@@ -70,6 +70,107 @@ impl Default for CosmosConfig {
     }
 }
 
+impl CosmosConfig {
+    /// Validate the configuration.
+    ///
+    /// Returns an error if any configuration values are out of range.
+    pub fn validate(&self) -> Result<()> {
+        if self.timeout_ms == 0 {
+            return Err(WorldForgeError::InvalidState(
+                "Cosmos timeout_ms must be > 0".to_string(),
+            ));
+        }
+        if self.default_num_frames == 0 || self.default_num_frames > 300 {
+            return Err(WorldForgeError::InvalidState(
+                "Cosmos default_num_frames must be 1..=300".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Request payload for the Cosmos Predict API.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CosmosPredictRequest {
+    /// Model identifier.
+    pub model: String,
+    /// Text prompt describing the desired action.
+    pub prompt: String,
+    /// Number of frames to generate.
+    pub num_frames: u32,
+    /// Output resolution `[width, height]`.
+    pub resolution: [u32; 2],
+    /// Frames per second.
+    pub fps: f32,
+    /// Whether to include depth maps.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include_depth: Option<bool>,
+}
+
+/// Response payload from the Cosmos Predict API.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CosmosPredictResponse {
+    /// Request identifier.
+    pub request_id: String,
+    /// Status of the prediction.
+    pub status: String,
+    /// Confidence score (0.0–1.0).
+    pub confidence: Option<f32>,
+    /// Physics plausibility scores.
+    pub physics_scores: Option<CosmosPhysicsScores>,
+    /// Processing time in milliseconds.
+    pub processing_time_ms: Option<u64>,
+}
+
+/// Physics scores returned by the Cosmos API.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CosmosPhysicsScores {
+    pub overall: Option<f32>,
+    pub object_permanence: Option<f32>,
+    pub gravity_compliance: Option<f32>,
+    pub collision_accuracy: Option<f32>,
+    pub spatial_consistency: Option<f32>,
+    pub temporal_consistency: Option<f32>,
+}
+
+impl CosmosPhysicsScores {
+    /// Convert to the core PhysicsScores type.
+    pub fn to_physics_scores(&self) -> PhysicsScores {
+        PhysicsScores {
+            overall: self.overall.unwrap_or(0.0),
+            object_permanence: self.object_permanence.unwrap_or(0.0),
+            gravity_compliance: self.gravity_compliance.unwrap_or(0.0),
+            collision_accuracy: self.collision_accuracy.unwrap_or(0.0),
+            spatial_consistency: self.spatial_consistency.unwrap_or(0.0),
+            temporal_consistency: self.temporal_consistency.unwrap_or(0.0),
+        }
+    }
+}
+
+/// Request payload for the Cosmos Generate API.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CosmosGenerateRequest {
+    /// Model identifier.
+    pub model: String,
+    /// Text prompt.
+    pub prompt: String,
+    /// Negative prompt (things to avoid).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub negative_prompt: Option<String>,
+    /// Duration in seconds.
+    pub duration_seconds: f64,
+    /// Output resolution `[width, height]`.
+    pub resolution: [u32; 2],
+    /// Frames per second.
+    pub fps: f32,
+    /// Sampling temperature.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    /// Random seed for reproducibility.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
+}
+
 /// NVIDIA Cosmos provider adapter.
 ///
 /// Wraps the Cosmos NIM API (or local deployment) to implement
@@ -101,19 +202,76 @@ impl CosmosProvider {
     }
 
     /// Create a new Cosmos provider with custom configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the configuration is invalid.
     pub fn with_config(
         model: CosmosModel,
         api_key: impl Into<String>,
         endpoint: CosmosEndpoint,
         config: CosmosConfig,
-    ) -> Self {
-        Self {
+    ) -> Result<Self> {
+        config.validate()?;
+        Ok(Self {
             model,
             api_key: api_key.into(),
             endpoint,
             config,
             client: reqwest::Client::new(),
+        })
+    }
+
+    /// Get the model identifier string for API requests.
+    fn model_id(&self) -> &'static str {
+        match self.model {
+            CosmosModel::Predict2_5 => "nvidia/cosmos-predict-2.5",
+            CosmosModel::Transfer2_5 => "nvidia/cosmos-transfer-2.5",
+            CosmosModel::Reason2 => "nvidia/cosmos-reason-2",
+            CosmosModel::Embed1 => "nvidia/cosmos-embed-1",
         }
+    }
+
+    /// Send an HTTP request with retry logic for transient failures.
+    async fn send_with_retry(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> std::result::Result<reqwest::Response, WorldForgeError> {
+        let mut last_err = WorldForgeError::NetworkError("no attempts made".to_string());
+        for attempt in 0..=self.config.max_retries {
+            if attempt > 0 {
+                let delay = std::time::Duration::from_millis(100 * 2u64.pow(attempt - 1));
+                tokio::time::sleep(delay).await;
+            }
+
+            match request
+                .try_clone()
+                .ok_or_else(|| {
+                    WorldForgeError::InternalError("request cannot be cloned".to_string())
+                })?
+                .send()
+                .await
+            {
+                Ok(resp) => {
+                    // Don't retry client errors (4xx), only server errors (5xx)
+                    if resp.status().is_server_error() && attempt < self.config.max_retries {
+                        last_err = WorldForgeError::ProviderUnavailable {
+                            provider: "cosmos".to_string(),
+                            reason: format!("HTTP {}", resp.status()),
+                        };
+                        continue;
+                    }
+                    return Ok(resp);
+                }
+                Err(e) => {
+                    last_err = WorldForgeError::NetworkError(e.to_string());
+                    if attempt >= self.config.max_retries {
+                        break;
+                    }
+                }
+            }
+        }
+        Err(last_err)
     }
 
     /// Get the base URL for the configured endpoint.
@@ -226,26 +384,31 @@ impl WorldModelProvider for CosmosProvider {
         config: &PredictionConfig,
     ) -> Result<Prediction> {
         let base_url = self.base_url()?;
+        let start = std::time::Instant::now();
         let prompt = Self::action_to_prompt(action);
 
-        let request_body = serde_json::json!({
-            "model": format!("nvidia/cosmos-predict-2.5"),
-            "prompt": prompt,
-            "num_frames": config.steps * (config.fps as u32),
-            "resolution": [config.resolution.0, config.resolution.1],
-            "fps": config.fps,
-        });
+        let request_body = CosmosPredictRequest {
+            model: self.model_id().to_string(),
+            prompt,
+            num_frames: config.steps * (config.fps as u32),
+            resolution: [config.resolution.0, config.resolution.1],
+            fps: config.fps,
+            include_depth: if self.config.include_depth {
+                Some(true)
+            } else {
+                None
+            },
+        };
 
-        let response = self
+        let request = self
             .client
             .post(format!("{base_url}/v1/predict"))
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
             .timeout(std::time::Duration::from_millis(self.config.timeout_ms))
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|e| WorldForgeError::NetworkError(e.to_string()))?;
+            .json(&request_body);
+
+        let response = self.send_with_retry(request).await?;
 
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
             return Err(WorldForgeError::ProviderAuthError(
@@ -254,9 +417,15 @@ impl WorldModelProvider for CosmosProvider {
         }
 
         if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            let retry_after = response
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(5000);
             return Err(WorldForgeError::ProviderRateLimited {
                 provider: "cosmos".to_string(),
-                retry_after_ms: 5000,
+                retry_after_ms: retry_after,
             });
         }
 
@@ -272,24 +441,34 @@ impl WorldModelProvider for CosmosProvider {
             });
         }
 
+        let latency_ms = start.elapsed().as_millis() as u64;
+
         // Parse the prediction response
-        // In a real implementation, this would parse the Cosmos API response format.
-        // For now, we return a structured prediction with the output state.
+        let api_response: CosmosPredictResponse = response
+            .json()
+            .await
+            .map_err(|e| WorldForgeError::SerializationError(e.to_string()))?;
+
         let mut output_state = state.clone();
         output_state.time.step += config.steps as u64;
         output_state.time.seconds += config.steps as f64 / config.fps as f64;
 
+        let physics_scores = api_response
+            .physics_scores
+            .map(|ps| ps.to_physics_scores())
+            .unwrap_or_default();
+
         Ok(Prediction {
             id: uuid::Uuid::new_v4(),
             provider: "cosmos".to_string(),
-            model: "cosmos-predict-2.5".to_string(),
+            model: self.model_id().to_string(),
             input_state: state.clone(),
             action: action.clone(),
             output_state,
             video: None,
-            confidence: 0.0, // Would be parsed from API response
-            physics_scores: PhysicsScores::default(),
-            latency_ms: 0, // Would be measured
+            confidence: api_response.confidence.unwrap_or(0.0),
+            physics_scores,
+            latency_ms,
             cost: self.estimate_cost(&Operation::Predict {
                 steps: config.steps,
                 resolution: config.resolution,
@@ -306,27 +485,26 @@ impl WorldModelProvider for CosmosProvider {
     ) -> Result<VideoClip> {
         let base_url = self.base_url()?;
 
-        let request_body = serde_json::json!({
-            "model": "nvidia/cosmos-predict-2.5",
-            "prompt": prompt.text,
-            "negative_prompt": prompt.negative_prompt,
-            "duration_seconds": config.duration_seconds,
-            "resolution": [config.resolution.0, config.resolution.1],
-            "fps": config.fps,
-            "temperature": config.temperature,
-            "seed": config.seed,
-        });
+        let request_body = CosmosGenerateRequest {
+            model: self.model_id().to_string(),
+            prompt: prompt.text.clone(),
+            negative_prompt: prompt.negative_prompt.clone(),
+            duration_seconds: config.duration_seconds,
+            resolution: [config.resolution.0, config.resolution.1],
+            fps: config.fps,
+            temperature: Some(config.temperature),
+            seed: config.seed,
+        };
 
-        let response = self
+        let request = self
             .client
             .post(format!("{base_url}/v1/generate"))
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
             .timeout(std::time::Duration::from_millis(self.config.timeout_ms))
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|e| WorldForgeError::NetworkError(e.to_string()))?;
+            .json(&request_body);
+
+        let response = self.send_with_retry(request).await?;
 
         if !response.status().is_success() {
             return Err(WorldForgeError::ProviderUnavailable {
@@ -638,5 +816,187 @@ mod tests {
         let json = serde_json::to_string(&endpoint).unwrap();
         let ep2: CosmosEndpoint = serde_json::from_str(&json).unwrap();
         assert!(matches!(ep2, CosmosEndpoint::NimApi(_)));
+    }
+
+    #[test]
+    fn test_config_validation_valid() {
+        let config = CosmosConfig::default();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_config_validation_zero_timeout() {
+        let config = CosmosConfig {
+            timeout_ms: 0,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_config_validation_too_many_frames() {
+        let config = CosmosConfig {
+            default_num_frames: 500,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_with_config_validates() {
+        let bad_config = CosmosConfig {
+            timeout_ms: 0,
+            ..Default::default()
+        };
+        let result = CosmosProvider::with_config(
+            CosmosModel::Predict2_5,
+            "key",
+            CosmosEndpoint::NimApi("https://api.nvidia.com".to_string()),
+            bad_config,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_model_id() {
+        let provider = CosmosProvider::new(
+            CosmosModel::Predict2_5,
+            "key",
+            CosmosEndpoint::NimApi("https://api.nvidia.com".to_string()),
+        );
+        assert_eq!(provider.model_id(), "nvidia/cosmos-predict-2.5");
+
+        let provider = CosmosProvider::new(
+            CosmosModel::Reason2,
+            "key",
+            CosmosEndpoint::NimApi("https://api.nvidia.com".to_string()),
+        );
+        assert_eq!(provider.model_id(), "nvidia/cosmos-reason-2");
+    }
+
+    #[test]
+    fn test_predict_request_serialization() {
+        let req = CosmosPredictRequest {
+            model: "nvidia/cosmos-predict-2.5".to_string(),
+            prompt: "Move forward".to_string(),
+            num_frames: 24,
+            resolution: [1280, 720],
+            fps: 24.0,
+            include_depth: None,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(!json.contains("include_depth")); // skip_serializing_if
+        let req2: CosmosPredictRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(req2.num_frames, 24);
+    }
+
+    #[test]
+    fn test_predict_request_with_depth() {
+        let req = CosmosPredictRequest {
+            model: "nvidia/cosmos-predict-2.5".to_string(),
+            prompt: "Move forward".to_string(),
+            num_frames: 24,
+            resolution: [1280, 720],
+            fps: 24.0,
+            include_depth: Some(true),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("include_depth"));
+    }
+
+    #[test]
+    fn test_cosmos_physics_scores_conversion() {
+        let api_scores = CosmosPhysicsScores {
+            overall: Some(0.9),
+            object_permanence: Some(0.85),
+            gravity_compliance: None,
+            collision_accuracy: Some(0.7),
+            spatial_consistency: None,
+            temporal_consistency: Some(0.95),
+        };
+        let scores = api_scores.to_physics_scores();
+        assert_eq!(scores.overall, 0.9);
+        assert_eq!(scores.object_permanence, 0.85);
+        assert_eq!(scores.gravity_compliance, 0.0); // None => 0.0
+        assert_eq!(scores.collision_accuracy, 0.7);
+        assert_eq!(scores.temporal_consistency, 0.95);
+    }
+
+    #[test]
+    fn test_generate_request_serialization() {
+        let req = CosmosGenerateRequest {
+            model: "nvidia/cosmos-predict-2.5".to_string(),
+            prompt: "A ball rolling down a hill".to_string(),
+            negative_prompt: None,
+            duration_seconds: 5.0,
+            resolution: [1920, 1080],
+            fps: 30.0,
+            temperature: Some(0.8),
+            seed: Some(42),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(!json.contains("negative_prompt")); // None => skipped
+        let req2: CosmosGenerateRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(req2.seed, Some(42));
+    }
+
+    #[test]
+    fn test_all_action_prompts() {
+        // Ensure all action variants produce reasonable prompts
+        let actions = vec![
+            Action::Move {
+                target: Position {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                speed: 1.0,
+            },
+            Action::Grasp {
+                object: uuid::Uuid::new_v4(),
+                grip_force: 5.0,
+            },
+            Action::Release {
+                object: uuid::Uuid::new_v4(),
+            },
+            Action::Push {
+                object: uuid::Uuid::new_v4(),
+                direction: worldforge_core::types::Vec3 {
+                    x: 1.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                force: 3.0,
+            },
+            Action::Rotate {
+                object: uuid::Uuid::new_v4(),
+                axis: worldforge_core::types::Vec3 {
+                    x: 0.0,
+                    y: 1.0,
+                    z: 0.0,
+                },
+                angle: 1.57,
+            },
+            Action::Place {
+                object: uuid::Uuid::new_v4(),
+                target: Position {
+                    x: 1.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            },
+            Action::SetWeather {
+                weather: worldforge_core::action::Weather::Snow,
+            },
+            Action::SetLighting { time_of_day: 12.0 },
+            Action::SpawnObject {
+                template: "sphere".to_string(),
+                pose: worldforge_core::types::Pose::default(),
+            },
+        ];
+        for action in &actions {
+            let prompt = CosmosProvider::action_to_prompt(action);
+            assert!(!prompt.is_empty());
+        }
     }
 }
