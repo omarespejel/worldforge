@@ -2480,6 +2480,7 @@ dependencies = [
  "worldforge-core",
  "worldforge-eval",
  "worldforge-providers",
+ "worldforge-verify",
 ]
 
 [[package]]
