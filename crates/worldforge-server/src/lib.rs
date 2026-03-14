@@ -16,6 +16,7 @@ use worldforge_core::prediction::PredictionConfig;
 use worldforge_core::provider::ProviderRegistry;
 use worldforge_core::state::{FileStateStore, StateStore, WorldState};
 use worldforge_core::types::WorldId;
+use worldforge_eval::EvalSuite;
 
 /// Server configuration.
 #[derive(Debug, Clone)]
@@ -61,6 +62,41 @@ struct PredictRequest {
 
 fn default_provider() -> String {
     "mock".to_string()
+}
+
+/// JSON request body for planning.
+#[derive(Debug, Deserialize)]
+struct PlanRequest {
+    goal: String,
+    #[serde(default = "default_max_steps")]
+    max_steps: u32,
+    #[serde(default = "default_provider")]
+    provider: String,
+}
+
+fn default_max_steps() -> u32 {
+    10
+}
+
+/// JSON request body for evaluation.
+#[derive(Debug, Deserialize)]
+struct EvaluateRequest {
+    #[serde(default = "default_suite")]
+    suite: String,
+}
+
+fn default_suite() -> String {
+    "physics".to_string()
+}
+
+/// JSON request body for cross-provider comparison.
+#[derive(Debug, Deserialize)]
+struct CompareRequest {
+    world_id: String,
+    action: Action,
+    providers: Vec<String>,
+    #[serde(default)]
+    config: PredictionConfig,
 }
 
 /// JSON response envelope.
@@ -224,8 +260,30 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
             Err(e) => (400, error_response(&format!("invalid request: {e}"))),
         },
 
+        // GET /v1/worlds — list all worlds
+        ("GET", "/v1/worlds") => {
+            let ids = state.store.list().await.unwrap_or_default();
+            let mut worlds = Vec::new();
+            for id in &ids {
+                if let Ok(ws) = state.store.load(id).await {
+                    worlds.push(serde_json::json!({
+                        "id": id.to_string(),
+                        "name": ws.metadata.name,
+                        "provider": ws.metadata.created_by,
+                        "step": ws.time.step,
+                    }));
+                }
+            }
+            (200, ApiResponse::ok(worlds))
+        }
+
         // GET /v1/worlds/{id}
-        ("GET", p) if p.starts_with("/v1/worlds/") && !p.contains("/predict") => {
+        ("GET", p)
+            if p.starts_with("/v1/worlds/")
+                && !p.contains("/predict")
+                && !p.contains("/plan")
+                && !p.contains("/evaluate") =>
+        {
             let id_str = p.strip_prefix("/v1/worlds/").unwrap_or("");
             match id_str.parse::<WorldId>() {
                 Ok(id) => match state.store.load(&id).await {
@@ -269,6 +327,127 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                 Err(_) => (400, error_response("invalid world ID")),
             }
         }
+
+        // DELETE /v1/worlds/{id}
+        ("DELETE", p) if p.starts_with("/v1/worlds/") => {
+            let id_str = p.strip_prefix("/v1/worlds/").unwrap_or("");
+            match id_str.parse::<WorldId>() {
+                Ok(id) => match state.store.delete(&id).await {
+                    Ok(()) => {
+                        state.worlds.write().await.remove(&id);
+                        (
+                            200,
+                            ApiResponse::ok(serde_json::json!({"deleted": id.to_string()})),
+                        )
+                    }
+                    Err(e) => (404, error_response(&e.to_string())),
+                },
+                Err(_) => (400, error_response("invalid world ID")),
+            }
+        }
+
+        // POST /v1/worlds/{id}/plan
+        ("POST", p) if p.starts_with("/v1/worlds/") && p.ends_with("/plan") => {
+            let id_str = p
+                .strip_prefix("/v1/worlds/")
+                .and_then(|s| s.strip_suffix("/plan"))
+                .unwrap_or("");
+            match id_str.parse::<WorldId>() {
+                Ok(id) => match serde_json::from_str::<PlanRequest>(body) {
+                    Ok(req) => {
+                        let ws = match state.store.load(&id).await {
+                            Ok(ws) => ws,
+                            Err(e) => return (404, error_response(&e.to_string())),
+                        };
+                        if let Err(e) = state.registry.get(&req.provider) {
+                            return (404, error_response(&e.to_string()));
+                        }
+                        let registry = Arc::clone(&state.registry);
+                        let world =
+                            worldforge_core::world::World::new(ws.clone(), &req.provider, registry);
+                        let plan_req = worldforge_core::prediction::PlanRequest {
+                            current_state: ws,
+                            goal: worldforge_core::prediction::PlanGoal::Description(
+                                req.goal.clone(),
+                            ),
+                            max_steps: req.max_steps,
+                            guardrails: Vec::new(),
+                            planner: worldforge_core::prediction::PlannerType::Sampling {
+                                num_samples: 10,
+                                top_k: 3,
+                            },
+                            timeout_seconds: 30.0,
+                        };
+                        match world.plan(&plan_req).await {
+                            Ok(plan) => (200, ApiResponse::ok(plan)),
+                            Err(e) => (500, error_response(&e.to_string())),
+                        }
+                    }
+                    Err(e) => (400, error_response(&format!("invalid request: {e}"))),
+                },
+                Err(_) => (400, error_response("invalid world ID")),
+            }
+        }
+
+        // POST /v1/worlds/{id}/evaluate
+        ("POST", p) if p.starts_with("/v1/worlds/") && p.ends_with("/evaluate") => {
+            let _id_str = p
+                .strip_prefix("/v1/worlds/")
+                .and_then(|s| s.strip_suffix("/evaluate"))
+                .unwrap_or("");
+            match serde_json::from_str::<EvaluateRequest>(body) {
+                Ok(req) => {
+                    let suite = match req.suite.as_str() {
+                        "physics" => EvalSuite::physics_standard(),
+                        "manipulation" => EvalSuite::manipulation_standard(),
+                        "spatial" => EvalSuite::spatial_reasoning(),
+                        "comprehensive" => EvalSuite::comprehensive(),
+                        other => {
+                            return (400, error_response(&format!("unknown eval suite: {other}")))
+                        }
+                    };
+                    // Run eval against all registered providers
+                    let provider_refs: Vec<&dyn worldforge_core::provider::WorldModelProvider> =
+                        state
+                            .registry
+                            .list()
+                            .iter()
+                            .filter_map(|name| state.registry.get(name).ok())
+                            .collect();
+                    match suite.run(&provider_refs).await {
+                        Ok(report) => (200, ApiResponse::ok(report)),
+                        Err(e) => (500, error_response(&e.to_string())),
+                    }
+                }
+                Err(e) => (400, error_response(&format!("invalid request: {e}"))),
+            }
+        }
+
+        // POST /v1/compare
+        ("POST", "/v1/compare") => match serde_json::from_str::<CompareRequest>(body) {
+            Ok(req) => {
+                let id = match req.world_id.parse::<WorldId>() {
+                    Ok(id) => id,
+                    Err(_) => return (400, error_response("invalid world ID")),
+                };
+                let ws = match state.store.load(&id).await {
+                    Ok(ws) => ws,
+                    Err(e) => return (404, error_response(&e.to_string())),
+                };
+                let first_provider = req.providers.first().map(|s| s.as_str()).unwrap_or("mock");
+                let registry = Arc::clone(&state.registry);
+                let world = worldforge_core::world::World::new(ws, first_provider, registry);
+                let provider_refs: Vec<&str> = req.providers.iter().map(|s| s.as_str()).collect();
+                match world
+                    .predict_multi(&req.action, &provider_refs, &req.config)
+                    .await
+                {
+                    Ok(multi) => (200, ApiResponse::ok(multi)),
+                    Err(e) => (500, error_response(&e.to_string())),
+                }
+            }
+            Err(e) => (400, error_response(&format!("invalid request: {e}"))),
+        },
 
         // Catch-all
         _ => (404, error_response(&format!("not found: {method} {path}"))),
@@ -353,5 +532,113 @@ mod tests {
         let id = uuid::Uuid::new_v4();
         let (status, _) = route("GET", &format!("/v1/worlds/{id}"), "", &state).await;
         assert_eq!(status, 404);
+    }
+
+    #[tokio::test]
+    async fn test_route_list_worlds_empty() {
+        let state = test_state();
+        let (status, body) = route("GET", "/v1/worlds", "", &state).await;
+        assert_eq!(status, 200);
+        assert!(body.contains("[]") || body.contains("success"));
+    }
+
+    #[tokio::test]
+    async fn test_route_list_worlds_with_entries() {
+        let state = test_state();
+        // Create a world first
+        let body = r#"{"name":"w1","provider":"mock"}"#;
+        let (status, _) = route("POST", "/v1/worlds", body, &state).await;
+        assert_eq!(status, 201);
+
+        let (status, resp) = route("GET", "/v1/worlds", "", &state).await;
+        assert_eq!(status, 200);
+        assert!(resp.contains("w1"));
+    }
+
+    #[tokio::test]
+    async fn test_route_delete_world() {
+        let state = test_state();
+        // Create then delete
+        let body = r#"{"name":"to_delete","provider":"mock"}"#;
+        let (status, resp) = route("POST", "/v1/worlds", body, &state).await;
+        assert_eq!(status, 201);
+
+        // Extract ID
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let id = v["data"]["id"].as_str().unwrap();
+
+        let (status, _) = route("DELETE", &format!("/v1/worlds/{id}"), "", &state).await;
+        assert_eq!(status, 200);
+
+        // Verify it's gone
+        let (status, _) = route("GET", &format!("/v1/worlds/{id}"), "", &state).await;
+        assert_eq!(status, 404);
+    }
+
+    #[tokio::test]
+    async fn test_route_delete_nonexistent() {
+        let state = test_state();
+        let id = uuid::Uuid::new_v4();
+        let (status, _) = route("DELETE", &format!("/v1/worlds/{id}"), "", &state).await;
+        assert_eq!(status, 404);
+    }
+
+    #[tokio::test]
+    async fn test_route_predict() {
+        let state = test_state();
+        let body = r#"{"name":"pred_world","provider":"mock"}"#;
+        let (status, resp) = route("POST", "/v1/worlds", body, &state).await;
+        assert_eq!(status, 201);
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let id = v["data"]["id"].as_str().unwrap();
+
+        let pred_body = r#"{"action":{"Move":{"target":{"x":1.0,"y":0.0,"z":0.0},"speed":1.0}},"provider":"mock"}"#;
+        let (status, _) = route(
+            "POST",
+            &format!("/v1/worlds/{id}/predict"),
+            pred_body,
+            &state,
+        )
+        .await;
+        assert_eq!(status, 200);
+    }
+
+    #[tokio::test]
+    async fn test_route_evaluate() {
+        let state = test_state();
+        let body = r#"{"suite":"physics"}"#;
+        let id = uuid::Uuid::new_v4();
+        let (status, resp) =
+            route("POST", &format!("/v1/worlds/{id}/evaluate"), body, &state).await;
+        assert_eq!(status, 200);
+        assert!(resp.contains("success"));
+    }
+
+    #[tokio::test]
+    async fn test_route_evaluate_invalid_suite() {
+        let state = test_state();
+        let body = r#"{"suite":"nonexistent"}"#;
+        let id = uuid::Uuid::new_v4();
+        let (status, _) = route("POST", &format!("/v1/worlds/{id}/evaluate"), body, &state).await;
+        assert_eq!(status, 400);
+    }
+
+    #[tokio::test]
+    async fn test_route_compare() {
+        let state = test_state();
+        // Create a world
+        let body = r#"{"name":"cmp_world","provider":"mock"}"#;
+        let (status, resp) = route("POST", "/v1/worlds", body, &state).await;
+        assert_eq!(status, 201);
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let id = v["data"]["id"].as_str().unwrap();
+
+        let cmp_body = format!(
+            r#"{{"world_id":"{}","action":{{"Move":{{"target":{{"x":1.0,"y":0.0,"z":0.0}},"speed":1.0}}}},"providers":["mock"]}}"#,
+            id
+        );
+        let (status, resp) = route("POST", "/v1/compare", &cmp_body, &state).await;
+        assert_eq!(status, 200);
+        assert!(resp.contains("success"));
     }
 }
