@@ -278,4 +278,92 @@ mod tests {
             _ => panic!("wrong variant"),
         }
     }
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn arb_physics_scores() -> impl Strategy<Value = PhysicsScores> {
+            (
+                0.0f32..=1.0,
+                0.0f32..=1.0,
+                0.0f32..=1.0,
+                0.0f32..=1.0,
+                0.0f32..=1.0,
+                0.0f32..=1.0,
+            )
+                .prop_map(|(overall, op, gc, ca, sc, tc)| PhysicsScores {
+                    overall,
+                    object_permanence: op,
+                    gravity_compliance: gc,
+                    collision_accuracy: ca,
+                    spatial_consistency: sc,
+                    temporal_consistency: tc,
+                })
+        }
+
+        fn arb_planner_type() -> impl Strategy<Value = PlannerType> {
+            prop_oneof![
+                (
+                    any::<f32>().prop_filter("finite", |v| v.is_finite()),
+                    any::<u32>()
+                )
+                    .prop_map(|(lr, ni)| PlannerType::Gradient {
+                        learning_rate: lr,
+                        num_iterations: ni,
+                    }),
+                (any::<u32>(), any::<u32>()).prop_map(|(ns, tk)| PlannerType::Sampling {
+                    num_samples: ns,
+                    top_k: tk,
+                }),
+                Just(PlannerType::ProviderNative),
+            ]
+        }
+
+        proptest! {
+            #[test]
+            fn physics_scores_roundtrip(scores in arb_physics_scores()) {
+                let json = serde_json::to_string(&scores).unwrap();
+                let scores2: PhysicsScores = serde_json::from_str(&json).unwrap();
+                prop_assert!((scores.overall - scores2.overall).abs() < f32::EPSILON);
+                prop_assert!((scores.object_permanence - scores2.object_permanence).abs() < f32::EPSILON);
+            }
+
+            #[test]
+            fn prediction_config_roundtrip(
+                steps in 1u32..100,
+                w in 1u32..4096,
+                h in 1u32..4096,
+                fps in 1.0f32..120.0,
+            ) {
+                let config = PredictionConfig {
+                    steps,
+                    resolution: (w, h),
+                    fps,
+                    ..PredictionConfig::default()
+                };
+                let json = serde_json::to_string(&config).unwrap();
+                let config2: PredictionConfig = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(config2.steps, steps);
+                prop_assert_eq!(config2.resolution, (w, h));
+            }
+
+            #[test]
+            fn planner_type_roundtrip(pt in arb_planner_type()) {
+                let json = serde_json::to_string(&pt).unwrap();
+                let _pt2: PlannerType = serde_json::from_str(&json).unwrap();
+            }
+
+            #[test]
+            fn plan_goal_description_roundtrip(desc in ".*") {
+                let goal = PlanGoal::Description(desc.clone());
+                let json = serde_json::to_string(&goal).unwrap();
+                let goal2: PlanGoal = serde_json::from_str(&json).unwrap();
+                match goal2 {
+                    PlanGoal::Description(s) => prop_assert_eq!(s, desc),
+                    _ => prop_assert!(false, "wrong variant"),
+                }
+            }
+        }
+    }
 }

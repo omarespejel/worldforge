@@ -376,4 +376,182 @@ mod tests {
         let bbox2: BBox = serde_json::from_str(&json).unwrap();
         assert_eq!(bbox, bbox2);
     }
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn arb_finite_f32() -> impl Strategy<Value = f32> {
+            prop::num::f32::NORMAL
+                | prop::num::f32::POSITIVE
+                | prop::num::f32::NEGATIVE
+                | prop::num::f32::ZERO
+        }
+
+        fn arb_position() -> impl Strategy<Value = Position> {
+            (arb_finite_f32(), arb_finite_f32(), arb_finite_f32()).prop_map(|(x, y, z)| Position {
+                x,
+                y,
+                z,
+            })
+        }
+
+        fn arb_rotation() -> impl Strategy<Value = Rotation> {
+            (
+                arb_finite_f32(),
+                arb_finite_f32(),
+                arb_finite_f32(),
+                arb_finite_f32(),
+            )
+                .prop_map(|(w, x, y, z)| Rotation { w, x, y, z })
+        }
+
+        fn arb_pose() -> impl Strategy<Value = Pose> {
+            (arb_position(), arb_rotation())
+                .prop_map(|(position, rotation)| Pose { position, rotation })
+        }
+
+        fn arb_vec3() -> impl Strategy<Value = Vec3> {
+            (arb_finite_f32(), arb_finite_f32(), arb_finite_f32()).prop_map(|(x, y, z)| Vec3 {
+                x,
+                y,
+                z,
+            })
+        }
+
+        fn arb_simtime() -> impl Strategy<Value = SimTime> {
+            (any::<u64>(), -1e10f64..1e10, -1e10f64..1e10).prop_map(|(step, seconds, dt)| SimTime {
+                step,
+                seconds,
+                dt,
+            })
+        }
+
+        fn arb_device() -> impl Strategy<Value = Device> {
+            prop_oneof![
+                Just(Device::Cpu),
+                any::<u32>().prop_map(Device::Cuda),
+                Just(Device::Wasm),
+                ".*".prop_map(Device::Remote),
+            ]
+        }
+
+        fn arb_dtype() -> impl Strategy<Value = DType> {
+            prop_oneof![
+                Just(DType::Float16),
+                Just(DType::Float32),
+                Just(DType::BFloat16),
+                Just(DType::UInt8),
+                Just(DType::Int32),
+                Just(DType::Int64),
+            ]
+        }
+
+        proptest! {
+            #[test]
+            fn position_roundtrip(pos in arb_position()) {
+                let json = serde_json::to_string(&pos).unwrap();
+                let pos2: Position = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(pos, pos2);
+            }
+
+            #[test]
+            fn rotation_roundtrip(rot in arb_rotation()) {
+                let json = serde_json::to_string(&rot).unwrap();
+                let rot2: Rotation = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(rot, rot2);
+            }
+
+            #[test]
+            fn pose_roundtrip(pose in arb_pose()) {
+                let json = serde_json::to_string(&pose).unwrap();
+                let pose2: Pose = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(pose, pose2);
+            }
+
+            #[test]
+            fn vec3_roundtrip(v in arb_vec3()) {
+                let json = serde_json::to_string(&v).unwrap();
+                let v2: Vec3 = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(v, v2);
+            }
+
+            #[test]
+            fn simtime_roundtrip(t in arb_simtime()) {
+                let json = serde_json::to_string(&t).unwrap();
+                let t2: SimTime = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(t.step, t2.step);
+                // f64 JSON roundtrip can lose precision in the last ULP
+                prop_assert!((t.seconds - t2.seconds).abs() < 1e-6 * t.seconds.abs().max(1.0));
+                prop_assert!((t.dt - t2.dt).abs() < 1e-6 * t.dt.abs().max(1.0));
+            }
+
+            #[test]
+            fn device_roundtrip(d in arb_device()) {
+                let json = serde_json::to_string(&d).unwrap();
+                let d2: Device = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(d, d2);
+            }
+
+            #[test]
+            fn dtype_roundtrip(dt in arb_dtype()) {
+                let json = serde_json::to_string(&dt).unwrap();
+                let dt2: DType = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(dt, dt2);
+            }
+
+            #[test]
+            fn bbox_roundtrip(min in arb_position(), max in arb_position()) {
+                let bbox = BBox { min, max };
+                let json = serde_json::to_string(&bbox).unwrap();
+                let bbox2: BBox = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(bbox, bbox2);
+            }
+
+            #[test]
+            fn velocity_roundtrip(x in arb_finite_f32(), y in arb_finite_f32(), z in arb_finite_f32()) {
+                let v = Velocity { x, y, z };
+                let json = serde_json::to_string(&v).unwrap();
+                let v2: Velocity = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(v, v2);
+            }
+
+            #[test]
+            fn camera_pose_roundtrip(
+                pose in arb_pose(),
+                fov in arb_finite_f32(),
+                near in arb_finite_f32(),
+                far in arb_finite_f32()
+            ) {
+                let cp = CameraPose {
+                    extrinsics: pose,
+                    fov,
+                    near_clip: near,
+                    far_clip: far,
+                };
+                let json = serde_json::to_string(&cp).unwrap();
+                let cp2: CameraPose = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(cp, cp2);
+            }
+
+            #[test]
+            fn tensor_zeros_has_correct_size(
+                d1 in 1usize..10,
+                d2 in 1usize..10,
+                dt in arb_dtype()
+            ) {
+                let t = Tensor::zeros(vec![d1, d2], dt);
+                prop_assert_eq!(t.shape, vec![d1, d2]);
+                let expected_size = d1 * d2;
+                let actual_size = match &t.data {
+                    TensorData::Float32(v) => v.len(),
+                    TensorData::Float64(v) => v.len(),
+                    TensorData::UInt8(v) => v.len(),
+                    TensorData::Int32(v) => v.len(),
+                    TensorData::Int64(v) => v.len(),
+                };
+                prop_assert_eq!(actual_size, expected_size);
+            }
+        }
+    }
 }
