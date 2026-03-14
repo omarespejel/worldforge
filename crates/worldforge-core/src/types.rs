@@ -132,6 +132,23 @@ pub struct Velocity {
     pub z: f32,
 }
 
+impl Default for Velocity {
+    fn default() -> Self {
+        Self {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }
+    }
+}
+
+impl Velocity {
+    /// Compute the magnitude (speed) of this velocity vector.
+    pub fn magnitude(&self) -> f32 {
+        (self.x * self.x + self.y * self.y + self.z * self.z).sqrt()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Temporal types
 // ---------------------------------------------------------------------------
@@ -263,6 +280,31 @@ impl Default for Rotation {
             y: 0.0,
             z: 0.0,
         }
+    }
+}
+
+impl Rotation {
+    /// Compute the tilt angle in degrees from the upright orientation.
+    ///
+    /// This measures the angle between the object's local up vector
+    /// (after rotation) and the world up vector (0, 1, 0).
+    pub fn tilt_degrees(&self) -> f32 {
+        // Rotate the unit up vector (0, 1, 0) by this quaternion
+        // Using quaternion rotation formula: v' = q * v * q^-1
+        // For unit quaternion: q^-1 = conjugate
+        // Simplified for v = (0, 1, 0):
+        let ux = 2.0 * (self.x * self.y + self.w * self.z);
+        let uy = 1.0 - 2.0 * (self.x * self.x + self.z * self.z);
+        let uz = 2.0 * (self.y * self.z - self.w * self.x);
+
+        // Angle between rotated up and world up (0, 1, 0)
+        // cos(angle) = dot(rotated_up, world_up) / |rotated_up|
+        let len = (ux * ux + uy * uy + uz * uz).sqrt();
+        if len < f32::EPSILON {
+            return 90.0;
+        }
+        let cos_angle = uy / len;
+        cos_angle.clamp(-1.0, 1.0).acos().to_degrees()
     }
 }
 

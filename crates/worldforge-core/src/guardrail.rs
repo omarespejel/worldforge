@@ -137,25 +137,125 @@ fn evaluate_single(
             }
             ("BoundaryConstraint".to_string(), !out_of_bounds, detail)
         }
-        Guardrail::MaxVelocity { .. } => {
-            // Velocity checks require state deltas — pass by default in MVP
-            ("MaxVelocity".to_string(), true, None)
+        Guardrail::MaxVelocity { limit } => {
+            let mut violation = false;
+            let mut detail = None;
+            for obj in state.scene.objects.values() {
+                let speed = obj.velocity.magnitude();
+                if speed > *limit {
+                    violation = true;
+                    detail = Some(format!(
+                        "'{}' velocity {:.2} exceeds limit {:.2}",
+                        obj.name, speed, limit
+                    ));
+                    break;
+                }
+            }
+            ("MaxVelocity".to_string(), !violation, detail)
         }
-        Guardrail::HumanSafetyZone { .. } => {
-            // Human detection requires perception — pass by default in MVP
-            ("HumanSafetyZone".to_string(), true, None)
+        Guardrail::HumanSafetyZone { radius } => {
+            // Find objects tagged as "human" and check that all other objects
+            // maintain the required safety distance from them.
+            let humans: Vec<_> = state
+                .scene
+                .objects
+                .values()
+                .filter(|o| {
+                    o.semantic_label
+                        .as_deref()
+                        .map(|l| {
+                            l.eq_ignore_ascii_case("human") || l.eq_ignore_ascii_case("person")
+                        })
+                        .unwrap_or(false)
+                })
+                .collect();
+            let mut violation = false;
+            let mut detail = None;
+            'outer: for human in &humans {
+                let hp = &human.pose.position;
+                for obj in state.scene.objects.values() {
+                    if obj.id == human.id {
+                        continue;
+                    }
+                    let dx = obj.pose.position.x - hp.x;
+                    let dy = obj.pose.position.y - hp.y;
+                    let dz = obj.pose.position.z - hp.z;
+                    let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+                    if dist < *radius {
+                        violation = true;
+                        detail = Some(format!(
+                            "'{}' is {:.2}m from human '{}', safety radius is {:.2}m",
+                            obj.name, dist, human.name, radius
+                        ));
+                        break 'outer;
+                    }
+                }
+            }
+            ("HumanSafetyZone".to_string(), !violation, detail)
         }
-        Guardrail::StayUpright { .. } => {
-            // Orientation checks require quaternion analysis — pass by default in MVP
-            ("StayUpright".to_string(), true, None)
+        Guardrail::StayUpright {
+            objects,
+            max_tilt_degrees,
+        } => {
+            let mut violation = false;
+            let mut detail = None;
+            for obj_id in objects {
+                if let Some(obj) = state.scene.get_object(obj_id) {
+                    let tilt = obj.pose.rotation.tilt_degrees();
+                    if tilt > *max_tilt_degrees {
+                        violation = true;
+                        detail = Some(format!(
+                            "'{}' tilted {:.1}° (max {:.1}°)",
+                            obj.name, tilt, max_tilt_degrees
+                        ));
+                        break;
+                    }
+                }
+            }
+            ("StayUpright".to_string(), !violation, detail)
         }
-        Guardrail::EnergyConservation { .. } => {
-            // Energy checks require physics simulation — pass by default in MVP
-            ("EnergyConservation".to_string(), true, None)
+        Guardrail::EnergyConservation { tolerance } => {
+            // Compare total kinetic energy across objects.
+            // Since we only have a single state snapshot, we compute
+            // total KE and flag if any object has implausibly high energy
+            // relative to the scene total. A more complete implementation
+            // would compare input vs output states.
+            let total_ke: f32 = state
+                .scene
+                .objects
+                .values()
+                .map(|obj| {
+                    let mass = obj.physics.mass.unwrap_or(1.0);
+                    let v2 = obj.velocity.magnitude().powi(2);
+                    0.5 * mass * v2
+                })
+                .sum();
+
+            // Flag if total KE exceeds a reasonable bound.
+            // Using tolerance as the max allowed total KE in joules.
+            let violation = total_ke > *tolerance;
+            let detail = if violation {
+                Some(format!(
+                    "total kinetic energy {:.2}J exceeds tolerance {:.2}J",
+                    total_ke, tolerance
+                ))
+            } else {
+                None
+            };
+            ("EnergyConservation".to_string(), !violation, detail)
         }
-        Guardrail::ForbiddenStates { .. } => {
-            // Condition evaluation is complex — pass by default in MVP
-            ("ForbiddenStates".to_string(), true, None)
+        Guardrail::ForbiddenStates { conditions } => {
+            use crate::action::evaluate_condition;
+            let mut violation = false;
+            let mut detail = None;
+            for (i, cond) in conditions.iter().enumerate() {
+                if evaluate_condition(cond, state) {
+                    violation = true;
+                    detail = Some(format!("forbidden condition #{} is satisfied", i));
+                    break;
+                }
+            }
+            ("ForbiddenStates".to_string(), !violation, detail)
         }
     };
 
@@ -332,6 +432,368 @@ mod tests {
         let results = evaluate_guardrails(&configs, &state);
         assert!(!results[0].passed);
         assert_eq!(results[0].severity, ViolationSeverity::Warning);
+    }
+
+    #[test]
+    fn test_max_velocity_pass() {
+        let state = make_state_with_objects(vec![SceneObject::new(
+            "ball",
+            Pose::default(),
+            BBox {
+                min: Position {
+                    x: -1.0,
+                    y: -1.0,
+                    z: -1.0,
+                },
+                max: Position {
+                    x: 1.0,
+                    y: 1.0,
+                    z: 1.0,
+                },
+            },
+        )]);
+        let configs = vec![GuardrailConfig {
+            guardrail: Guardrail::MaxVelocity { limit: 10.0 },
+            blocking: true,
+        }];
+        let results = evaluate_guardrails(&configs, &state);
+        assert!(results[0].passed);
+    }
+
+    #[test]
+    fn test_max_velocity_fail() {
+        let mut obj = SceneObject::new(
+            "rocket",
+            Pose::default(),
+            BBox {
+                min: Position {
+                    x: -1.0,
+                    y: -1.0,
+                    z: -1.0,
+                },
+                max: Position {
+                    x: 1.0,
+                    y: 1.0,
+                    z: 1.0,
+                },
+            },
+        );
+        obj.velocity = crate::types::Velocity {
+            x: 10.0,
+            y: 10.0,
+            z: 10.0,
+        };
+        let state = make_state_with_objects(vec![obj]);
+        let configs = vec![GuardrailConfig {
+            guardrail: Guardrail::MaxVelocity { limit: 5.0 },
+            blocking: true,
+        }];
+        let results = evaluate_guardrails(&configs, &state);
+        assert!(!results[0].passed);
+        assert!(results[0]
+            .violation_details
+            .as_ref()
+            .unwrap()
+            .contains("rocket"));
+    }
+
+    #[test]
+    fn test_stay_upright_pass() {
+        let obj = SceneObject::new(
+            "mug",
+            Pose::default(), // identity rotation = upright
+            BBox {
+                min: Position {
+                    x: -1.0,
+                    y: -1.0,
+                    z: -1.0,
+                },
+                max: Position {
+                    x: 1.0,
+                    y: 1.0,
+                    z: 1.0,
+                },
+            },
+        );
+        let id = obj.id;
+        let state = make_state_with_objects(vec![obj]);
+        let configs = vec![GuardrailConfig {
+            guardrail: Guardrail::StayUpright {
+                objects: vec![id],
+                max_tilt_degrees: 10.0,
+            },
+            blocking: true,
+        }];
+        let results = evaluate_guardrails(&configs, &state);
+        assert!(results[0].passed);
+    }
+
+    #[test]
+    fn test_stay_upright_fail() {
+        use crate::types::Rotation;
+        // 90 degree rotation around Z axis
+        let angle = std::f32::consts::FRAC_PI_2;
+        let mut obj = SceneObject::new(
+            "cup",
+            Pose {
+                position: Position::default(),
+                rotation: Rotation {
+                    w: (angle / 2.0).cos(),
+                    x: 0.0,
+                    y: 0.0,
+                    z: (angle / 2.0).sin(),
+                },
+            },
+            BBox {
+                min: Position {
+                    x: -1.0,
+                    y: -1.0,
+                    z: -1.0,
+                },
+                max: Position {
+                    x: 1.0,
+                    y: 1.0,
+                    z: 1.0,
+                },
+            },
+        );
+        let id = obj.id;
+        // The rotation above doesn't tilt around X, so let's use a tilt around X
+        let tilt_angle = std::f32::consts::FRAC_PI_4; // 45 degrees
+        obj.pose.rotation = Rotation {
+            w: (tilt_angle / 2.0).cos(),
+            x: (tilt_angle / 2.0).sin(),
+            y: 0.0,
+            z: 0.0,
+        };
+        let state = make_state_with_objects(vec![obj]);
+        let configs = vec![GuardrailConfig {
+            guardrail: Guardrail::StayUpright {
+                objects: vec![id],
+                max_tilt_degrees: 10.0,
+            },
+            blocking: true,
+        }];
+        let results = evaluate_guardrails(&configs, &state);
+        assert!(!results[0].passed);
+    }
+
+    #[test]
+    fn test_energy_conservation_pass() {
+        let state = make_state_with_objects(vec![SceneObject::new(
+            "ball",
+            Pose::default(),
+            BBox {
+                min: Position {
+                    x: -1.0,
+                    y: -1.0,
+                    z: -1.0,
+                },
+                max: Position {
+                    x: 1.0,
+                    y: 1.0,
+                    z: 1.0,
+                },
+            },
+        )]);
+        let configs = vec![GuardrailConfig {
+            guardrail: Guardrail::EnergyConservation { tolerance: 100.0 },
+            blocking: true,
+        }];
+        let results = evaluate_guardrails(&configs, &state);
+        assert!(results[0].passed);
+    }
+
+    #[test]
+    fn test_energy_conservation_fail() {
+        let mut obj = SceneObject::new(
+            "cannonball",
+            Pose::default(),
+            BBox {
+                min: Position {
+                    x: -1.0,
+                    y: -1.0,
+                    z: -1.0,
+                },
+                max: Position {
+                    x: 1.0,
+                    y: 1.0,
+                    z: 1.0,
+                },
+            },
+        );
+        obj.velocity = crate::types::Velocity {
+            x: 100.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        obj.physics.mass = Some(10.0);
+        let state = make_state_with_objects(vec![obj]);
+        // KE = 0.5 * 10 * 100^2 = 50000
+        let configs = vec![GuardrailConfig {
+            guardrail: Guardrail::EnergyConservation { tolerance: 1000.0 },
+            blocking: true,
+        }];
+        let results = evaluate_guardrails(&configs, &state);
+        assert!(!results[0].passed);
+    }
+
+    #[test]
+    fn test_forbidden_states_pass() {
+        let fake_id = uuid::Uuid::new_v4();
+        let state = make_state_with_objects(vec![]);
+        let configs = vec![GuardrailConfig {
+            guardrail: Guardrail::ForbiddenStates {
+                conditions: vec![crate::action::Condition::ObjectExists { object: fake_id }],
+            },
+            blocking: true,
+        }];
+        let results = evaluate_guardrails(&configs, &state);
+        // Object doesn't exist, so forbidden condition is NOT satisfied => passes
+        assert!(results[0].passed);
+    }
+
+    #[test]
+    fn test_forbidden_states_fail() {
+        let obj = SceneObject::new(
+            "bomb",
+            Pose::default(),
+            BBox {
+                min: Position {
+                    x: -1.0,
+                    y: -1.0,
+                    z: -1.0,
+                },
+                max: Position {
+                    x: 1.0,
+                    y: 1.0,
+                    z: 1.0,
+                },
+            },
+        );
+        let id = obj.id;
+        let state = make_state_with_objects(vec![obj]);
+        let configs = vec![GuardrailConfig {
+            guardrail: Guardrail::ForbiddenStates {
+                conditions: vec![crate::action::Condition::ObjectExists { object: id }],
+            },
+            blocking: true,
+        }];
+        let results = evaluate_guardrails(&configs, &state);
+        // Object exists => forbidden condition IS satisfied => fails
+        assert!(!results[0].passed);
+    }
+
+    #[test]
+    fn test_human_safety_zone_pass() {
+        let mut human = SceneObject::new(
+            "person_1",
+            Pose::default(),
+            BBox {
+                min: Position {
+                    x: -0.5,
+                    y: -0.5,
+                    z: -0.5,
+                },
+                max: Position {
+                    x: 0.5,
+                    y: 0.5,
+                    z: 0.5,
+                },
+            },
+        );
+        human.semantic_label = Some("human".to_string());
+
+        let mut robot = SceneObject::new(
+            "robot_arm",
+            Pose {
+                position: Position {
+                    x: 10.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                ..Pose::default()
+            },
+            BBox {
+                min: Position {
+                    x: 9.0,
+                    y: -0.5,
+                    z: -0.5,
+                },
+                max: Position {
+                    x: 11.0,
+                    y: 0.5,
+                    z: 0.5,
+                },
+            },
+        );
+        robot.semantic_label = Some("robot".to_string());
+
+        let state = make_state_with_objects(vec![human, robot]);
+        let configs = vec![GuardrailConfig {
+            guardrail: Guardrail::HumanSafetyZone { radius: 2.0 },
+            blocking: true,
+        }];
+        let results = evaluate_guardrails(&configs, &state);
+        assert!(results[0].passed);
+    }
+
+    #[test]
+    fn test_human_safety_zone_fail() {
+        let mut human = SceneObject::new(
+            "person_1",
+            Pose::default(),
+            BBox {
+                min: Position {
+                    x: -0.5,
+                    y: -0.5,
+                    z: -0.5,
+                },
+                max: Position {
+                    x: 0.5,
+                    y: 0.5,
+                    z: 0.5,
+                },
+            },
+        );
+        human.semantic_label = Some("human".to_string());
+
+        let robot = SceneObject::new(
+            "robot_arm",
+            Pose {
+                position: Position {
+                    x: 0.5,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                ..Pose::default()
+            },
+            BBox {
+                min: Position {
+                    x: 0.0,
+                    y: -0.5,
+                    z: -0.5,
+                },
+                max: Position {
+                    x: 1.0,
+                    y: 0.5,
+                    z: 0.5,
+                },
+            },
+        );
+
+        let state = make_state_with_objects(vec![human, robot]);
+        let configs = vec![GuardrailConfig {
+            guardrail: Guardrail::HumanSafetyZone { radius: 2.0 },
+            blocking: true,
+        }];
+        let results = evaluate_guardrails(&configs, &state);
+        assert!(!results[0].passed);
+        assert!(results[0]
+            .violation_details
+            .as_ref()
+            .unwrap()
+            .contains("robot_arm"));
     }
 
     #[test]
