@@ -189,4 +189,75 @@ mod tests {
         let json = serde_json::to_string(&action).unwrap();
         let _: Action = serde_json::from_str(&json).unwrap();
     }
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn arb_weather() -> impl Strategy<Value = Weather> {
+            prop_oneof![
+                Just(Weather::Clear),
+                Just(Weather::Cloudy),
+                Just(Weather::Rain),
+                Just(Weather::Snow),
+                Just(Weather::Fog),
+                Just(Weather::Night),
+            ]
+        }
+
+        fn arb_action_space_type() -> impl Strategy<Value = ActionSpaceType> {
+            prop_oneof![
+                Just(ActionSpaceType::Continuous),
+                Just(ActionSpaceType::Discrete),
+                Just(ActionSpaceType::Language),
+                Just(ActionSpaceType::Visual),
+            ]
+        }
+
+        proptest! {
+            #[test]
+            fn weather_roundtrip(w in arb_weather()) {
+                let json = serde_json::to_string(&w).unwrap();
+                let w2: Weather = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(w, w2);
+            }
+
+            #[test]
+            fn action_space_type_roundtrip(ast in arb_action_space_type()) {
+                let json = serde_json::to_string(&ast).unwrap();
+                let ast2: ActionSpaceType = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(ast, ast2);
+            }
+
+            #[test]
+            fn move_action_roundtrip(x in prop::num::f32::NORMAL, y in prop::num::f32::NORMAL, z in prop::num::f32::NORMAL, speed in prop::num::f32::NORMAL) {
+                let action = Action::Move {
+                    target: Position { x, y, z },
+                    speed,
+                };
+                let json = serde_json::to_string(&action).unwrap();
+                let action2: Action = serde_json::from_str(&json).unwrap();
+                match action2 {
+                    Action::Move { target, speed: s } => {
+                        prop_assert_eq!(target.x, x);
+                        prop_assert_eq!(target.y, y);
+                        prop_assert_eq!(target.z, z);
+                        prop_assert_eq!(s, speed);
+                    }
+                    _ => prop_assert!(false, "wrong variant"),
+                }
+            }
+
+            #[test]
+            fn set_weather_roundtrip(w in arb_weather()) {
+                let action = Action::SetWeather { weather: w };
+                let json = serde_json::to_string(&action).unwrap();
+                let action2: Action = serde_json::from_str(&json).unwrap();
+                match action2 {
+                    Action::SetWeather { weather } => prop_assert_eq!(weather, w),
+                    _ => prop_assert!(false, "wrong variant"),
+                }
+            }
+        }
+    }
 }

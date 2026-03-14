@@ -344,4 +344,62 @@ mod tests {
         }];
         assert!(has_blocking_violation(&results));
     }
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn arb_severity() -> impl Strategy<Value = ViolationSeverity> {
+            prop_oneof![
+                Just(ViolationSeverity::Info),
+                Just(ViolationSeverity::Warning),
+                Just(ViolationSeverity::Critical),
+                Just(ViolationSeverity::Blocking),
+            ]
+        }
+
+        proptest! {
+            #[test]
+            fn severity_roundtrip(s in arb_severity()) {
+                let json = serde_json::to_string(&s).unwrap();
+                let s2: ViolationSeverity = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(s, s2);
+            }
+
+            #[test]
+            fn guardrail_result_roundtrip(
+                name in ".*",
+                passed in any::<bool>(),
+                sev in arb_severity()
+            ) {
+                let result = GuardrailResult {
+                    guardrail_name: name.clone(),
+                    passed,
+                    violation_details: None,
+                    severity: sev,
+                };
+                let json = serde_json::to_string(&result).unwrap();
+                let result2: GuardrailResult = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(result2.guardrail_name, name);
+                prop_assert_eq!(result2.passed, passed);
+                prop_assert_eq!(result2.severity, sev);
+            }
+
+            #[test]
+            fn has_blocking_only_for_blocking_failures(
+                passed in any::<bool>(),
+                sev in arb_severity()
+            ) {
+                let results = vec![GuardrailResult {
+                    guardrail_name: "test".to_string(),
+                    passed,
+                    violation_details: None,
+                    severity: sev,
+                }];
+                let has_blocking = has_blocking_violation(&results);
+                let expected = !passed && sev == ViolationSeverity::Blocking;
+                prop_assert_eq!(has_blocking, expected);
+            }
+        }
+    }
 }

@@ -121,4 +121,36 @@ mod tests {
         let e2: WorldForgeError = serde_json::from_str(&json).unwrap();
         assert_eq!(e.to_string(), e2.to_string());
     }
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn arb_error() -> impl Strategy<Value = WorldForgeError> {
+            prop_oneof![
+                ".*".prop_map(WorldForgeError::ProviderNotFound),
+                (".*", ".*").prop_map(|(p, r)| WorldForgeError::ProviderUnavailable {
+                    provider: p,
+                    reason: r,
+                }),
+                (".*", any::<u64>()).prop_map(|(p, t)| WorldForgeError::ProviderTimeout {
+                    provider: p,
+                    timeout_ms: t,
+                }),
+                ".*".prop_map(WorldForgeError::ProviderAuthError),
+                ".*".prop_map(WorldForgeError::SerializationError),
+                ".*".prop_map(WorldForgeError::NetworkError),
+                ".*".prop_map(WorldForgeError::InternalError),
+            ]
+        }
+
+        proptest! {
+            #[test]
+            fn error_serialization_roundtrip(e in arb_error()) {
+                let json = serde_json::to_string(&e).unwrap();
+                let e2: WorldForgeError = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(e.to_string(), e2.to_string());
+            }
+        }
+    }
 }
