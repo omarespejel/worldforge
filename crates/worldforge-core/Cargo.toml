@@ -18,3 +18,4 @@ tracing = { workspace = true }
 [dev-dependencies]
 proptest = { workspace = true }
 serde_json = { workspace = true }
+worldforge-providers = { path = "../worldforge-providers" }

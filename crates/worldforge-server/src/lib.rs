@@ -132,19 +132,32 @@ async fn handle_connection(
     let path = parts[1];
 
     // Read headers
+    const MAX_BODY_SIZE: usize = 4 * 1024 * 1024; // 4 MiB
+    const MAX_HEADER_COUNT: usize = 64;
     let mut content_length: usize = 0;
+    let mut header_count = 0;
     loop {
         let mut line = String::new();
         buf_reader.read_line(&mut line).await?;
         if line.trim().is_empty() {
             break;
         }
-        if let Some(val) = line
-            .strip_prefix("Content-Length: ")
-            .or_else(|| line.strip_prefix("content-length: "))
-        {
+        header_count += 1;
+        if header_count > MAX_HEADER_COUNT {
+            send_response(&mut writer, 400, &error_response("too many headers")).await?;
+            return Ok(());
+        }
+        // Case-insensitive header matching
+        let lower = line.to_ascii_lowercase();
+        if let Some(val) = lower.strip_prefix("content-length:") {
             content_length = val.trim().parse().unwrap_or(0);
         }
+    }
+
+    // Enforce body size limit
+    if content_length > MAX_BODY_SIZE {
+        send_response(&mut writer, 413, &error_response("request body too large")).await?;
+        return Ok(());
     }
 
     // Read body
@@ -271,6 +284,7 @@ async fn send_response(
         200 => "OK",
         201 => "Created",
         400 => "Bad Request",
+        413 => "Payload Too Large",
         404 => "Not Found",
         500 => "Internal Server Error",
         503 => "Service Unavailable",

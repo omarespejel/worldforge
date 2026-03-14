@@ -119,7 +119,8 @@ pub async fn run() -> Result<()> {
     let mut wf = WorldForge::new();
 
     // Register available providers
-    wf.register_provider(Box::new(MockProvider::new()));
+    wf.register_provider(Box::new(MockProvider::new()))
+        .context("failed to register mock provider")?;
 
     match cli.command {
         Commands::Create { prompt, provider } => cmd_create(&wf, &store, &prompt, &provider).await,
@@ -267,7 +268,12 @@ async fn cmd_delete(store: &FileStateStore, world_id: &str) -> Result<()> {
 async fn cmd_eval(_wf: &WorldForge, suite_name: &str, _providers_str: &str) -> Result<()> {
     let suite = match suite_name {
         "physics" => EvalSuite::physics_standard(),
-        _ => anyhow::bail!("unknown eval suite: {suite_name}"),
+        "manipulation" => EvalSuite::manipulation_standard(),
+        "spatial" => EvalSuite::spatial_reasoning(),
+        "comprehensive" => EvalSuite::comprehensive(),
+        _ => anyhow::bail!(
+            "unknown eval suite: {suite_name}. Available: physics, manipulation, spatial, comprehensive"
+        ),
     };
 
     let mock = MockProvider::new();

@@ -555,6 +555,168 @@ fn test_state_history_evolution() {
 }
 
 // ---------------------------------------------------------------------------
+// World orchestration async integration tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_world_predict_basic() {
+    use std::sync::Arc;
+    use worldforge_core::prediction::PredictionConfig;
+    use worldforge_core::provider::ProviderRegistry;
+    use worldforge_core::world::World;
+    use worldforge_providers::MockProvider;
+
+    let registry = Arc::new({
+        let mut r = ProviderRegistry::new();
+        r.register(Box::new(MockProvider::new()));
+        r
+    });
+
+    let state = WorldState::new("predict-test", "mock");
+    let initial_step = state.time.step;
+    let mut world = World::new(state, "mock", registry);
+
+    let action = Action::Move {
+        target: Position {
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        speed: 1.0,
+    };
+    let config = PredictionConfig::default();
+
+    let prediction = world.predict(&action, &config).await.unwrap();
+
+    assert_eq!(prediction.provider, "mock");
+    assert!(prediction.confidence > 0.0);
+    assert!(prediction.physics_scores.overall > 0.0);
+    // World state should have advanced
+    assert!(world.current_state().time.step > initial_step);
+    // History should have one entry
+    assert_eq!(world.current_state().history.len(), 1);
+}
+
+#[tokio::test]
+async fn test_world_predict_multi_compares_providers() {
+    use std::sync::Arc;
+    use worldforge_core::prediction::PredictionConfig;
+    use worldforge_core::provider::ProviderRegistry;
+    use worldforge_core::world::World;
+    use worldforge_providers::MockProvider;
+
+    let registry = Arc::new({
+        let mut r = ProviderRegistry::new();
+        r.register(Box::new(MockProvider::with_name("provider-a")));
+        r.register(Box::new(MockProvider::with_name("provider-b")));
+        r
+    });
+
+    let state = WorldState::new("multi-test", "mock");
+    let world = World::new(state, "provider-a", registry);
+
+    let action = Action::Move {
+        target: Position {
+            x: 2.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        speed: 1.0,
+    };
+    let config = PredictionConfig::default();
+
+    let multi = world
+        .predict_multi(&action, &["provider-a", "provider-b"], &config)
+        .await
+        .unwrap();
+
+    assert_eq!(multi.predictions.len(), 2);
+    assert!(multi.agreement_score > 0.0);
+    assert!(multi.agreement_score <= 1.0);
+    assert_eq!(multi.comparison.scores.len(), 2);
+    assert_eq!(multi.comparison.scores[0].provider, "provider-a");
+    assert_eq!(multi.comparison.scores[1].provider, "provider-b");
+}
+
+#[tokio::test]
+async fn test_world_predict_with_guardrails_pass() {
+    use std::sync::Arc;
+    use worldforge_core::prediction::PredictionConfig;
+    use worldforge_core::provider::ProviderRegistry;
+    use worldforge_core::world::World;
+    use worldforge_providers::MockProvider;
+
+    let registry = Arc::new({
+        let mut r = ProviderRegistry::new();
+        r.register(Box::new(MockProvider::new()));
+        r
+    });
+
+    let state = WorldState::new("guardrail-predict", "mock");
+    let mut world = World::new(state, "mock", registry);
+
+    let action = Action::Move {
+        target: Position {
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        speed: 1.0,
+    };
+    let config = PredictionConfig {
+        guardrails: vec![GuardrailConfig {
+            guardrail: Guardrail::BoundaryConstraint {
+                bounds: BBox {
+                    min: Position {
+                        x: -100.0,
+                        y: -100.0,
+                        z: -100.0,
+                    },
+                    max: Position {
+                        x: 100.0,
+                        y: 100.0,
+                        z: 100.0,
+                    },
+                },
+            },
+            blocking: true,
+        }],
+        ..PredictionConfig::default()
+    };
+
+    // Should succeed — everything is within bounds
+    let result = world.predict(&action, &config).await;
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn test_world_predict_unknown_provider_errors() {
+    use std::sync::Arc;
+    use worldforge_core::prediction::PredictionConfig;
+    use worldforge_core::provider::ProviderRegistry;
+    use worldforge_core::world::World;
+    use worldforge_providers::MockProvider;
+
+    let registry = Arc::new({
+        let mut r = ProviderRegistry::new();
+        r.register(Box::new(MockProvider::new()));
+        r
+    });
+
+    let state = WorldState::new("error-test", "nonexistent");
+    let mut world = World::new(state, "nonexistent", registry);
+
+    let action = Action::Move {
+        target: Position::default(),
+        speed: 1.0,
+    };
+    let config = PredictionConfig::default();
+
+    let result = world.predict(&action, &config).await;
+    assert!(result.is_err());
+}
+
+// ---------------------------------------------------------------------------
 // Prediction config integration tests
 // ---------------------------------------------------------------------------
 

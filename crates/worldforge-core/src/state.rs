@@ -3,6 +3,7 @@
 //! Provides the `StateStore` trait and file-based implementation
 //! for saving and loading world state.
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -46,7 +47,7 @@ pub struct WorldMetadata {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StateHistory {
     /// History entries in chronological order.
-    pub states: Vec<HistoryEntry>,
+    pub states: VecDeque<HistoryEntry>,
     /// Maximum number of entries to keep.
     pub max_entries: usize,
     /// Compression mode for stored states.
@@ -58,7 +59,7 @@ pub struct StateHistory {
 pub struct HistoryEntry {
     /// Simulation time of this entry.
     pub time: SimTime,
-    /// SHA-256 hash of the serialized state.
+    /// Fingerprint of the serialized state (non-cryptographic).
     pub state_hash: [u8; 32],
     /// Action that caused this transition (if any).
     pub action: Option<Action>,
@@ -94,7 +95,7 @@ pub enum Compression {
 impl Default for StateHistory {
     fn default() -> Self {
         Self {
-            states: Vec::new(),
+            states: VecDeque::new(),
             max_entries: 1000,
             compression: Compression::None,
         }
@@ -105,14 +106,14 @@ impl StateHistory {
     /// Add an entry, evicting the oldest if at capacity.
     pub fn push(&mut self, entry: HistoryEntry) {
         if self.states.len() >= self.max_entries {
-            self.states.remove(0);
+            self.states.pop_front();
         }
-        self.states.push(entry);
+        self.states.push_back(entry);
     }
 
     /// Get the most recent entry.
     pub fn latest(&self) -> Option<&HistoryEntry> {
-        self.states.last()
+        self.states.back()
     }
 
     /// Number of entries.
@@ -246,7 +247,7 @@ mod tests {
     #[test]
     fn test_state_history_push_and_eviction() {
         let mut history = StateHistory {
-            states: Vec::new(),
+            states: VecDeque::new(),
             max_entries: 3,
             compression: Compression::None,
         };
