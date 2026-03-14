@@ -1,0 +1,21 @@
+[package]
+name = "worldforge-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "WorldForge REST API server"
+
+[dependencies]
+worldforge-core = { path = "../worldforge-core" }
+worldforge-providers = { path = "../worldforge-providers" }
+worldforge-eval = { path = "../worldforge-eval" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
