@@ -7,6 +7,7 @@ members = [
     "crates/worldforge-verify",
     "crates/worldforge-server",
     "crates/worldforge-cli",
+    "crates/worldforge-python",
 ]
 
 [workspace.package]
