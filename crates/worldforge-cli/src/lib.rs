@@ -10,13 +10,14 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use worldforge_core::action::{Action, Weather};
-use worldforge_core::prediction::PredictionConfig;
+use worldforge_core::prediction::{PlanGoal, PlanRequest, PlannerType, PredictionConfig};
 use worldforge_core::provider::ProviderRegistry;
 use worldforge_core::state::{FileStateStore, StateStore};
 use worldforge_core::types::Position;
 use worldforge_core::WorldForge;
 use worldforge_eval::EvalSuite;
 use worldforge_providers::MockProvider;
+use worldforge_verify::{MockVerifier, ZkVerifier};
 
 /// WorldForge — orchestration layer for world foundation models.
 #[derive(Parser)]
@@ -101,6 +102,38 @@ pub enum Commands {
         providers: String,
     },
 
+    /// Plan a sequence of actions to achieve a goal.
+    Plan {
+        /// World ID.
+        #[arg(long)]
+        world: String,
+        /// Goal description (natural language).
+        #[arg(long)]
+        goal: String,
+        /// Maximum number of planning steps.
+        #[arg(long, default_value = "10")]
+        max_steps: u32,
+        /// Planning algorithm (sampling, cem, mpc, gradient).
+        #[arg(long, default_value = "sampling")]
+        planner: String,
+        /// Planning timeout in seconds.
+        #[arg(long, default_value = "30")]
+        timeout: f64,
+        /// Provider to use.
+        #[arg(long, default_value = "mock")]
+        provider: String,
+    },
+
+    /// Generate and verify a ZK proof for a plan.
+    Verify {
+        /// World ID.
+        #[arg(long)]
+        world: String,
+        /// Proof type: inference, guardrail, provenance.
+        #[arg(long, default_value = "inference")]
+        proof_type: String,
+    },
+
     /// Check provider health.
     Health {
         /// Provider name (or "all").
@@ -139,6 +172,20 @@ pub async fn run() -> Result<()> {
             action,
             providers,
         } => cmd_compare(&wf, &store, &world, &action, &providers).await,
+        Commands::Plan {
+            world,
+            goal,
+            max_steps,
+            planner,
+            timeout,
+            provider,
+        } => {
+            cmd_plan(
+                &wf, &store, &world, &goal, max_steps, &planner, timeout, &provider,
+            )
+            .await
+        }
+        Commands::Verify { world, proof_type } => cmd_verify(&store, &world, &proof_type).await,
         Commands::Health { provider } => cmd_health(&wf, &provider).await,
     }
 }
@@ -363,6 +410,180 @@ async fn cmd_compare(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn cmd_plan(
+    _wf: &WorldForge,
+    store: &FileStateStore,
+    world_id: &str,
+    goal: &str,
+    max_steps: u32,
+    planner_name: &str,
+    timeout: f64,
+    provider: &str,
+) -> Result<()> {
+    let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
+    let state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    let registry = Arc::new({
+        let mut r = ProviderRegistry::new();
+        r.register(Box::new(MockProvider::new()));
+        r
+    });
+    let world = worldforge_core::world::World::new(state.clone(), provider, registry);
+
+    let planner = match planner_name {
+        "sampling" => PlannerType::Sampling {
+            num_samples: 32,
+            top_k: 5,
+        },
+        "cem" => PlannerType::CEM {
+            population_size: 64,
+            elite_fraction: 0.1,
+            num_iterations: 5,
+        },
+        "mpc" => PlannerType::MPC {
+            horizon: max_steps,
+            num_samples: 32,
+            replanning_interval: 1,
+        },
+        "gradient" => PlannerType::Gradient {
+            learning_rate: 0.01,
+            num_iterations: 100,
+        },
+        other => anyhow::bail!("unknown planner: {other}. Available: sampling, cem, mpc, gradient"),
+    };
+
+    let request = PlanRequest {
+        current_state: state,
+        goal: PlanGoal::Description(goal.to_string()),
+        max_steps,
+        guardrails: Vec::new(),
+        planner,
+        timeout_seconds: timeout,
+    };
+
+    let plan = world
+        .plan(&request)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    println!("Plan generated:");
+    println!("  Actions: {}", plan.actions.len());
+    println!("  Success probability: {:.2}", plan.success_probability);
+    println!("  Planning time: {}ms", plan.planning_time_ms);
+    println!("  Iterations: {}", plan.iterations_used);
+    println!();
+    for (i, action) in plan.actions.iter().enumerate() {
+        println!("  Step {}: {:?}", i + 1, action);
+        if let Some(gr) = plan.guardrail_compliance.get(i) {
+            for r in gr {
+                let status = if r.passed { "PASS" } else { "FAIL" };
+                println!("    [{status}] {}", r.guardrail_name);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn cmd_verify(store: &FileStateStore, world_id: &str, proof_type: &str) -> Result<()> {
+    let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
+    let state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    let verifier = MockVerifier::new();
+
+    match proof_type {
+        "inference" => {
+            let model_hash = worldforge_verify::sha256_hash(b"mock-model");
+            let input_hash =
+                worldforge_verify::sha256_hash(&serde_json::to_vec(&state).unwrap_or_default());
+            let output_hash = worldforge_verify::sha256_hash(b"mock-output");
+
+            let proof = verifier
+                .prove_inference(model_hash, input_hash, output_hash)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+            println!("ZK Proof generated:");
+            println!("  Type: InferenceVerification");
+            println!("  Backend: {:?}", proof.backend);
+            println!("  Proof size: {} bytes", proof.proof_data.len());
+            println!("  Generation time: {}ms", proof.generation_time_ms);
+
+            let result = verifier
+                .verify(&proof)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            println!();
+            println!("Verification:");
+            println!("  Valid: {}", result.valid);
+            println!("  Details: {}", result.details);
+            println!("  Verification time: {}ms", result.verification_time_ms);
+        }
+        "guardrail" => {
+            use worldforge_core::prediction::Plan;
+
+            let plan = Plan {
+                actions: Vec::new(),
+                predicted_states: Vec::new(),
+                predicted_videos: None,
+                total_cost: 0.0,
+                success_probability: 1.0,
+                guardrail_compliance: Vec::new(),
+                planning_time_ms: 0,
+                iterations_used: 0,
+            };
+
+            let proof = verifier
+                .prove_guardrail_compliance(&plan, &[])
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+            println!("ZK Proof generated:");
+            println!("  Type: GuardrailCompliance");
+            println!("  Backend: {:?}", proof.backend);
+            println!("  Proof size: {} bytes", proof.proof_data.len());
+            println!("  Generation time: {}ms", proof.generation_time_ms);
+
+            let result = verifier
+                .verify(&proof)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            println!();
+            println!("Verification:");
+            println!("  Valid: {}", result.valid);
+            println!("  Details: {}", result.details);
+            println!("  Verification time: {}ms", result.verification_time_ms);
+        }
+        "provenance" => {
+            let data_hash =
+                worldforge_verify::sha256_hash(&serde_json::to_vec(&state).unwrap_or_default());
+            let timestamp = chrono::Utc::now().timestamp() as u64;
+            let source_commitment = worldforge_verify::sha256_hash(b"worldforge-cli");
+
+            let proof = verifier
+                .prove_data_provenance(data_hash, timestamp, source_commitment)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+            println!("ZK Proof generated:");
+            println!("  Type: DataProvenance");
+            println!("  Backend: {:?}", proof.backend);
+            println!("  Proof size: {} bytes", proof.proof_data.len());
+            println!("  Generation time: {}ms", proof.generation_time_ms);
+
+            let result = verifier
+                .verify(&proof)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            println!();
+            println!("Verification:");
+            println!("  Valid: {}", result.valid);
+            println!("  Details: {}", result.details);
+            println!("  Verification time: {}ms", result.verification_time_ms);
+        }
+        other => anyhow::bail!(
+            "unknown proof type: {other}. Available: inference, guardrail, provenance"
+        ),
+    }
+
+    Ok(())
+}
+
 async fn cmd_health(wf: &WorldForge, provider_name: &str) -> Result<()> {
     let registry = wf.registry();
     let providers_to_check: Vec<&str> = if provider_name == "all" {
@@ -475,6 +696,26 @@ mod tests {
         match action {
             Action::Raw { provider, .. } => assert_eq!(provider, "cli"),
             _ => panic!("expected Raw"),
+        }
+    }
+
+    #[test]
+    fn test_parse_action_spawn() {
+        let action = parse_action("spawn cube").unwrap();
+        match action {
+            Action::SpawnObject { template, .. } => assert_eq!(template, "cube"),
+            _ => panic!("expected SpawnObject"),
+        }
+    }
+
+    #[test]
+    fn test_parse_action_set_lighting() {
+        let action = parse_action("set-lighting 18.5").unwrap();
+        match action {
+            Action::SetLighting { time_of_day } => {
+                assert!((time_of_day - 18.5).abs() < f32::EPSILON)
+            }
+            _ => panic!("expected SetLighting"),
         }
     }
 }

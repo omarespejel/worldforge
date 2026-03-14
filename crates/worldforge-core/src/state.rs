@@ -232,6 +232,108 @@ impl StateStore for FileStateStore {
     }
 }
 
+// ---------------------------------------------------------------------------
+// SQLite-based state store
+// ---------------------------------------------------------------------------
+
+/// SQLite-backed state store using sqlx.
+///
+/// Stores world states in a single `world_states` table with the world ID as
+/// primary key and the JSON-serialized state as a TEXT column.
+#[cfg(feature = "sqlite")]
+#[derive(Debug, Clone)]
+pub struct SqliteStateStore {
+    pool: sqlx::SqlitePool,
+}
+
+#[cfg(feature = "sqlite")]
+impl SqliteStateStore {
+    /// Create a new SQLite state store and initialize the schema.
+    ///
+    /// The `url` should be a valid SQLite connection string, e.g.
+    /// `"sqlite:worldforge.db"` or `"sqlite::memory:"`.
+    pub async fn new(url: &str) -> Result<Self> {
+        let pool = sqlx::SqlitePool::connect(url)
+            .await
+            .map_err(|e| WorldForgeError::InternalError(format!("SQLite connect failed: {e}")))?;
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS world_states (
+                id TEXT PRIMARY KEY,
+                state TEXT NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await
+        .map_err(|e| WorldForgeError::InternalError(format!("schema creation failed: {e}")))?;
+
+        Ok(Self { pool })
+    }
+}
+
+#[cfg(feature = "sqlite")]
+#[async_trait::async_trait]
+impl StateStore for SqliteStateStore {
+    async fn save(&self, state: &WorldState) -> Result<()> {
+        let id = state.id.to_string();
+        let json = serde_json::to_string(state)
+            .map_err(|e| WorldForgeError::SerializationError(e.to_string()))?;
+
+        sqlx::query("INSERT OR REPLACE INTO world_states (id, state) VALUES (?, ?)")
+            .bind(&id)
+            .bind(&json)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| WorldForgeError::InternalError(format!("SQLite save failed: {e}")))?;
+
+        Ok(())
+    }
+
+    async fn load(&self, id: &WorldId) -> Result<WorldState> {
+        let id_str = id.to_string();
+        let row: Option<(String,)> = sqlx::query_as("SELECT state FROM world_states WHERE id = ?")
+            .bind(&id_str)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| WorldForgeError::InternalError(format!("SQLite load failed: {e}")))?;
+
+        match row {
+            Some((json,)) => serde_json::from_str(&json)
+                .map_err(|e| WorldForgeError::SerializationError(e.to_string())),
+            None => Err(WorldForgeError::WorldNotFound(*id)),
+        }
+    }
+
+    async fn list(&self) -> Result<Vec<WorldId>> {
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT id FROM world_states")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| WorldForgeError::InternalError(format!("SQLite list failed: {e}")))?;
+
+        let mut ids = Vec::new();
+        for (id_str,) in rows {
+            if let Ok(id) = id_str.parse::<WorldId>() {
+                ids.push(id);
+            }
+        }
+        Ok(ids)
+    }
+
+    async fn delete(&self, id: &WorldId) -> Result<()> {
+        let id_str = id.to_string();
+        let result = sqlx::query("DELETE FROM world_states WHERE id = ?")
+            .bind(&id_str)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| WorldForgeError::InternalError(format!("SQLite delete failed: {e}")))?;
+
+        if result.rows_affected() == 0 {
+            return Err(WorldForgeError::WorldNotFound(*id));
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,6 +377,41 @@ mod tests {
         let ws2: WorldState = serde_json::from_str(&json).unwrap();
         assert_eq!(ws.id, ws2.id);
         assert_eq!(ws.metadata.name, ws2.metadata.name);
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn test_sqlite_state_store() {
+        let store = SqliteStateStore::new("sqlite::memory:").await.unwrap();
+
+        let state = WorldState::new("sqlite-test", "mock");
+        let id = state.id;
+
+        // Save
+        store.save(&state).await.unwrap();
+
+        // Load
+        let loaded = store.load(&id).await.unwrap();
+        assert_eq!(loaded.id, id);
+        assert_eq!(loaded.metadata.name, "sqlite-test");
+
+        // List
+        let ids = store.list().await.unwrap();
+        assert!(ids.contains(&id));
+
+        // Overwrite (upsert)
+        let mut updated = state.clone();
+        updated.time.step = 42;
+        store.save(&updated).await.unwrap();
+        let reloaded = store.load(&id).await.unwrap();
+        assert_eq!(reloaded.time.step, 42);
+
+        // Delete
+        store.delete(&id).await.unwrap();
+        assert!(store.load(&id).await.is_err());
+
+        // Delete nonexistent
+        assert!(store.delete(&id).await.is_err());
     }
 
     #[tokio::test]

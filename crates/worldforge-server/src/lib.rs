@@ -17,6 +17,7 @@ use worldforge_core::provider::ProviderRegistry;
 use worldforge_core::state::{FileStateStore, StateStore, WorldState};
 use worldforge_core::types::WorldId;
 use worldforge_eval::EvalSuite;
+use worldforge_verify::{MockVerifier, ZkVerifier};
 
 /// Server configuration.
 #[derive(Debug, Clone)]
@@ -97,6 +98,18 @@ struct CompareRequest {
     providers: Vec<String>,
     #[serde(default)]
     config: PredictionConfig,
+}
+
+/// JSON request body for ZK verification.
+#[derive(Debug, Deserialize)]
+struct VerifyRequest {
+    /// Proof type: "inference", "guardrail", or "provenance".
+    #[serde(default = "default_proof_type")]
+    proof_type: String,
+}
+
+fn default_proof_type() -> String {
+    "inference".to_string()
 }
 
 /// JSON response envelope.
@@ -282,7 +295,8 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
             if p.starts_with("/v1/worlds/")
                 && !p.contains("/predict")
                 && !p.contains("/plan")
-                && !p.contains("/evaluate") =>
+                && !p.contains("/evaluate")
+                && !p.contains("/verify") =>
         {
             let id_str = p.strip_prefix("/v1/worlds/").unwrap_or("");
             match id_str.parse::<WorldId>() {
@@ -380,6 +394,89 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                         };
                         match world.plan(&plan_req).await {
                             Ok(plan) => (200, ApiResponse::ok(plan)),
+                            Err(e) => (500, error_response(&e.to_string())),
+                        }
+                    }
+                    Err(e) => (400, error_response(&format!("invalid request: {e}"))),
+                },
+                Err(_) => (400, error_response("invalid world ID")),
+            }
+        }
+
+        // POST /v1/worlds/{id}/verify
+        ("POST", p) if p.starts_with("/v1/worlds/") && p.ends_with("/verify") => {
+            let id_str = p
+                .strip_prefix("/v1/worlds/")
+                .and_then(|s| s.strip_suffix("/verify"))
+                .unwrap_or("");
+            match id_str.parse::<WorldId>() {
+                Ok(id) => match serde_json::from_str::<VerifyRequest>(body) {
+                    Ok(req) => {
+                        let ws = match state.store.load(&id).await {
+                            Ok(ws) => ws,
+                            Err(e) => return (404, error_response(&e.to_string())),
+                        };
+                        let verifier = MockVerifier::new();
+                        let state_bytes = serde_json::to_vec(&ws).unwrap_or_default();
+
+                        let proof_result = match req.proof_type.as_str() {
+                            "inference" => {
+                                let model_hash = worldforge_verify::sha256_hash(b"mock-model");
+                                let input_hash =
+                                    worldforge_verify::sha256_hash(&state_bytes);
+                                let output_hash =
+                                    worldforge_verify::sha256_hash(b"mock-output");
+                                verifier.prove_inference(model_hash, input_hash, output_hash)
+                            }
+                            "guardrail" => {
+                                let plan = worldforge_core::prediction::Plan {
+                                    actions: Vec::new(),
+                                    predicted_states: Vec::new(),
+                                    predicted_videos: None,
+                                    total_cost: 0.0,
+                                    success_probability: 1.0,
+                                    guardrail_compliance: Vec::new(),
+                                    planning_time_ms: 0,
+                                    iterations_used: 0,
+                                };
+                                verifier.prove_guardrail_compliance(&plan, &[])
+                            }
+                            "provenance" => {
+                                let data_hash =
+                                    worldforge_verify::sha256_hash(&state_bytes);
+                                let timestamp = chrono::Utc::now().timestamp() as u64;
+                                let source_commitment =
+                                    worldforge_verify::sha256_hash(b"worldforge-server");
+                                verifier.prove_data_provenance(
+                                    data_hash,
+                                    timestamp,
+                                    source_commitment,
+                                )
+                            }
+                            other => {
+                                return (
+                                    400,
+                                    error_response(&format!(
+                                        "unknown proof type: {other}. Available: inference, guardrail, provenance"
+                                    )),
+                                )
+                            }
+                        };
+
+                        match proof_result {
+                            Ok(proof) => {
+                                let verification = verifier.verify(&proof);
+                                match verification {
+                                    Ok(result) => (
+                                        200,
+                                        ApiResponse::ok(serde_json::json!({
+                                            "proof": proof,
+                                            "verification": result,
+                                        })),
+                                    ),
+                                    Err(e) => (500, error_response(&e.to_string())),
+                                }
+                            }
                             Err(e) => (500, error_response(&e.to_string())),
                         }
                     }
@@ -620,6 +717,74 @@ mod tests {
         let body = r#"{"suite":"nonexistent"}"#;
         let id = uuid::Uuid::new_v4();
         let (status, _) = route("POST", &format!("/v1/worlds/{id}/evaluate"), body, &state).await;
+        assert_eq!(status, 400);
+    }
+
+    #[tokio::test]
+    async fn test_route_verify_inference() {
+        let state = test_state();
+        let body = r#"{"name":"verify_world","provider":"mock"}"#;
+        let (status, resp) = route("POST", "/v1/worlds", body, &state).await;
+        assert_eq!(status, 201);
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let id = v["data"]["id"].as_str().unwrap();
+
+        let verify_body = r#"{"proof_type":"inference"}"#;
+        let (status, resp) = route(
+            "POST",
+            &format!("/v1/worlds/{id}/verify"),
+            verify_body,
+            &state,
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert!(resp.contains("proof"));
+        assert!(resp.contains("verification"));
+
+        // Check verification is valid
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert!(v["data"]["verification"]["valid"].as_bool().unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_route_verify_provenance() {
+        let state = test_state();
+        let body = r#"{"name":"verify_prov","provider":"mock"}"#;
+        let (status, resp) = route("POST", "/v1/worlds", body, &state).await;
+        assert_eq!(status, 201);
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let id = v["data"]["id"].as_str().unwrap();
+
+        let verify_body = r#"{"proof_type":"provenance"}"#;
+        let (status, resp) = route(
+            "POST",
+            &format!("/v1/worlds/{id}/verify"),
+            verify_body,
+            &state,
+        )
+        .await;
+        assert_eq!(status, 200);
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert!(v["data"]["verification"]["valid"].as_bool().unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_route_verify_invalid_type() {
+        let state = test_state();
+        let body = r#"{"name":"verify_bad","provider":"mock"}"#;
+        let (status, resp) = route("POST", "/v1/worlds", body, &state).await;
+        assert_eq!(status, 201);
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let id = v["data"]["id"].as_str().unwrap();
+
+        let verify_body = r#"{"proof_type":"nonexistent"}"#;
+        let (status, _) = route(
+            "POST",
+            &format!("/v1/worlds/{id}/verify"),
+            verify_body,
+            &state,
+        )
+        .await;
         assert_eq!(status, 400);
     }
 

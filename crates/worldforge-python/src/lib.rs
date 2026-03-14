@@ -10,6 +10,7 @@ use pyo3::prelude::*;
 use worldforge_core::scene::SceneObject;
 use worldforge_core::state::WorldState;
 use worldforge_core::types::{BBox, Position, Rotation, Velocity};
+use worldforge_verify::ZkVerifier;
 
 // ---------------------------------------------------------------------------
 // Spatial types
@@ -763,6 +764,314 @@ impl PyWorldForge {
 }
 
 // ---------------------------------------------------------------------------
+// Planning types
+// ---------------------------------------------------------------------------
+
+/// Result of a planning operation.
+#[pyclass(name = "Plan")]
+#[derive(Debug, Clone)]
+pub struct PyPlan {
+    inner: worldforge_core::prediction::Plan,
+}
+
+#[pymethods]
+impl PyPlan {
+    /// Number of actions in the plan.
+    #[getter]
+    fn action_count(&self) -> usize {
+        self.inner.actions.len()
+    }
+
+    /// Probability of success (0.0–1.0).
+    #[getter]
+    fn success_probability(&self) -> f32 {
+        self.inner.success_probability
+    }
+
+    /// Time taken for planning in milliseconds.
+    #[getter]
+    fn planning_time_ms(&self) -> u64 {
+        self.inner.planning_time_ms
+    }
+
+    /// Number of planner iterations used.
+    #[getter]
+    fn iterations_used(&self) -> u32 {
+        self.inner.iterations_used
+    }
+
+    /// Total estimated cost.
+    #[getter]
+    fn total_cost(&self) -> f32 {
+        self.inner.total_cost
+    }
+
+    /// Get actions as JSON array.
+    fn actions_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner.actions).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    }
+
+    /// Serialize the full plan to JSON.
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    }
+
+    /// Deserialize a plan from JSON.
+    #[staticmethod]
+    fn from_json(json: &str) -> PyResult<Self> {
+        let inner: worldforge_core::prediction::Plan = serde_json::from_str(json).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("deserialization error: {e}"))
+        })?;
+        Ok(Self { inner })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Plan(actions={}, success_prob={:.2}, time={}ms)",
+            self.inner.actions.len(),
+            self.inner.success_probability,
+            self.inner.planning_time_ms
+        )
+    }
+}
+
+/// Plan a sequence of actions in a world.
+///
+/// Uses sampling-based planning to find an action sequence that
+/// achieves the goal description.
+#[pyfunction]
+#[pyo3(signature = (world, goal, max_steps=10, timeout_seconds=30.0, provider="mock"))]
+fn plan(
+    world: &PyWorld,
+    goal: &str,
+    max_steps: u32,
+    timeout_seconds: f64,
+    provider: &str,
+) -> PyResult<PyPlan> {
+    let rt = tokio::runtime::Runtime::new().map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("failed to create runtime: {e}"))
+    })?;
+
+    let registry = std::sync::Arc::new({
+        let mut r = worldforge_core::provider::ProviderRegistry::new();
+        r.register(Box::new(worldforge_providers::MockProvider::new()));
+        r
+    });
+
+    let w = worldforge_core::world::World::new(world.state.clone(), provider, registry);
+
+    let request = worldforge_core::prediction::PlanRequest {
+        current_state: world.state.clone(),
+        goal: worldforge_core::prediction::PlanGoal::Description(goal.to_string()),
+        max_steps,
+        guardrails: Vec::new(),
+        planner: worldforge_core::prediction::PlannerType::Sampling {
+            num_samples: 32,
+            top_k: 5,
+        },
+        timeout_seconds,
+    };
+
+    let plan = rt
+        .block_on(w.plan(&request))
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("planning failed: {e}")))?;
+
+    Ok(PyPlan { inner: plan })
+}
+
+// ---------------------------------------------------------------------------
+// Evaluation types
+// ---------------------------------------------------------------------------
+
+/// A single evaluation result entry.
+#[pyclass(name = "EvalResult")]
+#[derive(Debug, Clone)]
+pub struct PyEvalResult {
+    /// Provider name.
+    provider: String,
+    /// Average score.
+    average_score: f32,
+    /// Average latency in ms.
+    average_latency_ms: u64,
+    /// Number of scenarios passed.
+    scenarios_passed: usize,
+    /// Total scenarios.
+    total_scenarios: usize,
+}
+
+#[pymethods]
+impl PyEvalResult {
+    #[getter]
+    fn provider(&self) -> &str {
+        &self.provider
+    }
+
+    #[getter]
+    fn average_score(&self) -> f32 {
+        self.average_score
+    }
+
+    #[getter]
+    fn average_latency_ms(&self) -> u64 {
+        self.average_latency_ms
+    }
+
+    #[getter]
+    fn scenarios_passed(&self) -> usize {
+        self.scenarios_passed
+    }
+
+    #[getter]
+    fn total_scenarios(&self) -> usize {
+        self.total_scenarios
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "EvalResult(provider='{}', score={:.2}, passed={}/{})",
+            self.provider, self.average_score, self.scenarios_passed, self.total_scenarios
+        )
+    }
+}
+
+/// Run an evaluation suite against the mock provider.
+///
+/// Returns a list of EvalResult entries from the leaderboard.
+#[pyfunction]
+#[pyo3(signature = (suite_name="physics"))]
+fn run_eval(suite_name: &str) -> PyResult<Vec<PyEvalResult>> {
+    let suite = match suite_name {
+        "physics" => worldforge_eval::EvalSuite::physics_standard(),
+        "manipulation" => worldforge_eval::EvalSuite::manipulation_standard(),
+        "spatial" => worldforge_eval::EvalSuite::spatial_reasoning(),
+        "comprehensive" => worldforge_eval::EvalSuite::comprehensive(),
+        other => return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "unknown eval suite: {other}. Available: physics, manipulation, spatial, comprehensive"
+        ))),
+    };
+
+    let rt = tokio::runtime::Runtime::new().map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("failed to create runtime: {e}"))
+    })?;
+
+    let mock = worldforge_providers::MockProvider::new();
+    let provider_list: Vec<&dyn worldforge_core::provider::WorldModelProvider> = vec![&mock];
+
+    let report = rt.block_on(suite.run(&provider_list)).map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("evaluation failed: {e}"))
+    })?;
+
+    Ok(report
+        .leaderboard
+        .iter()
+        .map(|entry| PyEvalResult {
+            provider: entry.provider.clone(),
+            average_score: entry.average_score,
+            average_latency_ms: entry.average_latency_ms,
+            scenarios_passed: entry.scenarios_passed,
+            total_scenarios: entry.total_scenarios,
+        })
+        .collect())
+}
+
+// ---------------------------------------------------------------------------
+// ZK Verification types
+// ---------------------------------------------------------------------------
+
+/// A ZK proof generated by the verification layer.
+#[pyclass(name = "ZkProof")]
+#[derive(Debug, Clone)]
+pub struct PyZkProof {
+    inner: worldforge_verify::ZkProof,
+}
+
+#[pymethods]
+impl PyZkProof {
+    /// Size of the proof data in bytes.
+    #[getter]
+    fn proof_size(&self) -> usize {
+        self.inner.proof_data.len()
+    }
+
+    /// Backend that generated this proof.
+    #[getter]
+    fn backend(&self) -> String {
+        format!("{:?}", self.inner.backend)
+    }
+
+    /// Time taken to generate the proof in milliseconds.
+    #[getter]
+    fn generation_time_ms(&self) -> u64 {
+        self.inner.generation_time_ms
+    }
+
+    /// Verify this proof and return (valid, details).
+    fn verify(&self) -> PyResult<(bool, String)> {
+        let verifier = worldforge_verify::MockVerifier::new();
+        let result = verifier.verify(&self.inner).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("verification failed: {e}"))
+        })?;
+        Ok((result.valid, result.details))
+    }
+
+    /// Serialize the proof to JSON.
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ZkProof(backend={:?}, size={} bytes)",
+            self.inner.backend,
+            self.inner.proof_data.len()
+        )
+    }
+}
+
+/// Generate a ZK proof for inference verification.
+#[pyfunction]
+fn prove_inference(
+    model_data: &[u8],
+    input_data: &[u8],
+    output_data: &[u8],
+) -> PyResult<PyZkProof> {
+    let verifier = worldforge_verify::MockVerifier::new();
+    let model_hash = worldforge_verify::sha256_hash(model_data);
+    let input_hash = worldforge_verify::sha256_hash(input_data);
+    let output_hash = worldforge_verify::sha256_hash(output_data);
+
+    let proof = verifier
+        .prove_inference(model_hash, input_hash, output_hash)
+        .map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("proof generation failed: {e}"))
+        })?;
+
+    Ok(PyZkProof { inner: proof })
+}
+
+/// Generate a ZK proof for data provenance.
+#[pyfunction]
+fn prove_provenance(data: &[u8], timestamp: u64, source: &[u8]) -> PyResult<PyZkProof> {
+    let verifier = worldforge_verify::MockVerifier::new();
+    let data_hash = worldforge_verify::sha256_hash(data);
+    let source_commitment = worldforge_verify::sha256_hash(source);
+
+    let proof = verifier
+        .prove_data_provenance(data_hash, timestamp, source_commitment)
+        .map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("proof generation failed: {e}"))
+        })?;
+
+    Ok(PyZkProof { inner: proof })
+}
+
+// ---------------------------------------------------------------------------
 // Module definition
 // ---------------------------------------------------------------------------
 
@@ -781,6 +1090,13 @@ fn worldforge(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyAction>()?;
     m.add_class::<PyGuardrail>()?;
     m.add_class::<PyWorldForge>()?;
+    m.add_class::<PyPlan>()?;
+    m.add_class::<PyEvalResult>()?;
+    m.add_class::<PyZkProof>()?;
+    m.add_function(wrap_pyfunction!(plan, m)?)?;
+    m.add_function(wrap_pyfunction!(run_eval, m)?)?;
+    m.add_function(wrap_pyfunction!(prove_inference, m)?)?;
+    m.add_function(wrap_pyfunction!(prove_provenance, m)?)?;
     Ok(())
 }
 
@@ -1064,5 +1380,91 @@ mod tests {
         let wf = PyWorldForge::new();
         let repr = wf.__repr__();
         assert!(repr.contains("WorldForge"));
+    }
+
+    // --- Planning tests ---
+
+    #[test]
+    fn test_plan_world() {
+        let world = PyWorld::new("plan_test", "mock");
+        let plan = plan(&world, "move forward", 5, 10.0, "mock").unwrap();
+        assert!(plan.action_count() > 0);
+        assert!(plan.success_probability() >= 0.0);
+        assert!(plan.planning_time_ms() < 30_000);
+    }
+
+    #[test]
+    fn test_plan_json_roundtrip() {
+        let world = PyWorld::new("plan_json", "mock");
+        let p = plan(&world, "reach goal", 5, 10.0, "mock").unwrap();
+        let json = p.to_json().unwrap();
+        let p2 = PyPlan::from_json(&json).unwrap();
+        assert_eq!(p2.action_count(), p.action_count());
+    }
+
+    #[test]
+    fn test_plan_repr() {
+        let world = PyWorld::new("repr_test", "mock");
+        let p = plan(&world, "go", 5, 10.0, "mock").unwrap();
+        let repr = p.__repr__();
+        assert!(repr.contains("Plan"));
+    }
+
+    // --- Evaluation tests ---
+
+    #[test]
+    fn test_run_eval_physics() {
+        let results = run_eval("physics").unwrap();
+        assert!(!results.is_empty());
+        assert_eq!(results[0].provider(), "mock");
+    }
+
+    #[test]
+    fn test_run_eval_invalid_suite() {
+        let result = run_eval("nonexistent");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_eval_result_repr() {
+        let results = run_eval("physics").unwrap();
+        let repr = results[0].__repr__();
+        assert!(repr.contains("EvalResult"));
+    }
+
+    // --- ZK Verification tests ---
+
+    #[test]
+    fn test_prove_inference_and_verify() {
+        let proof = prove_inference(b"model", b"input", b"output").unwrap();
+        assert_eq!(proof.proof_size(), 96);
+        assert_eq!(proof.backend(), "Mock");
+
+        let (valid, details) = proof.verify().unwrap();
+        assert!(valid);
+        assert!(details.contains("verified"));
+    }
+
+    #[test]
+    fn test_prove_provenance_and_verify() {
+        let proof = prove_provenance(b"sensor-data", 1710000000, b"camera-01").unwrap();
+        assert_eq!(proof.proof_size(), 72);
+
+        let (valid, _) = proof.verify().unwrap();
+        assert!(valid);
+    }
+
+    #[test]
+    fn test_zkproof_json_roundtrip() {
+        let proof = prove_inference(b"m", b"i", b"o").unwrap();
+        let json = proof.to_json().unwrap();
+        assert!(json.contains("Mock"));
+    }
+
+    #[test]
+    fn test_zkproof_repr() {
+        let proof = prove_inference(b"m", b"i", b"o").unwrap();
+        let repr = proof.__repr__();
+        assert!(repr.contains("ZkProof"));
     }
 }

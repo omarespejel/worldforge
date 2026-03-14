@@ -190,3 +190,248 @@ async fn test_verify_proof_roundtrip() {
     let result = verifier.verify(&restored).unwrap();
     assert!(result.valid);
 }
+
+// ---------------------------------------------------------------------------
+// End-to-end pipeline tests
+// ---------------------------------------------------------------------------
+
+/// Full pipeline: create world → add objects → plan → verify plan
+#[tokio::test]
+async fn test_e2e_plan_and_verify_pipeline() {
+    use worldforge_core::prediction::{PlanGoal, PlanRequest, PlannerType};
+    use worldforge_verify::{MockVerifier, ZkVerifier};
+
+    let (_store, registry) = test_server_config();
+
+    // 1. Create world with objects
+    let mut state = worldforge_core::state::WorldState::new("e2e_plan_verify", "mock");
+    let ball = worldforge_core::scene::SceneObject::new(
+        "ball",
+        worldforge_core::types::Pose {
+            position: worldforge_core::types::Position {
+                x: 0.0,
+                y: 1.0,
+                z: 0.0,
+            },
+            rotation: worldforge_core::types::Rotation::default(),
+        },
+        worldforge_core::types::BBox {
+            min: worldforge_core::types::Position {
+                x: -0.5,
+                y: 0.5,
+                z: -0.5,
+            },
+            max: worldforge_core::types::Position {
+                x: 0.5,
+                y: 1.5,
+                z: 0.5,
+            },
+        },
+    );
+    state.scene.add_object(ball);
+
+    // 2. Plan
+    let world = worldforge_core::world::World::new(state.clone(), "mock", registry);
+    let plan_request = PlanRequest {
+        current_state: state.clone(),
+        goal: PlanGoal::Description("move ball to position (2, 1, 0)".to_string()),
+        max_steps: 5,
+        guardrails: Vec::new(),
+        planner: PlannerType::Sampling {
+            num_samples: 16,
+            top_k: 3,
+        },
+        timeout_seconds: 10.0,
+    };
+
+    let plan = world.plan(&plan_request).await.unwrap();
+    assert!(!plan.actions.is_empty());
+    assert!(plan.success_probability >= 0.0);
+
+    // 3. Generate ZK proofs for the plan
+    let verifier = MockVerifier::new();
+
+    // 3a. Inference verification proof
+    let model_hash = worldforge_verify::sha256_hash(b"mock-model");
+    let input_hash = worldforge_verify::sha256_hash(&serde_json::to_vec(&state).unwrap());
+    let output_hash = worldforge_verify::sha256_hash(
+        &serde_json::to_vec(&plan.predicted_states.last().unwrap_or(&state)).unwrap(),
+    );
+    let inference_proof = verifier
+        .prove_inference(model_hash, input_hash, output_hash)
+        .unwrap();
+    let inference_result = verifier.verify(&inference_proof).unwrap();
+    assert!(inference_result.valid);
+
+    // 3b. Guardrail compliance proof
+    let guardrail_proof = verifier
+        .prove_guardrail_compliance(&plan, &plan.guardrail_compliance)
+        .unwrap();
+    let guardrail_result = verifier.verify(&guardrail_proof).unwrap();
+    assert!(guardrail_result.valid);
+
+    // 3c. Data provenance proof
+    let data_hash = worldforge_verify::sha256_hash(&serde_json::to_vec(&state).unwrap());
+    let provenance_proof = verifier
+        .prove_data_provenance(
+            data_hash,
+            1710000000,
+            worldforge_verify::sha256_hash(b"test"),
+        )
+        .unwrap();
+    let provenance_result = verifier.verify(&provenance_proof).unwrap();
+    assert!(provenance_result.valid);
+}
+
+/// Full pipeline: create → predict → predict again → verify multi-step state evolution
+#[tokio::test]
+async fn test_e2e_multi_step_state_evolution() {
+    let (_store, registry) = test_server_config();
+
+    let state = worldforge_core::state::WorldState::new("multi_step", "mock");
+    let mut world = worldforge_core::world::World::new(state, "mock", registry);
+
+    let config = worldforge_core::prediction::PredictionConfig::default();
+
+    // Apply 3 sequential predictions
+    let actions = vec![
+        worldforge_core::action::Action::Move {
+            target: worldforge_core::types::Position {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            speed: 1.0,
+        },
+        worldforge_core::action::Action::SetWeather {
+            weather: worldforge_core::action::Weather::Rain,
+        },
+        worldforge_core::action::Action::Move {
+            target: worldforge_core::types::Position {
+                x: 2.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            speed: 1.5,
+        },
+    ];
+
+    for action in &actions {
+        let prediction = world.predict(action, &config).await.unwrap();
+        assert_eq!(prediction.provider, "mock");
+    }
+
+    // State should have advanced 3 steps
+    let final_state = world.current_state();
+    assert_eq!(final_state.time.step, 3);
+    assert!(final_state.history.len() >= 3);
+}
+
+/// Cross-provider comparison pipeline
+#[tokio::test]
+async fn test_e2e_cross_provider_comparison() {
+    let registry = Arc::new({
+        let mut r = ProviderRegistry::new();
+        r.register(Box::new(MockProvider::new()));
+        r.register(Box::new(MockProvider::with_name("mock-2")));
+        r
+    });
+
+    let state = worldforge_core::state::WorldState::new("comparison", "mock");
+    let world = worldforge_core::world::World::new(state, "mock", registry);
+
+    let action = worldforge_core::action::Action::Move {
+        target: worldforge_core::types::Position {
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        speed: 1.0,
+    };
+    let config = worldforge_core::prediction::PredictionConfig::default();
+
+    let multi = world
+        .predict_multi(&action, &["mock", "mock-2"], &config)
+        .await
+        .unwrap();
+
+    assert_eq!(multi.predictions.len(), 2);
+    assert!(multi.agreement_score >= 0.0);
+    assert!(multi.agreement_score <= 1.0);
+    assert!(multi.comparison.scores.len() == 2);
+}
+
+/// Evaluation with leaderboard generation
+#[tokio::test]
+async fn test_e2e_evaluation_all_suites() {
+    let mock = MockProvider::new();
+    let providers: Vec<&dyn worldforge_core::provider::WorldModelProvider> = vec![&mock];
+
+    for suite_name in &["physics", "manipulation", "spatial", "comprehensive"] {
+        let suite = match *suite_name {
+            "physics" => worldforge_eval::EvalSuite::physics_standard(),
+            "manipulation" => worldforge_eval::EvalSuite::manipulation_standard(),
+            "spatial" => worldforge_eval::EvalSuite::spatial_reasoning(),
+            "comprehensive" => worldforge_eval::EvalSuite::comprehensive(),
+            _ => unreachable!(),
+        };
+
+        let report = suite.run(&providers).await.unwrap();
+        assert!(
+            !report.leaderboard.is_empty(),
+            "{suite_name} leaderboard empty"
+        );
+        assert!(!report.results.is_empty(), "{suite_name} results empty");
+
+        // Verify leaderboard has valid scores
+        for entry in &report.leaderboard {
+            assert!(entry.average_score >= 0.0);
+            assert!(entry.total_scenarios > 0);
+        }
+    }
+}
+
+/// Verify that all three ZK proof types serialize/deserialize correctly through the pipeline
+#[tokio::test]
+async fn test_e2e_zk_proof_types_serialization() {
+    use worldforge_verify::{MockVerifier, ZkVerifier};
+
+    let verifier = MockVerifier::new();
+
+    // Inference proof
+    let inference_proof = verifier.prove_inference([1; 32], [2; 32], [3; 32]).unwrap();
+    let json = serde_json::to_string(&inference_proof).unwrap();
+    let restored: worldforge_verify::ZkProof = serde_json::from_str(&json).unwrap();
+    assert!(verifier.verify(&restored).unwrap().valid);
+
+    // Guardrail proof
+    let plan = worldforge_core::prediction::Plan {
+        actions: vec![worldforge_core::action::Action::Move {
+            target: worldforge_core::types::Position {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            speed: 1.0,
+        }],
+        predicted_states: Vec::new(),
+        predicted_videos: None,
+        total_cost: 0.0,
+        success_probability: 0.9,
+        guardrail_compliance: Vec::new(),
+        planning_time_ms: 100,
+        iterations_used: 5,
+    };
+    let guardrail_proof = verifier.prove_guardrail_compliance(&plan, &[]).unwrap();
+    let json = serde_json::to_string(&guardrail_proof).unwrap();
+    let restored: worldforge_verify::ZkProof = serde_json::from_str(&json).unwrap();
+    assert!(verifier.verify(&restored).unwrap().valid);
+
+    // Provenance proof
+    let provenance_proof = verifier
+        .prove_data_provenance([4; 32], 1710000000, [5; 32])
+        .unwrap();
+    let json = serde_json::to_string(&provenance_proof).unwrap();
+    let restored: worldforge_verify::ZkProof = serde_json::from_str(&json).unwrap();
+    assert!(verifier.verify(&restored).unwrap().valid);
+}
