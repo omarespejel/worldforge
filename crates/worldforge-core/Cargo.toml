@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 description = "WorldForge core library - orchestration layer for world foundation models"
 
+[features]
+default = []
+sqlite = ["sqlx"]
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -14,8 +18,10 @@ thiserror = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
+sqlx = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
 serde_json = { workspace = true }
 worldforge-providers = { path = "../worldforge-providers" }
+sqlx = { workspace = true }
