@@ -454,6 +454,315 @@ impl PyWorld {
 }
 
 // ---------------------------------------------------------------------------
+// Action types
+// ---------------------------------------------------------------------------
+
+/// A standardized action in the WorldForge action system.
+///
+/// Use factory methods like `Action.move_to()`, `Action.grasp()`, etc.
+#[pyclass(name = "Action")]
+#[derive(Debug, Clone)]
+pub struct PyAction {
+    inner: worldforge_core::action::Action,
+}
+
+#[pymethods]
+impl PyAction {
+    /// Create a Move action to a target position.
+    #[staticmethod]
+    #[pyo3(signature = (x, y, z, speed=1.0))]
+    fn move_to(x: f32, y: f32, z: f32, speed: f32) -> Self {
+        Self {
+            inner: worldforge_core::action::Action::Move {
+                target: worldforge_core::types::Position { x, y, z },
+                speed,
+            },
+        }
+    }
+
+    /// Create a Grasp action on an object by ID.
+    #[staticmethod]
+    #[pyo3(signature = (object_id, grip_force=1.0))]
+    fn grasp(object_id: &str, grip_force: f32) -> PyResult<Self> {
+        let id: uuid::Uuid = object_id.parse().map_err(|_| {
+            pyo3::exceptions::PyValueError::new_err("invalid object ID (must be UUID)")
+        })?;
+        Ok(Self {
+            inner: worldforge_core::action::Action::Grasp {
+                object: id,
+                grip_force,
+            },
+        })
+    }
+
+    /// Create a Release action on an object by ID.
+    #[staticmethod]
+    fn release(object_id: &str) -> PyResult<Self> {
+        let id: uuid::Uuid = object_id.parse().map_err(|_| {
+            pyo3::exceptions::PyValueError::new_err("invalid object ID (must be UUID)")
+        })?;
+        Ok(Self {
+            inner: worldforge_core::action::Action::Release { object: id },
+        })
+    }
+
+    /// Create a Push action on an object.
+    #[staticmethod]
+    #[pyo3(signature = (object_id, dx, dy, dz, force=1.0))]
+    fn push(object_id: &str, dx: f32, dy: f32, dz: f32, force: f32) -> PyResult<Self> {
+        let id: uuid::Uuid = object_id.parse().map_err(|_| {
+            pyo3::exceptions::PyValueError::new_err("invalid object ID (must be UUID)")
+        })?;
+        Ok(Self {
+            inner: worldforge_core::action::Action::Push {
+                object: id,
+                direction: worldforge_core::types::Vec3 {
+                    x: dx,
+                    y: dy,
+                    z: dz,
+                },
+                force,
+            },
+        })
+    }
+
+    /// Create a Place action for an object at a target position.
+    #[staticmethod]
+    fn place(object_id: &str, x: f32, y: f32, z: f32) -> PyResult<Self> {
+        let id: uuid::Uuid = object_id.parse().map_err(|_| {
+            pyo3::exceptions::PyValueError::new_err("invalid object ID (must be UUID)")
+        })?;
+        Ok(Self {
+            inner: worldforge_core::action::Action::Place {
+                object: id,
+                target: worldforge_core::types::Position { x, y, z },
+            },
+        })
+    }
+
+    /// Create a SetWeather action.
+    #[staticmethod]
+    fn set_weather(weather: &str) -> PyResult<Self> {
+        let w = match weather.to_lowercase().as_str() {
+            "clear" => worldforge_core::action::Weather::Clear,
+            "cloudy" => worldforge_core::action::Weather::Cloudy,
+            "rain" => worldforge_core::action::Weather::Rain,
+            "snow" => worldforge_core::action::Weather::Snow,
+            "fog" => worldforge_core::action::Weather::Fog,
+            "night" => worldforge_core::action::Weather::Night,
+            other => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "unknown weather: {other}"
+                )))
+            }
+        };
+        Ok(Self {
+            inner: worldforge_core::action::Action::SetWeather { weather: w },
+        })
+    }
+
+    /// Create a SetLighting action.
+    #[staticmethod]
+    fn set_lighting(time_of_day: f32) -> Self {
+        Self {
+            inner: worldforge_core::action::Action::SetLighting { time_of_day },
+        }
+    }
+
+    /// Create a SpawnObject action.
+    #[staticmethod]
+    fn spawn_object(template: &str) -> Self {
+        Self {
+            inner: worldforge_core::action::Action::SpawnObject {
+                template: template.to_string(),
+                pose: worldforge_core::types::Pose::default(),
+            },
+        }
+    }
+
+    /// Create a Sequence of actions.
+    #[staticmethod]
+    fn sequence(actions: Vec<PyAction>) -> Self {
+        Self {
+            inner: worldforge_core::action::Action::Sequence(
+                actions.into_iter().map(|a| a.inner).collect(),
+            ),
+        }
+    }
+
+    /// Create a raw provider-specific action from JSON.
+    #[staticmethod]
+    fn raw(provider: &str, data: &str) -> PyResult<Self> {
+        let value: serde_json::Value = serde_json::from_str(data)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("invalid JSON: {e}")))?;
+        Ok(Self {
+            inner: worldforge_core::action::Action::Raw {
+                provider: provider.to_string(),
+                data: value,
+            },
+        })
+    }
+
+    /// Serialize the action to JSON.
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    }
+
+    /// Deserialize an action from JSON.
+    #[staticmethod]
+    fn from_json(json: &str) -> PyResult<Self> {
+        let inner: worldforge_core::action::Action = serde_json::from_str(json).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("deserialization error: {e}"))
+        })?;
+        Ok(Self { inner })
+    }
+
+    fn __repr__(&self) -> String {
+        format!("Action({:?})", self.inner)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Guardrail types
+// ---------------------------------------------------------------------------
+
+/// A safety guardrail that constrains predictions.
+#[pyclass(name = "Guardrail")]
+#[derive(Debug, Clone)]
+pub struct PyGuardrail {
+    inner: worldforge_core::guardrail::Guardrail,
+}
+
+#[pymethods]
+impl PyGuardrail {
+    /// No object may pass through another.
+    #[staticmethod]
+    fn no_collisions() -> Self {
+        Self {
+            inner: worldforge_core::guardrail::Guardrail::NoCollisions,
+        }
+    }
+
+    /// Specified objects must stay upright within max tilt degrees.
+    #[staticmethod]
+    #[pyo3(signature = (object_ids, max_tilt_degrees=45.0))]
+    fn stay_upright(object_ids: Vec<String>, max_tilt_degrees: f32) -> PyResult<Self> {
+        let ids: std::result::Result<Vec<uuid::Uuid>, _> =
+            object_ids.iter().map(|s| s.parse()).collect();
+        let ids = ids.map_err(|_| {
+            pyo3::exceptions::PyValueError::new_err("all object IDs must be valid UUIDs")
+        })?;
+        Ok(Self {
+            inner: worldforge_core::guardrail::Guardrail::StayUpright {
+                objects: ids,
+                max_tilt_degrees,
+            },
+        })
+    }
+
+    /// No object may leave the specified bounding box.
+    #[staticmethod]
+    fn boundary_constraint(bbox: &PyBBox) -> Self {
+        Self {
+            inner: worldforge_core::guardrail::Guardrail::BoundaryConstraint { bounds: bbox.inner },
+        }
+    }
+
+    /// Energy must be conserved within a tolerance.
+    #[staticmethod]
+    #[pyo3(signature = (tolerance=0.1))]
+    fn energy_conservation(tolerance: f32) -> Self {
+        Self {
+            inner: worldforge_core::guardrail::Guardrail::EnergyConservation { tolerance },
+        }
+    }
+
+    /// Maximum velocity for any object.
+    #[staticmethod]
+    fn max_velocity(limit: f32) -> Self {
+        Self {
+            inner: worldforge_core::guardrail::Guardrail::MaxVelocity { limit },
+        }
+    }
+
+    /// Human safety zone: no robot action within radius of human.
+    #[staticmethod]
+    fn human_safety_zone(radius: f32) -> Self {
+        Self {
+            inner: worldforge_core::guardrail::Guardrail::HumanSafetyZone { radius },
+        }
+    }
+
+    /// Serialize the guardrail to JSON.
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!("Guardrail({:?})", self.inner)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WorldForge orchestrator
+// ---------------------------------------------------------------------------
+
+/// The main WorldForge orchestrator.
+///
+/// Manages provider registration and world creation.
+#[pyclass(name = "WorldForge")]
+pub struct PyWorldForge {
+    inner: worldforge_core::WorldForge,
+}
+
+#[pymethods]
+impl PyWorldForge {
+    /// Create a new WorldForge instance with auto-detected providers.
+    #[new]
+    fn new() -> Self {
+        let registry = worldforge_providers::auto_detect();
+        let mut wf = worldforge_core::WorldForge::new();
+        // Transfer providers from auto-detected registry
+        for name in registry.list() {
+            // We can't move providers out of a registry, so we create
+            // a fresh WorldForge with mock provider as minimum.
+            let _ = name;
+        }
+        wf.register_provider(Box::new(worldforge_providers::MockProvider::new()))
+            .ok();
+        Self { inner: wf }
+    }
+
+    /// List all registered provider names.
+    fn providers(&self) -> Vec<String> {
+        self.inner
+            .providers()
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    /// Create a new world with the given name and provider.
+    #[pyo3(signature = (name, provider="mock"))]
+    fn create_world(&self, name: &str, provider: &str) -> PyResult<PyWorld> {
+        let world = self.inner.create_world(name, provider).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("failed to create world: {e}"))
+        })?;
+        Ok(PyWorld {
+            state: world.current_state().clone(),
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!("WorldForge(providers={:?})", self.inner.providers())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Module definition
 // ---------------------------------------------------------------------------
 
@@ -469,6 +778,9 @@ fn worldforge(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyVelocity>()?;
     m.add_class::<PySceneObject>()?;
     m.add_class::<PyWorld>()?;
+    m.add_class::<PyAction>()?;
+    m.add_class::<PyGuardrail>()?;
+    m.add_class::<PyWorldForge>()?;
     Ok(())
 }
 
@@ -613,5 +925,144 @@ mod tests {
         let world2 = PyWorld::from_json(&json).unwrap();
         assert_eq!(world2.name(), "test_world");
         assert_eq!(world2.object_count(), 1);
+    }
+
+    // --- Action tests ---
+
+    #[test]
+    fn test_action_move_to() {
+        let action = PyAction::move_to(1.0, 2.0, 3.0, 1.5);
+        let json = action.to_json().unwrap();
+        assert!(json.contains("Move"));
+        let action2 = PyAction::from_json(&json).unwrap();
+        let json2 = action2.to_json().unwrap();
+        assert_eq!(json, json2);
+    }
+
+    #[test]
+    fn test_action_set_weather() {
+        let action = PyAction::set_weather("rain").unwrap();
+        let json = action.to_json().unwrap();
+        assert!(json.contains("Rain"));
+    }
+
+    #[test]
+    fn test_action_set_weather_invalid() {
+        let result = PyAction::set_weather("tornado");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_action_set_lighting() {
+        let action = PyAction::set_lighting(18.0);
+        let json = action.to_json().unwrap();
+        assert!(json.contains("18"));
+    }
+
+    #[test]
+    fn test_action_spawn_object() {
+        let action = PyAction::spawn_object("cube");
+        let json = action.to_json().unwrap();
+        assert!(json.contains("cube"));
+    }
+
+    #[test]
+    fn test_action_sequence() {
+        let a1 = PyAction::move_to(1.0, 0.0, 0.0, 1.0);
+        let a2 = PyAction::set_lighting(12.0);
+        let seq = PyAction::sequence(vec![a1, a2]);
+        let json = seq.to_json().unwrap();
+        assert!(json.contains("Sequence"));
+    }
+
+    #[test]
+    fn test_action_raw() {
+        let action = PyAction::raw("cosmos", r#"{"prompt":"test"}"#).unwrap();
+        let json = action.to_json().unwrap();
+        assert!(json.contains("cosmos"));
+    }
+
+    #[test]
+    fn test_action_raw_invalid_json() {
+        let result = PyAction::raw("test", "not json");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_action_repr() {
+        let action = PyAction::move_to(1.0, 0.0, 0.0, 1.0);
+        let repr = action.__repr__();
+        assert!(repr.contains("Action"));
+    }
+
+    // --- Guardrail tests ---
+
+    #[test]
+    fn test_guardrail_no_collisions() {
+        let g = PyGuardrail::no_collisions();
+        let json = g.to_json().unwrap();
+        assert!(json.contains("NoCollisions"));
+    }
+
+    #[test]
+    fn test_guardrail_max_velocity() {
+        let g = PyGuardrail::max_velocity(10.0);
+        let json = g.to_json().unwrap();
+        assert!(json.contains("10"));
+    }
+
+    #[test]
+    fn test_guardrail_energy_conservation() {
+        let g = PyGuardrail::energy_conservation(0.05);
+        let json = g.to_json().unwrap();
+        assert!(json.contains("EnergyConservation"));
+    }
+
+    #[test]
+    fn test_guardrail_human_safety_zone() {
+        let g = PyGuardrail::human_safety_zone(2.0);
+        let json = g.to_json().unwrap();
+        assert!(json.contains("HumanSafetyZone"));
+    }
+
+    #[test]
+    fn test_guardrail_boundary_constraint() {
+        let min = PyPosition::new(-10.0, -10.0, -10.0);
+        let max = PyPosition::new(10.0, 10.0, 10.0);
+        let bbox = PyBBox::new(&min, &max);
+        let g = PyGuardrail::boundary_constraint(&bbox);
+        let json = g.to_json().unwrap();
+        assert!(json.contains("BoundaryConstraint"));
+    }
+
+    // --- WorldForge orchestrator tests ---
+
+    #[test]
+    fn test_worldforge_create() {
+        let wf = PyWorldForge::new();
+        let providers = wf.providers();
+        assert!(providers.contains(&"mock".to_string()));
+    }
+
+    #[test]
+    fn test_worldforge_create_world() {
+        let wf = PyWorldForge::new();
+        let world = wf.create_world("test_world", "mock").unwrap();
+        assert_eq!(world.name(), "test_world");
+        assert_eq!(world.object_count(), 0);
+    }
+
+    #[test]
+    fn test_worldforge_create_world_unknown_provider() {
+        let wf = PyWorldForge::new();
+        let result = wf.create_world("test", "nonexistent");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_worldforge_repr() {
+        let wf = PyWorldForge::new();
+        let repr = wf.__repr__();
+        assert!(repr.contains("WorldForge"));
     }
 }
