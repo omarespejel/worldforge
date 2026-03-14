@@ -183,6 +183,363 @@ impl EvalSuite {
         }
     }
 
+    /// Create a manipulation evaluation suite.
+    ///
+    /// Tests object grasping, placement, and compound manipulation tasks.
+    pub fn manipulation_standard() -> Self {
+        use worldforge_core::scene::SceneObject;
+        use worldforge_core::types::{BBox, Pose, Position};
+
+        let mut state = WorldState::new("manipulation_test", "eval");
+        let mug = SceneObject::new(
+            "mug",
+            Pose {
+                position: Position {
+                    x: 0.0,
+                    y: 1.0,
+                    z: 0.0,
+                },
+                ..Default::default()
+            },
+            BBox {
+                min: Position {
+                    x: -0.05,
+                    y: 0.9,
+                    z: -0.05,
+                },
+                max: Position {
+                    x: 0.05,
+                    y: 1.1,
+                    z: 0.05,
+                },
+            },
+        );
+        let mug_id = mug.id;
+        state.scene.add_object(mug);
+
+        let mut table_state = WorldState::new("table_test", "eval");
+        let mut table = SceneObject::new(
+            "table",
+            Pose::default(),
+            BBox {
+                min: Position {
+                    x: -0.5,
+                    y: 0.0,
+                    z: -0.5,
+                },
+                max: Position {
+                    x: 0.5,
+                    y: 0.8,
+                    z: 0.5,
+                },
+            },
+        );
+        table.physics.is_static = true;
+        let block = SceneObject::new(
+            "block",
+            Pose {
+                position: Position {
+                    x: 0.0,
+                    y: 0.9,
+                    z: 0.0,
+                },
+                ..Default::default()
+            },
+            BBox {
+                min: Position {
+                    x: -0.05,
+                    y: 0.8,
+                    z: -0.05,
+                },
+                max: Position {
+                    x: 0.05,
+                    y: 1.0,
+                    z: 0.05,
+                },
+            },
+        );
+        let block_id = block.id;
+        table_state.scene.add_object(table);
+        table_state.scene.add_object(block);
+
+        Self {
+            name: "Manipulation Standard".to_string(),
+            scenarios: vec![
+                EvalScenario {
+                    name: "grasp_object".to_string(),
+                    description: "Grasp a mug — object should remain in scene".to_string(),
+                    initial_state: state.clone(),
+                    actions: vec![Action::Grasp {
+                        object: mug_id,
+                        grip_force: 5.0,
+                    }],
+                    expected_outcomes: vec![
+                        ExpectedOutcome::ObjectExists {
+                            name: "mug".to_string(),
+                        },
+                        ExpectedOutcome::MinConfidence { threshold: 0.5 },
+                    ],
+                    ground_truth: None,
+                },
+                EvalScenario {
+                    name: "place_object".to_string(),
+                    description: "Place an object at a target — should reach destination"
+                        .to_string(),
+                    initial_state: state,
+                    actions: vec![Action::Place {
+                        object: mug_id,
+                        target: Position {
+                            x: 1.0,
+                            y: 0.8,
+                            z: 0.0,
+                        },
+                    }],
+                    expected_outcomes: vec![
+                        ExpectedOutcome::ObjectExists {
+                            name: "mug".to_string(),
+                        },
+                        ExpectedOutcome::MinPhysicsScore {
+                            dimension: EvalDimension::SpatialConsistency,
+                            threshold: 0.5,
+                        },
+                    ],
+                    ground_truth: None,
+                },
+                EvalScenario {
+                    name: "push_on_surface".to_string(),
+                    description: "Push a block along a table surface".to_string(),
+                    initial_state: table_state,
+                    actions: vec![Action::Push {
+                        object: block_id,
+                        direction: worldforge_core::types::Vec3 {
+                            x: 0.3,
+                            y: 0.0,
+                            z: 0.0,
+                        },
+                        force: 2.0,
+                    }],
+                    expected_outcomes: vec![
+                        ExpectedOutcome::ObjectExists {
+                            name: "block".to_string(),
+                        },
+                        ExpectedOutcome::ObjectExists {
+                            name: "table".to_string(),
+                        },
+                        ExpectedOutcome::MinPhysicsScore {
+                            dimension: EvalDimension::GravityCompliance,
+                            threshold: 0.5,
+                        },
+                    ],
+                    ground_truth: None,
+                },
+            ],
+            dimensions: vec![
+                EvalDimension::ObjectPermanence,
+                EvalDimension::GravityCompliance,
+                EvalDimension::SpatialConsistency,
+                EvalDimension::ActionPredictionAccuracy,
+            ],
+        }
+    }
+
+    /// Create a spatial reasoning evaluation suite.
+    ///
+    /// Tests understanding of spatial relationships, occlusion, and depth.
+    pub fn spatial_reasoning() -> Self {
+        use worldforge_core::scene::SceneObject;
+        use worldforge_core::types::{BBox, Pose, Position};
+
+        let mut state = WorldState::new("spatial_test", "eval");
+        let box_a = SceneObject::new(
+            "box_a",
+            Pose {
+                position: Position {
+                    x: 0.0,
+                    y: 0.5,
+                    z: 0.0,
+                },
+                ..Default::default()
+            },
+            BBox {
+                min: Position {
+                    x: -0.2,
+                    y: 0.0,
+                    z: -0.2,
+                },
+                max: Position {
+                    x: 0.2,
+                    y: 1.0,
+                    z: 0.2,
+                },
+            },
+        );
+        let box_b = SceneObject::new(
+            "box_b",
+            Pose {
+                position: Position {
+                    x: 2.0,
+                    y: 0.5,
+                    z: 0.0,
+                },
+                ..Default::default()
+            },
+            BBox {
+                min: Position {
+                    x: 1.8,
+                    y: 0.0,
+                    z: -0.2,
+                },
+                max: Position {
+                    x: 2.2,
+                    y: 1.0,
+                    z: 0.2,
+                },
+            },
+        );
+        let box_a_id = box_a.id;
+        state.scene.add_object(box_a);
+        state.scene.add_object(box_b);
+
+        let mut occl_state = WorldState::new("occlusion_test", "eval");
+        let front_obj = SceneObject::new(
+            "front_wall",
+            Pose {
+                position: Position {
+                    x: 0.0,
+                    y: 0.5,
+                    z: -1.0,
+                },
+                ..Default::default()
+            },
+            BBox {
+                min: Position {
+                    x: -1.0,
+                    y: 0.0,
+                    z: -1.1,
+                },
+                max: Position {
+                    x: 1.0,
+                    y: 1.0,
+                    z: -0.9,
+                },
+            },
+        );
+        let hidden_obj = SceneObject::new(
+            "hidden_ball",
+            Pose {
+                position: Position {
+                    x: 0.0,
+                    y: 0.5,
+                    z: 0.0,
+                },
+                ..Default::default()
+            },
+            BBox {
+                min: Position {
+                    x: -0.1,
+                    y: 0.4,
+                    z: -0.1,
+                },
+                max: Position {
+                    x: 0.1,
+                    y: 0.6,
+                    z: 0.1,
+                },
+            },
+        );
+        occl_state.scene.add_object(front_obj);
+        occl_state.scene.add_object(hidden_obj);
+
+        Self {
+            name: "Spatial Reasoning".to_string(),
+            scenarios: vec![
+                EvalScenario {
+                    name: "spatial_separation".to_string(),
+                    description: "Two separated boxes — moving one should not affect the other"
+                        .to_string(),
+                    initial_state: state,
+                    actions: vec![Action::Push {
+                        object: box_a_id,
+                        direction: worldforge_core::types::Vec3 {
+                            x: -1.0,
+                            y: 0.0,
+                            z: 0.0,
+                        },
+                        force: 1.0,
+                    }],
+                    expected_outcomes: vec![
+                        ExpectedOutcome::ObjectExists {
+                            name: "box_a".to_string(),
+                        },
+                        ExpectedOutcome::ObjectExists {
+                            name: "box_b".to_string(),
+                        },
+                        ExpectedOutcome::MinPhysicsScore {
+                            dimension: EvalDimension::SpatialConsistency,
+                            threshold: 0.5,
+                        },
+                    ],
+                    ground_truth: None,
+                },
+                EvalScenario {
+                    name: "object_permanence_occlusion".to_string(),
+                    description: "Object behind wall should persist even when occluded".to_string(),
+                    initial_state: occl_state,
+                    actions: vec![Action::CameraLookAt {
+                        target: Position {
+                            x: 0.0,
+                            y: 0.5,
+                            z: -5.0,
+                        },
+                    }],
+                    expected_outcomes: vec![
+                        ExpectedOutcome::ObjectExists {
+                            name: "hidden_ball".to_string(),
+                        },
+                        ExpectedOutcome::ObjectExists {
+                            name: "front_wall".to_string(),
+                        },
+                        ExpectedOutcome::MinPhysicsScore {
+                            dimension: EvalDimension::ObjectPermanence,
+                            threshold: 0.6,
+                        },
+                    ],
+                    ground_truth: None,
+                },
+            ],
+            dimensions: vec![
+                EvalDimension::ObjectPermanence,
+                EvalDimension::SpatialConsistency,
+                EvalDimension::SpatialReasoning,
+            ],
+        }
+    }
+
+    /// Create a comprehensive evaluation suite that combines all standard suites.
+    pub fn comprehensive() -> Self {
+        let physics = Self::physics_standard();
+        let manipulation = Self::manipulation_standard();
+        let spatial = Self::spatial_reasoning();
+
+        let mut all_scenarios = physics.scenarios;
+        all_scenarios.extend(manipulation.scenarios);
+        all_scenarios.extend(spatial.scenarios);
+
+        Self {
+            name: "Comprehensive".to_string(),
+            scenarios: all_scenarios,
+            dimensions: vec![
+                EvalDimension::ObjectPermanence,
+                EvalDimension::GravityCompliance,
+                EvalDimension::CollisionAccuracy,
+                EvalDimension::SpatialConsistency,
+                EvalDimension::TemporalConsistency,
+                EvalDimension::ActionPredictionAccuracy,
+                EvalDimension::SpatialReasoning,
+            ],
+        }
+    }
+
     /// Run the evaluation suite against a set of providers.
     pub async fn run(&self, providers: &[&dyn WorldModelProvider]) -> Result<EvalReport> {
         let config = PredictionConfig::default();
@@ -380,5 +737,62 @@ mod tests {
         assert!(!report.results.is_empty());
         assert!(!report.leaderboard.is_empty());
         assert_eq!(report.leaderboard[0].provider, "mock");
+    }
+
+    #[test]
+    fn test_manipulation_suite_creation() {
+        let suite = EvalSuite::manipulation_standard();
+        assert_eq!(suite.name, "Manipulation Standard");
+        assert_eq!(suite.scenarios.len(), 3);
+        assert!(suite.dimensions.contains(&EvalDimension::ObjectPermanence));
+        assert!(suite
+            .dimensions
+            .contains(&EvalDimension::ActionPredictionAccuracy));
+    }
+
+    #[tokio::test]
+    async fn test_manipulation_suite_run() {
+        let suite = EvalSuite::manipulation_standard();
+        let provider = MockProvider::new();
+        let providers: Vec<&dyn WorldModelProvider> = vec![&provider];
+        let report = suite.run(&providers).await.unwrap();
+        assert_eq!(report.results.len(), 3);
+        assert_eq!(report.leaderboard[0].provider, "mock");
+    }
+
+    #[test]
+    fn test_spatial_reasoning_suite_creation() {
+        let suite = EvalSuite::spatial_reasoning();
+        assert_eq!(suite.name, "Spatial Reasoning");
+        assert_eq!(suite.scenarios.len(), 2);
+        assert!(suite.dimensions.contains(&EvalDimension::SpatialReasoning));
+    }
+
+    #[tokio::test]
+    async fn test_spatial_reasoning_suite_run() {
+        let suite = EvalSuite::spatial_reasoning();
+        let provider = MockProvider::new();
+        let providers: Vec<&dyn WorldModelProvider> = vec![&provider];
+        let report = suite.run(&providers).await.unwrap();
+        assert_eq!(report.results.len(), 2);
+    }
+
+    #[test]
+    fn test_comprehensive_suite_creation() {
+        let suite = EvalSuite::comprehensive();
+        assert_eq!(suite.name, "Comprehensive");
+        // 2 physics + 3 manipulation + 2 spatial = 7
+        assert_eq!(suite.scenarios.len(), 7);
+        assert_eq!(suite.dimensions.len(), 7);
+    }
+
+    #[tokio::test]
+    async fn test_comprehensive_suite_run() {
+        let suite = EvalSuite::comprehensive();
+        let provider = MockProvider::new();
+        let providers: Vec<&dyn WorldModelProvider> = vec![&provider];
+        let report = suite.run(&providers).await.unwrap();
+        assert_eq!(report.results.len(), 7);
+        assert_eq!(report.leaderboard[0].total_scenarios, 7);
     }
 }
