@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::types::{BBox, Mesh, ObjectId, Pose, Tensor};
+use crate::types::{BBox, Mesh, ObjectId, Pose, Tensor, Velocity};
 
 /// Hierarchical scene representation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,6 +46,8 @@ pub struct SceneObject {
     pub mesh: Option<Mesh>,
     /// Physical properties for simulation.
     pub physics: PhysicsProperties,
+    /// Current velocity of the object.
+    pub velocity: Velocity,
     /// Semantic label (e.g. "mug", "table").
     pub semantic_label: Option<String>,
     /// Provider-specific visual embedding vector.
@@ -174,6 +176,11 @@ impl SceneObject {
             name: name.into(),
             pose,
             bbox,
+            velocity: Velocity {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
             mesh: None,
             physics: PhysicsProperties::default(),
             semantic_label: None,

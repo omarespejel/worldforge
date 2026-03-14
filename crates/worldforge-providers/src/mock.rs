@@ -209,6 +209,7 @@ fn apply_mock_action(state: &mut WorldState, action: &Action) {
                         z: 0.5,
                     },
                 },
+                velocity: Default::default(),
                 mesh: None,
                 physics: Default::default(),
                 semantic_label: Some(template.clone()),

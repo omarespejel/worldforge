@@ -135,6 +135,36 @@ pub trait ActionTranslator {
     fn supported_actions(&self) -> Vec<ActionSpaceType>;
 }
 
+/// Evaluate a condition against a world state.
+pub fn evaluate_condition(condition: &Condition, state: &crate::state::WorldState) -> bool {
+    match condition {
+        Condition::ObjectAt {
+            object,
+            position,
+            tolerance,
+        } => {
+            if let Some(obj) = state.scene.get_object(object) {
+                let dx = obj.pose.position.x - position.x;
+                let dy = obj.pose.position.y - position.y;
+                let dz = obj.pose.position.z - position.z;
+                let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+                dist <= *tolerance
+            } else {
+                false
+            }
+        }
+        Condition::ObjectsTouching { a, b } => state
+            .scene
+            .relationships
+            .iter()
+            .any(|r| matches!(r, crate::scene::SpatialRelationship::Touching { a: ra, b: rb } if (ra == a && rb == b) || (ra == b && rb == a))),
+        Condition::ObjectExists { object } => state.scene.get_object(object).is_some(),
+        Condition::And(conditions) => conditions.iter().all(|c| evaluate_condition(c, state)),
+        Condition::Or(conditions) => conditions.iter().any(|c| evaluate_condition(c, state)),
+        Condition::Not(inner) => !evaluate_condition(inner, state),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,6 +218,127 @@ mod tests {
         };
         let json = serde_json::to_string(&action).unwrap();
         let _: Action = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn test_evaluate_condition_object_exists() {
+        let mut state = crate::state::WorldState::new("test", "mock");
+        let obj = crate::scene::SceneObject::new(
+            "cube",
+            crate::types::Pose::default(),
+            crate::types::BBox {
+                min: crate::types::Position {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                max: crate::types::Position {
+                    x: 1.0,
+                    y: 1.0,
+                    z: 1.0,
+                },
+            },
+        );
+        let id = obj.id;
+        state.scene.add_object(obj);
+
+        assert!(evaluate_condition(
+            &Condition::ObjectExists { object: id },
+            &state
+        ));
+        assert!(!evaluate_condition(
+            &Condition::ObjectExists {
+                object: uuid::Uuid::new_v4()
+            },
+            &state
+        ));
+    }
+
+    #[test]
+    fn test_evaluate_condition_object_at() {
+        let mut state = crate::state::WorldState::new("test", "mock");
+        let obj = crate::scene::SceneObject::new(
+            "cube",
+            crate::types::Pose {
+                position: Position {
+                    x: 1.0,
+                    y: 2.0,
+                    z: 3.0,
+                },
+                ..crate::types::Pose::default()
+            },
+            crate::types::BBox {
+                min: Position {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                max: Position {
+                    x: 1.0,
+                    y: 1.0,
+                    z: 1.0,
+                },
+            },
+        );
+        let id = obj.id;
+        state.scene.add_object(obj);
+
+        assert!(evaluate_condition(
+            &Condition::ObjectAt {
+                object: id,
+                position: Position {
+                    x: 1.0,
+                    y: 2.0,
+                    z: 3.0
+                },
+                tolerance: 0.1,
+            },
+            &state
+        ));
+        assert!(!evaluate_condition(
+            &Condition::ObjectAt {
+                object: id,
+                position: Position {
+                    x: 10.0,
+                    y: 0.0,
+                    z: 0.0
+                },
+                tolerance: 0.1,
+            },
+            &state
+        ));
+    }
+
+    #[test]
+    fn test_evaluate_condition_and_or_not() {
+        let state = crate::state::WorldState::new("test", "mock");
+        let fake_id = uuid::Uuid::new_v4();
+
+        // NOT(ObjectExists(fake)) => true
+        assert!(evaluate_condition(
+            &Condition::Not(Box::new(Condition::ObjectExists { object: fake_id })),
+            &state
+        ));
+
+        // AND([NOT(exists), NOT(exists)]) => true
+        assert!(evaluate_condition(
+            &Condition::And(vec![
+                Condition::Not(Box::new(Condition::ObjectExists { object: fake_id })),
+                Condition::Not(Box::new(Condition::ObjectExists {
+                    object: uuid::Uuid::new_v4()
+                })),
+            ]),
+            &state
+        ));
+
+        // OR([exists, NOT(exists)]) => true
+        assert!(evaluate_condition(
+            &Condition::Or(vec![
+                Condition::ObjectExists { object: fake_id },
+                Condition::Not(Box::new(Condition::ObjectExists { object: fake_id })),
+            ]),
+            &state
+        ));
     }
 
     mod proptests {
