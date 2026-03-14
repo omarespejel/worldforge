@@ -76,43 +76,69 @@ comparison = wf.compare([prediction, prediction_2])
 
 ```
 worldforge/
-├── worldforge-core/        # Core library (Rust)
-│   ├── src/
-│   │   ├── world.rs        # World state management
-│   │   ├── action.rs       # Action type system
-│   │   ├── prediction.rs   # Prediction handling
-│   │   ├── plan.rs         # Planning algorithms
-│   │   ├── guardrail.rs    # Safety constraints
-│   │   ├── scene.rs        # Scene graph representation
-│   │   └── provider.rs     # Provider trait
-│   └── Cargo.toml
-├── worldforge-py/          # Python bindings (PyO3)
-│   ├── src/lib.rs
-│   └── worldforge/*.py
-├── worldforge-providers/   # Provider adapters
-│   ├── cosmos/             # NVIDIA Cosmos
-│   ├── runway/             # Runway GWM-1
-│   ├── jepa/               # Meta JEPA family
-│   ├── genie/              # Google Genie
-│   └── local/              # Local inference (burn/candle)
-├── worldforge-eval/        # Evaluation framework
-├── worldforge-verify/      # ZK verification (optional)
-├── worldforge-server/      # REST API server
-└── worldforge-cli/         # CLI tool
+├── crates/
+│   ├── worldforge-core/        # Core library: types, traits, state, orchestration
+│   │   └── src/
+│   │       ├── lib.rs          # WorldForge entry point + provider registry
+│   │       ├── types.rs        # Tensor, spatial, temporal, media types
+│   │       ├── world.rs        # World orchestration + planning
+│   │       ├── action.rs       # Action type system (18 variants)
+│   │       ├── prediction.rs   # Prediction engine, multi-provider comparison
+│   │       ├── provider.rs     # WorldModelProvider trait + registry
+│   │       ├── scene.rs        # Scene graph (objects, relationships, physics)
+│   │       ├── guardrail.rs    # Safety constraints (7 guardrail types)
+│   │       ├── state.rs        # State persistence (FileStateStore)
+│   │       └── error.rs        # WorldForgeError enum (18 variants)
+│   ├── worldforge-providers/   # Provider adapters
+│   │   └── src/
+│   │       ├── mock.rs         # Mock provider (deterministic, for testing)
+│   │       ├── cosmos.rs       # NVIDIA Cosmos adapter
+│   │       ├── runway.rs       # Runway GWM-1 adapter
+│   │       ├── jepa.rs         # Meta V-JEPA adapter
+│   │       └── genie.rs        # Google Genie adapter
+│   ├── worldforge-eval/        # Evaluation framework (4 built-in suites)
+│   ├── worldforge-verify/      # ZK verification (optional)
+│   ├── worldforge-server/      # REST API server (Tokio TCP)
+│   ├── worldforge-cli/         # CLI tool (Clap)
+│   └── worldforge-python/      # Python bindings (PyO3)
+├── SPECIFICATION.md            # Technical specification (source of truth)
+├── architecture/ADR.md         # Architecture Decision Records
+└── CONTRIBUTING.md             # Development setup guide
+```
+
+## Development
+
+```bash
+# Build
+cargo build
+
+# Test
+cargo test
+
+# Lint
+cargo clippy -- -D warnings
+
+# Format
+cargo fmt
+
+# Run CLI
+cargo run -p worldforge-cli -- create --prompt "A kitchen with a mug"
+cargo run -p worldforge-cli -- list
+cargo run -p worldforge-cli -- eval --suite physics
 ```
 
 ## Status
 
-Pre-alpha. Building in public. Star the repo and watch for updates.
+Pre-alpha. Core types, provider trait, state management, guardrails, evaluation
+framework, CLI, and server are implemented. Provider adapters (Cosmos, Runway,
+JEPA, Genie) have skeleton implementations awaiting API access.
 
 ## License
 
 Apache 2.0 (core library)
-NVIDIA Open Model License (for Cosmos-derived components)
 
 ## Links
 
 - [Specification](./SPECIFICATION.md)
 - [Architecture Decision Records](./architecture/)
-- [Business Plan](./business/)
 - [Contributing](./CONTRIBUTING.md)

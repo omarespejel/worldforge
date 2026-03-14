@@ -50,10 +50,23 @@ impl WorldForge {
     }
 
     /// Register a world model provider.
-    pub fn register_provider(&mut self, provider: Box<dyn provider::WorldModelProvider>) {
+    ///
+    /// # Errors
+    ///
+    /// Returns `WorldForgeError::InvalidState` if worlds are already active
+    /// (i.e., the registry `Arc` has been cloned).
+    pub fn register_provider(
+        &mut self,
+        provider: Box<dyn provider::WorldModelProvider>,
+    ) -> Result<()> {
         Arc::get_mut(&mut self.registry)
-            .expect("cannot register provider while worlds are active")
+            .ok_or_else(|| {
+                error::WorldForgeError::InvalidState(
+                    "cannot register provider while worlds are active".to_string(),
+                )
+            })?
             .register(provider);
+        Ok(())
     }
 
     /// List all registered provider names.

@@ -462,20 +462,43 @@ fn evaluate_goal_score(goal: &crate::prediction::PlanGoal, state: &WorldState) -
     }
 }
 
-/// Compute a simple hash of a world state for history tracking.
+/// Compute a non-cryptographic fingerprint of a world state for history tracking.
+///
+/// Uses multiple independent hash rounds to populate all 32 bytes. This is
+/// **not** a cryptographic hash — it is only used for quick equality checks
+/// and deduplication within the state history.
 fn compute_state_hash(state: &WorldState) -> [u8; 32] {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    let mut hasher = DefaultHasher::new();
-    // Hash the world ID and time as a simple fingerprint
-    state.id.hash(&mut hasher);
-    state.time.step.hash(&mut hasher);
-    state.scene.objects.len().hash(&mut hasher);
-    let h = hasher.finish();
-
     let mut result = [0u8; 32];
-    result[..8].copy_from_slice(&h.to_le_bytes());
+
+    // Round 1: world identity
+    let mut h1 = DefaultHasher::new();
+    state.id.hash(&mut h1);
+    state.time.step.hash(&mut h1);
+    result[..8].copy_from_slice(&h1.finish().to_le_bytes());
+
+    // Round 2: scene contents
+    let mut h2 = DefaultHasher::new();
+    state.scene.objects.len().hash(&mut h2);
+    for name in state.scene.objects.values().map(|o| &o.name) {
+        name.hash(&mut h2);
+    }
+    result[8..16].copy_from_slice(&h2.finish().to_le_bytes());
+
+    // Round 3: temporal state
+    let mut h3 = DefaultHasher::new();
+    state.time.seconds.to_bits().hash(&mut h3);
+    state.history.len().hash(&mut h3);
+    result[16..24].copy_from_slice(&h3.finish().to_le_bytes());
+
+    // Round 4: metadata
+    let mut h4 = DefaultHasher::new();
+    state.metadata.name.hash(&mut h4);
+    state.metadata.created_by.hash(&mut h4);
+    result[24..32].copy_from_slice(&h4.finish().to_le_bytes());
+
     result
 }
 

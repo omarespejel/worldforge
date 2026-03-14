@@ -1,1 +1,38 @@
+# Build artifacts
 /target
+
+# Environment and secrets
+.env
+.env.*
+*.pem
+*.key
+
+# State storage (runtime data)
+.worldforge/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Python artifacts (PyO3 builds)
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+*.whl
+
+# SQLite databases (runtime state)
+*.sqlite
+*.sqlite3
+*.db
+
+# Proptest regression files are checked in intentionally
+# proptest-regressions/
