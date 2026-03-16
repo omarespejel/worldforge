@@ -110,6 +110,7 @@ pub struct GenerationPrompt {
 
 /// Configuration for video generation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct GenerationConfig {
     /// Output resolution `(width, height)`.
     pub resolution: (u32, u32),
@@ -156,6 +157,7 @@ pub struct SpatialControls {
 
 /// Configuration for transfer operations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct TransferConfig {
     /// Output resolution.
     pub resolution: (u32, u32),

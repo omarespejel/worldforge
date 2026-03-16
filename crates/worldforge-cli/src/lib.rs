@@ -11,7 +11,9 @@ use clap::{Parser, Subcommand};
 
 use worldforge_core::action::{Action, Weather};
 use worldforge_core::prediction::{PlanGoal, PlanRequest, PlannerType, PredictionConfig};
-use worldforge_core::provider::{ProviderRegistry, WorldModelProvider};
+use worldforge_core::provider::{
+    GenerationConfig, GenerationPrompt, ProviderRegistry, WorldModelProvider,
+};
 use worldforge_core::state::{FileStateStore, StateStore, WorldState};
 use worldforge_core::types::Position;
 use worldforge_eval::EvalSuite;
@@ -66,6 +68,50 @@ pub enum Commands {
         /// Maximum time to wait for a provider response before timing out.
         #[arg(long)]
         timeout_ms: Option<u64>,
+    },
+
+    /// Generate a video clip directly from a prompt.
+    Generate {
+        /// Prompt describing the desired video.
+        #[arg(long)]
+        prompt: String,
+        /// Provider to use.
+        #[arg(long, default_value = "mock")]
+        provider: String,
+        /// Optional negative prompt.
+        #[arg(long)]
+        negative_prompt: Option<String>,
+        /// Output duration in seconds.
+        #[arg(long, default_value = "4.0")]
+        duration_seconds: f64,
+        /// Output width in pixels.
+        #[arg(long, default_value = "1280")]
+        width: u32,
+        /// Output height in pixels.
+        #[arg(long, default_value = "720")]
+        height: u32,
+        /// Output frames per second.
+        #[arg(long, default_value = "24.0")]
+        fps: f32,
+        /// Sampling temperature.
+        #[arg(long, default_value = "1.0")]
+        temperature: f32,
+        /// Optional random seed.
+        #[arg(long)]
+        seed: Option<u64>,
+    },
+
+    /// Ask a provider to reason about the current world state.
+    Reason {
+        /// World ID.
+        #[arg(long)]
+        world: String,
+        /// Natural-language reasoning query.
+        #[arg(long)]
+        query: String,
+        /// Optional provider override.
+        #[arg(long)]
+        provider: Option<String>,
     },
 
     /// List all saved worlds.
@@ -182,6 +228,36 @@ pub async fn run() -> Result<()> {
             )
             .await
         }
+        Commands::Generate {
+            prompt,
+            provider,
+            negative_prompt,
+            duration_seconds,
+            width,
+            height,
+            fps,
+            temperature,
+            seed,
+        } => {
+            cmd_generate(
+                &prompt,
+                &provider,
+                GenerateOptions {
+                    negative_prompt: negative_prompt.as_deref(),
+                    duration_seconds,
+                    resolution: (width, height),
+                    fps,
+                    temperature,
+                    seed,
+                },
+            )
+            .await
+        }
+        Commands::Reason {
+            world,
+            query,
+            provider,
+        } => cmd_reason(&store, &world, &query, provider.as_deref()).await,
         Commands::List => cmd_list(&store).await,
         Commands::Show { world } => cmd_show(&store, &world).await,
         Commands::Delete { world } => cmd_delete(&store, &world).await,
@@ -231,6 +307,21 @@ fn available_provider_names(registry: &ProviderRegistry) -> String {
     let mut names: Vec<String> = registry.list().into_iter().map(str::to_string).collect();
     names.sort();
     names.join(", ")
+}
+
+fn resolve_provider_name<'a>(state: &'a WorldState, provider: Option<&'a str>) -> &'a str {
+    provider
+        .filter(|name| !name.is_empty())
+        .unwrap_or(state.metadata.created_by.as_str())
+}
+
+struct GenerateOptions<'a> {
+    negative_prompt: Option<&'a str>,
+    duration_seconds: f64,
+    resolution: (u32, u32),
+    fps: f32,
+    temperature: f32,
+    seed: Option<u64>,
 }
 
 fn require_provider<'a>(
@@ -309,6 +400,75 @@ async fn cmd_predict(
     println!("  Physics score: {:.2}", prediction.physics_scores.overall);
     println!("  Latency: {}ms", prediction.latency_ms);
     println!("  New time step: {}", world.current_state().time.step);
+
+    Ok(())
+}
+
+async fn cmd_generate(
+    prompt: &str,
+    provider_name: &str,
+    options: GenerateOptions<'_>,
+) -> Result<()> {
+    let registry = auto_detect_registry();
+    let provider = require_provider(&registry, provider_name)?;
+    let prompt = GenerationPrompt {
+        text: prompt.to_string(),
+        reference_image: None,
+        negative_prompt: options.negative_prompt.map(ToOwned::to_owned),
+    };
+    let config = GenerationConfig {
+        duration_seconds: options.duration_seconds,
+        resolution: options.resolution,
+        fps: options.fps,
+        temperature: options.temperature,
+        seed: options.seed,
+    };
+
+    let clip = provider
+        .generate(&prompt, &config)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    println!("Generation completed:");
+    println!("  Provider: {provider_name}");
+    println!("  Duration: {:.2}s", clip.duration);
+    println!("  Resolution: {}x{}", clip.resolution.0, clip.resolution.1);
+    println!("  FPS: {:.1}", clip.fps);
+    println!("  Frames: {}", clip.frames.len());
+
+    Ok(())
+}
+
+async fn cmd_reason(
+    store: &FileStateStore,
+    world_id: &str,
+    query: &str,
+    provider: Option<&str>,
+) -> Result<()> {
+    let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
+    let state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let provider_name = resolve_provider_name(&state, provider).to_string();
+    let registry = Arc::new(auto_detect_registry());
+    require_provider(&registry, &provider_name)?;
+    let world = worldforge_core::world::World::new(state, &provider_name, registry);
+
+    let output = world
+        .reason(query)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    println!("Reasoning completed:");
+    println!("  Provider: {provider_name}");
+    println!("  Answer: {}", output.answer);
+    println!("  Confidence: {:.2}", output.confidence);
+    if output.evidence.is_empty() {
+        println!("  Evidence: none");
+    } else {
+        println!("  Evidence:");
+        for evidence in output.evidence {
+            println!("    - {evidence}");
+        }
+    }
 
     Ok(())
 }
@@ -853,5 +1013,87 @@ mod tests {
             }
             _ => panic!("expected Predict"),
         }
+    }
+
+    #[test]
+    fn test_cli_parse_generate_command() {
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "generate",
+            "--prompt",
+            "a bouncing sphere",
+            "--provider",
+            "mock",
+            "--duration-seconds",
+            "5.5",
+            "--width",
+            "640",
+            "--height",
+            "360",
+            "--fps",
+            "12.0",
+            "--temperature",
+            "0.7",
+            "--seed",
+            "42",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Generate {
+                provider,
+                duration_seconds,
+                width,
+                height,
+                fps,
+                temperature,
+                seed,
+                ..
+            } => {
+                assert_eq!(provider, "mock");
+                assert_eq!(duration_seconds, 5.5);
+                assert_eq!(width, 640);
+                assert_eq!(height, 360);
+                assert_eq!(fps, 12.0);
+                assert_eq!(temperature, 0.7);
+                assert_eq!(seed, Some(42));
+            }
+            _ => panic!("expected Generate"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_reason_command() {
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "reason",
+            "--world",
+            "123e4567-e89b-12d3-a456-426614174000",
+            "--query",
+            "will the mug fall?",
+            "--provider",
+            "cosmos",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Reason {
+                world,
+                query,
+                provider,
+            } => {
+                assert_eq!(world, "123e4567-e89b-12d3-a456-426614174000");
+                assert_eq!(query, "will the mug fall?");
+                assert_eq!(provider.as_deref(), Some("cosmos"));
+            }
+            _ => panic!("expected Reason"),
+        }
+    }
+
+    #[test]
+    fn test_resolve_provider_name_defaults_to_world_provider() {
+        let state = WorldState::new("default-provider", "mock");
+        assert_eq!(resolve_provider_name(&state, None), "mock");
+        assert_eq!(resolve_provider_name(&state, Some("runway")), "runway");
     }
 }

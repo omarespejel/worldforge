@@ -10,9 +10,10 @@ use std::sync::Arc;
 use pyo3::prelude::*;
 
 use worldforge_core::prediction::{PlannerType, PredictionConfig};
+use worldforge_core::provider::{GenerationConfig, GenerationPrompt};
 use worldforge_core::scene::SceneObject;
 use worldforge_core::state::WorldState;
-use worldforge_core::types::{BBox, Position, Rotation, Velocity};
+use worldforge_core::types::{BBox, Position, Rotation, Velocity, VideoClip};
 use worldforge_verify::ZkVerifier;
 
 fn auto_detect_registry() -> Arc<worldforge_core::provider::ProviderRegistry> {
@@ -601,6 +602,27 @@ impl PyWorld {
 
         Ok(PyPlan { inner: plan })
     }
+
+    /// Ask a provider to reason about the current world state.
+    #[pyo3(signature = (query, provider=None))]
+    fn reason(&self, query: &str, provider: Option<&str>) -> PyResult<PyReasoningOutput> {
+        let rt = tokio::runtime::Runtime::new().map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("failed to create runtime: {e}"))
+        })?;
+
+        let provider_name = resolve_provider_name(&self.state, provider);
+        let world = worldforge_core::world::World::new(
+            self.state.clone(),
+            provider_name,
+            auto_detect_registry(),
+        );
+
+        let output = rt.block_on(world.reason(query)).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("reasoning failed: {e}"))
+        })?;
+
+        Ok(PyReasoningOutput { inner: output })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -676,6 +698,100 @@ impl PyPrediction {
         format!(
             "Prediction(provider='{}', confidence={:.2}, physics_score={:.2})",
             self.inner.provider, self.inner.confidence, self.inner.physics_scores.overall
+        )
+    }
+}
+
+/// A generated or transferred video clip.
+#[pyclass(name = "VideoClip")]
+#[derive(Debug, Clone)]
+pub struct PyVideoClip {
+    inner: VideoClip,
+}
+
+#[pymethods]
+impl PyVideoClip {
+    /// Number of frames in the clip.
+    #[getter]
+    fn frame_count(&self) -> usize {
+        self.inner.frames.len()
+    }
+
+    /// Frames per second.
+    #[getter]
+    fn fps(&self) -> f32 {
+        self.inner.fps
+    }
+
+    /// Resolution as `(width, height)`.
+    #[getter]
+    fn resolution(&self) -> (u32, u32) {
+        self.inner.resolution
+    }
+
+    /// Duration in seconds.
+    #[getter]
+    fn duration(&self) -> f64 {
+        self.inner.duration
+    }
+
+    /// Serialize the clip to JSON.
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "VideoClip(frames={}, fps={:.1}, resolution=({}, {}), duration={:.2}s)",
+            self.inner.frames.len(),
+            self.inner.fps,
+            self.inner.resolution.0,
+            self.inner.resolution.1,
+            self.inner.duration
+        )
+    }
+}
+
+/// Output of a provider reasoning query.
+#[pyclass(name = "ReasoningOutput")]
+#[derive(Debug, Clone)]
+pub struct PyReasoningOutput {
+    inner: worldforge_core::provider::ReasoningOutput,
+}
+
+#[pymethods]
+impl PyReasoningOutput {
+    /// Natural-language answer.
+    #[getter]
+    fn answer(&self) -> &str {
+        &self.inner.answer
+    }
+
+    /// Confidence score.
+    #[getter]
+    fn confidence(&self) -> f32 {
+        self.inner.confidence
+    }
+
+    /// Evidence returned by the provider.
+    #[getter]
+    fn evidence(&self) -> Vec<String> {
+        self.inner.evidence.clone()
+    }
+
+    /// Serialize the reasoning output to JSON.
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ReasoningOutput(confidence={:.2}, answer='{}')",
+            self.inner.confidence, self.inner.answer
         )
     }
 }
@@ -976,6 +1092,47 @@ impl PyWorldForge {
         Ok(PyWorld {
             state: world.current_state().clone(),
         })
+    }
+
+    /// Generate a video clip directly from a prompt with a specific provider.
+    #[pyo3(signature = (prompt, provider="mock", duration_seconds=4.0, width=1280, height=720, fps=24.0, temperature=1.0, seed=None, negative_prompt=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn generate(
+        &self,
+        prompt: &str,
+        provider: &str,
+        duration_seconds: f64,
+        width: u32,
+        height: u32,
+        fps: f32,
+        temperature: f32,
+        seed: Option<u64>,
+        negative_prompt: Option<&str>,
+    ) -> PyResult<PyVideoClip> {
+        let provider_ref = self.inner.registry().get(provider).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("generation failed: {e}"))
+        })?;
+        let prompt = GenerationPrompt {
+            text: prompt.to_string(),
+            reference_image: None,
+            negative_prompt: negative_prompt.map(ToOwned::to_owned),
+        };
+        let config = GenerationConfig {
+            resolution: (width, height),
+            fps,
+            duration_seconds,
+            temperature,
+            seed,
+        };
+        let rt = tokio::runtime::Runtime::new().map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("failed to create runtime: {e}"))
+        })?;
+        let clip = rt
+            .block_on(provider_ref.generate(&prompt, &config))
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("generation failed: {e}"))
+            })?;
+        Ok(PyVideoClip { inner: clip })
     }
 
     fn __repr__(&self) -> String {
@@ -1305,6 +1462,8 @@ fn worldforge(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySceneObject>()?;
     m.add_class::<PyWorld>()?;
     m.add_class::<PyPrediction>()?;
+    m.add_class::<PyVideoClip>()?;
+    m.add_class::<PyReasoningOutput>()?;
     m.add_class::<PyAction>()?;
     m.add_class::<PyGuardrail>()?;
     m.add_class::<PyWorldForge>()?;
@@ -1498,6 +1657,15 @@ mod tests {
         assert_eq!(world.step(), 1);
     }
 
+    #[test]
+    fn test_world_reason() {
+        let world = PyWorld::new("reason_world", "mock");
+        let output = world.reason("will it fall?", None).unwrap();
+        assert!(output.answer().contains("will it fall?"));
+        assert!(output.confidence() > 0.0);
+        assert_eq!(output.evidence(), vec!["mock evidence".to_string()]);
+    }
+
     // --- Action tests ---
 
     #[test]
@@ -1635,6 +1803,30 @@ mod tests {
         let wf = PyWorldForge::new();
         let repr = wf.__repr__();
         assert!(repr.contains("WorldForge"));
+    }
+
+    #[test]
+    fn test_worldforge_generate() {
+        let wf = PyWorldForge::new();
+        let clip = wf
+            .generate(
+                "a spinning cube",
+                "mock",
+                5.0,
+                640,
+                360,
+                12.0,
+                0.7,
+                Some(7),
+                Some("blurry"),
+            )
+            .unwrap();
+
+        assert_eq!(clip.duration(), 5.0);
+        assert_eq!(clip.resolution(), (640, 360));
+        assert_eq!(clip.fps(), 12.0);
+        assert_eq!(clip.frame_count(), 0);
+        assert!(clip.__repr__().contains("VideoClip"));
     }
 
     // --- Planning tests ---

@@ -127,6 +127,8 @@ cargo run -p worldforge-cli -- create --prompt "A kitchen with a mug"
 cargo run -p worldforge-cli -- list
 cargo run -p worldforge-cli -- predict --world <id> --action "move 1 0 0" --provider runway --fallback-provider mock --timeout-ms 500
 cargo run -p worldforge-cli -- plan --world <id> --goal "spawn cube" --planner cem
+cargo run -p worldforge-cli -- generate --provider mock --prompt "A cube rolling across a table" --duration-seconds 5
+cargo run -p worldforge-cli -- reason --world <id> --query "Will the mug fall if pushed?"
 cargo run -p worldforge-cli -- eval --suite physics
 cargo run -p worldforge-cli -- serve --bind 127.0.0.1:8080
 
@@ -157,7 +159,15 @@ curl -X POST http://127.0.0.1:8080/v1/worlds \
 
 curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/plan \
   -H 'content-type: application/json' \
-  -d '{"goal":"spawn cube","provider":"mock","planner":"cem","population_size":12,"elite_fraction":0.25,"num_iterations":3}'
+  -d '{"goal":"spawn cube","planner":"cem","population_size":12,"elite_fraction":0.25,"num_iterations":3}'
+
+curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/reason \
+  -H 'content-type: application/json' \
+  -d '{"query":"Will the spawned cube stay stable?"}'
+
+curl -X POST http://127.0.0.1:8080/v1/providers/mock/generate \
+  -H 'content-type: application/json' \
+  -d '{"prompt":"A cube rolling across the floor","config":{"duration_seconds":5.0}}'
 
 curl http://127.0.0.1:8080/v1/providers
 ```
@@ -170,7 +180,10 @@ are implemented. Prediction fallback and timeout handling are wired through the
 core orchestration layer and exposed in the CLI, REST server, and Python API.
 Planning now supports distinct sampling, CEM, MPC, gradient, and provider-native
 execution paths in the core, with planner selection exposed across the CLI,
-REST server, and Python bindings. Cosmos and Runway adapters have API wiring in
+REST server, and Python bindings. Direct provider generation and world-state
+reasoning are now exposed across the CLI, REST server, and Python bindings as
+well, with REST requests defaulting to each stored world's configured provider
+instead of hard-coding `mock`. Cosmos and Runway adapters have API wiring in
 place, while Genie remains a research-preview stub pending public access.
 
 ## License

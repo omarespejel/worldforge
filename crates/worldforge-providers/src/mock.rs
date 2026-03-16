@@ -132,14 +132,14 @@ impl WorldModelProvider for MockProvider {
     async fn generate(
         &self,
         prompt: &GenerationPrompt,
-        _config: &GenerationConfig,
+        config: &GenerationConfig,
     ) -> Result<VideoClip> {
         tracing::info!(prompt = %prompt.text, "mock: generating video");
         Ok(VideoClip {
             frames: Vec::new(),
-            fps: 24.0,
-            resolution: (1280, 720),
-            duration: 4.0,
+            fps: config.fps,
+            resolution: config.resolution,
+            duration: config.duration_seconds,
         })
     }
 
@@ -265,9 +265,16 @@ mod tests {
             reference_image: None,
             negative_prompt: None,
         };
-        let config = GenerationConfig::default();
+        let config = GenerationConfig {
+            resolution: (640, 360),
+            fps: 12.0,
+            duration_seconds: 5.0,
+            ..GenerationConfig::default()
+        };
         let clip = provider.generate(&prompt, &config).await.unwrap();
-        assert_eq!(clip.fps, 24.0);
+        assert_eq!(clip.fps, 12.0);
+        assert_eq!(clip.resolution, (640, 360));
+        assert_eq!(clip.duration, 5.0);
     }
 
     #[tokio::test]

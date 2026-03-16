@@ -15,7 +15,7 @@ use tokio::sync::RwLock;
 use worldforge_core::action::Action;
 use worldforge_core::error::WorldForgeError;
 use worldforge_core::prediction::{PlannerType, PredictionConfig};
-use worldforge_core::provider::ProviderRegistry;
+use worldforge_core::provider::{GenerationConfig, GenerationPrompt, ProviderRegistry};
 use worldforge_core::state::{FileStateStore, StateStore, WorldState};
 use worldforge_core::types::WorldId;
 use worldforge_eval::EvalSuite;
@@ -103,12 +103,8 @@ struct PredictRequest {
     action: Action,
     #[serde(default)]
     config: PredictionConfig,
-    #[serde(default = "default_provider")]
-    provider: String,
-}
-
-fn default_provider() -> String {
-    "mock".to_string()
+    #[serde(default)]
+    provider: Option<String>,
 }
 
 /// JSON request body for planning.
@@ -117,8 +113,8 @@ struct PlanRequest {
     goal: String,
     #[serde(default = "default_max_steps")]
     max_steps: u32,
-    #[serde(default = "default_provider")]
-    provider: String,
+    #[serde(default)]
+    provider: Option<String>,
     #[serde(default = "default_timeout_seconds")]
     timeout_seconds: f64,
     #[serde(default = "default_planner_name")]
@@ -151,6 +147,24 @@ fn default_timeout_seconds() -> f64 {
 
 fn default_planner_name() -> String {
     "sampling".to_string()
+}
+
+/// JSON request body for generation.
+#[derive(Debug, Deserialize)]
+struct GenerateRequest {
+    prompt: String,
+    #[serde(default)]
+    negative_prompt: Option<String>,
+    #[serde(default)]
+    config: GenerationConfig,
+}
+
+/// JSON request body for world-state reasoning.
+#[derive(Debug, Deserialize)]
+struct ReasonRequest {
+    query: String,
+    #[serde(default)]
+    provider: Option<String>,
 }
 
 fn planner_from_request(request: &PlanRequest) -> std::result::Result<PlannerType, String> {
@@ -245,7 +259,7 @@ fn error_response(msg: &str) -> String {
     .unwrap_or_else(|_| format!(r#"{{"success":false,"error":"{msg}"}}"#))
 }
 
-fn prediction_error_status(error: &WorldForgeError) -> u16 {
+fn api_error_status(error: &WorldForgeError) -> u16 {
     match error {
         WorldForgeError::ProviderNotFound(_) | WorldForgeError::WorldNotFound(_) => 404,
         WorldForgeError::UnsupportedAction { .. }
@@ -256,6 +270,12 @@ fn prediction_error_status(error: &WorldForgeError) -> u16 {
         WorldForgeError::ProviderTimeout { .. } => 504,
         _ => 500,
     }
+}
+
+fn resolve_world_provider<'a>(state: &'a WorldState, requested: Option<&'a str>) -> &'a str {
+    requested
+        .filter(|provider| !provider.is_empty())
+        .unwrap_or(state.metadata.created_by.as_str())
 }
 
 /// Start the WorldForge HTTP server.
@@ -356,6 +376,9 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
         // POST /v1/worlds
         ("POST", "/v1/worlds") => match serde_json::from_str::<CreateWorldRequest>(body) {
             Ok(req) => {
+                if let Err(error) = state.registry.get(&req.provider) {
+                    return (404, error_response(&error.to_string()));
+                }
                 let ws = WorldState::new(&req.name, &req.provider);
                 let id = ws.id;
                 if let Err(e) = state.store.save(&ws).await {
@@ -373,6 +396,33 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
             }
             Err(e) => (400, error_response(&format!("invalid request: {e}"))),
         },
+
+        // POST /v1/providers/{name}/generate
+        ("POST", p) if p.starts_with("/v1/providers/") && p.ends_with("/generate") => {
+            let provider_name = p
+                .strip_prefix("/v1/providers/")
+                .and_then(|value| value.strip_suffix("/generate"))
+                .unwrap_or("");
+            match serde_json::from_str::<GenerateRequest>(body) {
+                Ok(req) => match state.registry.get(provider_name) {
+                    Ok(provider) => {
+                        let prompt = GenerationPrompt {
+                            text: req.prompt,
+                            reference_image: None,
+                            negative_prompt: req.negative_prompt,
+                        };
+                        match provider.generate(&prompt, &req.config).await {
+                            Ok(clip) => (200, ApiResponse::ok(clip)),
+                            Err(error) => {
+                                (api_error_status(&error), error_response(&error.to_string()))
+                            }
+                        }
+                    }
+                    Err(error) => (404, error_response(&error.to_string())),
+                },
+                Err(e) => (400, error_response(&format!("invalid request: {e}"))),
+            }
+        }
 
         // GET /v1/worlds — list all worlds
         ("GET", "/v1/worlds") => {
@@ -423,9 +473,11 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                                 Ok(ws) => ws,
                                 Err(e) => return (404, error_response(&e.to_string())),
                             };
+                            let provider_name =
+                                resolve_world_provider(&ws, req.provider.as_deref()).to_string();
                             let mut world = worldforge_core::world::World::new(
                                 ws,
-                                req.provider.clone(),
+                                provider_name,
                                 Arc::clone(&state.registry),
                             );
                             match world.predict(&req.action, &req.config).await {
@@ -434,9 +486,7 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                                     let _ = state.store.save(world.current_state()).await;
                                     (200, ApiResponse::ok(prediction))
                                 }
-                                Err(e) => {
-                                    (prediction_error_status(&e), error_response(&e.to_string()))
-                                }
+                                Err(e) => (api_error_status(&e), error_response(&e.to_string())),
                             }
                         }
                         Err(e) => (400, error_response(&format!("invalid request: {e}"))),
@@ -464,6 +514,39 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
             }
         }
 
+        // POST /v1/worlds/{id}/reason
+        ("POST", p) if p.starts_with("/v1/worlds/") && p.ends_with("/reason") => {
+            let id_str = p
+                .strip_prefix("/v1/worlds/")
+                .and_then(|value| value.strip_suffix("/reason"))
+                .unwrap_or("");
+            match id_str.parse::<WorldId>() {
+                Ok(id) => match serde_json::from_str::<ReasonRequest>(body) {
+                    Ok(req) => {
+                        let ws = match state.store.load(&id).await {
+                            Ok(ws) => ws,
+                            Err(e) => return (404, error_response(&e.to_string())),
+                        };
+                        let provider_name =
+                            resolve_world_provider(&ws, req.provider.as_deref()).to_string();
+                        let world = worldforge_core::world::World::new(
+                            ws,
+                            provider_name,
+                            Arc::clone(&state.registry),
+                        );
+                        match world.reason(&req.query).await {
+                            Ok(output) => (200, ApiResponse::ok(output)),
+                            Err(error) => {
+                                (api_error_status(&error), error_response(&error.to_string()))
+                            }
+                        }
+                    }
+                    Err(e) => (400, error_response(&format!("invalid request: {e}"))),
+                },
+                Err(_) => (400, error_response("invalid world ID")),
+            }
+        }
+
         // POST /v1/worlds/{id}/plan
         ("POST", p) if p.starts_with("/v1/worlds/") && p.ends_with("/plan") => {
             let id_str = p
@@ -477,7 +560,9 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                             Ok(ws) => ws,
                             Err(e) => return (404, error_response(&e.to_string())),
                         };
-                        if let Err(e) = state.registry.get(&req.provider) {
+                        let provider_name =
+                            resolve_world_provider(&ws, req.provider.as_deref()).to_string();
+                        if let Err(e) = state.registry.get(&provider_name) {
                             return (404, error_response(&e.to_string()));
                         }
                         let planner = match planner_from_request(&req) {
@@ -485,8 +570,11 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                             Err(error) => return (400, error_response(&error)),
                         };
                         let registry = Arc::clone(&state.registry);
-                        let world =
-                            worldforge_core::world::World::new(ws.clone(), &req.provider, registry);
+                        let world = worldforge_core::world::World::new(
+                            ws.clone(),
+                            &provider_name,
+                            registry,
+                        );
                         let plan_req = worldforge_core::prediction::PlanRequest {
                             current_state: ws,
                             goal: worldforge_core::prediction::PlanGoal::Description(
@@ -665,10 +753,12 @@ async fn send_response(
         200 => "OK",
         201 => "Created",
         400 => "Bad Request",
+        409 => "Conflict",
         413 => "Payload Too Large",
         404 => "Not Found",
         500 => "Internal Server Error",
         503 => "Service Unavailable",
+        504 => "Gateway Timeout",
         _ => "Unknown",
     };
     let response = format!(
@@ -686,8 +776,12 @@ mod tests {
     use worldforge_providers::MockProvider;
 
     fn test_state() -> Arc<AppState> {
+        test_state_with_provider("mock")
+    }
+
+    fn test_state_with_provider(provider_name: &str) -> Arc<AppState> {
         let mut registry = ProviderRegistry::new();
-        registry.register(Box::new(MockProvider::new()));
+        registry.register(Box::new(MockProvider::with_name(provider_name)));
         Arc::new(AppState {
             registry: Arc::new(registry),
             store: FileStateStore::new(
@@ -712,6 +806,15 @@ mod tests {
         let (status, resp) = route("POST", "/v1/worlds", body, &state).await;
         assert_eq!(status, 201);
         assert!(resp.contains("test world"));
+    }
+
+    #[tokio::test]
+    async fn test_route_create_world_requires_registered_provider() {
+        let state = test_state();
+        let body = r#"{"name":"bad world","provider":"missing"}"#;
+        let (status, resp) = route("POST", "/v1/worlds", body, &state).await;
+        assert_eq!(status, 404);
+        assert!(resp.contains("provider not found"));
     }
 
     #[tokio::test]
@@ -819,6 +922,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_route_predict_defaults_to_world_provider() {
+        let state = test_state_with_provider("alt-mock");
+        let body = r#"{"name":"alt world","provider":"alt-mock"}"#;
+        let (status, resp) = route("POST", "/v1/worlds", body, &state).await;
+        assert_eq!(status, 201);
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let id = value["data"]["id"].as_str().unwrap();
+
+        let pred_body = r#"{"action":{"Move":{"target":{"x":1.0,"y":0.0,"z":0.0},"speed":1.0}}}"#;
+        let (status, resp) = route(
+            "POST",
+            &format!("/v1/worlds/{id}/predict"),
+            pred_body,
+            &state,
+        )
+        .await;
+
+        assert_eq!(status, 200);
+        let prediction: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(prediction["data"]["provider"], "alt-mock");
+    }
+
+    #[tokio::test]
     async fn test_route_predict_uses_fallback_provider() {
         let state = test_state();
         let body = r#"{"name":"fallback_world","provider":"mock"}"#;
@@ -859,6 +985,45 @@ mod tests {
         let id = uuid::Uuid::new_v4();
         let (status, _) = route("POST", &format!("/v1/worlds/{id}/evaluate"), body, &state).await;
         assert_eq!(status, 400);
+    }
+
+    #[tokio::test]
+    async fn test_route_generate() {
+        let state = test_state();
+        let body =
+            r#"{"prompt":"a cube rolling across the floor","config":{"duration_seconds":5.0}}"#;
+        let (status, resp) = route("POST", "/v1/providers/mock/generate", body, &state).await;
+        assert_eq!(status, 200);
+
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(value["data"]["duration"], 5.0);
+        assert_eq!(value["data"]["fps"], 24.0);
+    }
+
+    #[tokio::test]
+    async fn test_route_reason() {
+        let state = test_state();
+        let body = r#"{"name":"reason_world","provider":"mock"}"#;
+        let (status, resp) = route("POST", "/v1/worlds", body, &state).await;
+        assert_eq!(status, 201);
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let id = value["data"]["id"].as_str().unwrap();
+
+        let reason_body = r#"{"query":"what happens next?"}"#;
+        let (status, resp) = route(
+            "POST",
+            &format!("/v1/worlds/{id}/reason"),
+            reason_body,
+            &state,
+        )
+        .await;
+        assert_eq!(status, 200);
+
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert!(value["data"]["answer"]
+            .as_str()
+            .unwrap()
+            .contains("what happens next?"));
     }
 
     #[tokio::test]

@@ -14,7 +14,10 @@ use crate::prediction::{
     ComparisonReport, MultiPrediction, Plan, PlanRequest, PlannerType, Prediction,
     PredictionConfig, ProviderScore,
 };
-use crate::provider::{Operation, ProviderRegistry, WorldModelProvider};
+use crate::provider::{
+    GenerationConfig, GenerationPrompt, Operation, ProviderRegistry, ReasoningInput,
+    ReasoningOutput, WorldModelProvider,
+};
 use crate::scene::SceneObject;
 use crate::state::{HistoryEntry, PredictionSummary, WorldState};
 use crate::types::{ObjectId, Pose, Position, SimTime, Vec3};
@@ -198,6 +201,51 @@ impl World {
             },
             predictions,
         })
+    }
+
+    /// Generate a video clip with the world's default provider.
+    #[instrument(skip(self, prompt, config))]
+    pub async fn generate(
+        &self,
+        prompt: &GenerationPrompt,
+        config: &GenerationConfig,
+    ) -> Result<crate::types::VideoClip> {
+        self.generate_with_provider(prompt, config, &self.default_provider)
+            .await
+    }
+
+    /// Generate a video clip with a specific provider.
+    #[instrument(skip(self, prompt, config))]
+    pub async fn generate_with_provider(
+        &self,
+        prompt: &GenerationPrompt,
+        config: &GenerationConfig,
+        provider_name: &str,
+    ) -> Result<crate::types::VideoClip> {
+        let provider = self.registry.get(provider_name)?;
+        provider.generate(prompt, config).await
+    }
+
+    /// Ask the world's default provider to reason about the current state.
+    #[instrument(skip(self, query))]
+    pub async fn reason(&self, query: &str) -> Result<ReasoningOutput> {
+        self.reason_with_provider(query, &self.default_provider)
+            .await
+    }
+
+    /// Ask a specific provider to reason about the current world state.
+    #[instrument(skip(self, query))]
+    pub async fn reason_with_provider(
+        &self,
+        query: &str,
+        provider_name: &str,
+    ) -> Result<ReasoningOutput> {
+        let provider = self.registry.get(provider_name)?;
+        let input = ReasoningInput {
+            video: None,
+            state: Some(self.state.clone()),
+        };
+        provider.reason(&input, query).await
     }
 
     /// Plan a sequence of actions to achieve a goal.
@@ -2027,6 +2075,64 @@ mod tests {
         assert!(prediction.guardrail_results[0].passed);
     }
 
+    #[tokio::test]
+    async fn test_generate_uses_default_provider() {
+        let state = WorldState::new("media", "media");
+        let registry = std::sync::Arc::new({
+            let mut registry = ProviderRegistry::new();
+            registry.register(Box::new(MediaProvider::new("media")));
+            registry
+        });
+        let world = World::new(state, "media", registry);
+        let prompt = GenerationPrompt {
+            text: "a rolling sphere".to_string(),
+            reference_image: None,
+            negative_prompt: Some("low quality".to_string()),
+        };
+        let config = GenerationConfig {
+            duration_seconds: 6.0,
+            ..GenerationConfig::default()
+        };
+
+        let clip = world.generate(&prompt, &config).await.unwrap();
+
+        assert_eq!(clip.duration, 6.0);
+        assert_eq!(clip.resolution, config.resolution);
+    }
+
+    #[tokio::test]
+    async fn test_reason_uses_current_state() {
+        let mut state = WorldState::new("reasoning", "media");
+        let object = crate::scene::SceneObject::new(
+            "cube",
+            crate::types::Pose::default(),
+            crate::types::BBox {
+                min: crate::types::Position {
+                    x: -0.5,
+                    y: -0.5,
+                    z: -0.5,
+                },
+                max: crate::types::Position {
+                    x: 0.5,
+                    y: 0.5,
+                    z: 0.5,
+                },
+            },
+        );
+        state.scene.add_object(object);
+        let registry = std::sync::Arc::new({
+            let mut registry = ProviderRegistry::new();
+            registry.register(Box::new(MediaProvider::new("media")));
+            registry
+        });
+        let world = World::new(state, "media", registry);
+
+        let output = world.reason("what objects are present?").await.unwrap();
+
+        assert!(output.answer.contains("1 object"));
+        assert!(output.evidence.iter().any(|item| item.contains("cube")));
+    }
+
     #[derive(Debug, Clone)]
     struct FailingProvider {
         name: String,
@@ -2075,12 +2181,25 @@ mod tests {
         supports_planning: bool,
     }
 
+    #[derive(Debug, Clone)]
+    struct MediaProvider {
+        name: String,
+    }
+
     impl PlanningProvider {
         fn new(name: &str, movement_scale: f32, supports_planning: bool) -> Self {
             Self {
                 name: name.to_string(),
                 movement_scale,
                 supports_planning,
+            }
+        }
+    }
+
+    impl MediaProvider {
+        fn new(name: &str) -> Self {
+            Self {
+                name: name.to_string(),
             }
         }
     }
@@ -2106,6 +2225,14 @@ mod tests {
                 p99_ms: 1,
                 throughput_fps: 1.0,
             },
+        }
+    }
+
+    fn media_capabilities() -> ProviderCapabilities {
+        ProviderCapabilities {
+            generate: true,
+            reason: true,
+            ..test_capabilities(false)
         }
     }
 
@@ -2500,6 +2627,81 @@ mod tests {
             Ok(HealthStatus {
                 healthy: true,
                 message: "planning provider".to_string(),
+                latency_ms: 1,
+            })
+        }
+
+        fn estimate_cost(&self, _operation: &Operation) -> CostEstimate {
+            CostEstimate::default()
+        }
+    }
+
+    #[async_trait]
+    impl WorldModelProvider for MediaProvider {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            media_capabilities()
+        }
+
+        async fn predict(
+            &self,
+            state: &WorldState,
+            action: &Action,
+            _config: &PredictionConfig,
+        ) -> Result<Prediction> {
+            Ok(dummy_prediction(&self.name, state, action))
+        }
+
+        async fn generate(
+            &self,
+            _prompt: &GenerationPrompt,
+            config: &GenerationConfig,
+        ) -> Result<VideoClip> {
+            Ok(VideoClip {
+                frames: Vec::new(),
+                fps: config.fps,
+                resolution: config.resolution,
+                duration: config.duration_seconds,
+            })
+        }
+
+        async fn reason(&self, input: &ReasoningInput, query: &str) -> Result<ReasoningOutput> {
+            let object_names = input
+                .state
+                .as_ref()
+                .map(|state| {
+                    state
+                        .scene
+                        .objects
+                        .values()
+                        .map(|object| object.name.clone())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let object_count = object_names.len();
+            Ok(ReasoningOutput {
+                answer: format!("Observed {object_count} object(s) while answering: {query}"),
+                confidence: 0.88,
+                evidence: object_names,
+            })
+        }
+
+        async fn transfer(
+            &self,
+            source: &VideoClip,
+            _controls: &SpatialControls,
+            _config: &TransferConfig,
+        ) -> Result<VideoClip> {
+            Ok(source.clone())
+        }
+
+        async fn health_check(&self) -> Result<HealthStatus> {
+            Ok(HealthStatus {
+                healthy: true,
+                message: "media provider".to_string(),
                 latency_ms: 1,
             })
         }
