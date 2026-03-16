@@ -1,10 +1,13 @@
 //! State persistence for WorldForge worlds.
 //!
-//! Provides the `StateStore` trait and file-based implementation
-//! for saving and loading world state.
+//! Provides the `StateStore` trait and built-in file/SQLite
+//! implementations for saving and loading world state.
 
 use std::collections::VecDeque;
+#[cfg(feature = "sqlite")]
+use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -162,6 +165,30 @@ pub trait StateStore: Send + Sync {
     async fn delete(&self, id: &WorldId) -> Result<()>;
 }
 
+/// Shared pointer to a dynamically selected state store implementation.
+pub type DynStateStore = Arc<dyn StateStore>;
+
+/// Concrete state-store implementation to open at runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StateStoreKind {
+    /// Persist each world state as a JSON file in the given directory.
+    File(PathBuf),
+    /// Persist all world states in a SQLite database file.
+    #[cfg(feature = "sqlite")]
+    Sqlite(PathBuf),
+}
+
+impl StateStoreKind {
+    /// Open the configured state store implementation.
+    pub async fn open(&self) -> Result<DynStateStore> {
+        match self {
+            Self::File(path) => Ok(Arc::new(FileStateStore::new(path.clone()))),
+            #[cfg(feature = "sqlite")]
+            Self::Sqlite(path) => Ok(Arc::new(SqliteStateStore::from_path(path).await?)),
+        }
+    }
+}
+
 /// File-based state store using JSON serialization.
 #[derive(Debug, Clone)]
 pub struct FileStateStore {
@@ -203,6 +230,13 @@ impl StateStore for FileStateStore {
     }
 
     async fn list(&self) -> Result<Vec<WorldId>> {
+        if !tokio::fs::try_exists(&self.path)
+            .await
+            .map_err(|e| WorldForgeError::InternalError(format!("failed to inspect dir: {e}")))?
+        {
+            return Ok(Vec::new());
+        }
+
         let mut ids = Vec::new();
         let mut entries = tokio::fs::read_dir(&self.path)
             .await
@@ -257,17 +291,48 @@ impl SqliteStateStore {
             .await
             .map_err(|e| WorldForgeError::InternalError(format!("SQLite connect failed: {e}")))?;
 
+        Self::initialize_schema(&pool).await?;
+
+        Ok(Self { pool })
+    }
+
+    /// Create a SQLite state store from a filesystem path, creating parent
+    /// directories and the database file as needed.
+    pub async fn from_path(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                WorldForgeError::InternalError(format!(
+                    "failed to create SQLite parent directory: {e}"
+                ))
+            })?;
+        }
+
+        let options = sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(path)
+            .create_if_missing(true);
+        let pool = sqlx::SqlitePool::connect_with(options)
+            .await
+            .map_err(|e| WorldForgeError::InternalError(format!("SQLite connect failed: {e}")))?;
+
+        Self::initialize_schema(&pool).await?;
+
+        Ok(Self { pool })
+    }
+
+    async fn initialize_schema(pool: &sqlx::SqlitePool) -> Result<()> {
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS world_states (
                 id TEXT PRIMARY KEY,
                 state TEXT NOT NULL
             )",
         )
-        .execute(&pool)
+        .execute(pool)
         .await
         .map_err(|e| WorldForgeError::InternalError(format!("schema creation failed: {e}")))?;
 
-        Ok(Self { pool })
+        Ok(())
     }
 }
 
@@ -433,5 +498,70 @@ mod tests {
         assert!(store.load(&id).await.is_err());
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn test_file_state_store_lists_empty_directory_when_missing() {
+        let dir = std::env::temp_dir().join(format!("worldforge-missing-{}", uuid::Uuid::new_v4()));
+        let store = FileStateStore::new(&dir);
+
+        let ids = store.list().await.unwrap();
+        assert!(ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_state_store_kind_opens_file_store() {
+        let dir = std::env::temp_dir().join(format!("worldforge-kind-{}", uuid::Uuid::new_v4()));
+        let store = StateStoreKind::File(dir.clone()).open().await.unwrap();
+        let state = WorldState::new("kind-test", "mock");
+
+        store.save(&state).await.unwrap();
+        let loaded = store.load(&state.id).await.unwrap();
+        assert_eq!(loaded.id, state.id);
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn test_sqlite_state_store_from_path() {
+        let db_path = std::env::temp_dir()
+            .join(format!("worldforge-sqlite-{}", uuid::Uuid::new_v4()))
+            .join("nested")
+            .join("worldforge.db");
+        let store = SqliteStateStore::from_path(&db_path).await.unwrap();
+        let state = WorldState::new("sqlite-path-test", "mock");
+
+        store.save(&state).await.unwrap();
+        let ids = store.list().await.unwrap();
+        assert!(ids.contains(&state.id));
+        assert!(db_path.exists());
+
+        let _ = tokio::fs::remove_file(&db_path).await;
+        if let Some(parent) = db_path.parent().and_then(Path::parent) {
+            let _ = tokio::fs::remove_dir_all(parent).await;
+        }
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn test_state_store_kind_opens_sqlite_store() {
+        let db_path = std::env::temp_dir()
+            .join(format!("worldforge-kind-sqlite-{}", uuid::Uuid::new_v4()))
+            .join("state.db");
+        let store = StateStoreKind::Sqlite(db_path.clone())
+            .open()
+            .await
+            .unwrap();
+        let state = WorldState::new("sqlite-kind", "mock");
+
+        store.save(&state).await.unwrap();
+        let loaded = store.load(&state.id).await.unwrap();
+        assert_eq!(loaded.metadata.name, "sqlite-kind");
+
+        let _ = tokio::fs::remove_file(&db_path).await;
+        if let Some(parent) = db_path.parent() {
+            let _ = tokio::fs::remove_dir_all(parent).await;
+        }
     }
 }

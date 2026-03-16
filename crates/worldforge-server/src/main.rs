@@ -10,12 +10,14 @@ const USAGE: &str = "\
 WorldForge REST API server
 
 Usage:
-  worldforge-server [--bind <addr>] [--state-dir <path>]
+  worldforge-server [--bind <addr>] [--state-dir <path>] [--state-backend <file|sqlite>] [--state-db-path <path>]
 
 Options:
-  --bind <addr>       Address to bind to (default: 127.0.0.1:8080)
-  --state-dir <path>  Directory for persisted world state (default: .worldforge)
-  -h, --help          Show this help text";
+  --bind <addr>             Address to bind to (default: 127.0.0.1:8080)
+  --state-dir <path>        Directory for file-backed state or default SQLite location (default: .worldforge)
+  --state-backend <kind>    Persistence backend: file or sqlite (default: file)
+  --state-db-path <path>    SQLite database path override
+  -h, --help                Show this help text";
 
 fn parse_args<I>(args: I) -> Result<ServerConfig>
 where
@@ -35,6 +37,17 @@ where
                 config.state_dir = args
                     .next()
                     .ok_or_else(|| anyhow::anyhow!("missing value for --state-dir"))?;
+            }
+            "--state-backend" => {
+                config.state_backend = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("missing value for --state-backend"))?;
+            }
+            "--state-db-path" => {
+                config.state_db_path = Some(
+                    args.next()
+                        .ok_or_else(|| anyhow::anyhow!("missing value for --state-db-path"))?,
+                );
             }
             "-h" | "--help" => {
                 println!("{USAGE}");
@@ -66,6 +79,8 @@ mod tests {
         let config = parse_args(Vec::<String>::new()).unwrap();
         assert_eq!(config.bind_address, "127.0.0.1:8080");
         assert_eq!(config.state_dir, ".worldforge");
+        assert_eq!(config.state_backend, "file");
+        assert_eq!(config.state_db_path, None);
     }
 
     #[test]
@@ -75,11 +90,20 @@ mod tests {
             "127.0.0.1:9001".to_string(),
             "--state-dir".to_string(),
             "/tmp/worldforge".to_string(),
+            "--state-backend".to_string(),
+            "sqlite".to_string(),
+            "--state-db-path".to_string(),
+            "/tmp/worldforge/state.db".to_string(),
         ])
         .unwrap();
 
         assert_eq!(config.bind_address, "127.0.0.1:9001");
         assert_eq!(config.state_dir, "/tmp/worldforge");
+        assert_eq!(config.state_backend, "sqlite");
+        assert_eq!(
+            config.state_db_path.as_deref(),
+            Some("/tmp/worldforge/state.db")
+        );
     }
 
     #[test]

@@ -6,7 +6,7 @@ license.workspace = true
 description = "WorldForge REST API server"
 
 [dependencies]
-worldforge-core = { path = "../worldforge-core" }
+worldforge-core = { path = "../worldforge-core", features = ["sqlite"] }
 worldforge-providers = { path = "../worldforge-providers" }
 worldforge-eval = { path = "../worldforge-eval" }
 worldforge-verify = { path = "../worldforge-verify" }

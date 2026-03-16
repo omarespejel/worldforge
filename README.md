@@ -88,7 +88,7 @@ worldforge/
 │   │       ├── provider.rs     # WorldModelProvider trait + registry
 │   │       ├── scene.rs        # Scene graph (objects, relationships, physics)
 │   │       ├── guardrail.rs    # Safety constraints (7 guardrail types)
-│   │       ├── state.rs        # State persistence (FileStateStore)
+│   │       ├── state.rs        # State persistence (file + SQLite stores)
 │   │       └── error.rs        # WorldForgeError enum (18 variants)
 │   ├── worldforge-providers/   # Provider adapters
 │   │   └── src/
@@ -125,6 +125,7 @@ cargo fmt
 # Run CLI
 cargo run -p worldforge-cli -- create --prompt "A kitchen with a mug"
 cargo run -p worldforge-cli -- list
+cargo run -p worldforge-cli -- --state-backend sqlite --state-db-path .worldforge/worldforge.db list
 cargo run -p worldforge-cli -- predict --world <id> --action "move 1 0 0" --provider runway --fallback-provider mock --timeout-ms 500
 cargo run -p worldforge-cli -- plan --world <id> --goal "spawn cube" --planner cem
 cargo run -p worldforge-cli -- generate --provider mock --prompt "A cube rolling across a table" --duration-seconds 5
@@ -148,6 +149,7 @@ Start the server with either the CLI or the dedicated binary:
 worldforge serve --bind 127.0.0.1:8080
 # or
 worldforge-server --bind 127.0.0.1:8080 --state-dir .worldforge
+worldforge-server --bind 127.0.0.1:8080 --state-backend sqlite --state-db-path .worldforge/worldforge.db
 ```
 
 Then call the HTTP API directly:
@@ -183,8 +185,10 @@ execution paths in the core, with planner selection exposed across the CLI,
 REST server, and Python bindings. Direct provider generation and world-state
 reasoning are now exposed across the CLI, REST server, and Python bindings as
 well, with REST requests defaulting to each stored world's configured provider
-instead of hard-coding `mock`. Cosmos and Runway adapters have API wiring in
-place, while Genie remains a research-preview stub pending public access.
+instead of hard-coding `mock`. File-backed and SQLite-backed world persistence
+are both supported through the shared `StateStore` abstraction across the core,
+CLI, and REST server. Cosmos and Runway adapters have API wiring in place,
+while Genie remains a research-preview stub pending public access.
 
 ## License
 

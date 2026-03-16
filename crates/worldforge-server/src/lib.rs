@@ -16,7 +16,7 @@ use worldforge_core::action::Action;
 use worldforge_core::error::WorldForgeError;
 use worldforge_core::prediction::{PlannerType, PredictionConfig};
 use worldforge_core::provider::{GenerationConfig, GenerationPrompt, ProviderRegistry};
-use worldforge_core::state::{FileStateStore, StateStore, WorldState};
+use worldforge_core::state::{DynStateStore, StateStoreKind, WorldState};
 use worldforge_core::types::WorldId;
 use worldforge_eval::EvalSuite;
 use worldforge_verify::{MockVerifier, ZkVerifier};
@@ -26,8 +26,12 @@ use worldforge_verify::{MockVerifier, ZkVerifier};
 pub struct ServerConfig {
     /// Address to bind to.
     pub bind_address: String,
-    /// State storage directory.
+    /// State storage directory for file mode and the default SQLite location.
     pub state_dir: String,
+    /// Persistence backend to use: `file` or `sqlite`.
+    pub state_backend: String,
+    /// Optional SQLite database path override.
+    pub state_db_path: Option<String>,
 }
 
 impl Default for ServerConfig {
@@ -35,6 +39,25 @@ impl Default for ServerConfig {
         Self {
             bind_address: "127.0.0.1:8080".to_string(),
             state_dir: ".worldforge".to_string(),
+            state_backend: "file".to_string(),
+            state_db_path: None,
+        }
+    }
+}
+
+impl ServerConfig {
+    fn resolve_state_store_kind(&self) -> anyhow::Result<StateStoreKind> {
+        match self.state_backend.as_str() {
+            "file" => Ok(StateStoreKind::File(self.state_dir.clone().into())),
+            "sqlite" => Ok(StateStoreKind::Sqlite(
+                self.state_db_path
+                    .as_deref()
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| std::path::Path::new(&self.state_dir).join("worldforge.db")),
+            )),
+            other => {
+                anyhow::bail!("unknown state backend: {other}. Available backends: file, sqlite")
+            }
         }
     }
 }
@@ -52,9 +75,10 @@ impl Server {
         registry: Arc<ProviderRegistry>,
     ) -> anyhow::Result<Self> {
         let listener = TcpListener::bind(&config.bind_address).await?;
+        let store = config.resolve_state_store_kind()?.open().await?;
         let state = Arc::new(AppState {
             registry,
-            store: FileStateStore::new(&config.state_dir),
+            store,
             worlds: RwLock::new(HashMap::new()),
         });
 
@@ -86,7 +110,7 @@ impl Server {
 /// Shared application state.
 struct AppState {
     registry: Arc<ProviderRegistry>,
-    store: FileStateStore,
+    store: DynStateStore,
     worlds: RwLock<HashMap<WorldId, WorldState>>,
 }
 
@@ -773,6 +797,7 @@ async fn send_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use worldforge_core::state::FileStateStore;
     use worldforge_providers::MockProvider;
 
     fn test_state() -> Arc<AppState> {
@@ -784,11 +809,39 @@ mod tests {
         registry.register(Box::new(MockProvider::with_name(provider_name)));
         Arc::new(AppState {
             registry: Arc::new(registry),
-            store: FileStateStore::new(
+            store: Arc::new(FileStateStore::new(
                 std::env::temp_dir().join(format!("wf-server-test-{}", uuid::Uuid::new_v4())),
-            ),
+            )),
             worlds: RwLock::new(HashMap::new()),
         })
+    }
+
+    #[test]
+    fn test_server_config_resolves_file_store() {
+        let config = ServerConfig {
+            state_dir: "/tmp/worldforge".to_string(),
+            ..ServerConfig::default()
+        };
+
+        assert_eq!(
+            config.resolve_state_store_kind().unwrap(),
+            StateStoreKind::File("/tmp/worldforge".into())
+        );
+    }
+
+    #[test]
+    fn test_server_config_resolves_sqlite_store() {
+        let config = ServerConfig {
+            state_dir: "/tmp/worldforge".to_string(),
+            state_backend: "sqlite".to_string(),
+            state_db_path: None,
+            ..ServerConfig::default()
+        };
+
+        assert_eq!(
+            config.resolve_state_store_kind().unwrap(),
+            StateStoreKind::Sqlite("/tmp/worldforge/worldforge.db".into())
+        );
     }
 
     #[tokio::test]

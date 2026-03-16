@@ -7,25 +7,51 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 use worldforge_core::action::{Action, Weather};
 use worldforge_core::prediction::{PlanGoal, PlanRequest, PlannerType, PredictionConfig};
 use worldforge_core::provider::{
     GenerationConfig, GenerationPrompt, ProviderRegistry, WorldModelProvider,
 };
-use worldforge_core::state::{FileStateStore, StateStore, WorldState};
+use worldforge_core::state::{DynStateStore, StateStore, StateStoreKind, WorldState};
 use worldforge_core::types::Position;
 use worldforge_eval::EvalSuite;
 use worldforge_verify::{MockVerifier, ZkVerifier};
+
+/// Persistence backend used by the CLI.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum StateBackend {
+    /// Store world states as JSON files in a directory.
+    File,
+    /// Store world states in a SQLite database file.
+    Sqlite,
+}
+
+impl StateBackend {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Sqlite => "sqlite",
+        }
+    }
+}
 
 /// WorldForge — orchestration layer for world foundation models.
 #[derive(Parser)]
 #[command(name = "worldforge", version, about)]
 pub struct Cli {
-    /// State storage directory.
+    /// State storage directory for file mode and the default SQLite location.
     #[arg(long, default_value = ".worldforge", global = true)]
     pub state_dir: PathBuf,
+
+    /// Persistence backend for world state.
+    #[arg(long, value_enum, default_value_t = StateBackend::File, global = true)]
+    pub state_backend: StateBackend,
+
+    /// Explicit SQLite database path when using the sqlite backend.
+    #[arg(long, global = true)]
+    pub state_db_path: Option<PathBuf>,
 
     /// Log verbosity level.
     #[arg(long, default_value = "info", global = true)]
@@ -205,10 +231,22 @@ pub async fn run() -> Result<()> {
 
     tracing_subscriber::fmt().init();
 
-    let store = FileStateStore::new(&cli.state_dir);
+    if let Commands::Serve { bind } = &cli.command {
+        return cmd_serve(
+            &cli.state_dir,
+            cli.state_backend,
+            cli.state_db_path.as_deref(),
+            bind,
+        )
+        .await;
+    }
+
+    let store = open_state_store(&cli).await?;
 
     match cli.command {
-        Commands::Create { prompt, provider } => cmd_create(&store, &prompt, &provider).await,
+        Commands::Create { prompt, provider } => {
+            cmd_create(store.as_ref(), &prompt, &provider).await
+        }
         Commands::Predict {
             world,
             action,
@@ -218,7 +256,7 @@ pub async fn run() -> Result<()> {
             timeout_ms,
         } => {
             cmd_predict(
-                &store,
+                store.as_ref(),
                 &world,
                 &action,
                 steps,
@@ -257,16 +295,16 @@ pub async fn run() -> Result<()> {
             world,
             query,
             provider,
-        } => cmd_reason(&store, &world, &query, provider.as_deref()).await,
-        Commands::List => cmd_list(&store).await,
-        Commands::Show { world } => cmd_show(&store, &world).await,
-        Commands::Delete { world } => cmd_delete(&store, &world).await,
+        } => cmd_reason(store.as_ref(), &world, &query, provider.as_deref()).await,
+        Commands::List => cmd_list(store.as_ref()).await,
+        Commands::Show { world } => cmd_show(store.as_ref(), &world).await,
+        Commands::Delete { world } => cmd_delete(store.as_ref(), &world).await,
         Commands::Eval { suite, providers } => cmd_eval(&suite, &providers).await,
         Commands::Compare {
             world,
             action,
             providers,
-        } => cmd_compare(&store, &world, &action, &providers).await,
+        } => cmd_compare(store.as_ref(), &world, &action, &providers).await,
         Commands::Plan {
             world,
             goal,
@@ -276,14 +314,48 @@ pub async fn run() -> Result<()> {
             provider,
         } => {
             cmd_plan(
-                &store, &world, &goal, max_steps, &planner, timeout, &provider,
+                store.as_ref(),
+                &world,
+                &goal,
+                max_steps,
+                &planner,
+                timeout,
+                &provider,
             )
             .await
         }
-        Commands::Verify { world, proof_type } => cmd_verify(&store, &world, &proof_type).await,
+        Commands::Verify { world, proof_type } => {
+            cmd_verify(store.as_ref(), &world, &proof_type).await
+        }
         Commands::Health { provider } => cmd_health(&provider).await,
-        Commands::Serve { bind } => cmd_serve(&cli.state_dir, &bind).await,
+        Commands::Serve { .. } => unreachable!("serve command handled before store initialization"),
     }
+}
+
+fn state_store_kind(
+    state_dir: &Path,
+    state_backend: StateBackend,
+    state_db_path: Option<&Path>,
+) -> StateStoreKind {
+    match state_backend {
+        StateBackend::File => StateStoreKind::File(state_dir.to_path_buf()),
+        StateBackend::Sqlite => StateStoreKind::Sqlite(
+            state_db_path
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| state_dir.join("worldforge.db")),
+        ),
+    }
+}
+
+async fn open_state_store(cli: &Cli) -> Result<DynStateStore> {
+    state_store_kind(
+        &cli.state_dir,
+        cli.state_backend,
+        cli.state_db_path.as_deref(),
+    )
+    .open()
+    .await
+    .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 fn auto_detect_registry() -> ProviderRegistry {
@@ -336,7 +408,11 @@ fn require_provider<'a>(
     })
 }
 
-async fn cmd_create(store: &FileStateStore, prompt: &str, provider: &str) -> Result<()> {
+async fn cmd_create(
+    store: &(impl StateStore + ?Sized),
+    prompt: &str,
+    provider: &str,
+) -> Result<()> {
     let registry = auto_detect_registry();
     require_provider(&registry, provider).context("failed to create world")?;
     let state = WorldState::new(prompt, provider);
@@ -351,7 +427,7 @@ async fn cmd_create(store: &FileStateStore, prompt: &str, provider: &str) -> Res
 }
 
 async fn cmd_predict(
-    store: &FileStateStore,
+    store: &(impl StateStore + ?Sized),
     world_id: &str,
     action_str: &str,
     steps: u32,
@@ -440,7 +516,7 @@ async fn cmd_generate(
 }
 
 async fn cmd_reason(
-    store: &FileStateStore,
+    store: &(impl StateStore + ?Sized),
     world_id: &str,
     query: &str,
     provider: Option<&str>,
@@ -473,12 +549,7 @@ async fn cmd_reason(
     Ok(())
 }
 
-async fn cmd_list(store: &FileStateStore) -> Result<()> {
-    // Ensure directory exists
-    if !store.path.exists() {
-        println!("No worlds found.");
-        return Ok(());
-    }
+async fn cmd_list(store: &(impl StateStore + ?Sized)) -> Result<()> {
     let ids = store.list().await.map_err(|e| anyhow::anyhow!("{e}"))?;
     if ids.is_empty() {
         println!("No worlds found.");
@@ -501,7 +572,7 @@ async fn cmd_list(store: &FileStateStore) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_show(store: &FileStateStore, world_id: &str) -> Result<()> {
+async fn cmd_show(store: &(impl StateStore + ?Sized), world_id: &str) -> Result<()> {
     let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
     let state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
     println!("World: {}", state.id);
@@ -521,7 +592,7 @@ async fn cmd_show(store: &FileStateStore, world_id: &str) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_delete(store: &FileStateStore, world_id: &str) -> Result<()> {
+async fn cmd_delete(store: &(impl StateStore + ?Sized), world_id: &str) -> Result<()> {
     let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
     store
         .delete(&id)
@@ -589,7 +660,7 @@ async fn cmd_eval(suite_name: &str, providers_str: &str) -> Result<()> {
 }
 
 async fn cmd_compare(
-    store: &FileStateStore,
+    store: &(impl StateStore + ?Sized),
     world_id: &str,
     action_str: &str,
     providers_str: &str,
@@ -632,7 +703,7 @@ async fn cmd_compare(
 
 #[allow(clippy::too_many_arguments)]
 async fn cmd_plan(
-    store: &FileStateStore,
+    store: &(impl StateStore + ?Sized),
     world_id: &str,
     goal: &str,
     max_steps: u32,
@@ -705,7 +776,11 @@ async fn cmd_plan(
     Ok(())
 }
 
-async fn cmd_verify(store: &FileStateStore, world_id: &str, proof_type: &str) -> Result<()> {
+async fn cmd_verify(
+    store: &(impl StateStore + ?Sized),
+    world_id: &str,
+    proof_type: &str,
+) -> Result<()> {
     let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
     let state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -833,11 +908,18 @@ async fn cmd_health(provider_name: &str) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_serve(state_dir: &Path, bind: &str) -> Result<()> {
+async fn cmd_serve(
+    state_dir: &Path,
+    state_backend: StateBackend,
+    state_db_path: Option<&Path>,
+    bind: &str,
+) -> Result<()> {
     let registry = Arc::new(auto_detect_registry());
     let config = worldforge_server::ServerConfig {
         bind_address: bind.to_string(),
         state_dir: state_dir.display().to_string(),
+        state_backend: state_backend.as_str().to_string(),
+        state_db_path: state_db_path.map(|path| path.display().to_string()),
     };
 
     worldforge_server::serve(config, registry)
@@ -976,10 +1058,39 @@ mod tests {
         .unwrap();
 
         assert_eq!(cli.state_dir, PathBuf::from(".wf-test"));
+        assert_eq!(cli.state_backend, StateBackend::File);
         match cli.command {
             Commands::Serve { bind } => assert_eq!(bind, "127.0.0.1:9000"),
             _ => panic!("expected Serve"),
         }
+    }
+
+    #[test]
+    fn test_cli_parse_sqlite_backend() {
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "--state-backend",
+            "sqlite",
+            "--state-db-path",
+            "/tmp/worldforge/state.db",
+            "list",
+        ])
+        .unwrap();
+
+        assert_eq!(cli.state_backend, StateBackend::Sqlite);
+        assert_eq!(
+            cli.state_db_path,
+            Some(PathBuf::from("/tmp/worldforge/state.db"))
+        );
+        assert!(matches!(cli.command, Commands::List));
+    }
+
+    #[test]
+    fn test_state_store_kind_defaults_sqlite_path_under_state_dir() {
+        assert_eq!(
+            state_store_kind(Path::new(".wf"), StateBackend::Sqlite, None),
+            StateStoreKind::Sqlite(PathBuf::from(".wf/worldforge.db"))
+        );
     }
 
     #[test]
