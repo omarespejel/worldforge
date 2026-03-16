@@ -71,6 +71,11 @@ prediction_2 = world.predict(action=plan.actions[0])
 
 # Compare predictions across providers
 comparison = wf.compare([prediction, prediction_2])
+
+# Persist Python-managed worlds with either backend
+wf = WorldForge(state_backend="sqlite", state_db_path=".worldforge/worldforge.db")
+wf.save_world(world)
+same_world = wf.load_world(world.id)
 ```
 
 ## Architecture
@@ -187,7 +192,7 @@ reasoning are now exposed across the CLI, REST server, and Python bindings as
 well, with REST requests defaulting to each stored world's configured provider
 instead of hard-coding `mock`. File-backed and SQLite-backed world persistence
 are both supported through the shared `StateStore` abstraction across the core,
-CLI, and REST server. Cosmos and Runway adapters have API wiring in place,
+CLI, REST server, and Python bindings. Cosmos and Runway adapters have API wiring in place,
 while Genie remains a research-preview stub pending public access.
 
 ## License

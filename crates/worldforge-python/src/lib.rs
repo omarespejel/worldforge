@@ -5,6 +5,7 @@
 //! Exposes core types, scene management, and the main WorldForge
 //! orchestrator to Python via PyO3.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use pyo3::prelude::*;
@@ -12,7 +13,7 @@ use pyo3::prelude::*;
 use worldforge_core::prediction::{PlannerType, PredictionConfig};
 use worldforge_core::provider::{GenerationConfig, GenerationPrompt};
 use worldforge_core::scene::SceneObject;
-use worldforge_core::state::WorldState;
+use worldforge_core::state::{DynStateStore, StateStoreKind, WorldState};
 use worldforge_core::types::{BBox, Position, Rotation, Velocity, VideoClip};
 use worldforge_verify::ZkVerifier;
 
@@ -24,6 +25,36 @@ fn resolve_provider_name<'a>(state: &'a WorldState, provider: Option<&'a str>) -
     provider
         .filter(|name| !name.is_empty())
         .unwrap_or(state.metadata.created_by.as_str())
+}
+
+fn new_runtime() -> PyResult<tokio::runtime::Runtime> {
+    tokio::runtime::Runtime::new().map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("failed to create runtime: {e}"))
+    })
+}
+
+fn parse_world_id(world_id: &str) -> PyResult<uuid::Uuid> {
+    world_id
+        .parse()
+        .map_err(|_| pyo3::exceptions::PyValueError::new_err("invalid world ID (must be UUID)"))
+}
+
+fn state_store_kind(
+    state_backend: &str,
+    state_dir: &str,
+    state_db_path: Option<&str>,
+) -> PyResult<StateStoreKind> {
+    match state_backend {
+        "file" => Ok(StateStoreKind::File(state_dir.into())),
+        "sqlite" => Ok(StateStoreKind::Sqlite(
+            state_db_path
+                .map(Into::into)
+                .unwrap_or_else(|| Path::new(state_dir).join("worldforge.db")),
+        )),
+        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "unknown state backend: {other}. Available: file, sqlite"
+        ))),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1060,18 +1091,25 @@ impl PyGuardrail {
 #[pyclass(name = "WorldForge")]
 pub struct PyWorldForge {
     inner: worldforge_core::WorldForge,
+    store: DynStateStore,
 }
 
 #[pymethods]
 impl PyWorldForge {
     /// Create a new WorldForge instance with auto-detected providers.
     #[new]
-    fn new() -> Self {
+    #[pyo3(signature = (state_backend="file", state_dir=".worldforge", state_db_path=None))]
+    fn new(state_backend: &str, state_dir: &str, state_db_path: Option<&str>) -> PyResult<Self> {
+        let store_kind = state_store_kind(state_backend, state_dir, state_db_path)?;
+        let rt = new_runtime()?;
+        let store = rt.block_on(store_kind.open()).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("failed to open state store: {e}"))
+        })?;
         let mut wf = worldforge_core::WorldForge::new();
         for provider in worldforge_providers::auto_detect().into_providers() {
             let _ = wf.register_provider(provider);
         }
-        Self { inner: wf }
+        Ok(Self { inner: wf, store })
     }
 
     /// List all registered provider names.
@@ -1092,6 +1130,44 @@ impl PyWorldForge {
         Ok(PyWorld {
             state: world.current_state().clone(),
         })
+    }
+
+    /// Persist a world snapshot to the configured state store.
+    fn save_world(&self, world: &PyWorld) -> PyResult<String> {
+        let rt = new_runtime()?;
+        rt.block_on(self.store.save(&world.state)).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("failed to save world: {e}"))
+        })?;
+        Ok(world.state.id.to_string())
+    }
+
+    /// Load a world snapshot from the configured state store.
+    fn load_world(&self, world_id: &str) -> PyResult<PyWorld> {
+        let id = parse_world_id(world_id)?;
+        let rt = new_runtime()?;
+        let state = rt.block_on(self.store.load(&id)).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("failed to load world: {e}"))
+        })?;
+        Ok(PyWorld { state })
+    }
+
+    /// List all persisted world IDs in the configured state store.
+    fn list_worlds(&self) -> PyResult<Vec<String>> {
+        let rt = new_runtime()?;
+        let ids = rt.block_on(self.store.list()).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("failed to list worlds: {e}"))
+        })?;
+        Ok(ids.into_iter().map(|id| id.to_string()).collect())
+    }
+
+    /// Delete a persisted world snapshot by ID.
+    fn delete_world(&self, world_id: &str) -> PyResult<()> {
+        let id = parse_world_id(world_id)?;
+        let rt = new_runtime()?;
+        rt.block_on(self.store.delete(&id)).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("failed to delete world: {e}"))
+        })?;
+        Ok(())
     }
 
     /// Generate a video clip directly from a prompt with a specific provider.
@@ -1481,6 +1557,10 @@ fn worldforge(m: &Bound<'_, PyModule>) -> PyResult<()> {
 mod tests {
     use super::*;
 
+    fn test_worldforge() -> PyWorldForge {
+        PyWorldForge::new("file", ".worldforge-python-tests", None).unwrap()
+    }
+
     #[test]
     fn test_position_create() {
         let pos = PyPosition::new(1.0, 2.0, 3.0);
@@ -1778,14 +1858,14 @@ mod tests {
 
     #[test]
     fn test_worldforge_create() {
-        let wf = PyWorldForge::new();
+        let wf = test_worldforge();
         let providers = wf.providers();
         assert!(providers.contains(&"mock".to_string()));
     }
 
     #[test]
     fn test_worldforge_create_world() {
-        let wf = PyWorldForge::new();
+        let wf = test_worldforge();
         let world = wf.create_world("test_world", "mock").unwrap();
         assert_eq!(world.name(), "test_world");
         assert_eq!(world.object_count(), 0);
@@ -1793,21 +1873,21 @@ mod tests {
 
     #[test]
     fn test_worldforge_create_world_unknown_provider() {
-        let wf = PyWorldForge::new();
+        let wf = test_worldforge();
         let result = wf.create_world("test", "nonexistent");
         assert!(result.is_err());
     }
 
     #[test]
     fn test_worldforge_repr() {
-        let wf = PyWorldForge::new();
+        let wf = test_worldforge();
         let repr = wf.__repr__();
         assert!(repr.contains("WorldForge"));
     }
 
     #[test]
     fn test_worldforge_generate() {
-        let wf = PyWorldForge::new();
+        let wf = test_worldforge();
         let clip = wf
             .generate(
                 "a spinning cube",
@@ -1827,6 +1907,50 @@ mod tests {
         assert_eq!(clip.fps(), 12.0);
         assert_eq!(clip.frame_count(), 0);
         assert!(clip.__repr__().contains("VideoClip"));
+    }
+
+    #[test]
+    fn test_worldforge_file_store_roundtrip() {
+        let state_dir =
+            std::env::temp_dir().join(format!("wf-python-file-{}", uuid::Uuid::new_v4()));
+        let wf = PyWorldForge::new("file", state_dir.to_str().unwrap(), None).unwrap();
+        let world = wf.create_world("persisted_world", "mock").unwrap();
+        let world_id = wf.save_world(&world).unwrap();
+
+        let listed = wf.list_worlds().unwrap();
+        assert!(listed.contains(&world_id));
+
+        let loaded = wf.load_world(&world_id).unwrap();
+        assert_eq!(loaded.name(), "persisted_world");
+
+        wf.delete_world(&world_id).unwrap();
+        assert!(wf.load_world(&world_id).is_err());
+
+        let _ = std::fs::remove_dir_all(&state_dir);
+    }
+
+    #[test]
+    fn test_worldforge_sqlite_store_roundtrip() {
+        let state_dir =
+            std::env::temp_dir().join(format!("wf-python-sqlite-{}", uuid::Uuid::new_v4()));
+        let state_db_path = state_dir.join("worldforge.db");
+        let wf = PyWorldForge::new(
+            "sqlite",
+            state_dir.to_str().unwrap(),
+            Some(state_db_path.to_str().unwrap()),
+        )
+        .unwrap();
+        let world = wf.create_world("sqlite_world", "mock").unwrap();
+        let world_id = wf.save_world(&world).unwrap();
+
+        let loaded = wf.load_world(&world_id).unwrap();
+        assert_eq!(loaded.name(), "sqlite_world");
+        assert_eq!(wf.list_worlds().unwrap(), vec![world_id.clone()]);
+
+        wf.delete_world(&world_id).unwrap();
+        assert!(wf.list_worlds().unwrap().is_empty());
+
+        let _ = std::fs::remove_dir_all(&state_dir);
     }
 
     // --- Planning tests ---

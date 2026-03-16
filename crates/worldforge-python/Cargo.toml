@@ -17,7 +17,7 @@ extension-module = ["pyo3/extension-module"]
 
 [dependencies]
 pyo3 = { workspace = true }
-worldforge-core = { path = "../worldforge-core" }
+worldforge-core = { path = "../worldforge-core", features = ["sqlite"] }
 worldforge-providers = { path = "../worldforge-providers" }
 worldforge-eval = { path = "../worldforge-eval" }
 worldforge-verify = { path = "../worldforge-verify" }
