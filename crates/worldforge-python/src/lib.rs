@@ -949,9 +949,11 @@ fn run_eval(suite_name: &str) -> PyResult<Vec<PyEvalResult>> {
         "manipulation" => worldforge_eval::EvalSuite::manipulation_standard(),
         "spatial" => worldforge_eval::EvalSuite::spatial_reasoning(),
         "comprehensive" => worldforge_eval::EvalSuite::comprehensive(),
-        other => return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        other => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
             "unknown eval suite: {other}. Available: physics, manipulation, spatial, comprehensive"
-        ))),
+        )))
+        }
     };
 
     let rt = tokio::runtime::Runtime::new().map_err(|e| {

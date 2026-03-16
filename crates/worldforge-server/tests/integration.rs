@@ -86,14 +86,14 @@ async fn test_multiple_worlds_persistence() {
 
     let ids: Vec<uuid::Uuid> = (0..5)
         .map(|i| {
-            let state = worldforge_core::state::WorldState::new(&format!("world_{i}"), "mock");
+            let state = worldforge_core::state::WorldState::new(format!("world_{i}"), "mock");
             state.id
         })
         .collect();
 
     // Save all worlds
     for (i, id) in ids.iter().enumerate() {
-        let mut state = worldforge_core::state::WorldState::new(&format!("world_{i}"), "mock");
+        let mut state = worldforge_core::state::WorldState::new(format!("world_{i}"), "mock");
         // Override the auto-generated ID so we can track it
         state.id = *id;
         store.save(&state).await.unwrap();

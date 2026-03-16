@@ -98,7 +98,7 @@ mod tests {
     fn test_auto_detect_always_has_mock() {
         let registry = auto_detect();
         assert!(registry.get("mock").is_ok());
-        assert!(registry.len() >= 1);
+        assert!(!registry.is_empty());
     }
 
     #[test]

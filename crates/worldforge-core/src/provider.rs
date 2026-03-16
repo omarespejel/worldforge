@@ -350,6 +350,6 @@ mod tests {
         };
         let json = serde_json::to_string(&caps).unwrap();
         let caps2: ProviderCapabilities = serde_json::from_str(&json).unwrap();
-        assert_eq!(caps2.predict, true);
+        assert!(caps2.predict);
     }
 }

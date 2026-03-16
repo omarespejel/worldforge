@@ -26,7 +26,7 @@ fn test_provider_capabilities_querying() {
     assert!(caps.predict);
     assert!(caps.generate);
     assert!(caps.action_conditioned);
-    assert!(caps.supported_action_spaces.len() >= 1);
+    assert!(!caps.supported_action_spaces.is_empty());
 }
 
 #[test]
@@ -138,7 +138,7 @@ async fn test_provider_cost_estimation() {
     });
     // Mock provider should have zero or minimal cost
     assert!(cost.usd >= 0.0);
-    assert!(cost.estimated_latency_ms >= 0);
+    assert_eq!(cost.estimated_latency_ms, mock.latency_ms);
 }
 
 #[test]
