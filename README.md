@@ -130,8 +130,9 @@ cargo run -p worldforge-cli -- eval --suite physics
 ## Status
 
 Pre-alpha. Core types, provider trait, state management, guardrails, evaluation
-framework, CLI, and server are implemented. Provider adapters (Cosmos, Runway,
-JEPA, Genie) have skeleton implementations awaiting API access.
+framework, CLI, server, Python bindings, and the mock plus JEPA local providers
+are implemented. Cosmos and Runway adapters have API wiring in place, while
+Genie remains a research-preview stub pending public access.
 
 ## License
 

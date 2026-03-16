@@ -8,7 +8,7 @@
 //! - [`mock`] — Deterministic mock for testing and development
 //! - [`cosmos`] — NVIDIA Cosmos (Predict, Transfer, Reason, Embed)
 //! - [`runway`] — Runway GWM (Worlds, Robotics, Avatars)
-//! - [`jepa`] — Meta JEPA (local inference, ZK-compatible)
+//! - [`jepa`] — Meta JEPA (local deterministic inference, ZK-compatible)
 //! - [`genie`] — Google Genie (research preview, stubbed)
 
 pub mod cosmos;
@@ -19,7 +19,7 @@ pub mod runway;
 
 pub use cosmos::CosmosProvider;
 pub use genie::GenieProvider;
-pub use jepa::JepaProvider;
+pub use jepa::{JepaBackend, JepaModelManifest, JepaProvider};
 pub use mock::MockProvider;
 pub use runway::RunwayProvider;
 
@@ -32,7 +32,8 @@ use worldforge_core::provider::ProviderRegistry;
 /// Checks for:
 /// - `NVIDIA_API_KEY` → registers `CosmosProvider` (Predict 2.5)
 /// - `RUNWAY_API_SECRET` → registers `RunwayProvider` (GWM-1 Worlds)
-/// - `JEPA_MODEL_PATH` → registers `JepaProvider` (Burn backend)
+/// - `JEPA_MODEL_PATH` → registers `JepaProvider`
+/// - `JEPA_BACKEND` → optional backend override (`burn`, `pytorch`, `onnx`, `safetensors`)
 /// - `GENIE_API_KEY` → registers `GenieProvider` (Genie 3)
 ///
 /// A `MockProvider` is always registered for testing.
@@ -76,7 +77,11 @@ pub fn auto_detect() -> ProviderRegistry {
     // JEPA: requires JEPA_MODEL_PATH pointing to model weights
     if let Ok(model_path) = std::env::var("JEPA_MODEL_PATH") {
         let path = PathBuf::from(&model_path);
-        registry.register(Box::new(JepaProvider::new(path, jepa::JepaBackend::Burn)));
+        let backend = std::env::var("JEPA_BACKEND")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(jepa::JepaBackend::Burn);
+        registry.register(Box::new(JepaProvider::new(path, backend)));
     }
 
     // Genie: requires GENIE_API_KEY (research preview)
