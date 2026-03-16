@@ -61,6 +61,7 @@ score = prediction.physics_score()  # 0.0 - 1.0
 plan = world.plan(
     goal="The red mug is inside the dishwasher",
     max_steps=20,
+    planner="cem",
     guardrails=["no_collisions", "mug_stays_upright"]
 )
 
@@ -125,6 +126,7 @@ cargo fmt
 cargo run -p worldforge-cli -- create --prompt "A kitchen with a mug"
 cargo run -p worldforge-cli -- list
 cargo run -p worldforge-cli -- predict --world <id> --action "move 1 0 0" --provider runway --fallback-provider mock --timeout-ms 500
+cargo run -p worldforge-cli -- plan --world <id> --goal "spawn cube" --planner cem
 cargo run -p worldforge-cli -- eval --suite physics
 cargo run -p worldforge-cli -- serve --bind 127.0.0.1:8080
 
@@ -153,6 +155,10 @@ curl -X POST http://127.0.0.1:8080/v1/worlds \
   -H 'content-type: application/json' \
   -d '{"name":"Kitchen counter","provider":"mock"}'
 
+curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/plan \
+  -H 'content-type: application/json' \
+  -d '{"goal":"spawn cube","provider":"mock","planner":"cem","population_size":12,"elite_fraction":0.25,"num_iterations":3}'
+
 curl http://127.0.0.1:8080/v1/providers
 ```
 
@@ -162,8 +168,10 @@ Pre-alpha. Core types, provider trait, state management, guardrails, evaluation
 framework, CLI, server, Python bindings, and the mock plus JEPA local providers
 are implemented. Prediction fallback and timeout handling are wired through the
 core orchestration layer and exposed in the CLI, REST server, and Python API.
-Cosmos and Runway adapters have API wiring in place, while Genie remains a
-research-preview stub pending public access.
+Planning now supports distinct sampling, CEM, MPC, gradient, and provider-native
+execution paths in the core, with planner selection exposed across the CLI,
+REST server, and Python bindings. Cosmos and Runway adapters have API wiring in
+place, while Genie remains a research-preview stub pending public access.
 
 ## License
 

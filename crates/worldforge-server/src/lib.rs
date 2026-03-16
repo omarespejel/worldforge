@@ -14,7 +14,7 @@ use tokio::sync::RwLock;
 
 use worldforge_core::action::Action;
 use worldforge_core::error::WorldForgeError;
-use worldforge_core::prediction::PredictionConfig;
+use worldforge_core::prediction::{PlannerType, PredictionConfig};
 use worldforge_core::provider::ProviderRegistry;
 use worldforge_core::state::{FileStateStore, StateStore, WorldState};
 use worldforge_core::types::WorldId;
@@ -119,10 +119,69 @@ struct PlanRequest {
     max_steps: u32,
     #[serde(default = "default_provider")]
     provider: String,
+    #[serde(default = "default_timeout_seconds")]
+    timeout_seconds: f64,
+    #[serde(default = "default_planner_name")]
+    planner: String,
+    #[serde(default)]
+    num_samples: Option<u32>,
+    #[serde(default)]
+    top_k: Option<u32>,
+    #[serde(default)]
+    population_size: Option<u32>,
+    #[serde(default)]
+    elite_fraction: Option<f32>,
+    #[serde(default)]
+    num_iterations: Option<u32>,
+    #[serde(default)]
+    learning_rate: Option<f32>,
+    #[serde(default)]
+    horizon: Option<u32>,
+    #[serde(default)]
+    replanning_interval: Option<u32>,
 }
 
 fn default_max_steps() -> u32 {
     10
+}
+
+fn default_timeout_seconds() -> f64 {
+    30.0
+}
+
+fn default_planner_name() -> String {
+    "sampling".to_string()
+}
+
+fn planner_from_request(request: &PlanRequest) -> std::result::Result<PlannerType, String> {
+    match request.planner.as_str() {
+        "sampling" => Ok(PlannerType::Sampling {
+            num_samples: request.num_samples.unwrap_or(32).max(1),
+            top_k: request.top_k.unwrap_or(5).max(1),
+        }),
+        "cem" => Ok(PlannerType::CEM {
+            population_size: request.population_size.unwrap_or(64).max(4),
+            elite_fraction: request.elite_fraction.unwrap_or(0.2).clamp(0.05, 1.0),
+            num_iterations: request.num_iterations.unwrap_or(5).max(1),
+        }),
+        "mpc" => Ok(PlannerType::MPC {
+            horizon: request
+                .horizon
+                .unwrap_or(request.max_steps)
+                .max(1)
+                .min(request.max_steps.max(1)),
+            num_samples: request.num_samples.unwrap_or(32).max(4),
+            replanning_interval: request.replanning_interval.unwrap_or(1).max(1),
+        }),
+        "gradient" => Ok(PlannerType::Gradient {
+            learning_rate: request.learning_rate.unwrap_or(0.25).clamp(0.01, 1.0),
+            num_iterations: request.num_iterations.unwrap_or(24).max(1),
+        }),
+        "provider-native" | "provider_native" | "native" => Ok(PlannerType::ProviderNative),
+        other => Err(format!(
+            "unknown planner: {other}. Available: sampling, cem, mpc, gradient, provider-native"
+        )),
+    }
 }
 
 /// JSON request body for evaluation.
@@ -421,6 +480,10 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                         if let Err(e) = state.registry.get(&req.provider) {
                             return (404, error_response(&e.to_string()));
                         }
+                        let planner = match planner_from_request(&req) {
+                            Ok(planner) => planner,
+                            Err(error) => return (400, error_response(&error)),
+                        };
                         let registry = Arc::clone(&state.registry);
                         let world =
                             worldforge_core::world::World::new(ws.clone(), &req.provider, registry);
@@ -431,11 +494,8 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                             ),
                             max_steps: req.max_steps,
                             guardrails: Vec::new(),
-                            planner: worldforge_core::prediction::PlannerType::Sampling {
-                                num_samples: 10,
-                                top_k: 3,
-                            },
-                            timeout_seconds: 30.0,
+                            planner,
+                            timeout_seconds: req.timeout_seconds,
                         };
                         match world.plan(&plan_req).await {
                             Ok(plan) => (200, ApiResponse::ok(plan)),

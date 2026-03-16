@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use pyo3::prelude::*;
 
-use worldforge_core::prediction::PredictionConfig;
+use worldforge_core::prediction::{PlannerType, PredictionConfig};
 use worldforge_core::scene::SceneObject;
 use worldforge_core::state::WorldState;
 use worldforge_core::types::{BBox, Position, Rotation, Velocity};
@@ -23,6 +23,45 @@ fn resolve_provider_name<'a>(state: &'a WorldState, provider: Option<&'a str>) -
     provider
         .filter(|name| !name.is_empty())
         .unwrap_or(state.metadata.created_by.as_str())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn planner_from_args(
+    planner: &str,
+    max_steps: u32,
+    num_samples: Option<u32>,
+    top_k: Option<u32>,
+    population_size: Option<u32>,
+    elite_fraction: Option<f32>,
+    num_iterations: Option<u32>,
+    learning_rate: Option<f32>,
+    horizon: Option<u32>,
+    replanning_interval: Option<u32>,
+) -> PyResult<PlannerType> {
+    match planner {
+        "sampling" => Ok(PlannerType::Sampling {
+            num_samples: num_samples.unwrap_or(32).max(1),
+            top_k: top_k.unwrap_or(5).max(1),
+        }),
+        "cem" => Ok(PlannerType::CEM {
+            population_size: population_size.unwrap_or(64).max(4),
+            elite_fraction: elite_fraction.unwrap_or(0.2).clamp(0.05, 1.0),
+            num_iterations: num_iterations.unwrap_or(5).max(1),
+        }),
+        "mpc" => Ok(PlannerType::MPC {
+            horizon: horizon.unwrap_or(max_steps).max(1).min(max_steps.max(1)),
+            num_samples: num_samples.unwrap_or(32).max(4),
+            replanning_interval: replanning_interval.unwrap_or(1).max(1),
+        }),
+        "gradient" => Ok(PlannerType::Gradient {
+            learning_rate: learning_rate.unwrap_or(0.25).clamp(0.01, 1.0),
+            num_iterations: num_iterations.unwrap_or(24).max(1),
+        }),
+        "provider-native" | "provider_native" | "native" => Ok(PlannerType::ProviderNative),
+        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "unknown planner: {other}. Available: sampling, cem, mpc, gradient, provider-native"
+        ))),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -507,13 +546,23 @@ impl PyWorld {
     }
 
     /// Plan a sequence of actions to achieve a natural-language goal.
-    #[pyo3(signature = (goal, max_steps=10, timeout_seconds=30.0, provider=None))]
+    #[pyo3(signature = (goal, max_steps=10, timeout_seconds=30.0, provider=None, planner="sampling", num_samples=None, top_k=None, population_size=None, elite_fraction=None, num_iterations=None, learning_rate=None, horizon=None, replanning_interval=None))]
+    #[allow(clippy::too_many_arguments)]
     fn plan(
         &self,
         goal: &str,
         max_steps: u32,
         timeout_seconds: f64,
         provider: Option<&str>,
+        planner: &str,
+        num_samples: Option<u32>,
+        top_k: Option<u32>,
+        population_size: Option<u32>,
+        elite_fraction: Option<f32>,
+        num_iterations: Option<u32>,
+        learning_rate: Option<f32>,
+        horizon: Option<u32>,
+        replanning_interval: Option<u32>,
     ) -> PyResult<PyPlan> {
         let rt = tokio::runtime::Runtime::new().map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("failed to create runtime: {e}"))
@@ -525,15 +574,24 @@ impl PyWorld {
             provider_name,
             auto_detect_registry(),
         );
+        let planner = planner_from_args(
+            planner,
+            max_steps,
+            num_samples,
+            top_k,
+            population_size,
+            elite_fraction,
+            num_iterations,
+            learning_rate,
+            horizon,
+            replanning_interval,
+        )?;
         let request = worldforge_core::prediction::PlanRequest {
             current_state: self.state.clone(),
             goal: worldforge_core::prediction::PlanGoal::Description(goal.to_string()),
             max_steps,
             guardrails: Vec::new(),
-            planner: worldforge_core::prediction::PlannerType::Sampling {
-                num_samples: 32,
-                top_k: 5,
-            },
+            planner,
             timeout_seconds,
         };
 
@@ -1003,18 +1061,41 @@ impl PyPlan {
 
 /// Plan a sequence of actions in a world.
 ///
-/// Uses sampling-based planning to find an action sequence that
-/// achieves the goal description.
+/// Supports sampling, CEM, MPC, gradient, and provider-native planning.
 #[pyfunction]
-#[pyo3(signature = (world, goal, max_steps=10, timeout_seconds=30.0, provider="mock"))]
+#[pyo3(signature = (world, goal, max_steps=10, timeout_seconds=30.0, provider="mock", planner="sampling", num_samples=None, top_k=None, population_size=None, elite_fraction=None, num_iterations=None, learning_rate=None, horizon=None, replanning_interval=None))]
+#[allow(clippy::too_many_arguments)]
 fn plan(
     world: &PyWorld,
     goal: &str,
     max_steps: u32,
     timeout_seconds: f64,
     provider: &str,
+    planner: &str,
+    num_samples: Option<u32>,
+    top_k: Option<u32>,
+    population_size: Option<u32>,
+    elite_fraction: Option<f32>,
+    num_iterations: Option<u32>,
+    learning_rate: Option<f32>,
+    horizon: Option<u32>,
+    replanning_interval: Option<u32>,
 ) -> PyResult<PyPlan> {
-    world.plan(goal, max_steps, timeout_seconds, Some(provider))
+    world.plan(
+        goal,
+        max_steps,
+        timeout_seconds,
+        Some(provider),
+        planner,
+        num_samples,
+        top_k,
+        population_size,
+        elite_fraction,
+        num_iterations,
+        learning_rate,
+        horizon,
+        replanning_interval,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1561,7 +1642,23 @@ mod tests {
     #[test]
     fn test_plan_world() {
         let world = PyWorld::new("plan_test", "mock");
-        let plan = world.plan("move forward", 5, 10.0, Some("mock")).unwrap();
+        let plan = world
+            .plan(
+                "move forward",
+                5,
+                10.0,
+                Some("mock"),
+                "sampling",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
         assert!(plan.action_count() > 0);
         assert!(plan.success_probability() >= 0.0);
         assert!(plan.planning_time_ms() < 30_000);
@@ -1570,7 +1667,23 @@ mod tests {
     #[test]
     fn test_plan_json_roundtrip() {
         let world = PyWorld::new("plan_json", "mock");
-        let p = plan(&world, "reach goal", 5, 10.0, "mock").unwrap();
+        let p = plan(
+            &world,
+            "reach goal",
+            5,
+            10.0,
+            "mock",
+            "sampling",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         let json = p.to_json().unwrap();
         let p2 = PyPlan::from_json(&json).unwrap();
         assert_eq!(p2.action_count(), p.action_count());
@@ -1579,9 +1692,38 @@ mod tests {
     #[test]
     fn test_plan_repr() {
         let world = PyWorld::new("repr_test", "mock");
-        let p = plan(&world, "go", 5, 10.0, "mock").unwrap();
+        let p = plan(
+            &world, "go", 5, 10.0, "mock", "sampling", None, None, None, None, None, None, None,
+            None,
+        )
+        .unwrap();
         let repr = p.__repr__();
         assert!(repr.contains("Plan"));
+    }
+
+    #[test]
+    fn test_plan_world_with_cem() {
+        let world = PyWorld::new("plan_cem", "mock");
+        let plan = world
+            .plan(
+                "spawn cube",
+                4,
+                10.0,
+                Some("mock"),
+                "cem",
+                None,
+                None,
+                Some(16),
+                Some(0.25),
+                Some(3),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert!(plan.action_count() > 0);
+        assert_eq!(plan.iterations_used(), 3);
     }
 
     // --- Evaluation tests ---

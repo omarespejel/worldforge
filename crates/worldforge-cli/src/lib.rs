@@ -506,7 +506,10 @@ async fn cmd_plan(
             learning_rate: 0.01,
             num_iterations: 100,
         },
-        other => anyhow::bail!("unknown planner: {other}. Available: sampling, cem, mpc, gradient"),
+        "provider-native" | "provider_native" | "native" => PlannerType::ProviderNative,
+        other => anyhow::bail!(
+            "unknown planner: {other}. Available: sampling, cem, mpc, gradient, provider-native"
+        ),
     };
 
     let request = PlanRequest {

@@ -180,6 +180,41 @@ async fn test_live_http_predict_uses_fallback_provider() {
 }
 
 #[tokio::test]
+async fn test_live_http_plan_uses_requested_planner() {
+    let server = spawn_test_server().await;
+
+    let (status, create) = http_request(
+        server.address,
+        "POST",
+        "/v1/worlds",
+        r#"{"name":"plan_world","provider":"mock"}"#,
+    )
+    .await;
+    assert_eq!(status, 201);
+    let world_id = create["data"]["id"].as_str().unwrap().to_string();
+
+    let plan_body = r#"{
+        "goal":"spawn cube",
+        "provider":"mock",
+        "planner":"cem",
+        "population_size":12,
+        "elite_fraction":0.25,
+        "num_iterations":3
+    }"#;
+    let (status, plan) = http_request(
+        server.address,
+        "POST",
+        &format!("/v1/worlds/{world_id}/plan"),
+        plan_body,
+    )
+    .await;
+
+    assert_eq!(status, 200);
+    assert_eq!(plan["data"]["iterations_used"], 3);
+    assert!(!plan["data"]["actions"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn test_live_http_rejects_oversized_body() {
     let server = spawn_test_server().await;
     let request = "POST /v1/worlds HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 4194305\r\nConnection: close\r\n\r\n";

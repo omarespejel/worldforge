@@ -1,6 +1,6 @@
 <identity>
 WorldForge: Unified orchestration layer for world foundation models (WFMs).
-Rust core library with Python bindings (PyO3). Pre-alpha — most modules are stubs awaiting implementation per SPECIFICATION.md.
+Rust core library with Python bindings (PyO3). Pre-alpha — the workspace has implemented core orchestration, providers, eval, verification, CLI, server, and Python bindings, with ongoing depth work tracked against SPECIFICATION.md.
 </identity>
 
 <stack>
@@ -39,32 +39,30 @@ worldforge/
 ├── research/
 │   └── MARKET_INTELLIGENCE.md  # Market research (read-only context)
 ├── crates/
-│   ├── worldforge-core/        # Core library: types, traits, state management [IMPLEMENT HERE]
+│   ├── worldforge-core/        # Core library: types, traits, state management
 │   │   └── src/
-│   │       ├── lib.rs          # Crate root — WorldForge struct (stub)
-│   │       ├── types.rs        # Tensor, spatial, temporal, media types (stub)
-│   │       ├── world.rs        # World state management (stub)
-│   │       ├── action.rs       # Action type system (stub)
-│   │       ├── prediction.rs   # Prediction engine (stub)
-│   │       ├── provider.rs     # WorldModelProvider trait (stub)
-│   │       ├── scene.rs        # Scene graph (stub)
-│   │       ├── guardrail.rs    # Safety constraints (stub)
-│   │       ├── state.rs        # State persistence (stub)
-│   │       └── error.rs        # WorldForgeError enum (stub)
-│   ├── worldforge-providers/   # Provider adapters: Cosmos, GWM, JEPA, Genie [IMPLEMENT HERE]
-│   │   └── src/lib.rs          # (stub)
-│   ├── worldforge-eval/        # Evaluation framework [IMPLEMENT HERE]
-│   │   └── src/lib.rs          # (stub)
-│   ├── worldforge-verify/      # ZK verification — optional module [IMPLEMENT HERE]
-│   │   └── src/lib.rs          # (stub)
-│   ├── worldforge-server/      # REST API server [IMPLEMENT HERE]
-│   │   └── src/lib.rs          # (stub)
-│   └── worldforge-cli/         # CLI tool [IMPLEMENT HERE]
-│       └── src/lib.rs          # (stub)
+│   │       ├── lib.rs          # Crate root — WorldForge struct
+│   │       ├── types.rs        # Tensor, spatial, temporal, media types
+│   │       ├── world.rs        # World orchestration + planning
+│   │       ├── action.rs       # Action type system
+│   │       ├── prediction.rs   # Prediction engine + planning types
+│   │       ├── provider.rs     # WorldModelProvider trait + registry
+│   │       ├── scene.rs        # Scene graph
+│   │       ├── guardrail.rs    # Safety constraints
+│   │       ├── state.rs        # State persistence
+│   │       └── error.rs        # WorldForgeError enum
+│   ├── worldforge-providers/   # Provider adapters: Cosmos, GWM, JEPA, Genie
+│   │   └── src/lib.rs          # Auto-detection + adapter exports
+│   ├── worldforge-eval/        # Evaluation framework
+│   │   └── src/lib.rs          # Built-in suites + reports
+│   ├── worldforge-verify/      # ZK verification — optional module
+│   │   └── src/lib.rs          # Mock verifier + proof types
+│   ├── worldforge-server/      # REST API server
+│   │   └── src/lib.rs          # HTTP routing + persistence
+│   └── worldforge-cli/         # CLI tool
+│       └── src/lib.rs          # Command parsing + orchestration
 └── .codex/skills/              # Agentic skill files
 ```
-
-All `src/` files in crates are currently stubs (single doc comment line). Implementation should follow SPECIFICATION.md precisely.
 </structure>
 
 <commands>
