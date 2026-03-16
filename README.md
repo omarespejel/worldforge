@@ -125,6 +125,10 @@ cargo fmt
 cargo run -p worldforge-cli -- create --prompt "A kitchen with a mug"
 cargo run -p worldforge-cli -- list
 cargo run -p worldforge-cli -- eval --suite physics
+
+# Use auto-detected local JEPA weights from the CLI
+JEPA_MODEL_PATH=/path/to/v-jepa-2 cargo run -p worldforge-cli -- create --prompt "A lab bench" --provider jepa
+JEPA_MODEL_PATH=/path/to/v-jepa-2 cargo run -p worldforge-cli -- health jepa
 ```
 
 ## Status

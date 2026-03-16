@@ -11,12 +11,10 @@ use clap::{Parser, Subcommand};
 
 use worldforge_core::action::{Action, Weather};
 use worldforge_core::prediction::{PlanGoal, PlanRequest, PlannerType, PredictionConfig};
-use worldforge_core::provider::ProviderRegistry;
-use worldforge_core::state::{FileStateStore, StateStore};
+use worldforge_core::provider::{ProviderRegistry, WorldModelProvider};
+use worldforge_core::state::{FileStateStore, StateStore, WorldState};
 use worldforge_core::types::Position;
-use worldforge_core::WorldForge;
 use worldforge_eval::EvalSuite;
-use worldforge_providers::MockProvider;
 use worldforge_verify::{MockVerifier, ZkVerifier};
 
 /// WorldForge — orchestration layer for world foundation models.
@@ -149,29 +147,24 @@ pub async fn run() -> Result<()> {
     tracing_subscriber::fmt().init();
 
     let store = FileStateStore::new(&cli.state_dir);
-    let mut wf = WorldForge::new();
-
-    // Register available providers
-    wf.register_provider(Box::new(MockProvider::new()))
-        .context("failed to register mock provider")?;
 
     match cli.command {
-        Commands::Create { prompt, provider } => cmd_create(&wf, &store, &prompt, &provider).await,
+        Commands::Create { prompt, provider } => cmd_create(&store, &prompt, &provider).await,
         Commands::Predict {
             world,
             action,
             steps,
             provider,
-        } => cmd_predict(&wf, &store, &world, &action, steps, &provider).await,
+        } => cmd_predict(&store, &world, &action, steps, &provider).await,
         Commands::List => cmd_list(&store).await,
         Commands::Show { world } => cmd_show(&store, &world).await,
         Commands::Delete { world } => cmd_delete(&store, &world).await,
-        Commands::Eval { suite, providers } => cmd_eval(&wf, &suite, &providers).await,
+        Commands::Eval { suite, providers } => cmd_eval(&suite, &providers).await,
         Commands::Compare {
             world,
             action,
             providers,
-        } => cmd_compare(&wf, &store, &world, &action, &providers).await,
+        } => cmd_compare(&store, &world, &action, &providers).await,
         Commands::Plan {
             world,
             goal,
@@ -181,36 +174,65 @@ pub async fn run() -> Result<()> {
             provider,
         } => {
             cmd_plan(
-                &wf, &store, &world, &goal, max_steps, &planner, timeout, &provider,
+                &store, &world, &goal, max_steps, &planner, timeout, &provider,
             )
             .await
         }
         Commands::Verify { world, proof_type } => cmd_verify(&store, &world, &proof_type).await,
-        Commands::Health { provider } => cmd_health(&wf, &provider).await,
+        Commands::Health { provider } => cmd_health(&provider).await,
     }
 }
 
-async fn cmd_create(
-    wf: &WorldForge,
-    store: &FileStateStore,
-    prompt: &str,
+fn auto_detect_registry() -> ProviderRegistry {
+    worldforge_providers::auto_detect()
+}
+
+fn parse_provider_names(input: &str) -> Vec<String> {
+    let mut provider_names: Vec<String> = input
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(ToOwned::to_owned)
+        .collect();
+    if provider_names.is_empty() {
+        provider_names.push("mock".to_string());
+    }
+    provider_names
+}
+
+fn available_provider_names(registry: &ProviderRegistry) -> String {
+    let mut names: Vec<String> = registry.list().into_iter().map(str::to_string).collect();
+    names.sort();
+    names.join(", ")
+}
+
+fn require_provider<'a>(
+    registry: &'a ProviderRegistry,
     provider: &str,
-) -> Result<()> {
-    let world = wf
-        .create_world(prompt, provider)
-        .context("failed to create world")?;
+) -> Result<&'a dyn WorldModelProvider> {
+    registry.get(provider).map_err(|e| {
+        anyhow::anyhow!(
+            "{e}. Available providers: {}",
+            available_provider_names(registry)
+        )
+    })
+}
+
+async fn cmd_create(store: &FileStateStore, prompt: &str, provider: &str) -> Result<()> {
+    let registry = auto_detect_registry();
+    require_provider(&registry, provider).context("failed to create world")?;
+    let state = WorldState::new(prompt, provider);
     store
-        .save(world.current_state())
+        .save(&state)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    println!("Created world: {}", world.id());
+    println!("Created world: {}", state.id);
     println!("  Name: {prompt}");
     println!("  Provider: {provider}");
     Ok(())
 }
 
 async fn cmd_predict(
-    _wf: &WorldForge,
     store: &FileStateStore,
     world_id: &str,
     action_str: &str,
@@ -220,11 +242,8 @@ async fn cmd_predict(
     let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
     let state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    let registry = Arc::new({
-        let mut r = ProviderRegistry::new();
-        r.register(Box::new(MockProvider::new()));
-        r
-    });
+    let registry = Arc::new(auto_detect_registry());
+    require_provider(&registry, provider)?;
     let mut world = worldforge_core::world::World::new(state, provider, registry);
 
     let action = parse_action(action_str)?;
@@ -312,7 +331,7 @@ async fn cmd_delete(store: &FileStateStore, world_id: &str) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_eval(_wf: &WorldForge, suite_name: &str, _providers_str: &str) -> Result<()> {
+async fn cmd_eval(suite_name: &str, providers_str: &str) -> Result<()> {
     let suite = match suite_name {
         "physics" => EvalSuite::physics_standard(),
         "manipulation" => EvalSuite::manipulation_standard(),
@@ -323,8 +342,12 @@ async fn cmd_eval(_wf: &WorldForge, suite_name: &str, _providers_str: &str) -> R
         ),
     };
 
-    let mock = MockProvider::new();
-    let provider_list: Vec<&dyn worldforge_core::provider::WorldModelProvider> = vec![&mock];
+    let registry = auto_detect_registry();
+    let provider_names = parse_provider_names(providers_str);
+    let mut provider_list: Vec<&dyn WorldModelProvider> = Vec::new();
+    for provider_name in &provider_names {
+        provider_list.push(require_provider(&registry, provider_name)?);
+    }
 
     let report = suite
         .run(&provider_list)
@@ -366,7 +389,6 @@ async fn cmd_eval(_wf: &WorldForge, suite_name: &str, _providers_str: &str) -> R
 }
 
 async fn cmd_compare(
-    _wf: &WorldForge,
     store: &FileStateStore,
     world_id: &str,
     action_str: &str,
@@ -375,20 +397,18 @@ async fn cmd_compare(
     let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
     let state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    let registry = Arc::new({
-        let mut r = ProviderRegistry::new();
-        // Register mock providers with different names for comparison
-        for name in providers_str.split(',') {
-            r.register(Box::new(MockProvider::with_name(name.trim())));
-        }
-        r
-    });
+    let provider_names = parse_provider_names(providers_str);
+    let registry = Arc::new(auto_detect_registry());
+    for provider_name in &provider_names {
+        require_provider(&registry, provider_name)?;
+    }
 
-    let world = worldforge_core::world::World::new(state, "mock", registry);
+    let default_provider = provider_names.first().map(String::as_str).unwrap_or("mock");
+    let world = worldforge_core::world::World::new(state, default_provider, registry);
     let action = parse_action(action_str)?;
     let config = PredictionConfig::default();
 
-    let provider_names: Vec<&str> = providers_str.split(',').map(|s| s.trim()).collect();
+    let provider_names: Vec<&str> = provider_names.iter().map(String::as_str).collect();
     let multi = world
         .predict_multi(&action, &provider_names, &config)
         .await
@@ -412,7 +432,6 @@ async fn cmd_compare(
 
 #[allow(clippy::too_many_arguments)]
 async fn cmd_plan(
-    _wf: &WorldForge,
     store: &FileStateStore,
     world_id: &str,
     goal: &str,
@@ -424,11 +443,8 @@ async fn cmd_plan(
     let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
     let state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    let registry = Arc::new({
-        let mut r = ProviderRegistry::new();
-        r.register(Box::new(MockProvider::new()));
-        r
-    });
+    let registry = Arc::new(auto_detect_registry());
+    require_provider(&registry, provider)?;
     let world = worldforge_core::world::World::new(state.clone(), provider, registry);
 
     let planner = match planner_name {
@@ -584,8 +600,8 @@ async fn cmd_verify(store: &FileStateStore, world_id: &str, proof_type: &str) ->
     Ok(())
 }
 
-async fn cmd_health(wf: &WorldForge, provider_name: &str) -> Result<()> {
-    let registry = wf.registry();
+async fn cmd_health(provider_name: &str) -> Result<()> {
+    let registry = auto_detect_registry();
     let providers_to_check: Vec<&str> = if provider_name == "all" {
         registry.list()
     } else {
@@ -717,5 +733,18 @@ mod tests {
             }
             _ => panic!("expected SetLighting"),
         }
+    }
+
+    #[test]
+    fn test_parse_provider_names_trims_and_splits() {
+        assert_eq!(
+            parse_provider_names(" mock , jepa ,,cosmos "),
+            vec!["mock", "jepa", "cosmos"]
+        );
+    }
+
+    #[test]
+    fn test_parse_provider_names_defaults_to_mock() {
+        assert_eq!(parse_provider_names(" , "), vec!["mock"]);
     }
 }
