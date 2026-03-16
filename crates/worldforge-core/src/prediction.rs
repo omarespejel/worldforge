@@ -61,6 +61,7 @@ pub struct PhysicsScores {
 
 /// Configuration for a prediction request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PredictionConfig {
     /// Number of future steps to predict.
     pub steps: u32,
@@ -249,6 +250,16 @@ mod tests {
     fn test_physics_scores_default() {
         let scores = PhysicsScores::default();
         assert_eq!(scores.overall, 0.0);
+    }
+
+    #[test]
+    fn test_prediction_config_deserializes_partial_json() {
+        let config: PredictionConfig =
+            serde_json::from_str(r#"{"fallback_provider":"mock"}"#).unwrap();
+
+        assert_eq!(config.fallback_provider.as_deref(), Some("mock"));
+        assert_eq!(config.steps, 1);
+        assert_eq!(config.resolution, (640, 480));
     }
 
     #[test]

@@ -3,6 +3,8 @@
 //! The `World` struct is the primary user-facing object for interacting
 //! with a simulated world through one or more providers.
 
+use std::time::Duration;
+
 use tracing::instrument;
 
 use crate::action::Action;
@@ -64,8 +66,9 @@ impl World {
         config: &PredictionConfig,
         provider_name: &str,
     ) -> Result<Prediction> {
-        let provider = self.registry.get(provider_name)?;
-        let prediction = provider.predict(&self.state, action, config).await?;
+        let mut prediction = self
+            .run_prediction_with_fallback(&self.state, action, config, provider_name)
+            .await?;
 
         // Evaluate guardrails on the predicted state
         if !config.guardrails.is_empty() {
@@ -86,6 +89,7 @@ impl World {
                         .join("; "),
                 });
             }
+            prediction.guardrail_results = results;
         }
 
         // Update world state and history
@@ -99,7 +103,7 @@ impl World {
                 physics_score: prediction.physics_scores.overall,
                 latency_ms: prediction.latency_ms,
             }),
-            provider: provider_name.to_string(),
+            provider: prediction.provider.clone(),
         });
 
         self.state.time = SimTime {
@@ -123,8 +127,9 @@ impl World {
         let mut predictions = Vec::new();
 
         for &name in provider_names {
-            let provider = self.registry.get(name)?;
-            let pred = provider.predict(&self.state, action, config).await?;
+            let pred = self
+                .run_prediction(&self.state, action, config, name)
+                .await?;
             predictions.push(pred);
         }
 
@@ -322,6 +327,74 @@ impl World {
     pub fn current_state(&self) -> &WorldState {
         &self.state
     }
+
+    async fn run_prediction(
+        &self,
+        state: &WorldState,
+        action: &Action,
+        config: &PredictionConfig,
+        provider_name: &str,
+    ) -> Result<Prediction> {
+        let provider = self.registry.get(provider_name)?;
+
+        if let Some(timeout_ms) = config.max_latency_ms {
+            tokio::time::timeout(
+                Duration::from_millis(timeout_ms),
+                provider.predict(state, action, config),
+            )
+            .await
+            .map_err(|_| WorldForgeError::ProviderTimeout {
+                provider: provider_name.to_string(),
+                timeout_ms,
+            })?
+        } else {
+            provider.predict(state, action, config).await
+        }
+    }
+
+    async fn run_prediction_with_fallback(
+        &self,
+        state: &WorldState,
+        action: &Action,
+        config: &PredictionConfig,
+        provider_name: &str,
+    ) -> Result<Prediction> {
+        match self
+            .run_prediction(state, action, config, provider_name)
+            .await
+        {
+            Ok(prediction) => Ok(prediction),
+            Err(primary_error) => {
+                let Some(fallback_provider) = config
+                    .fallback_provider
+                    .as_deref()
+                    .filter(|fallback| *fallback != provider_name)
+                else {
+                    return Err(primary_error);
+                };
+
+                tracing::warn!(
+                    provider = provider_name,
+                    fallback = fallback_provider,
+                    error = %primary_error,
+                    "prediction failed on primary provider, attempting fallback"
+                );
+
+                match self
+                    .run_prediction(state, action, config, fallback_provider)
+                    .await
+                {
+                    Ok(prediction) => Ok(prediction),
+                    Err(fallback_error) => Err(WorldForgeError::ProviderUnavailable {
+                        provider: provider_name.to_string(),
+                        reason: format!(
+                            "primary provider error: {primary_error}; fallback provider '{fallback_provider}' error: {fallback_error}"
+                        ),
+                    }),
+                }
+            }
+        }
+    }
 }
 
 /// Generate candidate action sequences for planning.
@@ -505,7 +578,17 @@ fn compute_state_hash(state: &WorldState) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+
+    use crate::error::WorldForgeError;
     use crate::prediction::PlanGoal;
+    use crate::prediction::{PhysicsScores, Prediction};
+    use crate::provider::{
+        CostEstimate, GenerationConfig, GenerationPrompt, HealthStatus, LatencyProfile, Operation,
+        ProviderCapabilities, ReasoningInput, ReasoningOutput, SpatialControls, TransferConfig,
+        WorldModelProvider,
+    };
+    use crate::types::VideoClip;
 
     #[test]
     fn test_compute_state_hash() {
@@ -631,5 +714,360 @@ mod tests {
         let score = evaluate_goal_score(&goal, &state);
         // Distance is 0, so similarity = 1/(1+0) = 1.0
         assert!((score - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn test_predict_uses_fallback_provider() {
+        let state = WorldState::new("fallback", "primary");
+        let registry = std::sync::Arc::new({
+            let mut registry = ProviderRegistry::new();
+            registry.register(Box::new(FailingProvider::new("primary")));
+            registry.register(Box::new(SuccessfulProvider::new("fallback")));
+            registry
+        });
+        let mut world = World::new(state, "primary", registry);
+        let action = Action::Move {
+            target: crate::types::Position::default(),
+            speed: 1.0,
+        };
+        let config = PredictionConfig {
+            fallback_provider: Some("fallback".to_string()),
+            ..PredictionConfig::default()
+        };
+
+        let prediction = world.predict(&action, &config).await.unwrap();
+
+        assert_eq!(prediction.provider, "fallback");
+        assert_eq!(world.current_state().history.len(), 1);
+        assert_eq!(
+            world.current_state().history.latest().unwrap().provider,
+            "fallback"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_predict_timeout_uses_fallback_provider() {
+        let state = WorldState::new("timeout", "slow");
+        let registry = std::sync::Arc::new({
+            let mut registry = ProviderRegistry::new();
+            registry.register(Box::new(SlowProvider::new("slow", 25)));
+            registry.register(Box::new(SuccessfulProvider::new("fallback")));
+            registry
+        });
+        let mut world = World::new(state, "slow", registry);
+        let action = Action::Move {
+            target: crate::types::Position::default(),
+            speed: 1.0,
+        };
+        let config = PredictionConfig {
+            fallback_provider: Some("fallback".to_string()),
+            max_latency_ms: Some(1),
+            ..PredictionConfig::default()
+        };
+
+        let prediction = world.predict(&action, &config).await.unwrap();
+
+        assert_eq!(prediction.provider, "fallback");
+        assert_eq!(world.current_state().time.step, 1);
+    }
+
+    #[tokio::test]
+    async fn test_predict_records_guardrail_results() {
+        let state = WorldState::new("guardrails", "mock");
+        let registry = std::sync::Arc::new({
+            let mut registry = ProviderRegistry::new();
+            registry.register(Box::new(SuccessfulProvider::new("mock")));
+            registry
+        });
+        let mut world = World::new(state, "mock", registry);
+        let action = Action::Move {
+            target: crate::types::Position::default(),
+            speed: 1.0,
+        };
+        let config = PredictionConfig {
+            guardrails: vec![crate::guardrail::GuardrailConfig {
+                guardrail: crate::guardrail::Guardrail::NoCollisions,
+                blocking: false,
+            }],
+            ..PredictionConfig::default()
+        };
+
+        let prediction = world.predict(&action, &config).await.unwrap();
+
+        assert_eq!(prediction.guardrail_results.len(), 1);
+        assert!(prediction.guardrail_results[0].passed);
+    }
+
+    #[derive(Debug, Clone)]
+    struct FailingProvider {
+        name: String,
+    }
+
+    impl FailingProvider {
+        fn new(name: &str) -> Self {
+            Self {
+                name: name.to_string(),
+            }
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct SlowProvider {
+        name: String,
+        delay_ms: u64,
+    }
+
+    impl SlowProvider {
+        fn new(name: &str, delay_ms: u64) -> Self {
+            Self {
+                name: name.to_string(),
+                delay_ms,
+            }
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct SuccessfulProvider {
+        name: String,
+    }
+
+    impl SuccessfulProvider {
+        fn new(name: &str) -> Self {
+            Self {
+                name: name.to_string(),
+            }
+        }
+    }
+
+    fn test_capabilities() -> ProviderCapabilities {
+        ProviderCapabilities {
+            predict: true,
+            generate: false,
+            reason: false,
+            transfer: false,
+            action_conditioned: true,
+            multi_view: false,
+            max_video_length_seconds: 4.0,
+            max_resolution: (640, 480),
+            fps_range: (1.0, 30.0),
+            supported_action_spaces: Vec::new(),
+            supports_depth: false,
+            supports_segmentation: false,
+            supports_planning: false,
+            latency_profile: LatencyProfile {
+                p50_ms: 1,
+                p95_ms: 1,
+                p99_ms: 1,
+                throughput_fps: 1.0,
+            },
+        }
+    }
+
+    fn dummy_prediction(provider: &str, state: &WorldState, action: &Action) -> Prediction {
+        Prediction {
+            id: uuid::Uuid::new_v4(),
+            provider: provider.to_string(),
+            model: format!("{provider}-model"),
+            input_state: state.clone(),
+            action: action.clone(),
+            output_state: state.clone(),
+            video: None,
+            confidence: 0.5,
+            physics_scores: PhysicsScores::default(),
+            latency_ms: 0,
+            cost: CostEstimate::default(),
+            guardrail_results: Vec::new(),
+            timestamp: chrono::Utc::now(),
+        }
+    }
+
+    #[async_trait]
+    impl WorldModelProvider for FailingProvider {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            test_capabilities()
+        }
+
+        async fn predict(
+            &self,
+            _state: &WorldState,
+            _action: &Action,
+            _config: &PredictionConfig,
+        ) -> Result<Prediction> {
+            Err(WorldForgeError::ProviderUnavailable {
+                provider: self.name.clone(),
+                reason: "simulated failure".to_string(),
+            })
+        }
+
+        async fn generate(
+            &self,
+            _prompt: &GenerationPrompt,
+            _config: &GenerationConfig,
+        ) -> Result<VideoClip> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.clone(),
+                capability: "generate".to_string(),
+            })
+        }
+
+        async fn reason(&self, _input: &ReasoningInput, _query: &str) -> Result<ReasoningOutput> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.clone(),
+                capability: "reason".to_string(),
+            })
+        }
+
+        async fn transfer(
+            &self,
+            _source: &VideoClip,
+            _controls: &SpatialControls,
+            _config: &TransferConfig,
+        ) -> Result<VideoClip> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.clone(),
+                capability: "transfer".to_string(),
+            })
+        }
+
+        async fn health_check(&self) -> Result<HealthStatus> {
+            Ok(HealthStatus {
+                healthy: false,
+                message: "simulated failure".to_string(),
+                latency_ms: 0,
+            })
+        }
+
+        fn estimate_cost(&self, _operation: &Operation) -> CostEstimate {
+            CostEstimate::default()
+        }
+    }
+
+    #[async_trait]
+    impl WorldModelProvider for SlowProvider {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            test_capabilities()
+        }
+
+        async fn predict(
+            &self,
+            state: &WorldState,
+            action: &Action,
+            _config: &PredictionConfig,
+        ) -> Result<Prediction> {
+            tokio::time::sleep(Duration::from_millis(self.delay_ms)).await;
+            Ok(dummy_prediction(&self.name, state, action))
+        }
+
+        async fn generate(
+            &self,
+            _prompt: &GenerationPrompt,
+            _config: &GenerationConfig,
+        ) -> Result<VideoClip> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.clone(),
+                capability: "generate".to_string(),
+            })
+        }
+
+        async fn reason(&self, _input: &ReasoningInput, _query: &str) -> Result<ReasoningOutput> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.clone(),
+                capability: "reason".to_string(),
+            })
+        }
+
+        async fn transfer(
+            &self,
+            _source: &VideoClip,
+            _controls: &SpatialControls,
+            _config: &TransferConfig,
+        ) -> Result<VideoClip> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.clone(),
+                capability: "transfer".to_string(),
+            })
+        }
+
+        async fn health_check(&self) -> Result<HealthStatus> {
+            Ok(HealthStatus {
+                healthy: true,
+                message: "slow but healthy".to_string(),
+                latency_ms: self.delay_ms,
+            })
+        }
+
+        fn estimate_cost(&self, _operation: &Operation) -> CostEstimate {
+            CostEstimate::default()
+        }
+    }
+
+    #[async_trait]
+    impl WorldModelProvider for SuccessfulProvider {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            test_capabilities()
+        }
+
+        async fn predict(
+            &self,
+            state: &WorldState,
+            action: &Action,
+            _config: &PredictionConfig,
+        ) -> Result<Prediction> {
+            Ok(dummy_prediction(&self.name, state, action))
+        }
+
+        async fn generate(
+            &self,
+            _prompt: &GenerationPrompt,
+            _config: &GenerationConfig,
+        ) -> Result<VideoClip> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.clone(),
+                capability: "generate".to_string(),
+            })
+        }
+
+        async fn reason(&self, _input: &ReasoningInput, _query: &str) -> Result<ReasoningOutput> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.clone(),
+                capability: "reason".to_string(),
+            })
+        }
+
+        async fn transfer(
+            &self,
+            _source: &VideoClip,
+            _controls: &SpatialControls,
+            _config: &TransferConfig,
+        ) -> Result<VideoClip> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.clone(),
+                capability: "transfer".to_string(),
+            })
+        }
+
+        async fn health_check(&self) -> Result<HealthStatus> {
+            Ok(HealthStatus {
+                healthy: true,
+                message: "healthy".to_string(),
+                latency_ms: 0,
+            })
+        }
+
+        fn estimate_cost(&self, _operation: &Operation) -> CostEstimate {
+            CostEstimate::default()
+        }
     }
 }

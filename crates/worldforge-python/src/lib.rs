@@ -5,12 +5,25 @@
 //! Exposes core types, scene management, and the main WorldForge
 //! orchestrator to Python via PyO3.
 
+use std::sync::Arc;
+
 use pyo3::prelude::*;
 
+use worldforge_core::prediction::PredictionConfig;
 use worldforge_core::scene::SceneObject;
 use worldforge_core::state::WorldState;
 use worldforge_core::types::{BBox, Position, Rotation, Velocity};
 use worldforge_verify::ZkVerifier;
+
+fn auto_detect_registry() -> Arc<worldforge_core::provider::ProviderRegistry> {
+    Arc::new(worldforge_providers::auto_detect())
+}
+
+fn resolve_provider_name<'a>(state: &'a WorldState, provider: Option<&'a str>) -> &'a str {
+    provider
+        .filter(|name| !name.is_empty())
+        .unwrap_or(state.metadata.created_by.as_str())
+}
 
 // ---------------------------------------------------------------------------
 // Spatial types
@@ -452,6 +465,161 @@ impl PyWorld {
             self.state.time.step
         )
     }
+
+    /// Predict the next world state after applying an action.
+    #[pyo3(signature = (action, steps=1, provider=None, fallback_provider=None, return_video=false, max_latency_ms=None))]
+    fn predict(
+        &mut self,
+        action: &PyAction,
+        steps: u32,
+        provider: Option<&str>,
+        fallback_provider: Option<&str>,
+        return_video: bool,
+        max_latency_ms: Option<u64>,
+    ) -> PyResult<PyPrediction> {
+        let rt = tokio::runtime::Runtime::new().map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("failed to create runtime: {e}"))
+        })?;
+
+        let provider_name = resolve_provider_name(&self.state, provider);
+        let mut world = worldforge_core::world::World::new(
+            self.state.clone(),
+            provider_name,
+            auto_detect_registry(),
+        );
+        let config = PredictionConfig {
+            steps,
+            return_video,
+            max_latency_ms,
+            fallback_provider: fallback_provider.map(ToOwned::to_owned),
+            ..PredictionConfig::default()
+        };
+
+        let prediction = rt
+            .block_on(world.predict(&action.inner, &config))
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("prediction failed: {e}"))
+            })?;
+
+        self.state = world.current_state().clone();
+
+        Ok(PyPrediction { inner: prediction })
+    }
+
+    /// Plan a sequence of actions to achieve a natural-language goal.
+    #[pyo3(signature = (goal, max_steps=10, timeout_seconds=30.0, provider=None))]
+    fn plan(
+        &self,
+        goal: &str,
+        max_steps: u32,
+        timeout_seconds: f64,
+        provider: Option<&str>,
+    ) -> PyResult<PyPlan> {
+        let rt = tokio::runtime::Runtime::new().map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("failed to create runtime: {e}"))
+        })?;
+
+        let provider_name = resolve_provider_name(&self.state, provider);
+        let world = worldforge_core::world::World::new(
+            self.state.clone(),
+            provider_name,
+            auto_detect_registry(),
+        );
+        let request = worldforge_core::prediction::PlanRequest {
+            current_state: self.state.clone(),
+            goal: worldforge_core::prediction::PlanGoal::Description(goal.to_string()),
+            max_steps,
+            guardrails: Vec::new(),
+            planner: worldforge_core::prediction::PlannerType::Sampling {
+                num_samples: 32,
+                top_k: 5,
+            },
+            timeout_seconds,
+        };
+
+        let plan = rt.block_on(world.plan(&request)).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("planning failed: {e}"))
+        })?;
+
+        Ok(PyPlan { inner: plan })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Prediction
+// ---------------------------------------------------------------------------
+
+/// The result of a world-model prediction.
+#[pyclass(name = "Prediction")]
+#[derive(Debug, Clone)]
+pub struct PyPrediction {
+    inner: worldforge_core::prediction::Prediction,
+}
+
+#[pymethods]
+impl PyPrediction {
+    /// Prediction identifier.
+    #[getter]
+    fn id(&self) -> String {
+        self.inner.id.to_string()
+    }
+
+    /// Provider that generated the prediction.
+    #[getter]
+    fn provider(&self) -> &str {
+        &self.inner.provider
+    }
+
+    /// Model identifier used by the provider.
+    #[getter]
+    fn model(&self) -> &str {
+        &self.inner.model
+    }
+
+    /// Prediction confidence score.
+    #[getter]
+    fn confidence(&self) -> f32 {
+        self.inner.confidence
+    }
+
+    /// Overall physics plausibility score.
+    #[getter]
+    fn physics_score(&self) -> f32 {
+        self.inner.physics_scores.overall
+    }
+
+    /// Provider latency in milliseconds.
+    #[getter]
+    fn latency_ms(&self) -> u64 {
+        self.inner.latency_ms
+    }
+
+    /// Number of evaluated guardrails included in this prediction.
+    #[getter]
+    fn guardrail_count(&self) -> usize {
+        self.inner.guardrail_results.len()
+    }
+
+    /// Get the predicted output state as a `World`.
+    fn output_world(&self) -> PyWorld {
+        PyWorld {
+            state: self.inner.output_state.clone(),
+        }
+    }
+
+    /// Serialize the prediction to JSON.
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Prediction(provider='{}', confidence={:.2}, physics_score={:.2})",
+            self.inner.provider, self.inner.confidence, self.inner.physics_scores.overall
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -725,16 +893,10 @@ impl PyWorldForge {
     /// Create a new WorldForge instance with auto-detected providers.
     #[new]
     fn new() -> Self {
-        let registry = worldforge_providers::auto_detect();
         let mut wf = worldforge_core::WorldForge::new();
-        // Transfer providers from auto-detected registry
-        for name in registry.list() {
-            // We can't move providers out of a registry, so we create
-            // a fresh WorldForge with mock provider as minimum.
-            let _ = name;
+        for provider in worldforge_providers::auto_detect().into_providers() {
+            let _ = wf.register_provider(provider);
         }
-        wf.register_provider(Box::new(worldforge_providers::MockProvider::new()))
-            .ok();
         Self { inner: wf }
     }
 
@@ -852,35 +1014,7 @@ fn plan(
     timeout_seconds: f64,
     provider: &str,
 ) -> PyResult<PyPlan> {
-    let rt = tokio::runtime::Runtime::new().map_err(|e| {
-        pyo3::exceptions::PyRuntimeError::new_err(format!("failed to create runtime: {e}"))
-    })?;
-
-    let registry = std::sync::Arc::new({
-        let mut r = worldforge_core::provider::ProviderRegistry::new();
-        r.register(Box::new(worldforge_providers::MockProvider::new()));
-        r
-    });
-
-    let w = worldforge_core::world::World::new(world.state.clone(), provider, registry);
-
-    let request = worldforge_core::prediction::PlanRequest {
-        current_state: world.state.clone(),
-        goal: worldforge_core::prediction::PlanGoal::Description(goal.to_string()),
-        max_steps,
-        guardrails: Vec::new(),
-        planner: worldforge_core::prediction::PlannerType::Sampling {
-            num_samples: 32,
-            top_k: 5,
-        },
-        timeout_seconds,
-    };
-
-    let plan = rt
-        .block_on(w.plan(&request))
-        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("planning failed: {e}")))?;
-
-    Ok(PyPlan { inner: plan })
+    world.plan(goal, max_steps, timeout_seconds, Some(provider))
 }
 
 // ---------------------------------------------------------------------------
@@ -1089,6 +1223,7 @@ fn worldforge(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyVelocity>()?;
     m.add_class::<PySceneObject>()?;
     m.add_class::<PyWorld>()?;
+    m.add_class::<PyPrediction>()?;
     m.add_class::<PyAction>()?;
     m.add_class::<PyGuardrail>()?;
     m.add_class::<PyWorldForge>()?;
@@ -1245,6 +1380,43 @@ mod tests {
         assert_eq!(world2.object_count(), 1);
     }
 
+    #[test]
+    fn test_world_predict_updates_state() {
+        let mut world = PyWorld::new("predict_world", "mock");
+        let prediction = world
+            .predict(
+                &PyAction::move_to(1.0, 0.0, 0.0, 1.0),
+                1,
+                None,
+                None,
+                false,
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(prediction.provider(), "mock");
+        assert_eq!(world.step(), 1);
+        assert_eq!(world.history_length(), 1);
+    }
+
+    #[test]
+    fn test_world_predict_uses_fallback_provider() {
+        let mut world = PyWorld::new("predict_world", "missing");
+        let prediction = world
+            .predict(
+                &PyAction::move_to(1.0, 0.0, 0.0, 1.0),
+                1,
+                None,
+                Some("mock"),
+                false,
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(prediction.provider(), "mock");
+        assert_eq!(world.step(), 1);
+    }
+
     // --- Action tests ---
 
     #[test]
@@ -1389,7 +1561,7 @@ mod tests {
     #[test]
     fn test_plan_world() {
         let world = PyWorld::new("plan_test", "mock");
-        let plan = plan(&world, "move forward", 5, 10.0, "mock").unwrap();
+        let plan = world.plan("move forward", 5, 10.0, Some("mock")).unwrap();
         assert!(plan.action_count() > 0);
         assert!(plan.success_probability() >= 0.0);
         assert!(plan.planning_time_ms() < 30_000);

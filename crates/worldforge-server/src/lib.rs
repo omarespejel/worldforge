@@ -13,6 +13,7 @@ use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 
 use worldforge_core::action::Action;
+use worldforge_core::error::WorldForgeError;
 use worldforge_core::prediction::PredictionConfig;
 use worldforge_core::provider::ProviderRegistry;
 use worldforge_core::state::{FileStateStore, StateStore, WorldState};
@@ -185,6 +186,19 @@ fn error_response(msg: &str) -> String {
     .unwrap_or_else(|_| format!(r#"{{"success":false,"error":"{msg}"}}"#))
 }
 
+fn prediction_error_status(error: &WorldForgeError) -> u16 {
+    match error {
+        WorldForgeError::ProviderNotFound(_) | WorldForgeError::WorldNotFound(_) => 404,
+        WorldForgeError::UnsupportedAction { .. }
+        | WorldForgeError::UnsupportedCapability { .. }
+        | WorldForgeError::InvalidState(_)
+        | WorldForgeError::SerializationError(_) => 400,
+        WorldForgeError::GuardrailBlocked { .. } => 409,
+        WorldForgeError::ProviderTimeout { .. } => 504,
+        _ => 500,
+    }
+}
+
 /// Start the WorldForge HTTP server.
 pub async fn serve(config: ServerConfig, registry: Arc<ProviderRegistry>) -> anyhow::Result<()> {
     Server::bind(config, registry).await?.run().await
@@ -350,17 +364,20 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                                 Ok(ws) => ws,
                                 Err(e) => return (404, error_response(&e.to_string())),
                             };
-                            let provider = match state.registry.get(&req.provider) {
-                                Ok(p) => p,
-                                Err(e) => return (404, error_response(&e.to_string())),
-                            };
-                            match provider.predict(&ws, &req.action, &req.config).await {
+                            let mut world = worldforge_core::world::World::new(
+                                ws,
+                                req.provider.clone(),
+                                Arc::clone(&state.registry),
+                            );
+                            match world.predict(&req.action, &req.config).await {
                                 Ok(prediction) => {
                                     // Save updated state
-                                    let _ = state.store.save(&prediction.output_state).await;
+                                    let _ = state.store.save(world.current_state()).await;
                                     (200, ApiResponse::ok(prediction))
                                 }
-                                Err(e) => (500, error_response(&e.to_string())),
+                                Err(e) => {
+                                    (prediction_error_status(&e), error_response(&e.to_string()))
+                                }
                             }
                         }
                         Err(e) => (400, error_response(&format!("invalid request: {e}"))),
@@ -718,7 +735,7 @@ mod tests {
         let id = v["data"]["id"].as_str().unwrap();
 
         let pred_body = r#"{"action":{"Move":{"target":{"x":1.0,"y":0.0,"z":0.0},"speed":1.0}},"provider":"mock"}"#;
-        let (status, _) = route(
+        let (status, resp) = route(
             "POST",
             &format!("/v1/worlds/{id}/predict"),
             pred_body,
@@ -726,6 +743,42 @@ mod tests {
         )
         .await;
         assert_eq!(status, 200);
+
+        let prediction: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(prediction["data"]["provider"], "mock");
+
+        let (status, resp) = route("GET", &format!("/v1/worlds/{id}"), "", &state).await;
+        assert_eq!(status, 200);
+
+        let world: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(world["data"]["time"]["step"], 1);
+        assert_eq!(
+            world["data"]["history"]["states"].as_array().unwrap().len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn test_route_predict_uses_fallback_provider() {
+        let state = test_state();
+        let body = r#"{"name":"fallback_world","provider":"mock"}"#;
+        let (status, resp) = route("POST", "/v1/worlds", body, &state).await;
+        assert_eq!(status, 201);
+        let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let id = v["data"]["id"].as_str().unwrap();
+
+        let pred_body = r#"{"action":{"Move":{"target":{"x":1.0,"y":0.0,"z":0.0},"speed":1.0}},"provider":"missing","config":{"fallback_provider":"mock"}}"#;
+        let (status, resp) = route(
+            "POST",
+            &format!("/v1/worlds/{id}/predict"),
+            pred_body,
+            &state,
+        )
+        .await;
+
+        assert_eq!(status, 200);
+        let prediction: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(prediction["data"]["provider"], "mock");
     }
 
     #[tokio::test]

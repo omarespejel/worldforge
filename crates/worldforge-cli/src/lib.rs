@@ -60,6 +60,12 @@ pub enum Commands {
         /// Provider to use.
         #[arg(long, default_value = "mock")]
         provider: String,
+        /// Optional fallback provider if the primary provider fails.
+        #[arg(long)]
+        fallback_provider: Option<String>,
+        /// Maximum time to wait for a provider response before timing out.
+        #[arg(long)]
+        timeout_ms: Option<u64>,
     },
 
     /// List all saved worlds.
@@ -162,7 +168,20 @@ pub async fn run() -> Result<()> {
             action,
             steps,
             provider,
-        } => cmd_predict(&store, &world, &action, steps, &provider).await,
+            fallback_provider,
+            timeout_ms,
+        } => {
+            cmd_predict(
+                &store,
+                &world,
+                &action,
+                steps,
+                &provider,
+                fallback_provider.as_deref(),
+                timeout_ms,
+            )
+            .await
+        }
         Commands::List => cmd_list(&store).await,
         Commands::Show { world } => cmd_show(&store, &world).await,
         Commands::Delete { world } => cmd_delete(&store, &world).await,
@@ -246,17 +265,27 @@ async fn cmd_predict(
     action_str: &str,
     steps: u32,
     provider: &str,
+    fallback_provider: Option<&str>,
+    timeout_ms: Option<u64>,
 ) -> Result<()> {
     let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
     let state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let registry = Arc::new(auto_detect_registry());
-    require_provider(&registry, provider)?;
+    if fallback_provider.is_none() {
+        require_provider(&registry, provider)?;
+    }
+    if let Some(fallback_provider) = fallback_provider {
+        require_provider(&registry, fallback_provider)
+            .context("invalid fallback provider for predict command")?;
+    }
     let mut world = worldforge_core::world::World::new(state, provider, registry);
 
     let action = parse_action(action_str)?;
     let config = PredictionConfig {
         steps,
+        fallback_provider: fallback_provider.map(ToOwned::to_owned),
+        max_latency_ms: timeout_ms,
         ..PredictionConfig::default()
     };
 
@@ -273,6 +302,9 @@ async fn cmd_predict(
 
     println!("Prediction completed:");
     println!("  Provider: {}", prediction.provider);
+    if let Some(fallback_provider) = fallback_provider {
+        println!("  Fallback provider: {fallback_provider}");
+    }
     println!("  Confidence: {:.2}", prediction.confidence);
     println!("  Physics score: {:.2}", prediction.physics_scores.overall);
     println!("  Latency: {}ms", prediction.latency_ms);
@@ -784,6 +816,39 @@ mod tests {
         match cli.command {
             Commands::Serve { bind } => assert_eq!(bind, "127.0.0.1:9000"),
             _ => panic!("expected Serve"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_predict_with_fallback() {
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "predict",
+            "--world",
+            "123e4567-e89b-12d3-a456-426614174000",
+            "--action",
+            "move 1 2 3",
+            "--provider",
+            "runway",
+            "--fallback-provider",
+            "mock",
+            "--timeout-ms",
+            "250",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Predict {
+                provider,
+                fallback_provider,
+                timeout_ms,
+                ..
+            } => {
+                assert_eq!(provider, "runway");
+                assert_eq!(fallback_provider.as_deref(), Some("mock"));
+                assert_eq!(timeout_ms, Some(250));
+            }
+            _ => panic!("expected Predict"),
         }
     }
 }

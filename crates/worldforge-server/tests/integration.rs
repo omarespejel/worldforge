@@ -132,6 +132,10 @@ async fn test_live_http_world_lifecycle() {
         http_request(server.address, "GET", &format!("/v1/worlds/{world_id}"), "").await;
     assert_eq!(status, 200);
     assert_eq!(world["data"]["time"]["step"], 1);
+    assert_eq!(
+        world["data"]["history"]["states"].as_array().unwrap().len(),
+        1
+    );
 
     let (status, deleted) = http_request(
         server.address,
@@ -147,6 +151,32 @@ async fn test_live_http_world_lifecycle() {
         http_request(server.address, "GET", &format!("/v1/worlds/{world_id}"), "").await;
     assert_eq!(status, 404);
     assert_eq!(missing["success"], false);
+}
+
+#[tokio::test]
+async fn test_live_http_predict_uses_fallback_provider() {
+    let server = spawn_test_server().await;
+
+    let (status, create) = http_request(
+        server.address,
+        "POST",
+        "/v1/worlds",
+        r#"{"name":"fallback_world","provider":"mock"}"#,
+    )
+    .await;
+    assert_eq!(status, 201);
+    let world_id = create["data"]["id"].as_str().unwrap().to_string();
+
+    let predict_body = r#"{"action":{"Move":{"target":{"x":1.0,"y":0.0,"z":0.0},"speed":1.0}},"provider":"missing","config":{"fallback_provider":"mock"}}"#;
+    let (status, prediction) = http_request(
+        server.address,
+        "POST",
+        &format!("/v1/worlds/{world_id}/predict"),
+        predict_body,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(prediction["data"]["provider"], "mock");
 }
 
 #[tokio::test]

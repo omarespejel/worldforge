@@ -267,6 +267,11 @@ impl ProviderRegistry {
     pub fn is_empty(&self) -> bool {
         self.providers.is_empty()
     }
+
+    /// Consume the registry and return the registered provider instances.
+    pub fn into_providers(self) -> Vec<Box<dyn WorldModelProvider>> {
+        self.providers.into_values().collect()
+    }
 }
 
 impl Default for ProviderRegistry {
