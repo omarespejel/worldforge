@@ -3230,6 +3230,7 @@ dependencies = [
  "worldforge-core",
  "worldforge-eval",
  "worldforge-providers",
+ "worldforge-server",
  "worldforge-verify",
 ]
 

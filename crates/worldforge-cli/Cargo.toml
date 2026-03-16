@@ -13,6 +13,7 @@ path = "src/main.rs"
 worldforge-core = { path = "../worldforge-core" }
 worldforge-providers = { path = "../worldforge-providers" }
 worldforge-eval = { path = "../worldforge-eval" }
+worldforge-server = { path = "../worldforge-server" }
 worldforge-verify = { path = "../worldforge-verify" }
 serde = { workspace = true }
 serde_json = { workspace = true }

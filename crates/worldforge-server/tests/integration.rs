@@ -3,11 +3,19 @@
 //! Tests the full REST API workflow: create world → predict →
 //! list → show → delete, plus evaluation and comparison endpoints.
 
+use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
+
+use serde_json::Value;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+use tokio::task::JoinHandle;
 
 use worldforge_core::provider::ProviderRegistry;
 use worldforge_core::state::FileStateStore;
 use worldforge_providers::MockProvider;
+use worldforge_server::{Server, ServerConfig};
 
 /// Helper to create a server config with a unique temp directory.
 fn test_server_config() -> (FileStateStore, Arc<ProviderRegistry>) {
@@ -16,6 +24,143 @@ fn test_server_config() -> (FileStateStore, Arc<ProviderRegistry>) {
     let mut registry = ProviderRegistry::new();
     registry.register(Box::new(MockProvider::new()));
     (store, Arc::new(registry))
+}
+
+struct TestServer {
+    address: SocketAddr,
+    state_dir: PathBuf,
+    task: JoinHandle<anyhow::Result<()>>,
+}
+
+impl Drop for TestServer {
+    fn drop(&mut self) {
+        self.task.abort();
+        let _ = std::fs::remove_dir_all(&self.state_dir);
+    }
+}
+
+async fn spawn_test_server() -> TestServer {
+    let state_dir = std::env::temp_dir().join(format!("wf-http-{}", uuid::Uuid::new_v4()));
+    let mut registry = ProviderRegistry::new();
+    registry.register(Box::new(MockProvider::new()));
+
+    let server = Server::bind(
+        ServerConfig {
+            bind_address: "127.0.0.1:0".to_string(),
+            state_dir: state_dir.display().to_string(),
+        },
+        Arc::new(registry),
+    )
+    .await
+    .unwrap();
+    let address = server.local_addr().unwrap();
+    let task = tokio::spawn(server.run());
+
+    TestServer {
+        address,
+        state_dir,
+        task,
+    }
+}
+
+async fn http_request(address: SocketAddr, method: &str, path: &str, body: &str) -> (u16, Value) {
+    let request = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let response = raw_http_request(address, &request).await;
+    let (status, response_body) = parse_http_response(&response);
+    let json = serde_json::from_str(&response_body).unwrap();
+    (status, json)
+}
+
+async fn raw_http_request(address: SocketAddr, request: &str) -> String {
+    let mut stream = TcpStream::connect(address).await.unwrap();
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).await.unwrap();
+    response
+}
+
+fn parse_http_response(response: &str) -> (u16, String) {
+    let (headers, body) = response.split_once("\r\n\r\n").unwrap();
+    let status = headers
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .unwrap()
+        .parse()
+        .unwrap();
+    (status, body.to_string())
+}
+
+#[tokio::test]
+async fn test_live_http_world_lifecycle() {
+    let server = spawn_test_server().await;
+
+    let (status, create) = http_request(
+        server.address,
+        "POST",
+        "/v1/worlds",
+        r#"{"name":"tcp_world","provider":"mock"}"#,
+    )
+    .await;
+    assert_eq!(status, 201);
+    let world_id = create["data"]["id"].as_str().unwrap().to_string();
+
+    let (status, list) = http_request(server.address, "GET", "/v1/worlds", "").await;
+    assert_eq!(status, 200);
+    assert!(list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["id"] == world_id));
+
+    let predict_body =
+        r#"{"action":{"Move":{"target":{"x":1.0,"y":0.0,"z":0.0},"speed":1.0}},"provider":"mock"}"#;
+    let (status, prediction) = http_request(
+        server.address,
+        "POST",
+        &format!("/v1/worlds/{world_id}/predict"),
+        predict_body,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(prediction["data"]["provider"], "mock");
+
+    let (status, world) =
+        http_request(server.address, "GET", &format!("/v1/worlds/{world_id}"), "").await;
+    assert_eq!(status, 200);
+    assert_eq!(world["data"]["time"]["step"], 1);
+
+    let (status, deleted) = http_request(
+        server.address,
+        "DELETE",
+        &format!("/v1/worlds/{world_id}"),
+        "",
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(deleted["data"]["deleted"], world_id);
+
+    let (status, missing) =
+        http_request(server.address, "GET", &format!("/v1/worlds/{world_id}"), "").await;
+    assert_eq!(status, 404);
+    assert_eq!(missing["success"], false);
+}
+
+#[tokio::test]
+async fn test_live_http_rejects_oversized_body() {
+    let server = spawn_test_server().await;
+    let request = "POST /v1/worlds HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 4194305\r\nConnection: close\r\n\r\n";
+
+    let response = raw_http_request(server.address, request).await;
+    let (status, body) = parse_http_response(&response);
+    let payload: Value = serde_json::from_str(&body).unwrap();
+
+    assert_eq!(status, 413);
+    assert_eq!(payload["success"], false);
+    assert_eq!(payload["error"], "request body too large");
 }
 
 #[tokio::test]

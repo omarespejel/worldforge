@@ -4,6 +4,7 @@
 //! with WorldForge functionality over the network.
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -33,6 +34,50 @@ impl Default for ServerConfig {
         Self {
             bind_address: "127.0.0.1:8080".to_string(),
             state_dir: ".worldforge".to_string(),
+        }
+    }
+}
+
+/// A bound WorldForge REST server ready to accept connections.
+pub struct Server {
+    listener: TcpListener,
+    state: Arc<AppState>,
+}
+
+impl Server {
+    /// Bind a server to the configured address.
+    pub async fn bind(
+        config: ServerConfig,
+        registry: Arc<ProviderRegistry>,
+    ) -> anyhow::Result<Self> {
+        let listener = TcpListener::bind(&config.bind_address).await?;
+        let state = Arc::new(AppState {
+            registry,
+            store: FileStateStore::new(&config.state_dir),
+            worlds: RwLock::new(HashMap::new()),
+        });
+
+        Ok(Self { listener, state })
+    }
+
+    /// Return the socket address the server is listening on.
+    pub fn local_addr(&self) -> anyhow::Result<SocketAddr> {
+        Ok(self.listener.local_addr()?)
+    }
+
+    /// Run the accept loop until the task is cancelled or an unrecoverable I/O error occurs.
+    pub async fn run(self) -> anyhow::Result<()> {
+        let local_addr = self.listener.local_addr()?;
+        tracing::info!(address = %local_addr, "WorldForge server started");
+
+        loop {
+            let (stream, addr) = self.listener.accept().await?;
+            let state = Arc::clone(&self.state);
+            tokio::spawn(async move {
+                if let Err(e) = handle_connection(stream, state).await {
+                    tracing::error!(addr = %addr, error = %e, "request handling failed");
+                }
+            });
         }
     }
 }
@@ -142,24 +187,7 @@ fn error_response(msg: &str) -> String {
 
 /// Start the WorldForge HTTP server.
 pub async fn serve(config: ServerConfig, registry: Arc<ProviderRegistry>) -> anyhow::Result<()> {
-    let state = Arc::new(AppState {
-        registry,
-        store: FileStateStore::new(&config.state_dir),
-        worlds: RwLock::new(HashMap::new()),
-    });
-
-    let listener = TcpListener::bind(&config.bind_address).await?;
-    tracing::info!(address = %config.bind_address, "WorldForge server started");
-
-    loop {
-        let (stream, addr) = listener.accept().await?;
-        let state = Arc::clone(&state);
-        tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, state).await {
-                tracing::error!(addr = %addr, error = %e, "request handling failed");
-            }
-        });
-    }
+    Server::bind(config, registry).await?.run().await
 }
 
 async fn handle_connection(

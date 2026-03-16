@@ -125,10 +125,34 @@ cargo fmt
 cargo run -p worldforge-cli -- create --prompt "A kitchen with a mug"
 cargo run -p worldforge-cli -- list
 cargo run -p worldforge-cli -- eval --suite physics
+cargo run -p worldforge-cli -- serve --bind 127.0.0.1:8080
+
+# Or run the dedicated server binary
+cargo run -p worldforge-server -- --bind 127.0.0.1:8080 --state-dir .worldforge
 
 # Use auto-detected local JEPA weights from the CLI
 JEPA_MODEL_PATH=/path/to/v-jepa-2 cargo run -p worldforge-cli -- create --prompt "A lab bench" --provider jepa
 JEPA_MODEL_PATH=/path/to/v-jepa-2 cargo run -p worldforge-cli -- health jepa
+```
+
+## REST API
+
+Start the server with either the CLI or the dedicated binary:
+
+```bash
+worldforge serve --bind 127.0.0.1:8080
+# or
+worldforge-server --bind 127.0.0.1:8080 --state-dir .worldforge
+```
+
+Then call the HTTP API directly:
+
+```bash
+curl -X POST http://127.0.0.1:8080/v1/worlds \
+  -H 'content-type: application/json' \
+  -d '{"name":"Kitchen counter","provider":"mock"}'
+
+curl http://127.0.0.1:8080/v1/providers
 ```
 
 ## Status

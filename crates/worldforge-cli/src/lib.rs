@@ -3,7 +3,7 @@
 //! Command-line interface for interacting with world foundation models.
 //! Supports world creation, prediction, planning, evaluation, and comparison.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -138,6 +138,13 @@ pub enum Commands {
         #[arg(default_value = "all")]
         provider: String,
     },
+
+    /// Start the WorldForge REST API server.
+    Serve {
+        /// Address to bind the HTTP server to.
+        #[arg(long, default_value = "127.0.0.1:8080")]
+        bind: String,
+    },
 }
 
 /// Run the CLI application.
@@ -180,6 +187,7 @@ pub async fn run() -> Result<()> {
         }
         Commands::Verify { world, proof_type } => cmd_verify(&store, &world, &proof_type).await,
         Commands::Health { provider } => cmd_health(&provider).await,
+        Commands::Serve { bind } => cmd_serve(&cli.state_dir, &bind).await,
     }
 }
 
@@ -630,6 +638,18 @@ async fn cmd_health(provider_name: &str) -> Result<()> {
     Ok(())
 }
 
+async fn cmd_serve(state_dir: &Path, bind: &str) -> Result<()> {
+    let registry = Arc::new(auto_detect_registry());
+    let config = worldforge_server::ServerConfig {
+        bind_address: bind.to_string(),
+        state_dir: state_dir.display().to_string(),
+    };
+
+    worldforge_server::serve(config, registry)
+        .await
+        .context("failed to start server")
+}
+
 /// Parse a simple action string into an Action.
 fn parse_action(s: &str) -> Result<Action> {
     let parts: Vec<&str> = s.split_whitespace().collect();
@@ -746,5 +766,24 @@ mod tests {
     #[test]
     fn test_parse_provider_names_defaults_to_mock() {
         assert_eq!(parse_provider_names(" , "), vec!["mock"]);
+    }
+
+    #[test]
+    fn test_cli_parse_serve_command() {
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "--state-dir",
+            ".wf-test",
+            "serve",
+            "--bind",
+            "127.0.0.1:9000",
+        ])
+        .unwrap();
+
+        assert_eq!(cli.state_dir, PathBuf::from(".wf-test"));
+        match cli.command {
+            Commands::Serve { bind } => assert_eq!(bind, "127.0.0.1:9000"),
+            _ => panic!("expected Serve"),
+        }
     }
 }
