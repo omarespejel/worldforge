@@ -69,31 +69,9 @@ impl World {
         config: &PredictionConfig,
         provider_name: &str,
     ) -> Result<Prediction> {
-        let mut prediction = self
-            .run_prediction_with_fallback(&self.state, action, config, provider_name)
+        let prediction = self
+            .predict_from_state(&self.state, action, config, provider_name)
             .await?;
-
-        // Evaluate guardrails on the predicted state
-        if !config.guardrails.is_empty() {
-            let results = evaluate_guardrails(&config.guardrails, &prediction.output_state);
-            if has_blocking_violation(&results) {
-                return Err(WorldForgeError::GuardrailBlocked {
-                    reason: results
-                        .iter()
-                        .filter(|r| !r.passed)
-                        .map(|r| {
-                            format!(
-                                "{}: {}",
-                                r.guardrail_name,
-                                r.violation_details.as_deref().unwrap_or("violation")
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join("; "),
-                });
-            }
-            prediction.guardrail_results = results;
-        }
 
         // Update world state and history
         let hash = compute_state_hash(&prediction.output_state);
@@ -131,7 +109,7 @@ impl World {
 
         for &name in provider_names {
             let pred = self
-                .run_prediction(&self.state, action, config, name)
+                .predict_from_state(&self.state, action, config, name)
                 .await?;
             predictions.push(pred);
         }
@@ -297,6 +275,41 @@ impl World {
     /// Get the current world state.
     pub fn current_state(&self) -> &WorldState {
         &self.state
+    }
+
+    async fn predict_from_state(
+        &self,
+        state: &WorldState,
+        action: &Action,
+        config: &PredictionConfig,
+        provider_name: &str,
+    ) -> Result<Prediction> {
+        let mut prediction = self
+            .run_prediction_with_fallback(state, action, config, provider_name)
+            .await?;
+
+        if !config.guardrails.is_empty() {
+            let results = evaluate_guardrails(&config.guardrails, &prediction.output_state);
+            if has_blocking_violation(&results) {
+                return Err(WorldForgeError::GuardrailBlocked {
+                    reason: results
+                        .iter()
+                        .filter(|result| !result.passed)
+                        .map(|result| {
+                            format!(
+                                "{}: {}",
+                                result.guardrail_name,
+                                result.violation_details.as_deref().unwrap_or("violation")
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                });
+            }
+            prediction.guardrail_results = results;
+        }
+
+        Ok(prediction)
     }
 
     async fn run_prediction(
@@ -2125,6 +2138,91 @@ mod tests {
         assert_eq!(
             world.current_state().history.latest().unwrap().provider,
             "fallback"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_predict_multi_uses_fallback_provider() {
+        let state = WorldState::new("fallback", "primary");
+        let registry = std::sync::Arc::new({
+            let mut registry = ProviderRegistry::new();
+            registry.register(Box::new(FailingProvider::new("primary")));
+            registry.register(Box::new(SuccessfulProvider::new("fallback")));
+            registry
+        });
+        let world = World::new(state, "primary", registry);
+        let action = Action::Move {
+            target: crate::types::Position::default(),
+            speed: 1.0,
+        };
+        let config = PredictionConfig {
+            fallback_provider: Some("fallback".to_string()),
+            ..PredictionConfig::default()
+        };
+
+        let multi = world
+            .predict_multi(&action, &["primary"], &config)
+            .await
+            .unwrap();
+
+        assert_eq!(multi.predictions.len(), 1);
+        assert_eq!(multi.predictions[0].provider, "fallback");
+    }
+
+    #[tokio::test]
+    async fn test_predict_multi_applies_guardrails_without_mutating_state() {
+        let (state, object_id) = sample_planning_state();
+        let registry = std::sync::Arc::new({
+            let mut registry = ProviderRegistry::new();
+            registry.register(Box::new(PlanningProvider::new("planner", 1.0, false)));
+            registry
+        });
+        let world = World::new(state, "planner", registry);
+        let action = Action::Move {
+            target: Position {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            speed: 1.0,
+        };
+        let config = PredictionConfig {
+            guardrails: vec![crate::guardrail::GuardrailConfig {
+                guardrail: crate::guardrail::Guardrail::BoundaryConstraint {
+                    bounds: crate::types::BBox {
+                        min: Position {
+                            x: -0.25,
+                            y: -0.25,
+                            z: -0.25,
+                        },
+                        max: Position {
+                            x: 0.25,
+                            y: 0.25,
+                            z: 0.25,
+                        },
+                    },
+                },
+                blocking: true,
+            }],
+            ..PredictionConfig::default()
+        };
+
+        let error = world
+            .predict_multi(&action, &["planner"], &config)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, WorldForgeError::GuardrailBlocked { .. }));
+        assert!(world.current_state().history.is_empty());
+        assert_eq!(
+            world
+                .current_state()
+                .scene
+                .get_object(&object_id)
+                .unwrap()
+                .pose
+                .position,
+            Position::default()
         );
     }
 

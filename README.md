@@ -253,7 +253,10 @@ real generated plans instead of placeholder proof inputs. The CLI can export
 plan JSON for reuse, and the REST server can generate guardrail proofs directly
 from a goal plus guardrail set. Exported proofs and verification bundles can
 now be re-verified offline across the CLI, REST server, and Python bindings,
-and verification inputs are hashed with real SHA-256 digests. Evaluation now
+and verification inputs are hashed with real SHA-256 digests. Cross-provider
+comparison now reuses the same guardrail and fallback pipeline as single-provider
+prediction, with comparison config exposed in the CLI, REST server, and Python
+bindings. Evaluation now
 supports built-in suite discovery, JSON-defined custom suites, provider
 selection, and CLI report export across the CLI, REST server, and Python
 bindings. Provider discovery now exposes capability metadata across the CLI,

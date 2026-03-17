@@ -267,6 +267,18 @@ pub enum Commands {
         /// Comma-separated list of providers.
         #[arg(long)]
         providers: String,
+        /// Number of prediction steps to compare.
+        #[arg(long, default_value = "1")]
+        steps: u32,
+        /// Optional fallback provider if a listed provider fails.
+        #[arg(long)]
+        fallback_provider: Option<String>,
+        /// Maximum time to wait for each provider response before timing out.
+        #[arg(long)]
+        timeout_ms: Option<u64>,
+        /// Optional JSON file containing `Vec<GuardrailConfig>`.
+        #[arg(long)]
+        guardrails_json: Option<PathBuf>,
     },
 
     /// Plan a sequence of actions to achieve a goal.
@@ -522,7 +534,25 @@ pub async fn run() -> Result<()> {
             world,
             action,
             providers,
-        } => cmd_compare(store.as_ref(), &world, &action, &providers).await,
+            steps,
+            fallback_provider,
+            timeout_ms,
+            guardrails_json,
+        } => {
+            cmd_compare(
+                store.as_ref(),
+                &world,
+                &action,
+                &providers,
+                CompareOptions {
+                    steps,
+                    fallback_provider: fallback_provider.as_deref(),
+                    timeout_ms,
+                    guardrails_json: guardrails_json.as_deref(),
+                },
+            )
+            .await
+        }
         Commands::Plan {
             world,
             goal,
@@ -704,6 +734,13 @@ struct PlanOptions<'a> {
     provider: &'a str,
     guardrails_json: Option<&'a Path>,
     output_json: Option<&'a Path>,
+}
+
+struct CompareOptions<'a> {
+    steps: u32,
+    fallback_provider: Option<&'a str>,
+    timeout_ms: Option<u64>,
+    guardrails_json: Option<&'a Path>,
 }
 
 struct EvalOptions<'a> {
@@ -1239,6 +1276,7 @@ async fn cmd_compare(
     world_id: &str,
     action_str: &str,
     providers_str: &str,
+    options: CompareOptions<'_>,
 ) -> Result<()> {
     let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
     let state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -1248,11 +1286,20 @@ async fn cmd_compare(
     for provider_name in &provider_names {
         require_provider(&registry, provider_name)?;
     }
+    if let Some(fallback_provider) = options.fallback_provider {
+        require_provider(&registry, fallback_provider)?;
+    }
 
     let default_provider = provider_names.first().map(String::as_str).unwrap_or("mock");
     let world = worldforge_core::world::World::new(state, default_provider, registry);
     let action = parse_action(action_str)?;
-    let config = PredictionConfig::default();
+    let config = PredictionConfig {
+        steps: options.steps,
+        guardrails: read_guardrails(options.guardrails_json)?,
+        max_latency_ms: options.timeout_ms,
+        fallback_provider: options.fallback_provider.map(ToOwned::to_owned),
+        ..PredictionConfig::default()
+    };
 
     let provider_names: Vec<&str> = provider_names.iter().map(String::as_str).collect();
     let multi = world
@@ -1837,6 +1884,47 @@ mod tests {
                 assert_eq!(timeout_ms, Some(250));
             }
             _ => panic!("expected Predict"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_compare_with_guardrails_and_fallback() {
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "compare",
+            "--world",
+            "123e4567-e89b-12d3-a456-426614174000",
+            "--action",
+            "move 1 2 3",
+            "--providers",
+            "runway,cosmos",
+            "--steps",
+            "4",
+            "--fallback-provider",
+            "mock",
+            "--timeout-ms",
+            "300",
+            "--guardrails-json",
+            "/tmp/guardrails.json",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Compare {
+                providers,
+                steps,
+                fallback_provider,
+                timeout_ms,
+                guardrails_json,
+                ..
+            } => {
+                assert_eq!(providers, "runway,cosmos");
+                assert_eq!(steps, 4);
+                assert_eq!(fallback_provider.as_deref(), Some("mock"));
+                assert_eq!(timeout_ms, Some(300));
+                assert_eq!(guardrails_json, Some(PathBuf::from("/tmp/guardrails.json")));
+            }
+            _ => panic!("expected Compare"),
         }
     }
 

@@ -657,14 +657,17 @@ impl PyWorld {
     }
 
     /// Compare predictions from multiple providers without mutating the world state.
-    #[pyo3(signature = (action, providers, steps=1, return_video=false, max_latency_ms=None))]
+    #[pyo3(signature = (action, providers, steps=1, fallback_provider=None, return_video=false, max_latency_ms=None, guardrails_json=None))]
+    #[allow(clippy::too_many_arguments)]
     fn compare(
         &self,
         action: &PyAction,
         providers: Vec<String>,
         steps: u32,
+        fallback_provider: Option<&str>,
         return_video: bool,
         max_latency_ms: Option<u64>,
+        guardrails_json: Option<&str>,
     ) -> PyResult<PyMultiPrediction> {
         if providers.is_empty() {
             return Err(pyo3::exceptions::PyValueError::new_err(
@@ -682,6 +685,8 @@ impl PyWorld {
             steps,
             return_video,
             max_latency_ms,
+            fallback_provider: fallback_provider.map(ToOwned::to_owned),
+            guardrails: parse_guardrails_json(guardrails_json)?,
             ..PredictionConfig::default()
         };
         let provider_refs: Vec<&str> = providers.iter().map(String::as_str).collect();
@@ -2409,7 +2414,9 @@ mod tests {
                 &PyAction::move_to(1.0, 0.0, 0.0, 1.0),
                 vec!["mock".to_string(), "mock".to_string()],
                 1,
+                None,
                 false,
+                None,
                 None,
             )
             .unwrap();
@@ -2427,11 +2434,60 @@ mod tests {
             &PyAction::move_to(0.0, 0.0, 0.0, 1.0),
             Vec::new(),
             1,
+            None,
             false,
+            None,
             None,
         );
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_world_compare_uses_fallback_provider() {
+        let world = PyWorld::new("compare_world", "mock");
+        let comparison = world
+            .compare(
+                &PyAction::move_to(0.5, 0.0, 0.0, 1.0),
+                vec!["missing".to_string()],
+                1,
+                Some("mock"),
+                false,
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(comparison.prediction_count(), 1);
+        assert_eq!(comparison.best_prediction().provider(), "mock");
+    }
+
+    #[test]
+    fn test_world_compare_applies_guardrails() {
+        let mut world = PyWorld::new("compare_world", "mock");
+        world.add_object(&PySceneObject::new(
+            "cube",
+            &PyPosition::new(0.0, 0.0, 0.0),
+            &PyBBox::new(
+                &PyPosition::new(-0.1, -0.1, -0.1),
+                &PyPosition::new(0.1, 0.1, 0.1),
+            ),
+        ));
+
+        let result = world.compare(
+            &PyAction::move_to(1.0, 0.0, 0.0, 1.0),
+            vec!["mock".to_string()],
+            1,
+            None,
+            false,
+            None,
+            Some(
+                r#"[{"guardrail":{"BoundaryConstraint":{"bounds":{"min":{"x":-0.25,"y":-0.25,"z":-0.25},"max":{"x":0.25,"y":0.25,"z":0.25}}}},"blocking":true}]"#,
+            ),
+        );
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("guardrail"));
     }
 
     #[test]
