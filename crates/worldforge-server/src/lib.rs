@@ -17,7 +17,8 @@ use worldforge_core::error::WorldForgeError;
 use worldforge_core::guardrail::GuardrailConfig;
 use worldforge_core::prediction::{PlannerType, PredictionConfig};
 use worldforge_core::provider::{
-    GenerationConfig, GenerationPrompt, ProviderRegistry, SpatialControls, TransferConfig,
+    GenerationConfig, GenerationPrompt, Operation, ProviderRegistry, SpatialControls,
+    TransferConfig,
 };
 use worldforge_core::state::{DynStateStore, StateStoreKind, WorldState};
 use worldforge_core::types::{VideoClip, WorldId};
@@ -199,6 +200,12 @@ struct TransferRequest {
     controls: SpatialControls,
     #[serde(default)]
     config: TransferConfig,
+}
+
+/// JSON request body for provider cost estimation.
+#[derive(Debug, Deserialize)]
+struct EstimateCostRequest {
+    operation: Operation,
 }
 
 /// JSON request body for world-state reasoning.
@@ -511,7 +518,24 @@ async fn handle_connection(
     Ok(())
 }
 
+fn split_path_and_query(path: &str) -> (&str, Option<&str>) {
+    match path.split_once('?') {
+        Some((path, query)) => (path, Some(query)),
+        None => (path, None),
+    }
+}
+
+fn query_param<'a>(query: Option<&'a str>, key: &str) -> Option<&'a str> {
+    query.and_then(|query| {
+        query.split('&').find_map(|pair| {
+            let (candidate_key, candidate_value) = pair.split_once('=').unwrap_or((pair, ""));
+            (candidate_key == key).then_some(candidate_value)
+        })
+    })
+}
+
 async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, String) {
+    let (path, query) = split_path_and_query(path);
     // Trim trailing slash
     let path = path.trim_end_matches('/');
 
@@ -575,12 +599,20 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
 
         // GET /v1/providers
         ("GET", "/v1/providers") => {
-            let names = state.registry.list();
-            let providers: Vec<_> = names
-                .into_iter()
-                .map(|n| serde_json::json!({ "name": n }))
-                .collect();
+            let providers = match query_param(query, "capability") {
+                Some(capability) => state.registry.describe_by_capability(capability),
+                None => state.registry.describe_all(),
+            };
             (200, ApiResponse::ok(providers))
+        }
+
+        // GET /v1/providers/{name}
+        ("GET", p) if p.starts_with("/v1/providers/") && !p.ends_with("/health") => {
+            let name = p.strip_prefix("/v1/providers/").unwrap_or("");
+            match state.registry.describe(name) {
+                Ok(descriptor) => (200, ApiResponse::ok(descriptor)),
+                Err(error) => (404, error_response(&error.to_string())),
+            }
         }
 
         // GET /v1/evals/suites
@@ -604,6 +636,28 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                     Err(e) => (503, error_response(&e.to_string())),
                 },
                 Err(e) => (404, error_response(&e.to_string())),
+            }
+        }
+
+        // POST /v1/providers/{name}/estimate
+        ("POST", p) if p.starts_with("/v1/providers/") && p.ends_with("/estimate") => {
+            let provider_name = p
+                .strip_prefix("/v1/providers/")
+                .and_then(|value| value.strip_suffix("/estimate"))
+                .unwrap_or("");
+            match serde_json::from_str::<EstimateCostRequest>(body) {
+                Ok(req) => match state.registry.estimate_cost(provider_name, &req.operation) {
+                    Ok(estimate) => (
+                        200,
+                        ApiResponse::ok(serde_json::json!({
+                            "provider": provider_name,
+                            "operation": req.operation,
+                            "estimate": estimate,
+                        })),
+                    ),
+                    Err(error) => (404, error_response(&error.to_string())),
+                },
+                Err(error) => (400, error_response(&format!("invalid request: {error}"))),
             }
         }
 
@@ -1138,6 +1192,24 @@ mod tests {
         let (status, body) = route("GET", "/v1/providers", "", &state).await;
         assert_eq!(status, 200);
         assert!(body.contains("mock"));
+        assert!(body.contains("capabilities"));
+    }
+
+    #[tokio::test]
+    async fn test_route_list_providers_with_capability_filter() {
+        let state = test_state();
+        let (status, body) = route("GET", "/v1/providers?capability=predict", "", &state).await;
+        assert_eq!(status, 200);
+        assert!(body.contains("mock"));
+    }
+
+    #[tokio::test]
+    async fn test_route_get_provider_descriptor() {
+        let state = test_state();
+        let (status, body) = route("GET", "/v1/providers/mock", "", &state).await;
+        assert_eq!(status, 200);
+        assert!(body.contains("\"name\":\"mock\""));
+        assert!(body.contains("\"predict\":true"));
     }
 
     #[tokio::test]
@@ -1172,6 +1244,21 @@ mod tests {
         let state = test_state();
         let (status, _) = route("GET", "/v1/providers/mock/health", "", &state).await;
         assert_eq!(status, 200);
+    }
+
+    #[tokio::test]
+    async fn test_route_estimate_cost() {
+        let state = test_state();
+        let body = r#"{"operation":{"Generate":{"duration_seconds":5.0,"resolution":[640,360]}}}"#;
+        let (status, resp) = route("POST", "/v1/providers/mock/estimate", body, &state).await;
+        assert_eq!(status, 200);
+
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(value["data"]["provider"], "mock");
+        assert_eq!(
+            value["data"]["estimate"]["estimated_latency_ms"].as_u64(),
+            Some(10)
+        );
     }
 
     #[tokio::test]

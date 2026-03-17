@@ -14,7 +14,7 @@ use crate::state::WorldState;
 use crate::types::VideoClip;
 
 /// Capabilities declared by a provider.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProviderCapabilities {
     /// Whether the provider supports forward prediction.
     pub predict: bool,
@@ -47,7 +47,7 @@ pub struct ProviderCapabilities {
 }
 
 /// Latency percentile profile.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LatencyProfile {
     /// 50th percentile latency in milliseconds.
     pub p50_ms: u32,
@@ -60,7 +60,7 @@ pub struct LatencyProfile {
 }
 
 /// Health status of a provider.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HealthStatus {
     /// Whether the provider is healthy.
     pub healthy: bool,
@@ -71,7 +71,7 @@ pub struct HealthStatus {
 }
 
 /// Cost estimate for an operation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CostEstimate {
     /// Estimated cost in USD.
     pub usd: f64,
@@ -82,7 +82,7 @@ pub struct CostEstimate {
 }
 
 /// Describes the type of operation for cost estimation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Operation {
     /// A prediction operation.
     Predict { steps: u32, resolution: (u32, u32) },
@@ -95,6 +95,15 @@ pub enum Operation {
     Reason,
     /// A transfer operation.
     Transfer { duration_seconds: f64 },
+}
+
+/// Describes a registered provider and its advertised capabilities.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProviderDescriptor {
+    /// Provider identifier.
+    pub name: String,
+    /// Declared capabilities for this provider.
+    pub capabilities: ProviderCapabilities,
 }
 
 /// Prompt for video generation.
@@ -236,9 +245,32 @@ impl ProviderRegistry {
             .ok_or_else(|| WorldForgeError::ProviderNotFound(name.to_string()))
     }
 
+    /// Describe a provider by name.
+    pub fn describe(&self, name: &str) -> Result<ProviderDescriptor> {
+        let provider = self.get(name)?;
+        Ok(ProviderDescriptor {
+            name: name.to_string(),
+            capabilities: provider.capabilities(),
+        })
+    }
+
     /// List all registered provider names.
     pub fn list(&self) -> Vec<&str> {
         self.providers.keys().map(|k| k.as_str()).collect()
+    }
+
+    /// Describe all registered providers.
+    pub fn describe_all(&self) -> Vec<ProviderDescriptor> {
+        let mut descriptors: Vec<_> = self
+            .providers
+            .iter()
+            .map(|(name, provider)| ProviderDescriptor {
+                name: name.clone(),
+                capabilities: provider.capabilities(),
+            })
+            .collect();
+        descriptors.sort_by(|left, right| left.name.cmp(&right.name));
+        descriptors
     }
 
     /// Find providers that support a given capability.
@@ -247,17 +279,32 @@ impl ProviderRegistry {
             .values()
             .filter(|p| {
                 let caps = p.capabilities();
-                match capability {
-                    "predict" => caps.predict,
-                    "generate" => caps.generate,
-                    "reason" => caps.reason,
-                    "transfer" => caps.transfer,
-                    "planning" => caps.supports_planning,
-                    _ => false,
-                }
+                supports_capability(&caps, capability)
             })
             .map(|p| p.as_ref())
             .collect()
+    }
+
+    /// Describe providers that support a given capability.
+    pub fn describe_by_capability(&self, capability: &str) -> Vec<ProviderDescriptor> {
+        let mut descriptors: Vec<_> = self
+            .providers
+            .iter()
+            .filter_map(|(name, provider)| {
+                let capabilities = provider.capabilities();
+                supports_capability(&capabilities, capability).then(|| ProviderDescriptor {
+                    name: name.clone(),
+                    capabilities,
+                })
+            })
+            .collect();
+        descriptors.sort_by(|left, right| left.name.cmp(&right.name));
+        descriptors
+    }
+
+    /// Estimate the cost of an operation on a provider.
+    pub fn estimate_cost(&self, name: &str, operation: &Operation) -> Result<CostEstimate> {
+        Ok(self.get(name)?.estimate_cost(operation))
     }
 
     /// Number of registered providers.
@@ -279,6 +326,21 @@ impl ProviderRegistry {
 impl Default for ProviderRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn supports_capability(capabilities: &ProviderCapabilities, capability: &str) -> bool {
+    match capability {
+        "predict" => capabilities.predict,
+        "generate" => capabilities.generate,
+        "reason" => capabilities.reason,
+        "transfer" => capabilities.transfer,
+        "planning" => capabilities.supports_planning,
+        "action-conditioned" | "action_conditioned" => capabilities.action_conditioned,
+        "multi-view" | "multi_view" => capabilities.multi_view,
+        "depth" => capabilities.supports_depth,
+        "segmentation" => capabilities.supports_segmentation,
+        _ => false,
     }
 }
 
@@ -317,24 +379,81 @@ impl Default for TransferConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::WorldForgeError;
 
-    #[test]
-    fn test_provider_registry() {
-        let registry = ProviderRegistry::new();
-        assert!(registry.is_empty());
-        assert_eq!(registry.len(), 0);
+    struct TestProvider {
+        name: &'static str,
+        capabilities: ProviderCapabilities,
+        estimate: CostEstimate,
     }
 
-    #[test]
-    fn test_provider_not_found() {
-        let registry = ProviderRegistry::new();
-        let result = registry.get("nonexistent");
-        assert!(result.is_err());
+    #[async_trait::async_trait]
+    impl WorldModelProvider for TestProvider {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            self.capabilities.clone()
+        }
+
+        async fn predict(
+            &self,
+            _state: &crate::state::WorldState,
+            _action: &crate::action::Action,
+            _config: &crate::prediction::PredictionConfig,
+        ) -> Result<crate::prediction::Prediction> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.to_string(),
+                capability: "predict".to_string(),
+            })
+        }
+
+        async fn generate(
+            &self,
+            _prompt: &GenerationPrompt,
+            _config: &GenerationConfig,
+        ) -> Result<VideoClip> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.to_string(),
+                capability: "generate".to_string(),
+            })
+        }
+
+        async fn reason(&self, _input: &ReasoningInput, _query: &str) -> Result<ReasoningOutput> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.to_string(),
+                capability: "reason".to_string(),
+            })
+        }
+
+        async fn transfer(
+            &self,
+            _source: &VideoClip,
+            _controls: &SpatialControls,
+            _config: &TransferConfig,
+        ) -> Result<VideoClip> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.to_string(),
+                capability: "transfer".to_string(),
+            })
+        }
+
+        async fn health_check(&self) -> Result<HealthStatus> {
+            Ok(HealthStatus {
+                healthy: true,
+                message: "healthy".to_string(),
+                latency_ms: 1,
+            })
+        }
+
+        fn estimate_cost(&self, _operation: &Operation) -> CostEstimate {
+            self.estimate.clone()
+        }
     }
 
-    #[test]
-    fn test_capabilities_serialization() {
-        let caps = ProviderCapabilities {
+    fn test_capabilities() -> ProviderCapabilities {
+        ProviderCapabilities {
             predict: true,
             generate: true,
             reason: false,
@@ -354,7 +473,26 @@ mod tests {
                 p99_ms: 1000,
                 throughput_fps: 24.0,
             },
-        };
+        }
+    }
+
+    #[test]
+    fn test_provider_registry() {
+        let registry = ProviderRegistry::new();
+        assert!(registry.is_empty());
+        assert_eq!(registry.len(), 0);
+    }
+
+    #[test]
+    fn test_provider_not_found() {
+        let registry = ProviderRegistry::new();
+        let result = registry.get("nonexistent");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_capabilities_serialization() {
+        let caps = test_capabilities();
         let json = serde_json::to_string(&caps).unwrap();
         let caps2: ProviderCapabilities = serde_json::from_str(&json).unwrap();
         assert!(caps2.predict);
@@ -366,5 +504,72 @@ mod tests {
         assert!(controls.camera_trajectory.is_none());
         assert!(controls.depth_map.is_none());
         assert!(controls.segmentation_map.is_none());
+    }
+
+    #[test]
+    fn test_describe_all_and_capability_filtering() {
+        let mut registry = ProviderRegistry::new();
+        registry.register(Box::new(TestProvider {
+            name: "alpha",
+            capabilities: test_capabilities(),
+            estimate: CostEstimate {
+                usd: 0.42,
+                credits: 3.0,
+                estimated_latency_ms: 120,
+            },
+        }));
+        registry.register(Box::new(TestProvider {
+            name: "beta",
+            capabilities: ProviderCapabilities {
+                generate: false,
+                ..test_capabilities()
+            },
+            estimate: CostEstimate::default(),
+        }));
+
+        let descriptors = registry.describe_all();
+        assert_eq!(descriptors.len(), 2);
+        assert_eq!(descriptors[0].name, "alpha");
+        assert_eq!(descriptors[1].name, "beta");
+
+        let generators = registry.describe_by_capability("generate");
+        assert_eq!(generators.len(), 1);
+        assert_eq!(generators[0].name, "alpha");
+
+        let action_conditioned = registry.describe_by_capability("action-conditioned");
+        assert_eq!(action_conditioned.len(), 2);
+    }
+
+    #[test]
+    fn test_estimate_cost_delegates_to_provider() {
+        let mut registry = ProviderRegistry::new();
+        registry.register(Box::new(TestProvider {
+            name: "alpha",
+            capabilities: test_capabilities(),
+            estimate: CostEstimate {
+                usd: 1.25,
+                credits: 8.0,
+                estimated_latency_ms: 750,
+            },
+        }));
+
+        let estimate = registry
+            .estimate_cost(
+                "alpha",
+                &Operation::Predict {
+                    steps: 8,
+                    resolution: (1280, 720),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            estimate,
+            CostEstimate {
+                usd: 1.25,
+                credits: 8.0,
+                estimated_latency_ms: 750,
+            }
+        );
     }
 }

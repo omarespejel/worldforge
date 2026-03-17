@@ -133,6 +133,9 @@ cargo fmt
 
 # Run CLI
 cargo run -p worldforge-cli -- create --prompt "A kitchen with a mug"
+cargo run -p worldforge-cli -- providers
+cargo run -p worldforge-cli -- providers --capability planning
+cargo run -p worldforge-cli -- estimate --provider cosmos --operation generate --duration-seconds 5 --width 1280 --height 720
 cargo run -p worldforge-cli -- list
 cargo run -p worldforge-cli -- --state-backend sqlite --state-db-path .worldforge/worldforge.db list
 cargo run -p worldforge-cli -- predict --world <id> --action "move 1 0 0" --provider runway --fallback-provider mock --timeout-ms 500
@@ -207,6 +210,14 @@ curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/evaluate \
   -d '{"suite":"physics","providers":["mock"]}'
 
 curl http://127.0.0.1:8080/v1/providers
+
+curl http://127.0.0.1:8080/v1/providers?capability=predict
+
+curl http://127.0.0.1:8080/v1/providers/mock
+
+curl -X POST http://127.0.0.1:8080/v1/providers/mock/estimate \
+  -H 'content-type: application/json' \
+  -d '{"operation":{"Generate":{"duration_seconds":5.0,"resolution":[1280,720]}}}'
 ```
 
 ## Status
@@ -235,7 +246,9 @@ now be re-verified offline across the CLI, REST server, and Python bindings,
 and verification inputs are hashed with real SHA-256 digests. Evaluation now
 supports built-in suite discovery, JSON-defined custom suites, provider
 selection, and CLI report export across the CLI, REST server, and Python
-bindings.
+bindings. Provider discovery now exposes capability metadata across the CLI,
+REST server, and Python bindings, and provider adapters' cost estimates are
+queryable end-to-end for predict, generate, reason, and transfer operations.
 
 ## License
 

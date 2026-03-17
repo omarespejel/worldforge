@@ -13,7 +13,8 @@ use pyo3::prelude::*;
 use worldforge_core::guardrail::GuardrailConfig;
 use worldforge_core::prediction::{PlannerType, PredictionConfig};
 use worldforge_core::provider::{
-    GenerationConfig, GenerationPrompt, SpatialControls, TransferConfig,
+    CostEstimate, GenerationConfig, GenerationPrompt, Operation, ProviderCapabilities,
+    ProviderDescriptor, SpatialControls, TransferConfig,
 };
 use worldforge_core::scene::SceneObject;
 use worldforge_core::state::{DynStateStore, StateStoreKind, WorldState};
@@ -144,6 +145,32 @@ fn planner_from_args(
         "provider-native" | "provider_native" | "native" => Ok(PlannerType::ProviderNative),
         other => Err(pyo3::exceptions::PyValueError::new_err(format!(
             "unknown planner: {other}. Available: sampling, cem, mpc, gradient, provider-native"
+        ))),
+    }
+}
+
+fn operation_from_args(
+    operation: &str,
+    steps: u32,
+    duration_seconds: f64,
+    width: u32,
+    height: u32,
+) -> PyResult<Operation> {
+    match operation {
+        "predict" => Ok(Operation::Predict {
+            steps: steps.max(1),
+            resolution: (width, height),
+        }),
+        "generate" => Ok(Operation::Generate {
+            duration_seconds: duration_seconds.max(0.1),
+            resolution: (width, height),
+        }),
+        "reason" => Ok(Operation::Reason),
+        "transfer" => Ok(Operation::Transfer {
+            duration_seconds: duration_seconds.max(0.1),
+        }),
+        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "unknown operation: {other}. Available: predict, generate, reason, transfer"
         ))),
     }
 }
@@ -1147,6 +1174,158 @@ impl PyGuardrail {
 // WorldForge orchestrator
 // ---------------------------------------------------------------------------
 
+/// Provider capability metadata.
+#[pyclass(name = "ProviderCapabilities")]
+#[derive(Debug, Clone)]
+pub struct PyProviderCapabilities {
+    inner: ProviderCapabilities,
+}
+
+#[pymethods]
+impl PyProviderCapabilities {
+    #[getter]
+    fn predict(&self) -> bool {
+        self.inner.predict
+    }
+
+    #[getter]
+    fn generate(&self) -> bool {
+        self.inner.generate
+    }
+
+    #[getter]
+    fn reason(&self) -> bool {
+        self.inner.reason
+    }
+
+    #[getter]
+    fn transfer(&self) -> bool {
+        self.inner.transfer
+    }
+
+    #[getter]
+    fn supports_planning(&self) -> bool {
+        self.inner.supports_planning
+    }
+
+    #[getter]
+    fn action_conditioned(&self) -> bool {
+        self.inner.action_conditioned
+    }
+
+    #[getter]
+    fn multi_view(&self) -> bool {
+        self.inner.multi_view
+    }
+
+    #[getter]
+    fn supports_depth(&self) -> bool {
+        self.inner.supports_depth
+    }
+
+    #[getter]
+    fn supports_segmentation(&self) -> bool {
+        self.inner.supports_segmentation
+    }
+
+    #[getter]
+    fn max_resolution(&self) -> (u32, u32) {
+        self.inner.max_resolution
+    }
+
+    #[getter]
+    fn fps_range(&self) -> (f32, f32) {
+        self.inner.fps_range
+    }
+
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ProviderCapabilities(predict={}, generate={}, reason={}, transfer={}, planning={})",
+            self.inner.predict,
+            self.inner.generate,
+            self.inner.reason,
+            self.inner.transfer,
+            self.inner.supports_planning
+        )
+    }
+}
+
+/// Provider descriptor exposed to Python.
+#[pyclass(name = "ProviderInfo")]
+#[derive(Debug, Clone)]
+pub struct PyProviderInfo {
+    inner: ProviderDescriptor,
+}
+
+#[pymethods]
+impl PyProviderInfo {
+    #[getter]
+    fn name(&self) -> String {
+        self.inner.name.clone()
+    }
+
+    #[getter]
+    fn capabilities(&self) -> PyProviderCapabilities {
+        PyProviderCapabilities {
+            inner: self.inner.capabilities.clone(),
+        }
+    }
+
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!("ProviderInfo(name={})", self.inner.name)
+    }
+}
+
+/// Cost estimate exposed to Python.
+#[pyclass(name = "CostEstimate")]
+#[derive(Debug, Clone)]
+pub struct PyCostEstimate {
+    inner: CostEstimate,
+}
+
+#[pymethods]
+impl PyCostEstimate {
+    #[getter]
+    fn usd(&self) -> f64 {
+        self.inner.usd
+    }
+
+    #[getter]
+    fn credits(&self) -> f64 {
+        self.inner.credits
+    }
+
+    #[getter]
+    fn estimated_latency_ms(&self) -> u64 {
+        self.inner.estimated_latency_ms
+    }
+
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "CostEstimate(usd={:.4}, credits={:.2}, latency_ms={})",
+            self.inner.usd, self.inner.credits, self.inner.estimated_latency_ms
+        )
+    }
+}
+
 /// The main WorldForge orchestrator.
 ///
 /// Manages provider registration and world creation.
@@ -1181,6 +1360,52 @@ impl PyWorldForge {
             .iter()
             .map(|s| s.to_string())
             .collect()
+    }
+
+    /// Describe all registered providers, optionally filtering by capability.
+    #[pyo3(signature = (capability=None))]
+    fn provider_infos(&self, capability: Option<&str>) -> Vec<PyProviderInfo> {
+        let descriptors = match capability {
+            Some(capability) => self.inner.registry().describe_by_capability(capability),
+            None => self.inner.registry().describe_all(),
+        };
+        descriptors
+            .into_iter()
+            .map(|inner| PyProviderInfo { inner })
+            .collect()
+    }
+
+    /// Describe one registered provider.
+    fn provider_info(&self, provider: &str) -> PyResult<PyProviderInfo> {
+        let descriptor = self.inner.registry().describe(provider).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("failed to describe provider: {e}"))
+        })?;
+        Ok(PyProviderInfo { inner: descriptor })
+    }
+
+    /// Estimate the cost of running an operation on a provider.
+    #[pyo3(signature = (provider, operation="predict", steps=1, duration_seconds=4.0, width=1280, height=720))]
+    #[allow(clippy::too_many_arguments)]
+    fn estimate_cost(
+        &self,
+        provider: &str,
+        operation: &str,
+        steps: u32,
+        duration_seconds: f64,
+        width: u32,
+        height: u32,
+    ) -> PyResult<PyCostEstimate> {
+        let operation = operation_from_args(operation, steps, duration_seconds, width, height)?;
+        let estimate = self
+            .inner
+            .registry()
+            .estimate_cost(provider, &operation)
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "failed to estimate provider cost: {e}"
+                ))
+            })?;
+        Ok(PyCostEstimate { inner: estimate })
     }
 
     /// Create a new world with the given name and provider.
@@ -1784,6 +2009,9 @@ fn worldforge(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyReasoningOutput>()?;
     m.add_class::<PyAction>()?;
     m.add_class::<PyGuardrail>()?;
+    m.add_class::<PyProviderCapabilities>()?;
+    m.add_class::<PyProviderInfo>()?;
+    m.add_class::<PyCostEstimate>()?;
     m.add_class::<PyWorldForge>()?;
     m.add_class::<PyPlan>()?;
     m.add_class::<PyEvalResult>()?;
@@ -2109,6 +2337,32 @@ mod tests {
         let wf = test_worldforge();
         let providers = wf.providers();
         assert!(providers.contains(&"mock".to_string()));
+    }
+
+    #[test]
+    fn test_worldforge_provider_info() {
+        let wf = test_worldforge();
+        let info = wf.provider_info("mock").unwrap();
+        assert_eq!(info.name(), "mock");
+        assert!(info.capabilities().predict());
+    }
+
+    #[test]
+    fn test_worldforge_provider_infos_with_filter() {
+        let wf = test_worldforge();
+        let infos = wf.provider_infos(Some("predict"));
+        assert!(!infos.is_empty());
+        assert!(infos.iter().any(|info| info.name() == "mock"));
+    }
+
+    #[test]
+    fn test_worldforge_estimate_cost() {
+        let wf = test_worldforge();
+        let estimate = wf
+            .estimate_cost("mock", "generate", 1, 5.0, 640, 360)
+            .unwrap();
+        assert_eq!(estimate.usd(), 0.0);
+        assert_eq!(estimate.estimated_latency_ms(), 10);
     }
 
     #[test]

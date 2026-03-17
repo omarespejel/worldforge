@@ -16,8 +16,8 @@ use worldforge_core::action::{Action, Weather};
 use worldforge_core::guardrail::GuardrailConfig;
 use worldforge_core::prediction::{PlanGoal, PlanRequest, PlannerType, PredictionConfig};
 use worldforge_core::provider::{
-    GenerationConfig, GenerationPrompt, ProviderRegistry, SpatialControls, TransferConfig,
-    WorldModelProvider,
+    GenerationConfig, GenerationPrompt, Operation, ProviderDescriptor, ProviderRegistry,
+    SpatialControls, TransferConfig, WorldModelProvider,
 };
 use worldforge_core::state::{DynStateStore, StateStore, StateStoreKind, WorldState};
 use worldforge_core::types::{Position, VideoClip};
@@ -44,6 +44,19 @@ impl StateBackend {
             Self::Sqlite => "sqlite",
         }
     }
+}
+
+/// Operation type for provider cost estimation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum EstimateOperationKind {
+    /// Estimate a forward prediction call.
+    Predict,
+    /// Estimate a prompt-to-video generation call.
+    Generate,
+    /// Estimate a reasoning request.
+    Reason,
+    /// Estimate a transfer call.
+    Transfer,
 }
 
 /// WorldForge — orchestration layer for world foundation models.
@@ -195,6 +208,35 @@ pub enum Commands {
         world: String,
     },
 
+    /// List registered providers and their capabilities.
+    Providers {
+        /// Optional capability filter (for example: predict, generate, planning, depth).
+        #[arg(long)]
+        capability: Option<String>,
+    },
+
+    /// Estimate provider cost for an operation.
+    Estimate {
+        /// Provider name.
+        #[arg(long, default_value = "mock")]
+        provider: String,
+        /// Operation kind to estimate.
+        #[arg(long, value_enum, default_value_t = EstimateOperationKind::Predict)]
+        operation: EstimateOperationKind,
+        /// Prediction step count for `predict`.
+        #[arg(long, default_value = "1")]
+        steps: u32,
+        /// Duration in seconds for `generate` or `transfer`.
+        #[arg(long, default_value = "4.0")]
+        duration_seconds: f64,
+        /// Output width for `predict` or `generate`.
+        #[arg(long, default_value = "1280")]
+        width: u32,
+        /// Output height for `predict` or `generate`.
+        #[arg(long, default_value = "720")]
+        height: u32,
+    },
+
     /// Run an evaluation suite.
     Eval {
         /// Evaluation suite name.
@@ -338,14 +380,37 @@ pub async fn run() -> Result<()> {
 
     tracing_subscriber::fmt().init();
 
-    if let Commands::Serve { bind } = &cli.command {
-        return cmd_serve(
-            &cli.state_dir,
-            cli.state_backend,
-            cli.state_db_path.as_deref(),
-            bind,
-        )
-        .await;
+    match &cli.command {
+        Commands::Serve { bind } => {
+            return cmd_serve(
+                &cli.state_dir,
+                cli.state_backend,
+                cli.state_db_path.as_deref(),
+                bind,
+            )
+            .await;
+        }
+        Commands::Providers { capability } => return cmd_providers(capability.as_deref()),
+        Commands::Estimate {
+            provider,
+            operation,
+            steps,
+            duration_seconds,
+            width,
+            height,
+        } => {
+            return cmd_estimate(
+                provider,
+                EstimateOptions {
+                    operation: *operation,
+                    steps: *steps,
+                    duration_seconds: *duration_seconds,
+                    resolution: (*width, *height),
+                },
+            )
+        }
+        Commands::Health { provider } => return cmd_health(provider).await,
+        _ => {}
     }
 
     let store = open_state_store(&cli).await?;
@@ -431,6 +496,12 @@ pub async fn run() -> Result<()> {
         Commands::List => cmd_list(store.as_ref()).await,
         Commands::Show { world } => cmd_show(store.as_ref(), &world).await,
         Commands::Delete { world } => cmd_delete(store.as_ref(), &world).await,
+        Commands::Providers { .. } => {
+            unreachable!("providers command handled before store initialization")
+        }
+        Commands::Estimate { .. } => {
+            unreachable!("estimate command handled before store initialization")
+        }
         Commands::Eval {
             suite,
             suite_json,
@@ -512,7 +583,9 @@ pub async fn run() -> Result<()> {
             )
             .await
         }
-        Commands::Health { provider } => cmd_health(&provider).await,
+        Commands::Health { .. } => {
+            unreachable!("health command handled before store initialization")
+        }
         Commands::VerifyProof {
             proof_json,
             inference_bundle_json,
@@ -529,7 +602,9 @@ pub async fn run() -> Result<()> {
             })
             .await
         }
-        Commands::Serve { .. } => unreachable!("serve command handled before store initialization"),
+        Commands::Serve { .. } => {
+            unreachable!("serve command handled before store initialization")
+        }
     }
 }
 
@@ -586,6 +661,10 @@ fn available_eval_suite_names() -> String {
     EvalSuite::builtin_names().join(", ")
 }
 
+fn available_provider_capabilities() -> &'static str {
+    "predict, generate, reason, transfer, planning, action-conditioned, multi-view, depth, segmentation"
+}
+
 fn resolve_provider_name<'a>(state: &'a WorldState, provider: Option<&'a str>) -> &'a str {
     provider
         .filter(|name| !name.is_empty())
@@ -600,6 +679,13 @@ struct GenerateOptions<'a> {
     temperature: f32,
     seed: Option<u64>,
     output_json: Option<&'a Path>,
+}
+
+struct EstimateOptions {
+    operation: EstimateOperationKind,
+    steps: u32,
+    duration_seconds: f64,
+    resolution: (u32, u32),
 }
 
 struct TransferOptions<'a> {
@@ -725,6 +811,74 @@ fn planner_from_name(planner_name: &str, max_steps: u32) -> Result<PlannerType> 
             "unknown planner: {other}. Available: sampling, cem, mpc, gradient, provider-native"
         ),
     }
+}
+
+fn build_operation(kind: EstimateOperationKind, options: &EstimateOptions) -> Operation {
+    match kind {
+        EstimateOperationKind::Predict => Operation::Predict {
+            steps: options.steps.max(1),
+            resolution: options.resolution,
+        },
+        EstimateOperationKind::Generate => Operation::Generate {
+            duration_seconds: options.duration_seconds.max(0.1),
+            resolution: options.resolution,
+        },
+        EstimateOperationKind::Reason => Operation::Reason,
+        EstimateOperationKind::Transfer => Operation::Transfer {
+            duration_seconds: options.duration_seconds.max(0.1),
+        },
+    }
+}
+
+fn summarize_capabilities(descriptor: &ProviderDescriptor) -> String {
+    let mut labels = Vec::new();
+    if descriptor.capabilities.predict {
+        labels.push("predict");
+    }
+    if descriptor.capabilities.generate {
+        labels.push("generate");
+    }
+    if descriptor.capabilities.reason {
+        labels.push("reason");
+    }
+    if descriptor.capabilities.transfer {
+        labels.push("transfer");
+    }
+    if descriptor.capabilities.supports_planning {
+        labels.push("planning");
+    }
+    if descriptor.capabilities.supports_depth {
+        labels.push("depth");
+    }
+    if descriptor.capabilities.supports_segmentation {
+        labels.push("segmentation");
+    }
+    labels.join(", ")
+}
+
+fn print_provider_descriptor(descriptor: &ProviderDescriptor) {
+    let caps = &descriptor.capabilities;
+    println!(
+        "{} [{}]",
+        descriptor.name,
+        summarize_capabilities(descriptor)
+    );
+    println!(
+        "  resolution: {}x{} | fps: {:.1}-{:.1} | max length: {:.1}s",
+        caps.max_resolution.0,
+        caps.max_resolution.1,
+        caps.fps_range.0,
+        caps.fps_range.1,
+        caps.max_video_length_seconds
+    );
+    println!(
+        "  action conditioned: {} | multi-view: {} | latency p50/p95/p99: {}/{}/{} ms",
+        caps.action_conditioned,
+        caps.multi_view,
+        caps.latency_profile.p50_ms,
+        caps.latency_profile.p95_ms,
+        caps.latency_profile.p99_ms
+    );
 }
 
 fn print_verification_bundle<T: Serialize>(
@@ -1383,6 +1537,49 @@ async fn cmd_health(provider_name: &str) -> Result<()> {
     Ok(())
 }
 
+fn cmd_providers(capability: Option<&str>) -> Result<()> {
+    let registry = auto_detect_registry();
+    let descriptors = match capability {
+        Some(capability) => {
+            let descriptors = registry.describe_by_capability(capability);
+            if descriptors.is_empty() {
+                anyhow::bail!(
+                    "no providers matched capability '{capability}'. Available capability filters: {}",
+                    available_provider_capabilities()
+                );
+            }
+            descriptors
+        }
+        None => registry.describe_all(),
+    };
+
+    for descriptor in descriptors {
+        print_provider_descriptor(&descriptor);
+    }
+
+    Ok(())
+}
+
+fn cmd_estimate(provider_name: &str, options: EstimateOptions) -> Result<()> {
+    let registry = auto_detect_registry();
+    let operation = build_operation(options.operation, &options);
+    let estimate = registry
+        .estimate_cost(provider_name, &operation)
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "{e}. Available providers: {}",
+                available_provider_names(&registry)
+            )
+        })?;
+
+    println!("Provider: {provider_name}");
+    println!("Operation: {:?}", operation);
+    println!("Estimated USD: {:.4}", estimate.usd);
+    println!("Estimated credits: {:.2}", estimate.credits);
+    println!("Estimated latency: {}ms", estimate.estimated_latency_ms);
+    Ok(())
+}
+
 async fn cmd_serve(
     state_dir: &Path,
     state_backend: StateBackend,
@@ -1519,6 +1716,47 @@ mod tests {
     #[test]
     fn test_parse_provider_names_defaults_to_mock() {
         assert_eq!(parse_provider_names(" , "), vec!["mock"]);
+    }
+
+    #[test]
+    fn test_build_operation_predict() {
+        let operation = build_operation(
+            EstimateOperationKind::Predict,
+            &EstimateOptions {
+                operation: EstimateOperationKind::Predict,
+                steps: 0,
+                duration_seconds: 2.0,
+                resolution: (640, 360),
+            },
+        );
+
+        assert_eq!(
+            operation,
+            Operation::Predict {
+                steps: 1,
+                resolution: (640, 360),
+            }
+        );
+    }
+
+    #[test]
+    fn test_build_operation_transfer() {
+        let operation = build_operation(
+            EstimateOperationKind::Transfer,
+            &EstimateOptions {
+                operation: EstimateOperationKind::Transfer,
+                steps: 4,
+                duration_seconds: 0.0,
+                resolution: (640, 360),
+            },
+        );
+
+        assert_eq!(
+            operation,
+            Operation::Transfer {
+                duration_seconds: 0.1,
+            }
+        );
     }
 
     #[test]
@@ -1758,6 +1996,56 @@ mod tests {
                 assert_eq!(output_json, Some(PathBuf::from("/tmp/eval-report.json")));
             }
             _ => panic!("expected Eval"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_providers_command() {
+        let cli =
+            Cli::try_parse_from(["worldforge", "providers", "--capability", "planning"]).unwrap();
+
+        match cli.command {
+            Commands::Providers { capability } => {
+                assert_eq!(capability.as_deref(), Some("planning"));
+            }
+            _ => panic!("expected Providers"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_estimate_command() {
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "estimate",
+            "--provider",
+            "cosmos",
+            "--operation",
+            "generate",
+            "--duration-seconds",
+            "5.5",
+            "--width",
+            "640",
+            "--height",
+            "360",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Estimate {
+                provider,
+                operation,
+                duration_seconds,
+                width,
+                height,
+                ..
+            } => {
+                assert_eq!(provider, "cosmos");
+                assert_eq!(operation, EstimateOperationKind::Generate);
+                assert_eq!(duration_seconds, 5.5);
+                assert_eq!(width, 640);
+                assert_eq!(height, 360);
+            }
+            _ => panic!("expected Estimate"),
         }
     }
 
