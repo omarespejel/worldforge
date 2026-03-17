@@ -7,7 +7,9 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::types::{BBox, Mesh, ObjectId, Pose, Tensor, Velocity};
+use crate::types::{BBox, Mesh, ObjectId, Pose, Position, Tensor, Vec3, Velocity};
+
+const RELATIONSHIP_EPSILON: f32 = 0.05;
 
 /// Hierarchical scene representation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,6 +130,7 @@ impl SceneGraph {
             children: Vec::new(),
             object_id: Some(id),
         });
+        self.refresh_relationships();
     }
 
     /// Get an object by its ID.
@@ -166,26 +169,42 @@ impl SceneGraph {
         self.root
             .children
             .retain(|n| n.object_id.as_ref() != Some(id));
-        self.relationships.retain(|r| !relationship_involves(r, id));
-        self.objects.remove(id)
+        let removed = self.objects.remove(id);
+        self.refresh_relationships();
+        removed
+    }
+
+    /// Set the world position for an object and recompute relationships.
+    pub fn set_object_position(&mut self, id: &ObjectId, position: Position) -> bool {
+        if let Some(object) = self.objects.get_mut(id) {
+            object.set_position(position);
+            self.refresh_relationships();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Translate an object by a delta and recompute relationships.
+    pub fn translate_object(&mut self, id: &ObjectId, delta: Vec3) -> bool {
+        if let Some(object) = self.objects.get_mut(id) {
+            object.translate_by(delta);
+            self.refresh_relationships();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Recompute spatial relationships from the current object geometry.
+    pub fn refresh_relationships(&mut self) {
+        self.relationships = infer_relationships(&self.objects);
     }
 }
 
 impl Default for SceneGraph {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-/// Check if a spatial relationship involves a given object.
-fn relationship_involves(rel: &SpatialRelationship, id: &ObjectId) -> bool {
-    match rel {
-        SpatialRelationship::On { subject, surface } => subject == id || surface == id,
-        SpatialRelationship::In { subject, container } => subject == id || container == id,
-        SpatialRelationship::Near { a, b, .. } => a == id || b == id,
-        SpatialRelationship::Touching { a, b } => a == id || b == id,
-        SpatialRelationship::Above { subject, reference } => subject == id || reference == id,
-        SpatialRelationship::Below { subject, reference } => subject == id || reference == id,
     }
 }
 
@@ -208,6 +227,121 @@ impl SceneObject {
             visual_embedding: None,
         }
     }
+
+    /// Return the half extents of this object's axis-aligned bounding box.
+    pub fn half_extents(&self) -> Vec3 {
+        self.bbox.size().scale(0.5)
+    }
+
+    /// Update the object's position while keeping its bounding box aligned.
+    pub fn set_position(&mut self, position: Position) {
+        let delta = Vec3 {
+            x: position.x - self.pose.position.x,
+            y: position.y - self.pose.position.y,
+            z: position.z - self.pose.position.z,
+        };
+        self.pose.position = position;
+        self.bbox.translate(delta);
+    }
+
+    /// Translate the object and its bounding box by a delta.
+    pub fn translate_by(&mut self, delta: Vec3) {
+        self.pose.position = self.pose.position.offset(delta);
+        self.bbox.translate(delta);
+    }
+}
+
+fn infer_relationships(objects: &HashMap<ObjectId, SceneObject>) -> Vec<SpatialRelationship> {
+    let mut ordered: Vec<_> = objects.values().collect();
+    ordered.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.id.as_bytes().cmp(right.id.as_bytes()))
+    });
+
+    let mut relationships = Vec::new();
+    for i in 0..ordered.len() {
+        for j in (i + 1)..ordered.len() {
+            let left = ordered[i];
+            let right = ordered[j];
+
+            if left.bbox.intersects_or_touches(&right.bbox) {
+                relationships.push(SpatialRelationship::Touching {
+                    a: left.id,
+                    b: right.id,
+                });
+            }
+
+            let distance = left.pose.position.distance(right.pose.position);
+            let near_threshold =
+                (left.half_extents().magnitude() + right.half_extents().magnitude()).max(0.25)
+                    + 0.5;
+            if distance <= near_threshold {
+                relationships.push(SpatialRelationship::Near {
+                    a: left.id,
+                    b: right.id,
+                    distance,
+                });
+            }
+
+            if left.bbox.contains(&right.bbox) {
+                relationships.push(SpatialRelationship::In {
+                    subject: right.id,
+                    container: left.id,
+                });
+            } else if right.bbox.contains(&left.bbox) {
+                relationships.push(SpatialRelationship::In {
+                    subject: left.id,
+                    container: right.id,
+                });
+            }
+
+            if is_on(left, right) {
+                relationships.push(SpatialRelationship::On {
+                    subject: left.id,
+                    surface: right.id,
+                });
+            } else if is_on(right, left) {
+                relationships.push(SpatialRelationship::On {
+                    subject: right.id,
+                    surface: left.id,
+                });
+            }
+
+            if left.pose.position.y > right.pose.position.y + RELATIONSHIP_EPSILON {
+                relationships.push(SpatialRelationship::Above {
+                    subject: left.id,
+                    reference: right.id,
+                });
+                relationships.push(SpatialRelationship::Below {
+                    subject: right.id,
+                    reference: left.id,
+                });
+            } else if right.pose.position.y > left.pose.position.y + RELATIONSHIP_EPSILON {
+                relationships.push(SpatialRelationship::Above {
+                    subject: right.id,
+                    reference: left.id,
+                });
+                relationships.push(SpatialRelationship::Below {
+                    subject: left.id,
+                    reference: right.id,
+                });
+            }
+        }
+    }
+
+    relationships
+}
+
+fn is_on(subject: &SceneObject, surface: &SceneObject) -> bool {
+    let vertical_gap = (subject.bbox.min.y - surface.bbox.max.y).abs();
+    vertical_gap <= RELATIONSHIP_EPSILON
+        && horizontal_overlap(&subject.bbox, &surface.bbox)
+        && subject.pose.position.y >= surface.pose.position.y
+}
+
+fn horizontal_overlap(a: &BBox, b: &BBox) -> bool {
+    a.min.x <= b.max.x && a.max.x >= b.min.x && a.min.z <= b.max.z && a.max.z >= b.min.z
 }
 
 #[cfg(test)]
@@ -299,5 +433,152 @@ mod tests {
                 .and_then(|object| object.semantic_label.as_deref()),
             Some("block")
         );
+    }
+
+    #[test]
+    fn test_scene_object_set_position_updates_bbox() {
+        let mut object = sample_object("cube");
+        object.set_position(Position {
+            x: 2.0,
+            y: 1.0,
+            z: -1.0,
+        });
+
+        assert_eq!(object.pose.position.x, 2.0);
+        assert_eq!(object.bbox.center().x, 2.0);
+        assert_eq!(object.bbox.center().y, 1.0);
+        assert_eq!(object.bbox.center().z, -1.0);
+    }
+
+    #[test]
+    fn test_scene_graph_refresh_relationships_detects_geometry() {
+        let mut sg = SceneGraph::new();
+
+        let table = SceneObject::new(
+            "table",
+            Pose::default(),
+            BBox {
+                min: Position {
+                    x: -1.0,
+                    y: -0.5,
+                    z: -1.0,
+                },
+                max: Position {
+                    x: 1.0,
+                    y: 0.5,
+                    z: 1.0,
+                },
+            },
+        );
+        let table_id = table.id;
+
+        let mug = SceneObject::new(
+            "mug",
+            Pose {
+                position: Position {
+                    x: 0.0,
+                    y: 0.6,
+                    z: 0.0,
+                },
+                ..Pose::default()
+            },
+            BBox {
+                min: Position {
+                    x: -0.1,
+                    y: 0.5,
+                    z: -0.1,
+                },
+                max: Position {
+                    x: 0.1,
+                    y: 0.7,
+                    z: 0.1,
+                },
+            },
+        );
+        let mug_id = mug.id;
+
+        let crate_box = SceneObject::new(
+            "crate",
+            Pose {
+                position: Position {
+                    x: 2.0,
+                    y: 0.5,
+                    z: 0.0,
+                },
+                ..Pose::default()
+            },
+            BBox {
+                min: Position {
+                    x: 1.0,
+                    y: 0.0,
+                    z: -0.5,
+                },
+                max: Position {
+                    x: 3.0,
+                    y: 1.0,
+                    z: 0.5,
+                },
+            },
+        );
+        let crate_id = crate_box.id;
+
+        let ball = SceneObject::new(
+            "ball",
+            Pose {
+                position: Position {
+                    x: 2.0,
+                    y: 0.5,
+                    z: 0.0,
+                },
+                ..Pose::default()
+            },
+            BBox {
+                min: Position {
+                    x: 1.6,
+                    y: 0.2,
+                    z: -0.2,
+                },
+                max: Position {
+                    x: 2.4,
+                    y: 0.8,
+                    z: 0.2,
+                },
+            },
+        );
+        let ball_id = ball.id;
+
+        sg.add_object(table);
+        sg.add_object(mug);
+        sg.add_object(crate_box);
+        sg.add_object(ball);
+
+        assert!(sg.relationships.iter().any(|relationship| {
+            matches!(
+                relationship,
+                SpatialRelationship::On { subject, surface }
+                    if *subject == mug_id && *surface == table_id
+            )
+        }));
+        assert!(sg.relationships.iter().any(|relationship| {
+            matches!(
+                relationship,
+                SpatialRelationship::Above { subject, reference }
+                    if *subject == mug_id && *reference == table_id
+            )
+        }));
+        assert!(sg.relationships.iter().any(|relationship| {
+            matches!(
+                relationship,
+                SpatialRelationship::In { subject, container }
+                    if *subject == ball_id && *container == crate_id
+            )
+        }));
+        assert!(sg.relationships.iter().any(|relationship| {
+            matches!(
+                relationship,
+                SpatialRelationship::Touching { a, b }
+                    if (*a == ball_id && *b == crate_id) || (*a == crate_id && *b == ball_id)
+            )
+        }));
     }
 }

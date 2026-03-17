@@ -108,7 +108,7 @@ worldforge/
 │   │       └── error.rs        # WorldForgeError enum (18 variants)
 │   ├── worldforge-providers/   # Provider adapters
 │   │   └── src/
-│   │       ├── mock.rs         # Mock provider (deterministic, for testing)
+│   │       ├── mock.rs         # Mock provider (scene-aware offline reference backend)
 │   │       ├── cosmos.rs       # NVIDIA Cosmos adapter
 │   │       ├── runway.rs       # Runway GWM-1 adapter
 │   │       ├── jepa.rs         # Meta V-JEPA adapter
@@ -280,6 +280,10 @@ those workflows. Provider discovery now exposes capability metadata across the
 CLI, REST server, and Python bindings, and provider adapters' cost estimates
 are queryable end-to-end for predict, generate, reason, and transfer
 operations.
+The mock provider now serves as a higher-fidelity offline reference backend:
+object motion keeps bounding boxes and inferred relationships in sync,
+predictions can emit lightweight preview video/depth/segmentation outputs, and
+reasoning answers are grounded in the current scene instead of fixed strings.
 
 ## License
 

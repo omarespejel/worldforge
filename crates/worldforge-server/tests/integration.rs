@@ -264,8 +264,8 @@ async fn test_live_http_provider_transfer() {
     .await;
 
     assert_eq!(status, 200);
-    assert_eq!(clip["data"]["resolution"], serde_json::json!([320, 180]));
-    assert_eq!(clip["data"]["fps"], 10.0);
+    assert_eq!(clip["data"]["resolution"], serde_json::json!([640, 360]));
+    assert_eq!(clip["data"]["fps"], 24.0);
     assert_eq!(clip["data"]["duration"], 2.0);
 }
 

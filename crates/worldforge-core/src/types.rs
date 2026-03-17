@@ -272,6 +272,65 @@ impl Default for Vec3 {
     }
 }
 
+impl Position {
+    /// Compute the Euclidean distance to another position.
+    pub fn distance(self, other: Self) -> f32 {
+        let dx = self.x - other.x;
+        let dy = self.y - other.y;
+        let dz = self.z - other.z;
+        (dx * dx + dy * dy + dz * dz).sqrt()
+    }
+
+    /// Linearly interpolate toward another position.
+    pub fn lerp(self, target: Self, alpha: f32) -> Self {
+        let alpha = alpha.clamp(0.0, 1.0);
+        Self {
+            x: self.x + (target.x - self.x) * alpha,
+            y: self.y + (target.y - self.y) * alpha,
+            z: self.z + (target.z - self.z) * alpha,
+        }
+    }
+
+    /// Offset this position by the given vector.
+    pub fn offset(self, delta: Vec3) -> Self {
+        Self {
+            x: self.x + delta.x,
+            y: self.y + delta.y,
+            z: self.z + delta.z,
+        }
+    }
+}
+
+impl Vec3 {
+    /// Compute the magnitude of this vector.
+    pub fn magnitude(self) -> f32 {
+        (self.x * self.x + self.y * self.y + self.z * self.z).sqrt()
+    }
+
+    /// Normalize this vector, returning zero when the magnitude is negligible.
+    pub fn normalized(self) -> Self {
+        let magnitude = self.magnitude();
+        if magnitude < f32::EPSILON {
+            Self::default()
+        } else {
+            Self {
+                x: self.x / magnitude,
+                y: self.y / magnitude,
+                z: self.z / magnitude,
+            }
+        }
+    }
+
+    /// Scale this vector by a scalar value.
+    pub fn scale(self, scalar: f32) -> Self {
+        Self {
+            x: self.x * scalar,
+            y: self.y * scalar,
+            z: self.z * scalar,
+        }
+    }
+}
+
 impl Default for Rotation {
     fn default() -> Self {
         Self {
@@ -329,6 +388,75 @@ impl Tensor {
     }
 }
 
+impl BBox {
+    /// Build a world-space bounding box from a center point and half extents.
+    pub fn from_center_half_extents(center: Position, half_extents: Vec3) -> Self {
+        Self {
+            min: Position {
+                x: center.x - half_extents.x,
+                y: center.y - half_extents.y,
+                z: center.z - half_extents.z,
+            },
+            max: Position {
+                x: center.x + half_extents.x,
+                y: center.y + half_extents.y,
+                z: center.z + half_extents.z,
+            },
+        }
+    }
+
+    /// Return the center point of the box.
+    pub fn center(&self) -> Position {
+        Position {
+            x: (self.min.x + self.max.x) * 0.5,
+            y: (self.min.y + self.max.y) * 0.5,
+            z: (self.min.z + self.max.z) * 0.5,
+        }
+    }
+
+    /// Return the size of the box along each axis.
+    pub fn size(&self) -> Vec3 {
+        Vec3 {
+            x: self.max.x - self.min.x,
+            y: self.max.y - self.min.y,
+            z: self.max.z - self.min.z,
+        }
+    }
+
+    /// Return a translated copy of the box.
+    pub fn translated(&self, delta: Vec3) -> Self {
+        Self {
+            min: self.min.offset(delta),
+            max: self.max.offset(delta),
+        }
+    }
+
+    /// Translate the box in place.
+    pub fn translate(&mut self, delta: Vec3) {
+        *self = self.translated(delta);
+    }
+
+    /// Check whether this box intersects or touches another box.
+    pub fn intersects_or_touches(&self, other: &Self) -> bool {
+        self.min.x <= other.max.x
+            && self.max.x >= other.min.x
+            && self.min.y <= other.max.y
+            && self.max.y >= other.min.y
+            && self.min.z <= other.max.z
+            && self.max.z >= other.min.z
+    }
+
+    /// Check whether this box fully contains another box.
+    pub fn contains(&self, other: &Self) -> bool {
+        self.min.x <= other.min.x
+            && self.max.x >= other.max.x
+            && self.min.y <= other.min.y
+            && self.max.y >= other.max.y
+            && self.min.z <= other.min.z
+            && self.max.z >= other.max.z
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,6 +477,30 @@ mod tests {
         assert_eq!(p.x, 0.0);
         assert_eq!(p.y, 0.0);
         assert_eq!(p.z, 0.0);
+    }
+
+    #[test]
+    fn test_position_distance_and_lerp() {
+        let start = Position {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let target = Position {
+            x: 4.0,
+            y: 2.0,
+            z: 0.0,
+        };
+
+        assert_eq!(start.distance(target), (20.0f32).sqrt());
+        assert_eq!(
+            start.lerp(target, 0.25),
+            Position {
+                x: 1.0,
+                y: 0.5,
+                z: 0.0,
+            }
+        );
     }
 
     #[test]
@@ -417,6 +569,56 @@ mod tests {
         let json = serde_json::to_string(&bbox).unwrap();
         let bbox2: BBox = serde_json::from_str(&json).unwrap();
         assert_eq!(bbox, bbox2);
+    }
+
+    #[test]
+    fn test_bbox_translate_and_center() {
+        let mut bbox = BBox::from_center_half_extents(
+            Position {
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+            },
+            Vec3 {
+                x: 0.5,
+                y: 1.0,
+                z: 1.5,
+            },
+        );
+        assert_eq!(
+            bbox.center(),
+            Position {
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+            }
+        );
+
+        bbox.translate(Vec3 {
+            x: 1.0,
+            y: -1.0,
+            z: 0.5,
+        });
+        assert_eq!(
+            bbox.center(),
+            Position {
+                x: 2.0,
+                y: 1.0,
+                z: 3.5,
+            }
+        );
+        assert!(bbox.contains(&BBox::from_center_half_extents(
+            Position {
+                x: 2.0,
+                y: 1.0,
+                z: 3.5,
+            },
+            Vec3 {
+                x: 0.25,
+                y: 0.25,
+                z: 0.25,
+            },
+        )));
     }
 
     mod proptests {

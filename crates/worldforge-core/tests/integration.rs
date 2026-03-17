@@ -206,19 +206,25 @@ fn test_scene_graph_complex_operations() {
     sg.add_object(table);
     sg.add_object(mug);
 
-    // Add relationship
-    sg.relationships.push(SpatialRelationship::On {
-        subject: mug_id,
-        surface: table_id,
-    });
-
     // Verify
     assert_eq!(sg.objects.len(), 2);
-    assert_eq!(sg.relationships.len(), 1);
+    assert!(sg.relationships.iter().any(|relationship| {
+        matches!(
+            relationship,
+            SpatialRelationship::On { subject, surface }
+                if *subject == mug_id && *surface == table_id
+        )
+    }));
 
     // Modify object
-    let mug_mut = sg.get_object_mut(&mug_id).unwrap();
-    mug_mut.pose.position.y = 1.2;
+    sg.set_object_position(
+        &mug_id,
+        Position {
+            x: 0.0,
+            y: 1.2,
+            z: 0.0,
+        },
+    );
     assert_eq!(sg.get_object(&mug_id).unwrap().pose.position.y, 1.2);
 
     // Remove mug — should also remove relationships
@@ -687,6 +693,83 @@ async fn test_world_predict_with_guardrails_pass() {
     // Should succeed — everything is within bounds
     let result = world.predict(&action, &config).await;
     assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn test_world_predict_guardrails_use_updated_bbox_geometry() {
+    use std::sync::Arc;
+    use worldforge_core::prediction::PredictionConfig;
+    use worldforge_core::provider::ProviderRegistry;
+    use worldforge_core::world::World;
+    use worldforge_providers::MockProvider;
+
+    let registry = Arc::new({
+        let mut r = ProviderRegistry::new();
+        r.register(Box::new(MockProvider::new()));
+        r
+    });
+
+    let mut state = WorldState::new("collision-predict", "mock");
+    let mover = SceneObject::new(
+        "mover",
+        Pose {
+            position: Position {
+                x: -1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            ..Pose::default()
+        },
+        BBox {
+            min: Position {
+                x: -1.2,
+                y: -0.2,
+                z: -0.2,
+            },
+            max: Position {
+                x: -0.8,
+                y: 0.2,
+                z: 0.2,
+            },
+        },
+    );
+    let mover_id = mover.id;
+    state.scene.add_object(mover);
+    state.scene.add_object(SceneObject::new(
+        "anchor",
+        Pose::default(),
+        BBox {
+            min: Position {
+                x: -0.2,
+                y: -0.2,
+                z: -0.2,
+            },
+            max: Position {
+                x: 0.2,
+                y: 0.2,
+                z: 0.2,
+            },
+        },
+    ));
+
+    let mut world = World::new(state, "mock", registry);
+    let action = Action::Place {
+        object: mover_id,
+        target: Position::default(),
+    };
+    let config = PredictionConfig {
+        guardrails: vec![GuardrailConfig {
+            guardrail: Guardrail::NoCollisions,
+            blocking: true,
+        }],
+        ..PredictionConfig::default()
+    };
+
+    let result = world.predict(&action, &config).await;
+    assert!(matches!(
+        result,
+        Err(WorldForgeError::GuardrailBlocked { .. })
+    ));
 }
 
 #[tokio::test]

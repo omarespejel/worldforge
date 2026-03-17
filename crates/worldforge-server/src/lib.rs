@@ -1757,8 +1757,8 @@ mod tests {
         assert_eq!(status, 200);
 
         let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
-        assert_eq!(value["data"]["resolution"], serde_json::json!([320, 240]));
-        assert_eq!(value["data"]["fps"], 15.0);
+        assert_eq!(value["data"]["resolution"], serde_json::json!([800, 600]));
+        assert_eq!(value["data"]["fps"], 24.0);
         assert_eq!(value["data"]["duration"], 1.5);
     }
 
@@ -1782,10 +1782,7 @@ mod tests {
         assert_eq!(status, 200);
 
         let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
-        assert!(value["data"]["answer"]
-            .as_str()
-            .unwrap()
-            .contains("what happens next?"));
+        assert!(value["data"]["answer"].as_str().unwrap().contains("empty"));
     }
 
     #[tokio::test]

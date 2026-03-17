@@ -2781,9 +2781,9 @@ mod tests {
     fn test_world_reason() {
         let world = PyWorld::new("reason_world", "mock");
         let output = world.reason("will it fall?", None).unwrap();
-        assert!(output.answer().contains("will it fall?"));
+        assert!(output.answer().contains("empty"));
         assert!(output.confidence() > 0.0);
-        assert_eq!(output.evidence(), vec!["mock evidence".to_string()]);
+        assert_eq!(output.evidence(), vec!["objects: none".to_string()]);
     }
 
     // --- Action tests ---
@@ -3022,7 +3022,7 @@ mod tests {
         assert_eq!(clip.duration(), 5.0);
         assert_eq!(clip.resolution(), (640, 360));
         assert_eq!(clip.fps(), 12.0);
-        assert_eq!(clip.frame_count(), 0);
+        assert!(clip.frame_count() > 0);
         assert!(clip.__repr__().contains("VideoClip"));
     }
 
@@ -3071,8 +3071,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(transferred.duration(), clip.duration());
-        assert_eq!(transferred.resolution(), clip.resolution());
-        assert_eq!(transferred.fps(), clip.fps());
+        assert_eq!(transferred.resolution(), (640, 360));
+        assert_eq!(transferred.fps(), 24.0);
     }
 
     #[test]

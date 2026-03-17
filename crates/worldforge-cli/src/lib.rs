@@ -2805,8 +2805,8 @@ mod tests {
 
         let clip: VideoClip = read_json_file(&output_path).unwrap();
         assert_eq!(clip.duration, source.duration);
-        assert_eq!(clip.resolution, source.resolution);
-        assert_eq!(clip.fps, source.fps);
+        assert_eq!(clip.resolution, (800, 600));
+        assert_eq!(clip.fps, 24.0);
 
         let _ = fs::remove_dir_all(dir);
     }
