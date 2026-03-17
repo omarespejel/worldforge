@@ -267,11 +267,19 @@ impl World {
                 num_iterations,
             } => gradient_search(&context, *learning_rate, *num_iterations, seed).await?,
             PlannerType::ProviderNative => {
-                if provider.capabilities().supports_planning {
-                    gradient_search(&context, 0.25, 24, seed).await?
-                } else {
-                    sampling_search(&context, 48, 8, seed).await?
+                if !provider.capabilities().supports_planning {
+                    return Err(WorldForgeError::UnsupportedCapability {
+                        provider: provider_name.to_string(),
+                        capability: "native planning".to_string(),
+                    });
                 }
+
+                let plan = tokio::time::timeout(timeout, provider.plan(request))
+                    .await
+                    .map_err(|_| WorldForgeError::PlanningTimeout {
+                        elapsed_ms: timeout.as_millis() as u64,
+                    })??;
+                return finalize_provider_plan(provider_name, request, plan, start.elapsed());
             }
         };
 
@@ -358,6 +366,86 @@ impl World {
             }
         }
     }
+}
+
+fn finalize_provider_plan(
+    provider_name: &str,
+    request: &PlanRequest,
+    mut plan: Plan,
+    elapsed: Duration,
+) -> Result<Plan> {
+    let step_count = plan.actions.len();
+    if step_count > request.max_steps as usize {
+        return Err(WorldForgeError::PlanningFailed {
+            reason: format!(
+                "provider-native plan from '{provider_name}' exceeded max_steps ({} > {})",
+                step_count, request.max_steps
+            ),
+        });
+    }
+    if plan.predicted_states.len() != step_count {
+        return Err(WorldForgeError::PlanningFailed {
+            reason: format!(
+                "provider-native plan from '{provider_name}' returned {} predicted states for {step_count} actions",
+                plan.predicted_states.len()
+            ),
+        });
+    }
+    if let Some(videos) = &plan.predicted_videos {
+        if videos.len() != step_count {
+            return Err(WorldForgeError::PlanningFailed {
+                reason: format!(
+                    "provider-native plan from '{provider_name}' returned {} videos for {step_count} actions",
+                    videos.len()
+                ),
+            });
+        }
+    }
+
+    let computed_guardrails = if request.guardrails.is_empty() {
+        vec![Vec::new(); step_count]
+    } else {
+        let mut per_step = Vec::with_capacity(step_count);
+        for (index, state) in plan.predicted_states.iter().enumerate() {
+            let results = evaluate_guardrails(&request.guardrails, state);
+            if has_blocking_violation(&results) {
+                let reason = results
+                    .iter()
+                    .filter(|result| !result.passed)
+                    .map(|result| {
+                        format!(
+                            "{}: {}",
+                            result.guardrail_name,
+                            result.violation_details.as_deref().unwrap_or("violation")
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                return Err(WorldForgeError::NoFeasiblePlan {
+                    goal: format!("{:?}", request.goal),
+                    reason: format!(
+                        "provider-native plan from '{provider_name}' violated blocking guardrails at step {}: {reason}",
+                        index + 1
+                    ),
+                });
+            }
+            per_step.push(results);
+        }
+        per_step
+    };
+
+    if !plan.guardrail_compliance.is_empty() && plan.guardrail_compliance.len() != step_count {
+        return Err(WorldForgeError::PlanningFailed {
+            reason: format!(
+                "provider-native plan from '{provider_name}' returned {} guardrail steps for {step_count} actions",
+                plan.guardrail_compliance.len()
+            ),
+        });
+    }
+
+    plan.guardrail_compliance = computed_guardrails;
+    plan.planning_time_ms = elapsed.as_millis() as u64;
+    Ok(plan)
 }
 
 #[derive(Debug, Clone)]
@@ -1955,8 +2043,60 @@ mod tests {
             .unwrap()
             .pose
             .position;
-        assert!(plan.iterations_used > 1);
+        assert_eq!(plan.iterations_used, 97);
         assert!(final_position.x > 1.5);
+    }
+
+    #[tokio::test]
+    async fn test_provider_native_requires_provider_support() {
+        let (state, _) = sample_planning_state();
+        let registry = std::sync::Arc::new({
+            let mut registry = ProviderRegistry::new();
+            registry.register(Box::new(PlanningProvider::new("planner", 1.0, false)));
+            registry
+        });
+        let world = World::new(state.clone(), "planner", registry);
+        let request = PlanRequest {
+            current_state: state,
+            goal: PlanGoal::Description("spawn cube".to_string()),
+            max_steps: 2,
+            guardrails: Vec::new(),
+            planner: PlannerType::ProviderNative,
+            timeout_seconds: 5.0,
+        };
+
+        let error = world.plan(&request).await.unwrap_err();
+        assert!(matches!(
+            error,
+            WorldForgeError::UnsupportedCapability { provider, capability }
+                if provider == "planner" && capability == "native planning"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_provider_native_rejects_malformed_plan() {
+        let state = WorldState::new("planning", "planner");
+        let registry = std::sync::Arc::new({
+            let mut registry = ProviderRegistry::new();
+            registry.register(Box::new(MalformedPlanProvider::new("planner")));
+            registry
+        });
+        let world = World::new(state.clone(), "planner", registry);
+        let request = PlanRequest {
+            current_state: state,
+            goal: PlanGoal::Description("set weather fog".to_string()),
+            max_steps: 1,
+            guardrails: Vec::new(),
+            planner: PlannerType::ProviderNative,
+            timeout_seconds: 5.0,
+        };
+
+        let error = world.plan(&request).await.unwrap_err();
+        assert!(matches!(
+            error,
+            WorldForgeError::PlanningFailed { reason }
+                if reason.contains("predicted states")
+        ));
     }
 
     #[tokio::test]
@@ -2179,6 +2319,11 @@ mod tests {
     }
 
     #[derive(Debug, Clone)]
+    struct MalformedPlanProvider {
+        name: String,
+    }
+
+    #[derive(Debug, Clone)]
     struct MediaProvider {
         name: String,
     }
@@ -2194,6 +2339,14 @@ mod tests {
     }
 
     impl MediaProvider {
+        fn new(name: &str) -> Self {
+            Self {
+                name: name.to_string(),
+            }
+        }
+    }
+
+    impl MalformedPlanProvider {
         fn new(name: &str) -> Self {
             Self {
                 name: name.to_string(),
@@ -2356,6 +2509,103 @@ mod tests {
             cost: CostEstimate::default(),
             guardrail_results: Vec::new(),
             timestamp: chrono::Utc::now(),
+        }
+    }
+
+    fn build_native_plan(request: &PlanRequest, movement_scale: f32, iterations_used: u32) -> Plan {
+        let goal_hints = derive_goal_hints(&request.goal, &request.current_state);
+        let mut state = request.current_state.clone();
+        let mut actions = Vec::new();
+        let mut predicted_states = Vec::new();
+
+        for hint in goal_hints {
+            if actions.len() >= request.max_steps as usize {
+                break;
+            }
+
+            match hint {
+                GoalHint::ObjectAt {
+                    object_id,
+                    target,
+                    tolerance,
+                    ..
+                } => {
+                    while actions.len() < request.max_steps as usize {
+                        let distance_to_goal = state
+                            .scene
+                            .get_object(&object_id)
+                            .map(|object| distance(object.pose.position, target))
+                            .unwrap_or(f32::INFINITY);
+                        if distance_to_goal <= tolerance {
+                            break;
+                        }
+                        let action = Action::Place {
+                            object: object_id,
+                            target,
+                        };
+                        apply_planning_action(&mut state, &action, movement_scale);
+                        actions.push(action);
+                        predicted_states.push(state.clone());
+                    }
+                }
+                GoalHint::ObjectExists { object_name } => {
+                    let action = Action::SpawnObject {
+                        template: object_name,
+                        pose: Pose {
+                            position: default_spawn_position(&state),
+                            ..Pose::default()
+                        },
+                    };
+                    apply_planning_action(&mut state, &action, movement_scale);
+                    actions.push(action);
+                    predicted_states.push(state.clone());
+                }
+                GoalHint::ObjectMissing { object_id, .. } => {
+                    let action = Action::RemoveObject { object: object_id };
+                    apply_planning_action(&mut state, &action, movement_scale);
+                    actions.push(action);
+                    predicted_states.push(state.clone());
+                }
+                GoalHint::ObjectsTouching { a, b } => {
+                    let Some(anchor) = state
+                        .scene
+                        .get_object(&b)
+                        .map(|object| object.pose.position)
+                    else {
+                        continue;
+                    };
+                    let action = Action::Place {
+                        object: a,
+                        target: anchor,
+                    };
+                    apply_planning_action(&mut state, &action, movement_scale);
+                    actions.push(action);
+                    predicted_states.push(state.clone());
+                }
+                GoalHint::Weather { weather } => {
+                    let action = Action::SetWeather { weather };
+                    apply_planning_action(&mut state, &action, movement_scale);
+                    actions.push(action);
+                    predicted_states.push(state.clone());
+                }
+                GoalHint::Lighting { time_of_day } => {
+                    let action = Action::SetLighting { time_of_day };
+                    apply_planning_action(&mut state, &action, movement_scale);
+                    actions.push(action);
+                    predicted_states.push(state.clone());
+                }
+            }
+        }
+
+        Plan {
+            actions,
+            predicted_states,
+            predicted_videos: None,
+            total_cost: 0.0,
+            success_probability: evaluate_goal_score(&request.goal, &state),
+            guardrail_compliance: Vec::new(),
+            planning_time_ms: 0,
+            iterations_used,
         }
     }
 
@@ -2626,6 +2876,93 @@ mod tests {
                 healthy: true,
                 message: "planning provider".to_string(),
                 latency_ms: 1,
+            })
+        }
+
+        async fn plan(&self, request: &PlanRequest) -> Result<Plan> {
+            if !self.supports_planning {
+                return Err(WorldForgeError::UnsupportedCapability {
+                    provider: self.name.clone(),
+                    capability: "native planning".to_string(),
+                });
+            }
+            Ok(build_native_plan(request, self.movement_scale, 97))
+        }
+
+        fn estimate_cost(&self, _operation: &Operation) -> CostEstimate {
+            CostEstimate::default()
+        }
+    }
+
+    #[async_trait]
+    impl WorldModelProvider for MalformedPlanProvider {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            test_capabilities(true)
+        }
+
+        async fn predict(
+            &self,
+            state: &WorldState,
+            action: &Action,
+            _config: &PredictionConfig,
+        ) -> Result<Prediction> {
+            Ok(dummy_prediction(&self.name, state, action))
+        }
+
+        async fn generate(
+            &self,
+            _prompt: &GenerationPrompt,
+            _config: &GenerationConfig,
+        ) -> Result<VideoClip> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.clone(),
+                capability: "generate".to_string(),
+            })
+        }
+
+        async fn reason(&self, _input: &ReasoningInput, _query: &str) -> Result<ReasoningOutput> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.clone(),
+                capability: "reason".to_string(),
+            })
+        }
+
+        async fn transfer(
+            &self,
+            _source: &VideoClip,
+            _controls: &SpatialControls,
+            _config: &TransferConfig,
+        ) -> Result<VideoClip> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.clone(),
+                capability: "transfer".to_string(),
+            })
+        }
+
+        async fn health_check(&self) -> Result<HealthStatus> {
+            Ok(HealthStatus {
+                healthy: true,
+                message: "malformed native planner".to_string(),
+                latency_ms: 1,
+            })
+        }
+
+        async fn plan(&self, _request: &PlanRequest) -> Result<Plan> {
+            Ok(Plan {
+                actions: vec![Action::SetWeather {
+                    weather: Weather::Fog,
+                }],
+                predicted_states: Vec::new(),
+                predicted_videos: None,
+                total_cost: 0.0,
+                success_probability: 0.5,
+                guardrail_compliance: Vec::new(),
+                planning_time_ms: 0,
+                iterations_used: 1,
             })
         }
 

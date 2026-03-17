@@ -235,7 +235,10 @@ are implemented. Prediction fallback and timeout handling are wired through the
 core orchestration layer and exposed in the CLI, REST server, and Python API.
 Planning now supports distinct sampling, CEM, MPC, gradient, and provider-native
 execution paths in the core, with planner selection exposed across the CLI,
-REST server, and Python bindings. Direct provider generation and world-state
+REST server, and Python bindings. Provider-native planning now dispatches
+through an explicit provider hook instead of aliasing core heuristics, with the
+local JEPA adapter supplying deterministic native plans on top of its
+action-conditioned surrogate dynamics. Direct provider generation and world-state
 reasoning are now exposed across the CLI, REST server, and Python bindings as
 well, with REST requests defaulting to each stored world's configured provider
 instead of hard-coding `mock`. Provider transfer is now exposed end-to-end in

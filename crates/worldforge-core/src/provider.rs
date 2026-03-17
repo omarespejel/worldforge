@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::action::{Action, ActionSpaceType};
 use crate::error::{Result, WorldForgeError};
-use crate::prediction::PredictionConfig;
+use crate::prediction::{Plan, PlanRequest, PredictionConfig};
 use crate::state::WorldState;
 use crate::types::VideoClip;
 
@@ -214,6 +214,17 @@ pub trait WorldModelProvider: Send + Sync {
     /// Check provider health and connectivity.
     async fn health_check(&self) -> Result<HealthStatus>;
 
+    /// Produce a provider-native plan when the model supports built-in planning.
+    ///
+    /// Providers that do not implement native planning should rely on the
+    /// default implementation, which returns `UnsupportedCapability`.
+    async fn plan(&self, _request: &PlanRequest) -> Result<Plan> {
+        Err(WorldForgeError::UnsupportedCapability {
+            provider: self.name().to_string(),
+            capability: "native planning".to_string(),
+        })
+    }
+
     /// Estimate cost for an operation.
     fn estimate_cost(&self, operation: &Operation) -> CostEstimate;
 }
@@ -380,6 +391,7 @@ impl Default for TransferConfig {
 mod tests {
     use super::*;
     use crate::error::WorldForgeError;
+    use crate::prediction::{PlanGoal, PlannerType};
 
     struct TestProvider {
         name: &'static str,
@@ -571,5 +583,29 @@ mod tests {
                 estimated_latency_ms: 750,
             }
         );
+    }
+
+    #[tokio::test]
+    async fn test_default_native_planning_is_unsupported() {
+        let provider = TestProvider {
+            name: "alpha",
+            capabilities: test_capabilities(),
+            estimate: CostEstimate::default(),
+        };
+        let request = PlanRequest {
+            current_state: crate::state::WorldState::new("planning", "alpha"),
+            goal: PlanGoal::Description("move block to position (1.0, 0.0, 0.0)".to_string()),
+            max_steps: 3,
+            guardrails: Vec::new(),
+            planner: PlannerType::ProviderNative,
+            timeout_seconds: 1.0,
+        };
+
+        let error = provider.plan(&request).await.unwrap_err();
+        assert!(matches!(
+            error,
+            WorldForgeError::UnsupportedCapability { provider, capability }
+                if provider == "alpha" && capability == "native planning"
+        ));
     }
 }

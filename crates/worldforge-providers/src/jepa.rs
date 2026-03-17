@@ -19,9 +19,12 @@ use std::time::Instant;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use worldforge_core::action::{evaluate_condition, Action, ActionSpaceType};
+use worldforge_core::action::{evaluate_condition, Action, ActionSpaceType, Condition, Weather};
 use worldforge_core::error::{Result, WorldForgeError};
-use worldforge_core::prediction::{PhysicsScores, Prediction, PredictionConfig};
+use worldforge_core::guardrail::{evaluate_guardrails, has_blocking_violation};
+use worldforge_core::prediction::{
+    PhysicsScores, Plan, PlanGoal, PlanRequest, Prediction, PredictionConfig,
+};
 use worldforge_core::provider::{
     CostEstimate, GenerationConfig, GenerationPrompt, HealthStatus, LatencyProfile, Operation,
     ProviderCapabilities, ReasoningInput, ReasoningOutput, SpatialControls, TransferConfig,
@@ -29,7 +32,7 @@ use worldforge_core::provider::{
 };
 use worldforge_core::scene::{SceneGraph, SceneObject, SpatialRelationship};
 use worldforge_core::state::WorldState;
-use worldforge_core::types::{BBox, Position, Rotation, Vec3, Velocity, VideoClip};
+use worldforge_core::types::{BBox, Pose, Position, Rotation, Vec3, Velocity, VideoClip};
 
 const DEFAULT_MODEL_NAME: &str = "v-jepa-2-surrogate";
 const MANIFEST_FILES: &[&str] = &["worldforge-jepa.json", "jepa.json", "config.json"];
@@ -332,6 +335,82 @@ impl WorldModelProvider for JepaProvider {
         }
     }
 
+    async fn plan(&self, request: &PlanRequest) -> Result<Plan> {
+        let assets = self.inspect_assets()?;
+        let start = Instant::now();
+        let native_goal =
+            derive_native_goal(&request.goal, &request.current_state).ok_or_else(|| {
+                WorldForgeError::NoFeasiblePlan {
+                    goal: format!("{:?}", request.goal),
+                    reason: "JEPA native planner could not interpret the requested goal"
+                        .to_string(),
+                }
+            })?;
+
+        let mut state = request.current_state.clone();
+        let config = PredictionConfig::default();
+        let mut actions = Vec::new();
+        let mut predicted_states = Vec::new();
+        let mut guardrail_compliance = Vec::new();
+
+        while actions.len() < request.max_steps as usize {
+            if native_goal_satisfied(&native_goal, &state) {
+                break;
+            }
+
+            let Some(action) = next_native_action(&native_goal, &state) else {
+                break;
+            };
+
+            let next_state = simulate_prediction(&state, &action, &config, &assets);
+            let guardrail_results = if request.guardrails.is_empty() {
+                Vec::new()
+            } else {
+                let results = evaluate_guardrails(&request.guardrails, &next_state);
+                if has_blocking_violation(&results) {
+                    return Err(WorldForgeError::NoFeasiblePlan {
+                        goal: format!("{:?}", request.goal),
+                        reason: "JEPA native planner generated a guardrail-blocked step"
+                            .to_string(),
+                    });
+                }
+                results
+            };
+
+            actions.push(action);
+            state = next_state;
+            predicted_states.push(state.clone());
+            guardrail_compliance.push(guardrail_results);
+        }
+
+        if !native_goal_satisfied(&native_goal, &state) {
+            return Err(WorldForgeError::NoFeasiblePlan {
+                goal: format!("{:?}", request.goal),
+                reason: "JEPA native planner exhausted the step budget before satisfying the goal"
+                    .to_string(),
+            });
+        }
+
+        let step_cost = self.estimate_cost(&Operation::Predict {
+            steps: 1,
+            resolution: config.resolution,
+        });
+        let total_cost = step_cost.usd as f32 * actions.len() as f32;
+
+        let iterations_used = u32::try_from(predicted_states.len()).unwrap_or(u32::MAX);
+
+        Ok(Plan {
+            actions,
+            predicted_states,
+            predicted_videos: None,
+            total_cost,
+            success_probability: native_goal_score(&native_goal, &state),
+            guardrail_compliance,
+            planning_time_ms: start.elapsed().as_millis() as u64,
+            iterations_used,
+        })
+    }
+
     fn estimate_cost(&self, operation: &Operation) -> CostEstimate {
         match operation {
             Operation::Predict { steps, .. } => CostEstimate {
@@ -481,6 +560,477 @@ fn simulate_prediction(
     output_state.time.seconds += f64::from(config.steps.max(1)) / f64::from(fps);
     output_state.time.dt = 1.0 / f64::from(fps);
     output_state
+}
+
+#[derive(Debug, Clone)]
+enum NativePlanGoal {
+    AlreadySatisfied,
+    ObjectAt {
+        object_id: uuid::Uuid,
+        target: Position,
+        tolerance: f32,
+    },
+    ObjectExists {
+        object_name: String,
+        pose: Pose,
+    },
+    ObjectMissing {
+        object_id: uuid::Uuid,
+    },
+    ObjectsTouching {
+        mover: uuid::Uuid,
+        anchor: uuid::Uuid,
+    },
+    Weather {
+        weather: Weather,
+    },
+    Lighting {
+        time_of_day: f32,
+    },
+}
+
+fn derive_native_goal(goal: &PlanGoal, state: &WorldState) -> Option<NativePlanGoal> {
+    match goal {
+        PlanGoal::Condition(condition) => native_goal_from_condition(condition, state),
+        PlanGoal::TargetState(target) => native_goal_from_target_state(target, state),
+        PlanGoal::Description(description) => native_goal_from_description(description, state),
+        PlanGoal::GoalImage(_) => None,
+    }
+}
+
+fn native_goal_from_condition(condition: &Condition, state: &WorldState) -> Option<NativePlanGoal> {
+    match condition {
+        Condition::ObjectAt {
+            object,
+            position,
+            tolerance,
+        } => Some(NativePlanGoal::ObjectAt {
+            object_id: *object,
+            target: *position,
+            tolerance: *tolerance,
+        }),
+        Condition::ObjectsTouching { a, b } => Some(NativePlanGoal::ObjectsTouching {
+            mover: *a,
+            anchor: *b,
+        }),
+        Condition::ObjectExists { object } => state
+            .scene
+            .get_object(object)
+            .map(|_| NativePlanGoal::AlreadySatisfied),
+        Condition::And(conditions) | Condition::Or(conditions) => conditions
+            .iter()
+            .find_map(|condition| native_goal_from_condition(condition, state)),
+        Condition::Not(inner) => match inner.as_ref() {
+            Condition::ObjectExists { object } => {
+                if state.scene.get_object(object).is_some() {
+                    Some(NativePlanGoal::ObjectMissing { object_id: *object })
+                } else {
+                    Some(NativePlanGoal::AlreadySatisfied)
+                }
+            }
+            _ => None,
+        },
+    }
+}
+
+fn native_goal_from_target_state(
+    target: &WorldState,
+    state: &WorldState,
+) -> Option<NativePlanGoal> {
+    for (object_id, target_object) in &target.scene.objects {
+        match state.scene.get_object(object_id) {
+            Some(current) => {
+                if position_distance(current.pose.position, target_object.pose.position) > 0.15 {
+                    return Some(NativePlanGoal::ObjectAt {
+                        object_id: *object_id,
+                        target: target_object.pose.position,
+                        tolerance: 0.15,
+                    });
+                }
+            }
+            None => {
+                return Some(NativePlanGoal::ObjectExists {
+                    object_name: target_object.name.clone(),
+                    pose: target_object.pose,
+                });
+            }
+        }
+    }
+
+    for object_id in state.scene.objects.keys() {
+        if target.scene.get_object(object_id).is_none() {
+            return Some(NativePlanGoal::ObjectMissing {
+                object_id: *object_id,
+            });
+        }
+    }
+
+    Some(NativePlanGoal::AlreadySatisfied)
+}
+
+fn native_goal_from_description(description: &str, state: &WorldState) -> Option<NativePlanGoal> {
+    let normalized = description.to_lowercase();
+    let mentioned = mentioned_scene_objects(state, &normalized);
+
+    if contains_any(&normalized, &["remove", "delete", "discard"]) {
+        if let Some(object) = mentioned.first() {
+            return Some(NativePlanGoal::ObjectMissing {
+                object_id: object.id,
+            });
+        }
+    }
+
+    if normalized.contains("touch") && mentioned.len() >= 2 {
+        return Some(NativePlanGoal::ObjectsTouching {
+            mover: mentioned[0].id,
+            anchor: mentioned[1].id,
+        });
+    }
+
+    if let Some((weather, _)) = parse_weather_hint(&normalized) {
+        return Some(NativePlanGoal::Weather { weather });
+    }
+
+    if let Some(time_of_day) = parse_lighting_hint(&normalized) {
+        return Some(NativePlanGoal::Lighting { time_of_day });
+    }
+
+    if contains_any(&normalized, &["spawn", "create", "add"]) {
+        return infer_object_name_from_verb(description, &["spawn", "create", "add"]).map(
+            |object_name| NativePlanGoal::ObjectExists {
+                pose: infer_spawn_pose(description, state),
+                object_name,
+            },
+        );
+    }
+
+    parse_position_hint(description).and_then(|target| {
+        mentioned
+            .first()
+            .map(|object| object.id)
+            .or_else(|| primary_dynamic_object_id(&state.scene))
+            .map(|object_id| NativePlanGoal::ObjectAt {
+                object_id,
+                target,
+                tolerance: 0.15,
+            })
+    })
+}
+
+fn native_goal_satisfied(goal: &NativePlanGoal, state: &WorldState) -> bool {
+    match goal {
+        NativePlanGoal::AlreadySatisfied => true,
+        NativePlanGoal::ObjectAt {
+            object_id,
+            target,
+            tolerance,
+        } => state
+            .scene
+            .get_object(object_id)
+            .map(|object| position_distance(object.pose.position, *target) <= *tolerance)
+            .unwrap_or(false),
+        NativePlanGoal::ObjectExists { object_name, .. } => {
+            !mentioned_scene_objects(state, &object_name.to_lowercase()).is_empty()
+        }
+        NativePlanGoal::ObjectMissing { object_id } => state.scene.get_object(object_id).is_none(),
+        NativePlanGoal::ObjectsTouching { mover, anchor } => {
+            touching_goal_satisfied(state, *mover, *anchor)
+        }
+        NativePlanGoal::Weather { weather } => {
+            let expected = format!("weather:{weather:?}").to_lowercase();
+            state
+                .metadata
+                .tags
+                .iter()
+                .any(|tag| tag.to_lowercase() == expected)
+        }
+        NativePlanGoal::Lighting { time_of_day } => state
+            .metadata
+            .tags
+            .iter()
+            .find_map(|tag| {
+                tag.to_lowercase()
+                    .strip_prefix("lighting:")
+                    .and_then(|value| value.parse::<f32>().ok())
+            })
+            .map(|observed| (observed - *time_of_day).abs() <= 0.5)
+            .unwrap_or(false),
+    }
+}
+
+fn native_goal_score(goal: &NativePlanGoal, state: &WorldState) -> f32 {
+    match goal {
+        NativePlanGoal::AlreadySatisfied => 1.0,
+        NativePlanGoal::ObjectAt {
+            object_id,
+            target,
+            tolerance,
+        } => state
+            .scene
+            .get_object(object_id)
+            .map(|object| distance_score(object.pose.position, *target, *tolerance))
+            .unwrap_or(0.0),
+        NativePlanGoal::ObjectExists { object_name, .. } => {
+            if mentioned_scene_objects(state, &object_name.to_lowercase()).is_empty() {
+                0.0
+            } else {
+                1.0
+            }
+        }
+        NativePlanGoal::ObjectMissing { object_id } => {
+            if state.scene.get_object(object_id).is_none() {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        NativePlanGoal::ObjectsTouching { mover, anchor } => touching_score(state, *mover, *anchor),
+        NativePlanGoal::Weather { .. } | NativePlanGoal::Lighting { .. } => {
+            if native_goal_satisfied(goal, state) {
+                1.0
+            } else {
+                0.0
+            }
+        }
+    }
+}
+
+fn next_native_action(goal: &NativePlanGoal, state: &WorldState) -> Option<Action> {
+    match goal {
+        NativePlanGoal::AlreadySatisfied => None,
+        NativePlanGoal::ObjectAt {
+            object_id, target, ..
+        } => state.scene.get_object(object_id).map(|_| Action::Place {
+            object: *object_id,
+            target: *target,
+        }),
+        NativePlanGoal::ObjectExists { object_name, pose } => {
+            mentioned_scene_objects(state, &object_name.to_lowercase())
+                .is_empty()
+                .then(|| Action::SpawnObject {
+                    template: object_name.clone(),
+                    pose: *pose,
+                })
+        }
+        NativePlanGoal::ObjectMissing { object_id } => state
+            .scene
+            .get_object(object_id)
+            .map(|_| Action::RemoveObject { object: *object_id }),
+        NativePlanGoal::ObjectsTouching { mover, anchor } => {
+            state.scene.get_object(anchor).map(|target| Action::Place {
+                object: *mover,
+                target: target.pose.position,
+            })
+        }
+        NativePlanGoal::Weather { weather } => (!native_goal_satisfied(goal, state))
+            .then_some(Action::SetWeather { weather: *weather }),
+        NativePlanGoal::Lighting { time_of_day } => (!native_goal_satisfied(goal, state))
+            .then_some(Action::SetLighting {
+                time_of_day: *time_of_day,
+            }),
+    }
+}
+
+fn parse_weather_hint(input: &str) -> Option<(Weather, &'static str)> {
+    [
+        (Weather::Rain, "rain"),
+        (Weather::Snow, "snow"),
+        (Weather::Fog, "fog"),
+        (Weather::Cloudy, "cloudy"),
+        (Weather::Night, "night"),
+        (Weather::Clear, "clear"),
+    ]
+    .into_iter()
+    .find(|(_, needle)| input.contains(needle))
+}
+
+fn parse_lighting_hint(input: &str) -> Option<f32> {
+    for marker in ["lighting", "time of day", "time"] {
+        if let Some(index) = input.find(marker) {
+            let suffix = &input[index + marker.len()..];
+            if let Some(value) = first_number(suffix) {
+                return Some(value.clamp(0.0, 24.0));
+            }
+        }
+    }
+    None
+}
+
+fn parse_position_hint(input: &str) -> Option<Position> {
+    if let (Some(start), Some(end)) = (input.find('('), input.rfind(')')) {
+        if start < end {
+            let values: Vec<f32> = input[start + 1..end]
+                .split([',', ' '])
+                .filter(|token| !token.trim().is_empty())
+                .filter_map(|token| token.trim().parse::<f32>().ok())
+                .collect();
+            if values.len() >= 3 {
+                return Some(Position {
+                    x: values[0],
+                    y: values[1],
+                    z: values[2],
+                });
+            }
+        }
+    }
+
+    let words: Vec<&str> = input.split_whitespace().collect();
+    for window in words.windows(4) {
+        if matches!(window[0], "to" | "at" | "position") {
+            if let (Ok(x), Ok(y), Ok(z)) = (
+                window[1].parse::<f32>(),
+                window[2].parse::<f32>(),
+                window[3].parse::<f32>(),
+            ) {
+                return Some(Position { x, y, z });
+            }
+        }
+    }
+
+    None
+}
+
+fn first_number(input: &str) -> Option<f32> {
+    input.split_whitespace().find_map(|token| {
+        token
+            .trim_matches(|ch: char| !ch.is_ascii_digit() && ch != '.' && ch != '-')
+            .parse::<f32>()
+            .ok()
+    })
+}
+
+fn infer_object_name_from_verb(input: &str, verbs: &[&str]) -> Option<String> {
+    let normalized = input.to_lowercase();
+    for verb in verbs {
+        if let Some(index) = normalized.find(verb) {
+            let remainder = input[index + verb.len()..].trim();
+            let token = remainder
+                .split_whitespace()
+                .next()
+                .map(|value| value.trim_matches(|ch: char| !ch.is_alphanumeric()));
+            if let Some(token) = token {
+                if !token.is_empty() {
+                    return Some(token.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn mentioned_scene_objects<'a>(state: &'a WorldState, description: &str) -> Vec<&'a SceneObject> {
+    let mut objects: Vec<_> = state
+        .scene
+        .objects
+        .values()
+        .filter(|object| {
+            let name = object.name.to_lowercase();
+            let label_match = object
+                .semantic_label
+                .as_ref()
+                .map(|label| description.contains(&label.to_lowercase()))
+                .unwrap_or(false);
+            description.contains(&name) || label_match
+        })
+        .collect();
+    objects.sort_by(|left, right| {
+        right
+            .name
+            .len()
+            .cmp(&left.name.len())
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    objects
+}
+
+fn infer_spawn_pose(description: &str, state: &WorldState) -> Pose {
+    let normalized = description.to_lowercase();
+    if contains_any(&normalized, &["next to", "beside", "near"]) {
+        if let Some(anchor) = mentioned_scene_objects(state, &normalized).first() {
+            let dx = (anchor.bbox.max.x - anchor.bbox.min.x).abs().max(0.15) + 0.15;
+            return Pose {
+                position: Position {
+                    x: anchor.pose.position.x + dx,
+                    y: anchor.pose.position.y,
+                    z: anchor.pose.position.z,
+                },
+                ..Pose::default()
+            };
+        }
+    }
+
+    Pose {
+        position: default_spawn_position_for_state(state),
+        ..Pose::default()
+    }
+}
+
+fn default_spawn_position_for_state(state: &WorldState) -> Position {
+    let baseline = primary_dynamic_object_id(&state.scene)
+        .and_then(|object_id| {
+            state
+                .scene
+                .get_object(&object_id)
+                .map(|object| object.pose.position)
+        })
+        .unwrap_or_default();
+    Position {
+        x: baseline.x + 0.25,
+        y: baseline.y.max(0.0) + 0.5,
+        z: baseline.z,
+    }
+}
+
+fn touching_goal_satisfied(state: &WorldState, mover: uuid::Uuid, anchor: uuid::Uuid) -> bool {
+    if state.scene.relationships.iter().any(|relationship| {
+        matches!(relationship, SpatialRelationship::Touching { a, b } if (*a == mover && *b == anchor) || (*a == anchor && *b == mover))
+    }) {
+        return true;
+    }
+
+    let Some(left) = state.scene.get_object(&mover) else {
+        return false;
+    };
+    let Some(right) = state.scene.get_object(&anchor) else {
+        return false;
+    };
+    let radius = approximate_radius(left) + approximate_radius(right);
+    position_distance(left.pose.position, right.pose.position) <= radius.max(0.05)
+}
+
+fn touching_score(state: &WorldState, mover: uuid::Uuid, anchor: uuid::Uuid) -> f32 {
+    if touching_goal_satisfied(state, mover, anchor) {
+        return 1.0;
+    }
+
+    let Some(left) = state.scene.get_object(&mover) else {
+        return 0.0;
+    };
+    let Some(right) = state.scene.get_object(&anchor) else {
+        return 0.0;
+    };
+    let radius = approximate_radius(left) + approximate_radius(right);
+    distance_score(left.pose.position, right.pose.position, radius.max(0.05))
+}
+
+fn approximate_radius(object: &SceneObject) -> f32 {
+    let dx = object.bbox.max.x - object.bbox.min.x;
+    let dy = object.bbox.max.y - object.bbox.min.y;
+    let dz = object.bbox.max.z - object.bbox.min.z;
+    (dx.mul_add(dx, dy * dy) + dz * dz).sqrt() * 0.5
+}
+
+fn distance_score(left: Position, right: Position, tolerance: f32) -> f32 {
+    let delta = position_distance(left, right);
+    if delta <= tolerance {
+        1.0
+    } else {
+        (1.0 / (1.0 + (delta - tolerance) / tolerance.max(0.1))).clamp(0.0, 1.0)
+    }
+}
+
+fn contains_any(input: &str, terms: &[&str]) -> bool {
+    terms.iter().any(|term| input.contains(term))
 }
 
 fn apply_action_conditioned_update(
@@ -1385,5 +1935,36 @@ mod tests {
         assert!(prediction.physics_scores.overall > 0.4);
         assert!(prediction.latency_ms > 0);
         assert!(prediction.model.contains("vjepa2-local"));
+    }
+
+    #[tokio::test]
+    async fn test_jepa_native_plan_moves_object_to_goal() {
+        let model_dir = TestModelDir::new("native-plan");
+        model_dir.write_weights("model.safetensors", b"latent-weights-go-here");
+        model_dir.write_manifest(&manifest_json("vjepa2-local"));
+
+        let provider = JepaProvider::new(&model_dir.path, JepaBackend::Burn);
+        let (state, object_id) = sample_state();
+        let request = PlanRequest {
+            current_state: state,
+            goal: PlanGoal::Description("move block to position (1.2, 1.0, 0.0)".to_string()),
+            max_steps: 4,
+            guardrails: Vec::new(),
+            planner: worldforge_core::prediction::PlannerType::ProviderNative,
+            timeout_seconds: 5.0,
+        };
+
+        let plan = provider.plan(&request).await.unwrap();
+        let final_state = plan.predicted_states.last().unwrap();
+        let final_position = final_state
+            .scene
+            .get_object(&object_id)
+            .unwrap()
+            .pose
+            .position;
+
+        assert!(!plan.actions.is_empty());
+        assert!(final_position.x > 1.0);
+        assert!(plan.success_probability > 0.9);
     }
 }
