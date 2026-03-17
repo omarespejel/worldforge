@@ -6,11 +6,15 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::time::Instant;
 
 use async_trait::async_trait;
 use worldforge_core::action::{evaluate_condition, Action, ActionSpaceType};
-use worldforge_core::error::Result;
-use worldforge_core::prediction::{PhysicsScores, Prediction, PredictionConfig};
+use worldforge_core::error::{Result, WorldForgeError};
+use worldforge_core::guardrail::{evaluate_guardrails, has_blocking_violation};
+use worldforge_core::prediction::{
+    PhysicsScores, Plan, PlanGoal, PlanRequest, Prediction, PredictionConfig,
+};
 use worldforge_core::provider::{
     CostEstimate, GenerationConfig, GenerationPrompt, HealthStatus, LatencyProfile, Operation,
     ProviderCapabilities, ReasoningInput, ReasoningOutput, SpatialControls, TransferConfig,
@@ -94,7 +98,7 @@ impl WorldModelProvider for MockProvider {
             ],
             supports_depth: true,
             supports_segmentation: true,
-            supports_planning: false,
+            supports_planning: true,
             latency_profile: LatencyProfile {
                 p50_ms: 10,
                 p95_ms: 20,
@@ -190,6 +194,69 @@ impl WorldModelProvider for MockProvider {
         })
     }
 
+    async fn plan(&self, request: &PlanRequest) -> Result<Plan> {
+        let started = Instant::now();
+        let mut state = request.current_state.clone();
+        let mut actions = derive_native_actions(&request.goal, &state)?;
+        actions.truncate(request.max_steps as usize);
+
+        let mut planned_actions = Vec::with_capacity(actions.len());
+        let mut predicted_states = Vec::with_capacity(actions.len());
+        let mut guardrail_compliance = Vec::with_capacity(actions.len());
+
+        for action in actions {
+            let next_state = simulate_single_action(&state, &action);
+            let guardrail_results = if request.guardrails.is_empty() {
+                Vec::new()
+            } else {
+                let results = evaluate_guardrails(&request.guardrails, &next_state);
+                if has_blocking_violation(&results) {
+                    return Err(WorldForgeError::NoFeasiblePlan {
+                        goal: format!("{:?}", request.goal),
+                        reason: "mock native planner generated a guardrail-blocked step"
+                            .to_string(),
+                    });
+                }
+                results
+            };
+
+            planned_actions.push(action);
+            state = next_state;
+            predicted_states.push(state.clone());
+            guardrail_compliance.push(guardrail_results);
+
+            if goal_satisfied(&request.goal, &state) {
+                break;
+            }
+        }
+
+        if !goal_satisfied(&request.goal, &state) {
+            return Err(WorldForgeError::NoFeasiblePlan {
+                goal: format!("{:?}", request.goal),
+                reason: "mock native planner exhausted the step budget before satisfying the goal"
+                    .to_string(),
+            });
+        }
+
+        let iterations_used = u32::try_from(planned_actions.len()).unwrap_or(u32::MAX);
+        let step_cost = self.estimate_cost(&Operation::Predict {
+            steps: 1,
+            resolution: planning_prediction_config().resolution,
+        });
+        let total_cost = step_cost.usd as f32 * planned_actions.len() as f32;
+
+        Ok(Plan {
+            actions: planned_actions,
+            predicted_states,
+            predicted_videos: None,
+            total_cost,
+            success_probability: goal_score(&request.goal, &state),
+            guardrail_compliance,
+            planning_time_ms: started.elapsed().as_millis() as u64,
+            iterations_used,
+        })
+    }
+
     fn estimate_cost(&self, _operation: &Operation) -> CostEstimate {
         CostEstimate {
             usd: 0.0,
@@ -197,6 +264,786 @@ impl WorldModelProvider for MockProvider {
             estimated_latency_ms: self.latency_ms,
         }
     }
+}
+
+fn planning_prediction_config() -> PredictionConfig {
+    PredictionConfig {
+        steps: 1,
+        fps: 24.0,
+        ..PredictionConfig::default()
+    }
+}
+
+fn simulate_single_action(state: &WorldState, action: &Action) -> WorldState {
+    simulate_prediction_trajectory(state, action, &planning_prediction_config())
+        .last()
+        .cloned()
+        .unwrap_or_else(|| state.clone())
+}
+
+fn derive_native_actions(goal: &PlanGoal, state: &WorldState) -> Result<Vec<Action>> {
+    match goal {
+        PlanGoal::Condition(condition) => actions_for_condition(condition, state),
+        PlanGoal::TargetState(target) => Ok(actions_for_target_state(state, target)),
+        PlanGoal::Description(description) => actions_for_description(description, state),
+        PlanGoal::GoalImage(_) => Err(WorldForgeError::NoFeasiblePlan {
+            goal: format!("{goal:?}"),
+            reason: "mock native planner does not support image-goal planning".to_string(),
+        }),
+    }
+}
+
+fn actions_for_condition(
+    condition: &worldforge_core::action::Condition,
+    state: &WorldState,
+) -> Result<Vec<Action>> {
+    use worldforge_core::action::Condition;
+
+    match condition {
+        Condition::ObjectAt {
+            object,
+            position,
+            tolerance,
+        } => {
+            let Some(item) = state.scene.get_object(object) else {
+                return Err(WorldForgeError::NoFeasiblePlan {
+                    goal: format!("{condition:?}"),
+                    reason: "condition references an unknown object".to_string(),
+                });
+            };
+            if item.pose.position.distance(*position) <= *tolerance {
+                Ok(Vec::new())
+            } else {
+                Ok(vec![Action::Place {
+                    object: *object,
+                    target: *position,
+                }])
+            }
+        }
+        Condition::ObjectsTouching { a, b } => {
+            if evaluate_condition(condition, state) {
+                return Ok(Vec::new());
+            }
+            let Some(anchor) = state.scene.get_object(b) else {
+                return Err(WorldForgeError::NoFeasiblePlan {
+                    goal: format!("{condition:?}"),
+                    reason: "touching condition references an unknown anchor object".to_string(),
+                });
+            };
+            Ok(vec![Action::Place {
+                object: *a,
+                target: anchor.pose.position,
+            }])
+        }
+        Condition::ObjectExists { object } => {
+            if state.scene.get_object(object).is_some() {
+                Ok(Vec::new())
+            } else {
+                Err(WorldForgeError::NoFeasiblePlan {
+                    goal: format!("{condition:?}"),
+                    reason: "ObjectExists cannot be satisfied because IDs are immutable"
+                        .to_string(),
+                })
+            }
+        }
+        Condition::And(conditions) => {
+            let mut simulated = state.clone();
+            let mut actions = Vec::new();
+            for condition in conditions {
+                let step_actions = actions_for_condition(condition, &simulated)?;
+                for action in step_actions {
+                    simulated = simulate_single_action(&simulated, &action);
+                    actions.push(action);
+                }
+            }
+            Ok(actions)
+        }
+        Condition::Or(conditions) => {
+            if conditions
+                .iter()
+                .any(|condition| evaluate_condition(condition, state))
+            {
+                return Ok(Vec::new());
+            }
+
+            for condition in conditions {
+                if let Ok(actions) = actions_for_condition(condition, state) {
+                    return Ok(actions);
+                }
+            }
+
+            Err(WorldForgeError::NoFeasiblePlan {
+                goal: format!("{condition:?}"),
+                reason: "none of the OR branches can be satisfied".to_string(),
+            })
+        }
+        Condition::Not(inner) => actions_to_negate_condition(inner, state),
+    }
+}
+
+fn actions_to_negate_condition(
+    condition: &worldforge_core::action::Condition,
+    state: &WorldState,
+) -> Result<Vec<Action>> {
+    use worldforge_core::action::Condition;
+
+    if !evaluate_condition(condition, state) {
+        return Ok(Vec::new());
+    }
+
+    match condition {
+        Condition::ObjectExists { object } => Ok(vec![Action::RemoveObject { object: *object }]),
+        Condition::ObjectAt {
+            object,
+            position,
+            tolerance,
+        } => Ok(vec![Action::Place {
+            object: *object,
+            target: Position {
+                x: position.x + tolerance.max(0.1) + 0.2,
+                y: position.y,
+                z: position.z,
+            },
+        }]),
+        Condition::ObjectsTouching { a, b } => {
+            let Some(anchor) = state.scene.get_object(b) else {
+                return Err(WorldForgeError::NoFeasiblePlan {
+                    goal: format!("{condition:?}"),
+                    reason: "cannot negate touching condition without anchor object".to_string(),
+                });
+            };
+            Ok(vec![Action::Place {
+                object: *a,
+                target: Position {
+                    x: anchor.pose.position.x + 0.6,
+                    y: anchor.pose.position.y,
+                    z: anchor.pose.position.z,
+                },
+            }])
+        }
+        _ => Err(WorldForgeError::NoFeasiblePlan {
+            goal: format!("{condition:?}"),
+            reason: "mock native planner cannot negate this compound condition".to_string(),
+        }),
+    }
+}
+
+fn actions_for_target_state(current: &WorldState, target: &WorldState) -> Vec<Action> {
+    let mut actions = Vec::new();
+
+    let mut current_objects: Vec<_> = current.scene.objects.values().collect();
+    current_objects.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.id.as_bytes().cmp(right.id.as_bytes()))
+    });
+
+    for object in current_objects {
+        if target.scene.get_object(&object.id).is_none() {
+            actions.push(Action::RemoveObject { object: object.id });
+        }
+    }
+
+    let mut target_objects: Vec<_> = target.scene.objects.values().collect();
+    target_objects.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.id.as_bytes().cmp(right.id.as_bytes()))
+    });
+
+    for target_object in target_objects {
+        if let Some(current_object) = current.scene.get_object(&target_object.id) {
+            if current_object
+                .pose
+                .position
+                .distance(target_object.pose.position)
+                > 0.05
+            {
+                actions.push(Action::Place {
+                    object: target_object.id,
+                    target: target_object.pose.position,
+                });
+            }
+        } else {
+            actions.push(Action::SpawnObject {
+                template: target_object.name.clone(),
+                pose: target_object.pose,
+            });
+        }
+    }
+
+    if let Some(weather) = weather_from_tags(&target.metadata.tags) {
+        if weather_from_tags(&current.metadata.tags) != Some(weather) {
+            actions.push(Action::SetWeather { weather });
+        }
+    }
+
+    if let Some(lighting) = lighting_from_tags(&target.metadata.tags) {
+        let current_lighting = lighting_from_tags(&current.metadata.tags);
+        if current_lighting
+            .map(|value| (value - lighting).abs() > 0.25)
+            .unwrap_or(true)
+        {
+            actions.push(Action::SetLighting {
+                time_of_day: lighting,
+            });
+        }
+    }
+
+    actions
+}
+
+fn actions_for_description(description: &str, state: &WorldState) -> Result<Vec<Action>> {
+    let normalized = description.to_lowercase();
+    let mut actions = Vec::new();
+
+    if let Some(weather) = parse_weather_hint(&normalized) {
+        actions.push(Action::SetWeather { weather });
+    }
+
+    if let Some(time_of_day) = parse_lighting_hint(&normalized) {
+        actions.push(Action::SetLighting { time_of_day });
+    }
+
+    if let Some(name) =
+        infer_object_name_from_verb(description, &["remove", "delete", "discard", "drop"])
+    {
+        if let Some(object) = find_object_by_name_or_label(state, &name.to_lowercase()) {
+            actions.push(Action::RemoveObject { object: object.id });
+        }
+    }
+
+    if let Some(template) = infer_object_name_from_verb(description, &["spawn", "create", "add"]) {
+        let relative = parse_relative_target_hint(state, &normalized);
+        let pose = Pose {
+            position: relative
+                .map(|hint| hint.target)
+                .or_else(|| parse_position_hint(description))
+                .unwrap_or_else(|| default_spawn_position(state)),
+            ..Pose::default()
+        };
+        actions.push(Action::SpawnObject { template, pose });
+    }
+
+    if let Some(target) = parse_position_hint(description)
+        .or_else(|| parse_relative_target_hint(state, &normalized).map(|hint| hint.target))
+    {
+        if let Some(name) = infer_object_name_from_verb(description, &["move", "place", "put"]) {
+            if let Some(object) = find_object_by_name_or_label(state, &name.to_lowercase()) {
+                actions.push(Action::Place {
+                    object: object.id,
+                    target,
+                });
+            }
+        } else if let Some(object_id) = primary_movable_object_id(state) {
+            actions.push(Action::Place {
+                object: object_id,
+                target,
+            });
+        }
+    }
+
+    if actions.is_empty() {
+        return Err(WorldForgeError::NoFeasiblePlan {
+            goal: description.to_string(),
+            reason: "mock native planner could not interpret the requested goal".to_string(),
+        });
+    }
+
+    Ok(actions)
+}
+
+fn goal_satisfied(goal: &PlanGoal, state: &WorldState) -> bool {
+    goal_score(goal, state) >= 0.95
+}
+
+fn goal_score(goal: &PlanGoal, state: &WorldState) -> f32 {
+    match goal {
+        PlanGoal::Condition(condition) => {
+            if evaluate_condition(condition, state) {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        PlanGoal::TargetState(target) => target_state_score(state, target),
+        PlanGoal::Description(description) => description_goal_score(description, state),
+        PlanGoal::GoalImage(_) => 0.0,
+    }
+}
+
+fn target_state_score(current: &WorldState, target: &WorldState) -> f32 {
+    if target.scene.objects.is_empty() && current.scene.objects.is_empty() {
+        return 1.0;
+    }
+
+    let mut score = 0.0;
+    let mut components = 0.0;
+    for target_object in target.scene.objects.values() {
+        components += 1.0;
+        let object_score = current
+            .scene
+            .get_object(&target_object.id)
+            .map(|current_object| {
+                distance_score(
+                    current_object.pose.position,
+                    target_object.pose.position,
+                    0.1,
+                )
+            })
+            .or_else(|| {
+                current
+                    .scene
+                    .objects
+                    .values()
+                    .find(|object| object_name_matches(object, &target_object.name.to_lowercase()))
+                    .map(|current_object| {
+                        distance_score(
+                            current_object.pose.position,
+                            target_object.pose.position,
+                            0.1,
+                        )
+                    })
+            })
+            .unwrap_or(0.0);
+        score += object_score;
+    }
+
+    if let Some(target_weather) = weather_from_tags(&target.metadata.tags) {
+        components += 1.0;
+        let weather_score = if weather_from_tags(&current.metadata.tags) == Some(target_weather) {
+            1.0
+        } else {
+            0.0
+        };
+        score += weather_score;
+    }
+
+    if let Some(target_lighting) = lighting_from_tags(&target.metadata.tags) {
+        components += 1.0;
+        let lighting_score = lighting_from_tags(&current.metadata.tags)
+            .map(|value| distance_score_scalar(value, target_lighting, 0.5))
+            .unwrap_or(0.0);
+        score += lighting_score;
+    }
+
+    if components <= f32::EPSILON {
+        0.5
+    } else {
+        (score / components).clamp(0.0, 1.0)
+    }
+}
+
+fn description_goal_score(description: &str, state: &WorldState) -> f32 {
+    let normalized = description.to_lowercase();
+    let mut checks = Vec::new();
+
+    if let Some(weather) = parse_weather_hint(&normalized) {
+        checks.push(
+            if weather_from_tags(&state.metadata.tags) == Some(weather) {
+                1.0
+            } else {
+                0.0
+            },
+        );
+    }
+
+    if let Some(time_of_day) = parse_lighting_hint(&normalized) {
+        checks.push(
+            lighting_from_tags(&state.metadata.tags)
+                .map(|value| distance_score_scalar(value, time_of_day, 0.5))
+                .unwrap_or(0.0),
+        );
+    }
+
+    if let Some(name) = infer_object_name_from_verb(description, &["remove", "delete"]) {
+        checks.push(
+            if find_object_by_name_or_label(state, &name.to_lowercase()).is_none() {
+                1.0
+            } else {
+                0.0
+            },
+        );
+    }
+
+    if let Some(template) = infer_object_name_from_verb(description, &["spawn", "create", "add"]) {
+        let object = find_object_by_name_or_label(state, &template.to_lowercase());
+        let score = if let Some(hint) = parse_relative_target_hint(state, &normalized) {
+            object
+                .map(|item| distance_score(item.pose.position, hint.target, hint.tolerance))
+                .unwrap_or(0.0)
+        } else if let Some(target) = parse_position_hint(description) {
+            object
+                .map(|item| distance_score(item.pose.position, target, 0.2))
+                .unwrap_or(0.0)
+        } else if object.is_some() {
+            1.0
+        } else {
+            0.0
+        };
+        checks.push(score);
+    }
+
+    if let Some(target) = parse_position_hint(description)
+        .or_else(|| parse_relative_target_hint(state, &normalized).map(|hint| hint.target))
+    {
+        let object = infer_object_name_from_verb(description, &["move", "place", "put"])
+            .and_then(|name| find_object_by_name_or_label(state, &name.to_lowercase()))
+            .or_else(|| {
+                primary_movable_object_id(state).and_then(|id| state.scene.get_object(&id))
+            });
+        checks.push(
+            object
+                .map(|item| distance_score(item.pose.position, target, 0.2))
+                .unwrap_or(0.0),
+        );
+    }
+
+    if checks.is_empty() {
+        if state.scene.objects.is_empty() {
+            0.0
+        } else {
+            0.5
+        }
+    } else {
+        (checks.iter().sum::<f32>() / checks.len() as f32).clamp(0.0, 1.0)
+    }
+}
+
+fn distance_score(actual: Position, target: Position, tolerance: f32) -> f32 {
+    let distance = actual.distance(target);
+    distance_score_scalar(distance, 0.0, tolerance)
+}
+
+fn distance_score_scalar(actual: f32, target: f32, tolerance: f32) -> f32 {
+    let tolerance = tolerance.max(0.001);
+    let delta = (actual - target).abs();
+    if delta <= tolerance {
+        1.0
+    } else {
+        (1.0 - (delta - tolerance) / (tolerance * 2.0)).clamp(0.0, 1.0)
+    }
+}
+
+fn weather_from_tags(tags: &[String]) -> Option<worldforge_core::action::Weather> {
+    tags.iter()
+        .find_map(|tag| tag.strip_prefix("weather:"))
+        .and_then(parse_weather_value)
+}
+
+fn parse_weather_value(value: &str) -> Option<worldforge_core::action::Weather> {
+    use worldforge_core::action::Weather;
+    match value.to_ascii_lowercase().as_str() {
+        "clear" => Some(Weather::Clear),
+        "cloudy" => Some(Weather::Cloudy),
+        "rain" => Some(Weather::Rain),
+        "snow" => Some(Weather::Snow),
+        "fog" => Some(Weather::Fog),
+        "night" => Some(Weather::Night),
+        _ => None,
+    }
+}
+
+fn lighting_from_tags(tags: &[String]) -> Option<f32> {
+    tags.iter()
+        .find_map(|tag| tag.strip_prefix("lighting:"))
+        .and_then(|value| value.parse::<f32>().ok())
+}
+
+fn default_spawn_position(state: &WorldState) -> Position {
+    if state.scene.objects.is_empty() {
+        return Position::default();
+    }
+
+    let mut objects: Vec<_> = state.scene.objects.values().collect();
+    objects.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.id.as_bytes().cmp(right.id.as_bytes()))
+    });
+
+    let anchor = objects.last().expect("checked non-empty");
+    Position {
+        x: anchor.pose.position.x + 0.6,
+        y: anchor.pose.position.y.max(anchor.bbox.max.y + 0.2),
+        z: anchor.pose.position.z,
+    }
+}
+
+fn parse_weather_hint(input: &str) -> Option<worldforge_core::action::Weather> {
+    use worldforge_core::action::Weather;
+    [
+        (Weather::Rain, "rain"),
+        (Weather::Snow, "snow"),
+        (Weather::Fog, "fog"),
+        (Weather::Cloudy, "cloudy"),
+        (Weather::Night, "night"),
+        (Weather::Clear, "clear"),
+    ]
+    .into_iter()
+    .find_map(|(weather, needle)| input.contains(needle).then_some(weather))
+}
+
+fn parse_lighting_hint(input: &str) -> Option<f32> {
+    for marker in ["lighting", "time of day", "time"] {
+        if let Some(index) = input.find(marker) {
+            let suffix = &input[index + marker.len()..];
+            if let Some(value) = first_number(suffix) {
+                return Some(value.clamp(0.0, 24.0));
+            }
+        }
+    }
+    None
+}
+
+fn parse_position_hint(input: &str) -> Option<Position> {
+    if let (Some(start), Some(end)) = (input.find('('), input.rfind(')')) {
+        if start < end {
+            let values: Vec<f32> = input[start + 1..end]
+                .split([',', ' '])
+                .filter(|token| !token.trim().is_empty())
+                .filter_map(|token| token.trim().parse::<f32>().ok())
+                .collect();
+            if values.len() >= 3 {
+                return Some(Position {
+                    x: values[0],
+                    y: values[1],
+                    z: values[2],
+                });
+            }
+        }
+    }
+
+    let words: Vec<&str> = input.split_whitespace().collect();
+    for window in words.windows(4) {
+        if matches!(window[0], "to" | "at" | "position") {
+            let parsed = (
+                window[1].parse::<f32>(),
+                window[2].parse::<f32>(),
+                window[3].parse::<f32>(),
+            );
+            if let (Ok(x), Ok(y), Ok(z)) = parsed {
+                return Some(Position { x, y, z });
+            }
+        }
+    }
+    None
+}
+
+fn first_number(input: &str) -> Option<f32> {
+    input.split_whitespace().find_map(|token| {
+        token
+            .trim_matches(|ch: char| !ch.is_ascii_digit() && ch != '.' && ch != '-')
+            .parse::<f32>()
+            .ok()
+    })
+}
+
+fn infer_object_name_from_verb(input: &str, verbs: &[&str]) -> Option<String> {
+    let normalized = input.to_lowercase();
+    let delimiters = [
+        " next to ",
+        " beside ",
+        " near ",
+        " on top of ",
+        " above ",
+        " below ",
+        " under ",
+        " left of ",
+        " right of ",
+        " in front of ",
+        " behind ",
+        " at ",
+        " to position ",
+        " to (",
+    ];
+
+    for verb in verbs {
+        if let Some(index) = normalized.find(verb) {
+            let mut remainder = input[index + verb.len()..].trim();
+            let mut remainder_lower = remainder.to_lowercase();
+
+            for article in ["a ", "an ", "the "] {
+                if remainder_lower.starts_with(article) {
+                    remainder = remainder[article.len()..].trim_start();
+                    remainder_lower = remainder.to_lowercase();
+                    break;
+                }
+            }
+
+            if remainder.is_empty() {
+                continue;
+            }
+
+            let end_index = delimiters
+                .iter()
+                .filter_map(|delimiter| remainder_lower.find(delimiter))
+                .min()
+                .unwrap_or(remainder.len());
+
+            let token = remainder[..end_index].trim().trim_matches(|ch: char| {
+                !ch.is_alphanumeric() && ch != ' ' && ch != '_' && ch != '-'
+            });
+            if !token.is_empty() {
+                return Some(token.to_string());
+            }
+        }
+    }
+
+    None
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RelativePlacement {
+    NextTo,
+    OnTopOf,
+    Below,
+    LeftOf,
+    RightOf,
+    InFrontOf,
+    Behind,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RelativeTargetHint {
+    target: Position,
+    tolerance: f32,
+}
+
+fn parse_relative_target_hint(state: &WorldState, description: &str) -> Option<RelativeTargetHint> {
+    let mut best: Option<(usize, usize, RelativeTargetHint)> = None;
+
+    for object in state.scene.objects.values() {
+        let mut aliases = vec![object.name.to_lowercase()];
+        if let Some(label) = &object.semantic_label {
+            let lowered = label.to_lowercase();
+            if !aliases.contains(&lowered) {
+                aliases.push(lowered);
+            }
+        }
+
+        for alias in aliases {
+            for (phrase, placement) in [
+                ("next to", RelativePlacement::NextTo),
+                ("beside", RelativePlacement::NextTo),
+                ("near", RelativePlacement::NextTo),
+                ("on top of", RelativePlacement::OnTopOf),
+                ("above", RelativePlacement::OnTopOf),
+                ("below", RelativePlacement::Below),
+                ("under", RelativePlacement::Below),
+                ("left of", RelativePlacement::LeftOf),
+                ("right of", RelativePlacement::RightOf),
+                ("in front of", RelativePlacement::InFrontOf),
+                ("behind", RelativePlacement::Behind),
+            ] {
+                let position = [
+                    format!("{phrase} {alias}"),
+                    format!("{phrase} the {alias}"),
+                    format!("{phrase} a {alias}"),
+                    format!("{phrase} an {alias}"),
+                ]
+                .into_iter()
+                .filter_map(|pattern| description.find(&pattern))
+                .min();
+                let Some(position) = position else { continue };
+
+                let target = relative_target_position(object, placement);
+                let tolerance = (approximate_radius(object) + 0.15).clamp(0.15, 0.5);
+                let candidate = (
+                    position,
+                    alias.len(),
+                    RelativeTargetHint { target, tolerance },
+                );
+
+                match best {
+                    Some((best_position, best_alias_len, _)) => {
+                        if position < best_position
+                            || (position == best_position && alias.len() > best_alias_len)
+                        {
+                            best = Some(candidate);
+                        }
+                    }
+                    None => best = Some(candidate),
+                }
+            }
+        }
+    }
+
+    best.map(|(_, _, hint)| hint)
+}
+
+fn relative_target_position(anchor: &SceneObject, placement: RelativePlacement) -> Position {
+    let clearance = (approximate_radius(anchor) + 0.2).clamp(0.2, 0.8);
+    match placement {
+        RelativePlacement::NextTo => Position {
+            x: anchor.pose.position.x + clearance,
+            y: anchor.pose.position.y,
+            z: anchor.pose.position.z,
+        },
+        RelativePlacement::OnTopOf => Position {
+            x: anchor.pose.position.x,
+            y: anchor.pose.position.y + clearance,
+            z: anchor.pose.position.z,
+        },
+        RelativePlacement::Below => Position {
+            x: anchor.pose.position.x,
+            y: anchor.pose.position.y - clearance,
+            z: anchor.pose.position.z,
+        },
+        RelativePlacement::LeftOf => Position {
+            x: anchor.pose.position.x - clearance,
+            y: anchor.pose.position.y,
+            z: anchor.pose.position.z,
+        },
+        RelativePlacement::RightOf => Position {
+            x: anchor.pose.position.x + clearance,
+            y: anchor.pose.position.y,
+            z: anchor.pose.position.z,
+        },
+        RelativePlacement::InFrontOf => Position {
+            x: anchor.pose.position.x,
+            y: anchor.pose.position.y,
+            z: anchor.pose.position.z + clearance,
+        },
+        RelativePlacement::Behind => Position {
+            x: anchor.pose.position.x,
+            y: anchor.pose.position.y,
+            z: anchor.pose.position.z - clearance,
+        },
+    }
+}
+
+fn approximate_radius(object: &SceneObject) -> f32 {
+    let half_width = (object.bbox.max.x - object.bbox.min.x).abs() * 0.5;
+    let half_depth = (object.bbox.max.z - object.bbox.min.z).abs() * 0.5;
+    half_width.max(half_depth).max(0.05)
+}
+
+fn find_object_by_name_or_label<'a>(state: &'a WorldState, query: &str) -> Option<&'a SceneObject> {
+    let mut objects: Vec<_> = state.scene.objects.values().collect();
+    objects.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.id.as_bytes().cmp(right.id.as_bytes()))
+    });
+    objects
+        .into_iter()
+        .find(|object| object_name_matches(object, query))
+}
+
+fn object_name_matches(object: &SceneObject, query: &str) -> bool {
+    let name = object.name.to_lowercase();
+    if name == query || name.contains(query) {
+        return true;
+    }
+    object
+        .semantic_label
+        .as_ref()
+        .map(|label| {
+            let label = label.to_lowercase();
+            label == query || label.contains(query)
+        })
+        .unwrap_or(false)
 }
 
 fn simulate_prediction_trajectory(
@@ -1188,6 +2035,8 @@ fn color_from_seed(seed: u64) -> [u8; 3] {
 mod tests {
     use super::*;
     use worldforge_core::action::Condition;
+    use worldforge_core::guardrail::{Guardrail, GuardrailConfig};
+    use worldforge_core::prediction::{PlanGoal, PlanRequest, PlannerType};
     use worldforge_core::types::Position;
 
     fn sample_state() -> (WorldState, uuid::Uuid, uuid::Uuid) {
@@ -1238,6 +2087,17 @@ mod tests {
         state.scene.add_object(table);
         state.scene.add_object(mug);
         (state, table_id, mug_id)
+    }
+
+    fn native_request(state: &WorldState, goal: PlanGoal) -> PlanRequest {
+        PlanRequest {
+            current_state: state.clone(),
+            goal,
+            max_steps: 8,
+            guardrails: Vec::new(),
+            planner: PlannerType::ProviderNative,
+            timeout_seconds: 5.0,
+        }
     }
 
     #[tokio::test]
@@ -1423,6 +2283,114 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_mock_native_plan_spawn_description_goal() {
+        let provider = MockProvider::new();
+        let (state, _, mug_id) = sample_state();
+        let request = native_request(
+            &state,
+            PlanGoal::Description("spawn cube next to the mug".to_string()),
+        );
+
+        let plan = provider.plan(&request).await.unwrap();
+        assert!(!plan.actions.is_empty());
+        assert_eq!(plan.actions.len(), plan.predicted_states.len());
+        assert_eq!(plan.guardrail_compliance.len(), plan.actions.len());
+        assert!(plan.success_probability >= 0.95);
+
+        let final_state = plan.predicted_states.last().unwrap();
+        let spawned = final_state
+            .scene
+            .objects
+            .values()
+            .find(|object| object.name.eq_ignore_ascii_case("cube"))
+            .unwrap();
+        let mug = final_state.scene.get_object(&mug_id).unwrap();
+        assert!(spawned.pose.position.distance(mug.pose.position) <= 0.8);
+    }
+
+    #[tokio::test]
+    async fn test_mock_native_plan_condition_goal() {
+        let provider = MockProvider::new();
+        let (state, _, mug_id) = sample_state();
+        let target = Position {
+            x: 0.4,
+            y: 0.7,
+            z: 0.0,
+        };
+        let goal = PlanGoal::Condition(Condition::ObjectAt {
+            object: mug_id,
+            position: target,
+            tolerance: 0.05,
+        });
+
+        let plan = provider
+            .plan(&native_request(&state, goal.clone()))
+            .await
+            .unwrap();
+        assert!(!plan.actions.is_empty());
+        let final_state = plan.predicted_states.last().unwrap();
+        assert!(matches!(plan.actions[0], Action::Place { object, .. } if object == mug_id));
+        assert!(
+            matches!(goal, PlanGoal::Condition(ref condition) if evaluate_condition(condition, final_state))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mock_native_plan_target_state_goal() {
+        let provider = MockProvider::new();
+        let (state, _, mug_id) = sample_state();
+        let mut target = state.clone();
+        target.scene.set_object_position(
+            &mug_id,
+            Position {
+                x: 0.2,
+                y: 0.7,
+                z: 0.3,
+            },
+        );
+
+        let plan = provider
+            .plan(&native_request(
+                &state,
+                PlanGoal::TargetState(Box::new(target.clone())),
+            ))
+            .await
+            .unwrap();
+        assert!(!plan.actions.is_empty());
+        assert!(plan.success_probability >= 0.95);
+        let final_state = plan.predicted_states.last().unwrap();
+        let final_mug = final_state.scene.get_object(&mug_id).unwrap();
+        let target_mug = target.scene.get_object(&mug_id).unwrap();
+        assert!(final_mug.pose.position.distance(target_mug.pose.position) <= 0.1);
+    }
+
+    #[tokio::test]
+    async fn test_mock_native_plan_blocks_on_guardrail_violation() {
+        let provider = MockProvider::new();
+        let (state, _, mug_id) = sample_state();
+        let mut request = native_request(
+            &state,
+            PlanGoal::Condition(Condition::ObjectAt {
+                object: mug_id,
+                position: Position {
+                    x: 2.0,
+                    y: 0.7,
+                    z: 0.0,
+                },
+                tolerance: 0.05,
+            }),
+        );
+        request.guardrails = vec![GuardrailConfig {
+            guardrail: Guardrail::MaxVelocity { limit: 0.05 },
+            blocking: true,
+        }];
+
+        let error = provider.plan(&request).await.unwrap_err();
+        assert!(matches!(error, WorldForgeError::NoFeasiblePlan { .. }));
+        assert!(error.to_string().contains("guardrail-blocked"));
+    }
+
+    #[tokio::test]
     async fn test_mock_health() {
         let provider = MockProvider::new();
         let status = provider.health_check().await.unwrap();
@@ -1438,6 +2406,7 @@ mod tests {
         assert!(caps.transfer);
         assert!(caps.supports_depth);
         assert!(caps.supports_segmentation);
+        assert!(caps.supports_planning);
     }
 
     #[test]
