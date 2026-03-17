@@ -252,10 +252,13 @@ execution paths in the core, with planner selection exposed across the CLI,
 REST server, and Python bindings. Provider-native planning now dispatches
 through an explicit provider hook instead of aliasing core heuristics, with the
 local JEPA adapter supplying deterministic native plans on top of its
-action-conditioned surrogate dynamics. Direct provider generation and world-state
-reasoning are now exposed across the CLI, REST server, and Python bindings as
-well, with REST requests defaulting to each stored world's configured provider
-instead of hard-coding `mock`. Provider transfer is now exposed end-to-end in
+action-conditioned surrogate dynamics. Heuristic planners now parse relational
+natural-language goals like spawning an object next to a named anchor instead
+of collapsing those requests into plain anchor existence checks. Direct provider
+generation and world-state reasoning are now exposed across the CLI, REST
+server, and Python bindings as well, with REST requests defaulting to each
+stored world's configured provider instead of hard-coding `mock`. Provider
+transfer is now exposed end-to-end in
 the core, CLI, REST server, and Python bindings with JSON clip round-tripping
 for reusable workflows. File-backed and SQLite-backed world persistence are
 both supported through the shared `StateStore` abstraction across the core,

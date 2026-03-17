@@ -321,6 +321,108 @@ async fn test_live_http_plan_uses_requested_planner() {
 }
 
 #[tokio::test]
+async fn test_live_http_plan_relational_goal_spawns_object_near_anchor() {
+    let server = spawn_test_server().await;
+
+    let (status, create) = http_request(
+        server.address,
+        "POST",
+        "/v1/worlds",
+        r#"{"name":"relational_plan_world","provider":"mock"}"#,
+    )
+    .await;
+    assert_eq!(status, 201);
+    let world_id = create["data"]["id"].as_str().unwrap().to_string();
+
+    // Seed the world with the anchor object referenced by the natural-language goal.
+    let add_anchor_body = r#"{
+        "name":"red mug",
+        "position":{"x":1.0,"y":0.8,"z":0.0},
+        "bbox":{"min":{"x":0.95,"y":0.75,"z":-0.05},"max":{"x":1.05,"y":0.85,"z":0.05}},
+        "semantic_label":"mug"
+    }"#;
+    let (status, _object) = http_request(
+        server.address,
+        "POST",
+        &format!("/v1/worlds/{world_id}/objects"),
+        add_anchor_body,
+    )
+    .await;
+    assert_eq!(status, 201);
+
+    let plan_body = r#"{
+        "goal":"spawn cube next to the red mug",
+        "provider":"mock",
+        "planner":"sampling",
+        "max_steps":4,
+        "num_samples":48,
+        "top_k":5
+    }"#;
+    let (status, plan_json) = http_request(
+        server.address,
+        "POST",
+        &format!("/v1/worlds/{world_id}/plan"),
+        plan_body,
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    let plan: worldforge_core::prediction::Plan =
+        serde_json::from_value(plan_json["data"].clone()).unwrap();
+    assert!(
+        !plan.actions.is_empty(),
+        "planning should produce actions for relational spawn goals"
+    );
+
+    // The goal should not be considered satisfied merely because the anchor exists.
+    assert!(
+        plan.actions.iter().any(|action| {
+            matches!(
+                action,
+                worldforge_core::action::Action::SpawnObject { template, .. }
+                    if template.to_lowercase().contains("cube")
+            )
+        }),
+        "plan must include spawning the requested cube, not only operate on the anchor object"
+    );
+
+    let final_state = plan
+        .predicted_states
+        .last()
+        .expect("plan should include predicted states");
+    let anchor = final_state
+        .scene
+        .objects
+        .values()
+        .find(|object| object.name.to_lowercase() == "red mug")
+        .expect("anchor object should remain in the world");
+    let spawned_cubes: Vec<_> = final_state
+        .scene
+        .objects
+        .values()
+        .filter(|object| object.name.to_lowercase().contains("cube"))
+        .collect();
+    assert!(
+        !spawned_cubes.is_empty(),
+        "final state should contain a spawned cube"
+    );
+
+    let nearest_cube_distance = spawned_cubes
+        .iter()
+        .map(|cube| {
+            let dx = cube.pose.position.x - anchor.pose.position.x;
+            let dy = cube.pose.position.y - anchor.pose.position.y;
+            let dz = cube.pose.position.z - anchor.pose.position.z;
+            (dx * dx + dy * dy + dz * dz).sqrt()
+        })
+        .fold(f32::INFINITY, |best, distance| best.min(distance));
+    assert!(
+        nearest_cube_distance <= 0.8,
+        "spawned cube should be near the named anchor; got distance {nearest_cube_distance}"
+    );
+}
+
+#[tokio::test]
 async fn test_live_http_rejects_oversized_body() {
     let server = spawn_test_server().await;
     let request = "POST /v1/worlds HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 4194305\r\nConnection: close\r\n\r\n";
