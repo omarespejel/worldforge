@@ -72,6 +72,10 @@ prediction_2 = world.predict(action=plan.actions[0])
 # Compare predictions across providers
 comparison = wf.compare([prediction, prediction_2])
 
+# Transfer camera controls onto a generated clip
+clip = wf.generate("A robot arm reaching across a workbench", provider="mock")
+transferred = wf.transfer(clip, provider="mock")
+
 # Persist Python-managed worlds with either backend
 wf = WorldForge(state_backend="sqlite", state_db_path=".worldforge/worldforge.db")
 wf.save_world(world)
@@ -133,7 +137,8 @@ cargo run -p worldforge-cli -- list
 cargo run -p worldforge-cli -- --state-backend sqlite --state-db-path .worldforge/worldforge.db list
 cargo run -p worldforge-cli -- predict --world <id> --action "move 1 0 0" --provider runway --fallback-provider mock --timeout-ms 500
 cargo run -p worldforge-cli -- plan --world <id> --goal "spawn cube" --planner cem
-cargo run -p worldforge-cli -- generate --provider mock --prompt "A cube rolling across a table" --duration-seconds 5
+cargo run -p worldforge-cli -- generate --provider mock --prompt "A cube rolling across a table" --duration-seconds 5 --output-json clips/generated.json
+cargo run -p worldforge-cli -- transfer --provider mock --source-json clips/generated.json --output-json clips/transferred.json
 cargo run -p worldforge-cli -- reason --world <id> --query "Will the mug fall if pushed?"
 cargo run -p worldforge-cli -- eval --suite physics
 cargo run -p worldforge-cli -- serve --bind 127.0.0.1:8080
@@ -176,6 +181,10 @@ curl -X POST http://127.0.0.1:8080/v1/providers/mock/generate \
   -H 'content-type: application/json' \
   -d '{"prompt":"A cube rolling across the floor","config":{"duration_seconds":5.0}}'
 
+curl -X POST http://127.0.0.1:8080/v1/providers/mock/transfer \
+  -H 'content-type: application/json' \
+  -d '{"source":{"frames":[],"fps":12.0,"resolution":[640,360],"duration":5.0},"controls":{},"config":{"resolution":[1280,720],"fps":24.0,"control_strength":0.8}}'
+
 curl http://127.0.0.1:8080/v1/providers
 ```
 
@@ -190,8 +199,10 @@ execution paths in the core, with planner selection exposed across the CLI,
 REST server, and Python bindings. Direct provider generation and world-state
 reasoning are now exposed across the CLI, REST server, and Python bindings as
 well, with REST requests defaulting to each stored world's configured provider
-instead of hard-coding `mock`. File-backed and SQLite-backed world persistence
-are both supported through the shared `StateStore` abstraction across the core,
+instead of hard-coding `mock`. Provider transfer is now exposed end-to-end in
+the core, CLI, REST server, and Python bindings with JSON clip round-tripping
+for reusable workflows. File-backed and SQLite-backed world persistence are
+both supported through the shared `StateStore` abstraction across the core,
 CLI, REST server, and Python bindings. Cosmos and Runway adapters have API wiring in place,
 while Genie remains a research-preview stub pending public access.
 

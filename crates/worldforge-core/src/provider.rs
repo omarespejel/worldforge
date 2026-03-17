@@ -145,7 +145,7 @@ pub struct ReasoningOutput {
 }
 
 /// Spatial controls for transfer operations.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SpatialControls {
     /// Camera trajectory for the output.
     pub camera_trajectory: Option<crate::types::Trajectory>,
@@ -358,5 +358,13 @@ mod tests {
         let json = serde_json::to_string(&caps).unwrap();
         let caps2: ProviderCapabilities = serde_json::from_str(&json).unwrap();
         assert!(caps2.predict);
+    }
+
+    #[test]
+    fn test_spatial_controls_default() {
+        let controls = SpatialControls::default();
+        assert!(controls.camera_trajectory.is_none());
+        assert!(controls.depth_map.is_none());
+        assert!(controls.segmentation_map.is_none());
     }
 }

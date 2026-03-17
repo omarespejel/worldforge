@@ -11,7 +11,9 @@ use std::sync::Arc;
 use pyo3::prelude::*;
 
 use worldforge_core::prediction::{PlannerType, PredictionConfig};
-use worldforge_core::provider::{GenerationConfig, GenerationPrompt};
+use worldforge_core::provider::{
+    GenerationConfig, GenerationPrompt, SpatialControls, TransferConfig,
+};
 use worldforge_core::scene::SceneObject;
 use worldforge_core::state::{DynStateStore, StateStoreKind, WorldState};
 use worldforge_core::types::{BBox, Position, Rotation, Velocity, VideoClip};
@@ -773,6 +775,15 @@ impl PyVideoClip {
         })
     }
 
+    /// Deserialize a clip from JSON.
+    #[staticmethod]
+    fn from_json(json: &str) -> PyResult<Self> {
+        let inner: VideoClip = serde_json::from_str(json).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("deserialization error: {e}"))
+        })?;
+        Ok(Self { inner })
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "VideoClip(frames={}, fps={:.1}, resolution=({}, {}), duration={:.2}s)",
@@ -1207,6 +1218,42 @@ impl PyWorldForge {
             .block_on(provider_ref.generate(&prompt, &config))
             .map_err(|e| {
                 pyo3::exceptions::PyRuntimeError::new_err(format!("generation failed: {e}"))
+            })?;
+        Ok(PyVideoClip { inner: clip })
+    }
+
+    /// Transfer spatial controls over an existing clip with a specific provider.
+    #[pyo3(signature = (clip, provider="mock", controls_json=None, width=1280, height=720, fps=24.0, control_strength=0.8))]
+    #[allow(clippy::too_many_arguments)]
+    fn transfer(
+        &self,
+        clip: &PyVideoClip,
+        provider: &str,
+        controls_json: Option<&str>,
+        width: u32,
+        height: u32,
+        fps: f32,
+        control_strength: f32,
+    ) -> PyResult<PyVideoClip> {
+        let provider_ref = self.inner.registry().get(provider).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("transfer failed: {e}"))
+        })?;
+        let controls = match controls_json {
+            Some(json) => serde_json::from_str::<SpatialControls>(json).map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!("invalid controls JSON: {e}"))
+            })?,
+            None => SpatialControls::default(),
+        };
+        let config = TransferConfig {
+            resolution: (width, height),
+            fps,
+            control_strength,
+        };
+        let rt = new_runtime()?;
+        let clip = rt
+            .block_on(provider_ref.transfer(&clip.inner, &controls, &config))
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("transfer failed: {e}"))
             })?;
         Ok(PyVideoClip { inner: clip })
     }
@@ -1907,6 +1954,55 @@ mod tests {
         assert_eq!(clip.fps(), 12.0);
         assert_eq!(clip.frame_count(), 0);
         assert!(clip.__repr__().contains("VideoClip"));
+    }
+
+    #[test]
+    fn test_videoclip_json_roundtrip() {
+        let wf = test_worldforge();
+        let clip = wf
+            .generate(
+                "a rolling sphere",
+                "mock",
+                2.0,
+                320,
+                180,
+                10.0,
+                1.0,
+                None,
+                None,
+            )
+            .unwrap();
+        let json = clip.to_json().unwrap();
+        let restored = PyVideoClip::from_json(&json).unwrap();
+
+        assert_eq!(restored.duration(), 2.0);
+        assert_eq!(restored.resolution(), (320, 180));
+        assert_eq!(restored.fps(), 10.0);
+    }
+
+    #[test]
+    fn test_worldforge_transfer() {
+        let wf = test_worldforge();
+        let clip = wf
+            .generate(
+                "a rolling sphere",
+                "mock",
+                3.0,
+                320,
+                180,
+                10.0,
+                1.0,
+                None,
+                None,
+            )
+            .unwrap();
+        let transferred = wf
+            .transfer(&clip, "mock", None, 640, 360, 24.0, 0.5)
+            .unwrap();
+
+        assert_eq!(transferred.duration(), clip.duration());
+        assert_eq!(transferred.resolution(), clip.resolution());
+        assert_eq!(transferred.fps(), clip.fps());
     }
 
     #[test]

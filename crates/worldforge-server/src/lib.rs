@@ -15,9 +15,11 @@ use tokio::sync::RwLock;
 use worldforge_core::action::Action;
 use worldforge_core::error::WorldForgeError;
 use worldforge_core::prediction::{PlannerType, PredictionConfig};
-use worldforge_core::provider::{GenerationConfig, GenerationPrompt, ProviderRegistry};
+use worldforge_core::provider::{
+    GenerationConfig, GenerationPrompt, ProviderRegistry, SpatialControls, TransferConfig,
+};
 use worldforge_core::state::{DynStateStore, StateStoreKind, WorldState};
-use worldforge_core::types::WorldId;
+use worldforge_core::types::{VideoClip, WorldId};
 use worldforge_eval::EvalSuite;
 use worldforge_verify::{MockVerifier, ZkVerifier};
 
@@ -181,6 +183,16 @@ struct GenerateRequest {
     negative_prompt: Option<String>,
     #[serde(default)]
     config: GenerationConfig,
+}
+
+/// JSON request body for provider transfer.
+#[derive(Debug, Deserialize)]
+struct TransferRequest {
+    source: VideoClip,
+    #[serde(default)]
+    controls: SpatialControls,
+    #[serde(default)]
+    config: TransferConfig,
 }
 
 /// JSON request body for world-state reasoning.
@@ -436,6 +448,31 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                             negative_prompt: req.negative_prompt,
                         };
                         match provider.generate(&prompt, &req.config).await {
+                            Ok(clip) => (200, ApiResponse::ok(clip)),
+                            Err(error) => {
+                                (api_error_status(&error), error_response(&error.to_string()))
+                            }
+                        }
+                    }
+                    Err(error) => (404, error_response(&error.to_string())),
+                },
+                Err(e) => (400, error_response(&format!("invalid request: {e}"))),
+            }
+        }
+
+        // POST /v1/providers/{name}/transfer
+        ("POST", p) if p.starts_with("/v1/providers/") && p.ends_with("/transfer") => {
+            let provider_name = p
+                .strip_prefix("/v1/providers/")
+                .and_then(|value| value.strip_suffix("/transfer"))
+                .unwrap_or("");
+            match serde_json::from_str::<TransferRequest>(body) {
+                Ok(req) => match state.registry.get(provider_name) {
+                    Ok(provider) => {
+                        match provider
+                            .transfer(&req.source, &req.controls, &req.config)
+                            .await
+                        {
                             Ok(clip) => (200, ApiResponse::ok(clip)),
                             Err(error) => {
                                 (api_error_status(&error), error_response(&error.to_string()))
@@ -1051,6 +1088,23 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert_eq!(value["data"]["duration"], 5.0);
         assert_eq!(value["data"]["fps"], 24.0);
+    }
+
+    #[tokio::test]
+    async fn test_route_transfer() {
+        let state = test_state();
+        let body = r#"{
+            "source":{"frames":[],"fps":15.0,"resolution":[320,240],"duration":1.5},
+            "controls":{},
+            "config":{"resolution":[800,600],"fps":24.0,"control_strength":0.7}
+        }"#;
+        let (status, resp) = route("POST", "/v1/providers/mock/transfer", body, &state).await;
+        assert_eq!(status, 200);
+
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(value["data"]["resolution"], serde_json::json!([320, 240]));
+        assert_eq!(value["data"]["fps"], 15.0);
+        assert_eq!(value["data"]["duration"], 1.5);
     }
 
     #[tokio::test]

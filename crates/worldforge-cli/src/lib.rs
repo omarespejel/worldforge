@@ -3,19 +3,23 @@
 //! Command-line interface for interacting with world foundation models.
 //! Supports world creation, prediction, planning, evaluation, and comparison.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 
 use worldforge_core::action::{Action, Weather};
 use worldforge_core::prediction::{PlanGoal, PlanRequest, PlannerType, PredictionConfig};
 use worldforge_core::provider::{
-    GenerationConfig, GenerationPrompt, ProviderRegistry, WorldModelProvider,
+    GenerationConfig, GenerationPrompt, ProviderRegistry, SpatialControls, TransferConfig,
+    WorldModelProvider,
 };
 use worldforge_core::state::{DynStateStore, StateStore, StateStoreKind, WorldState};
-use worldforge_core::types::Position;
+use worldforge_core::types::{Position, VideoClip};
 use worldforge_eval::EvalSuite;
 use worldforge_verify::{MockVerifier, ZkVerifier};
 
@@ -125,6 +129,37 @@ pub enum Commands {
         /// Optional random seed.
         #[arg(long)]
         seed: Option<u64>,
+        /// Optional path to write the generated clip JSON payload.
+        #[arg(long)]
+        output_json: Option<PathBuf>,
+    },
+
+    /// Transfer spatial controls onto an existing source clip.
+    Transfer {
+        /// Provider to use.
+        #[arg(long, default_value = "mock")]
+        provider: String,
+        /// JSON file containing the source `VideoClip`.
+        #[arg(long)]
+        source_json: PathBuf,
+        /// Optional JSON file containing `SpatialControls`.
+        #[arg(long)]
+        controls_json: Option<PathBuf>,
+        /// Optional path to write the transferred clip JSON payload.
+        #[arg(long)]
+        output_json: Option<PathBuf>,
+        /// Output width in pixels.
+        #[arg(long, default_value = "1280")]
+        width: u32,
+        /// Output height in pixels.
+        #[arg(long, default_value = "720")]
+        height: u32,
+        /// Output frames per second.
+        #[arg(long, default_value = "24.0")]
+        fps: f32,
+        /// Spatial control strength.
+        #[arg(long, default_value = "0.8")]
+        control_strength: f32,
     },
 
     /// Ask a provider to reason about the current world state.
@@ -276,6 +311,7 @@ pub async fn run() -> Result<()> {
             fps,
             temperature,
             seed,
+            output_json,
         } => {
             cmd_generate(
                 &prompt,
@@ -287,6 +323,30 @@ pub async fn run() -> Result<()> {
                     fps,
                     temperature,
                     seed,
+                    output_json: output_json.as_deref(),
+                },
+            )
+            .await
+        }
+        Commands::Transfer {
+            provider,
+            source_json,
+            controls_json,
+            output_json,
+            width,
+            height,
+            fps,
+            control_strength,
+        } => {
+            cmd_transfer(
+                &provider,
+                TransferOptions {
+                    source_json: &source_json,
+                    controls_json: controls_json.as_deref(),
+                    output_json: output_json.as_deref(),
+                    resolution: (width, height),
+                    fps,
+                    control_strength,
                 },
             )
             .await
@@ -394,6 +454,16 @@ struct GenerateOptions<'a> {
     fps: f32,
     temperature: f32,
     seed: Option<u64>,
+    output_json: Option<&'a Path>,
+}
+
+struct TransferOptions<'a> {
+    source_json: &'a Path,
+    controls_json: Option<&'a Path>,
+    output_json: Option<&'a Path>,
+    resolution: (u32, u32),
+    fps: f32,
+    control_strength: f32,
 }
 
 fn require_provider<'a>(
@@ -406,6 +476,22 @@ fn require_provider<'a>(
             available_provider_names(registry)
         )
     })
+}
+
+fn read_json_file<T: DeserializeOwned>(path: &Path) -> Result<T> {
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("failed to read JSON from {}", path.display()))?;
+    serde_json::from_str(&contents)
+        .with_context(|| format!("failed to parse JSON from {}", path.display()))
+}
+
+fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let contents = serde_json::to_string_pretty(value).context("failed to serialize JSON")?;
+    fs::write(path, contents).with_context(|| format!("failed to write {}", path.display()))
 }
 
 async fn cmd_create(
@@ -511,6 +597,43 @@ async fn cmd_generate(
     println!("  Resolution: {}x{}", clip.resolution.0, clip.resolution.1);
     println!("  FPS: {:.1}", clip.fps);
     println!("  Frames: {}", clip.frames.len());
+    if let Some(path) = options.output_json {
+        write_json_file(path, &clip)?;
+        println!("  Output JSON: {}", path.display());
+    }
+
+    Ok(())
+}
+
+async fn cmd_transfer(provider_name: &str, options: TransferOptions<'_>) -> Result<()> {
+    let registry = auto_detect_registry();
+    let provider = require_provider(&registry, provider_name)?;
+    let source: VideoClip = read_json_file(options.source_json)?;
+    let controls = match options.controls_json {
+        Some(path) => read_json_file(path)?,
+        None => SpatialControls::default(),
+    };
+    let config = TransferConfig {
+        resolution: options.resolution,
+        fps: options.fps,
+        control_strength: options.control_strength,
+    };
+
+    let clip = provider
+        .transfer(&source, &controls, &config)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    println!("Transfer completed:");
+    println!("  Provider: {provider_name}");
+    println!("  Duration: {:.2}s", clip.duration);
+    println!("  Resolution: {}x{}", clip.resolution.0, clip.resolution.1);
+    println!("  FPS: {:.1}", clip.fps);
+    println!("  Frames: {}", clip.frames.len());
+    if let Some(path) = options.output_json {
+        write_json_file(path, &clip)?;
+        println!("  Output JSON: {}", path.display());
+    }
 
     Ok(())
 }
@@ -1147,6 +1270,8 @@ mod tests {
             "0.7",
             "--seed",
             "42",
+            "--output-json",
+            "/tmp/generated.json",
         ])
         .unwrap();
 
@@ -1159,6 +1284,7 @@ mod tests {
                 fps,
                 temperature,
                 seed,
+                output_json,
                 ..
             } => {
                 assert_eq!(provider, "mock");
@@ -1168,8 +1294,57 @@ mod tests {
                 assert_eq!(fps, 12.0);
                 assert_eq!(temperature, 0.7);
                 assert_eq!(seed, Some(42));
+                assert_eq!(output_json, Some(PathBuf::from("/tmp/generated.json")));
             }
             _ => panic!("expected Generate"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_transfer_command() {
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "transfer",
+            "--provider",
+            "mock",
+            "--source-json",
+            "/tmp/source.json",
+            "--controls-json",
+            "/tmp/controls.json",
+            "--output-json",
+            "/tmp/output.json",
+            "--width",
+            "800",
+            "--height",
+            "600",
+            "--fps",
+            "18.0",
+            "--control-strength",
+            "0.4",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Transfer {
+                provider,
+                source_json,
+                controls_json,
+                output_json,
+                width,
+                height,
+                fps,
+                control_strength,
+            } => {
+                assert_eq!(provider, "mock");
+                assert_eq!(source_json, PathBuf::from("/tmp/source.json"));
+                assert_eq!(controls_json, Some(PathBuf::from("/tmp/controls.json")));
+                assert_eq!(output_json, Some(PathBuf::from("/tmp/output.json")));
+                assert_eq!(width, 800);
+                assert_eq!(height, 600);
+                assert_eq!(fps, 18.0);
+                assert!((control_strength - 0.4).abs() < f32::EPSILON);
+            }
+            _ => panic!("expected Transfer"),
         }
     }
 
@@ -1206,5 +1381,69 @@ mod tests {
         let state = WorldState::new("default-provider", "mock");
         assert_eq!(resolve_provider_name(&state, None), "mock");
         assert_eq!(resolve_provider_name(&state, Some("runway")), "runway");
+    }
+
+    #[tokio::test]
+    async fn test_cmd_generate_writes_output_json() {
+        let dir = std::env::temp_dir().join(format!("wf-cli-generate-{}", uuid::Uuid::new_v4()));
+        let output = dir.join("clip.json");
+
+        cmd_generate(
+            "a bouncing sphere",
+            "mock",
+            GenerateOptions {
+                negative_prompt: None,
+                duration_seconds: 2.5,
+                resolution: (640, 360),
+                fps: 12.0,
+                temperature: 1.0,
+                seed: Some(7),
+                output_json: Some(&output),
+            },
+        )
+        .await
+        .unwrap();
+
+        let clip: VideoClip = read_json_file(&output).unwrap();
+        assert_eq!(clip.duration, 2.5);
+        assert_eq!(clip.resolution, (640, 360));
+        assert_eq!(clip.fps, 12.0);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn test_cmd_transfer_roundtrips_clip_json() {
+        let dir = std::env::temp_dir().join(format!("wf-cli-transfer-{}", uuid::Uuid::new_v4()));
+        let source_path = dir.join("source.json");
+        let output_path = dir.join("output.json");
+        let source = VideoClip {
+            frames: Vec::new(),
+            fps: 10.0,
+            resolution: (320, 180),
+            duration: 3.0,
+        };
+        write_json_file(&source_path, &source).unwrap();
+
+        cmd_transfer(
+            "mock",
+            TransferOptions {
+                source_json: &source_path,
+                controls_json: None,
+                output_json: Some(&output_path),
+                resolution: (800, 600),
+                fps: 24.0,
+                control_strength: 0.5,
+            },
+        )
+        .await
+        .unwrap();
+
+        let clip: VideoClip = read_json_file(&output_path).unwrap();
+        assert_eq!(clip.duration, source.duration);
+        assert_eq!(clip.resolution, source.resolution);
+        assert_eq!(clip.fps, source.fps);
+
+        let _ = fs::remove_dir_all(dir);
     }
 }

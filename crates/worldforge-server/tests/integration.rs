@@ -247,6 +247,29 @@ async fn test_live_http_predict_uses_fallback_provider() {
 }
 
 #[tokio::test]
+async fn test_live_http_provider_transfer() {
+    let server = spawn_test_server().await;
+
+    let transfer_body = r#"{
+        "source":{"frames":[],"fps":10.0,"resolution":[320,180],"duration":2.0},
+        "controls":{},
+        "config":{"resolution":[640,360],"fps":24.0,"control_strength":0.5}
+    }"#;
+    let (status, clip) = http_request(
+        server.address,
+        "POST",
+        "/v1/providers/mock/transfer",
+        transfer_body,
+    )
+    .await;
+
+    assert_eq!(status, 200);
+    assert_eq!(clip["data"]["resolution"], serde_json::json!([320, 180]));
+    assert_eq!(clip["data"]["fps"], 10.0);
+    assert_eq!(clip["data"]["duration"], 2.0);
+}
+
+#[tokio::test]
 async fn test_live_http_plan_uses_requested_planner() {
     let server = spawn_test_server().await;
 

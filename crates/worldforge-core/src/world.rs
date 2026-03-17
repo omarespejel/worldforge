@@ -16,7 +16,7 @@ use crate::prediction::{
 };
 use crate::provider::{
     GenerationConfig, GenerationPrompt, Operation, ProviderRegistry, ReasoningInput,
-    ReasoningOutput, WorldModelProvider,
+    ReasoningOutput, SpatialControls, TransferConfig, WorldModelProvider,
 };
 use crate::scene::SceneObject;
 use crate::state::{HistoryEntry, PredictionSummary, WorldState};
@@ -224,6 +224,31 @@ impl World {
     ) -> Result<crate::types::VideoClip> {
         let provider = self.registry.get(provider_name)?;
         provider.generate(prompt, config).await
+    }
+
+    /// Transfer spatial controls over an existing source clip with the world's default provider.
+    #[instrument(skip(self, source, controls, config))]
+    pub async fn transfer(
+        &self,
+        source: &crate::types::VideoClip,
+        controls: &SpatialControls,
+        config: &TransferConfig,
+    ) -> Result<crate::types::VideoClip> {
+        self.transfer_with_provider(source, controls, config, &self.default_provider)
+            .await
+    }
+
+    /// Transfer spatial controls over an existing source clip with a specific provider.
+    #[instrument(skip(self, source, controls, config))]
+    pub async fn transfer_with_provider(
+        &self,
+        source: &crate::types::VideoClip,
+        controls: &SpatialControls,
+        config: &TransferConfig,
+        provider_name: &str,
+    ) -> Result<crate::types::VideoClip> {
+        let provider = self.registry.get(provider_name)?;
+        provider.transfer(source, controls, config).await
     }
 
     /// Ask the world's default provider to reason about the current state.
@@ -2101,6 +2126,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_transfer_uses_default_provider() {
+        let state = WorldState::new("transfer", "media");
+        let registry = std::sync::Arc::new({
+            let mut registry = ProviderRegistry::new();
+            registry.register(Box::new(MediaProvider::new("media")));
+            registry
+        });
+        let world = World::new(state, "media", registry);
+        let source = VideoClip {
+            frames: Vec::new(),
+            fps: 12.0,
+            resolution: (640, 360),
+            duration: 5.0,
+        };
+        let config = TransferConfig {
+            resolution: (800, 600),
+            fps: 18.0,
+            control_strength: 0.6,
+        };
+
+        let clip = world
+            .transfer(&source, &SpatialControls::default(), &config)
+            .await
+            .unwrap();
+
+        assert_eq!(clip.duration, source.duration);
+        assert_eq!(clip.resolution, source.resolution);
+        assert_eq!(clip.fps, source.fps);
+    }
+
+    #[tokio::test]
     async fn test_reason_uses_current_state() {
         let mut state = WorldState::new("reasoning", "media");
         let object = crate::scene::SceneObject::new(
@@ -2232,6 +2288,7 @@ mod tests {
         ProviderCapabilities {
             generate: true,
             reason: true,
+            transfer: true,
             ..test_capabilities(false)
         }
     }

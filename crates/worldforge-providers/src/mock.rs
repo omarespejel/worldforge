@@ -63,7 +63,7 @@ impl WorldModelProvider for MockProvider {
             predict: true,
             generate: true,
             reason: true,
-            transfer: false,
+            transfer: true,
             action_conditioned: true,
             multi_view: false,
             max_video_length_seconds: 10.0,
@@ -288,12 +288,34 @@ mod tests {
         assert!(!output.answer.is_empty());
     }
 
+    #[tokio::test]
+    async fn test_mock_transfer() {
+        let provider = MockProvider::new();
+        let source = VideoClip {
+            frames: Vec::new(),
+            fps: 24.0,
+            resolution: (640, 360),
+            duration: 3.0,
+        };
+        let clip = provider
+            .transfer(
+                &source,
+                &SpatialControls::default(),
+                &TransferConfig::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(clip.duration, source.duration);
+        assert_eq!(clip.resolution, source.resolution);
+        assert_eq!(clip.fps, source.fps);
+    }
+
     #[test]
     fn test_mock_capabilities() {
         let provider = MockProvider::new();
         let caps = provider.capabilities();
         assert!(caps.predict);
         assert!(caps.generate);
-        assert!(!caps.transfer);
+        assert!(caps.transfer);
     }
 }
