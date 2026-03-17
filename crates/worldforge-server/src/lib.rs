@@ -14,6 +14,7 @@ use tokio::sync::RwLock;
 
 use worldforge_core::action::Action;
 use worldforge_core::error::WorldForgeError;
+use worldforge_core::guardrail::GuardrailConfig;
 use worldforge_core::prediction::{PlannerType, PredictionConfig};
 use worldforge_core::provider::{
     GenerationConfig, GenerationPrompt, ProviderRegistry, SpatialControls, TransferConfig,
@@ -21,7 +22,10 @@ use worldforge_core::provider::{
 use worldforge_core::state::{DynStateStore, StateStoreKind, WorldState};
 use worldforge_core::types::{VideoClip, WorldId};
 use worldforge_eval::EvalSuite;
-use worldforge_verify::{MockVerifier, ZkVerifier};
+use worldforge_verify::{
+    prove_guardrail_plan, prove_inference_transition, prove_latest_inference, prove_provenance,
+    MockVerifier,
+};
 
 /// Server configuration.
 #[derive(Debug, Clone)]
@@ -161,6 +165,8 @@ struct PlanRequest {
     horizon: Option<u32>,
     #[serde(default)]
     replanning_interval: Option<u32>,
+    #[serde(default)]
+    guardrails: Vec<GuardrailConfig>,
 }
 
 fn default_max_steps() -> u32 {
@@ -234,6 +240,57 @@ fn planner_from_request(request: &PlanRequest) -> std::result::Result<PlannerTyp
     }
 }
 
+fn planner_from_verify_request(
+    request: &VerifyRequest,
+) -> std::result::Result<PlannerType, String> {
+    match request.planner.as_str() {
+        "sampling" => Ok(PlannerType::Sampling {
+            num_samples: request.num_samples.unwrap_or(32).max(1),
+            top_k: request.top_k.unwrap_or(5).max(1),
+        }),
+        "cem" => Ok(PlannerType::CEM {
+            population_size: request.population_size.unwrap_or(64).max(4),
+            elite_fraction: request.elite_fraction.unwrap_or(0.2).clamp(0.05, 1.0),
+            num_iterations: request.num_iterations.unwrap_or(5).max(1),
+        }),
+        "mpc" => Ok(PlannerType::MPC {
+            horizon: request
+                .horizon
+                .unwrap_or(request.max_steps)
+                .max(1)
+                .min(request.max_steps.max(1)),
+            num_samples: request.num_samples.unwrap_or(32).max(4),
+            replanning_interval: request.replanning_interval.unwrap_or(1).max(1),
+        }),
+        "gradient" => Ok(PlannerType::Gradient {
+            learning_rate: request.learning_rate.unwrap_or(0.25).clamp(0.01, 1.0),
+            num_iterations: request.num_iterations.unwrap_or(24).max(1),
+        }),
+        "provider-native" | "provider_native" | "native" => Ok(PlannerType::ProviderNative),
+        other => Err(format!(
+            "unknown planner: {other}. Available: sampling, cem, mpc, gradient, provider-native"
+        )),
+    }
+}
+
+fn build_plan_request(
+    current_state: WorldState,
+    goal: String,
+    max_steps: u32,
+    guardrails: Vec<GuardrailConfig>,
+    planner: PlannerType,
+    timeout_seconds: f64,
+) -> worldforge_core::prediction::PlanRequest {
+    worldforge_core::prediction::PlanRequest {
+        current_state,
+        goal: worldforge_core::prediction::PlanGoal::Description(goal),
+        max_steps,
+        guardrails,
+        planner,
+        timeout_seconds,
+    }
+}
+
 /// JSON request body for evaluation.
 #[derive(Debug, Deserialize)]
 struct EvaluateRequest {
@@ -261,10 +318,55 @@ struct VerifyRequest {
     /// Proof type: "inference", "guardrail", or "provenance".
     #[serde(default = "default_proof_type")]
     proof_type: String,
+    /// Optional provider override for planning or history-backed inference proofs.
+    #[serde(default)]
+    provider: Option<String>,
+    /// Explicit input state for inference verification.
+    #[serde(default)]
+    input_state: Option<WorldState>,
+    /// Explicit output state for inference/provenance verification.
+    #[serde(default)]
+    output_state: Option<WorldState>,
+    /// Explicit plan for guardrail verification.
+    #[serde(default)]
+    plan: Option<worldforge_core::prediction::Plan>,
+    /// Goal used to generate a plan before guardrail verification.
+    #[serde(default)]
+    goal: Option<String>,
+    #[serde(default = "default_max_steps")]
+    max_steps: u32,
+    #[serde(default = "default_timeout_seconds")]
+    timeout_seconds: f64,
+    #[serde(default = "default_planner_name")]
+    planner: String,
+    #[serde(default)]
+    num_samples: Option<u32>,
+    #[serde(default)]
+    top_k: Option<u32>,
+    #[serde(default)]
+    population_size: Option<u32>,
+    #[serde(default)]
+    elite_fraction: Option<f32>,
+    #[serde(default)]
+    num_iterations: Option<u32>,
+    #[serde(default)]
+    learning_rate: Option<f32>,
+    #[serde(default)]
+    horizon: Option<u32>,
+    #[serde(default)]
+    replanning_interval: Option<u32>,
+    #[serde(default)]
+    guardrails: Vec<GuardrailConfig>,
+    #[serde(default = "default_source_label")]
+    source_label: String,
 }
 
 fn default_proof_type() -> String {
     "inference".to_string()
+}
+
+fn default_source_label() -> String {
+    "worldforge-server".to_string()
 }
 
 /// JSON response envelope.
@@ -636,16 +738,14 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                             &provider_name,
                             registry,
                         );
-                        let plan_req = worldforge_core::prediction::PlanRequest {
-                            current_state: ws,
-                            goal: worldforge_core::prediction::PlanGoal::Description(
-                                req.goal.clone(),
-                            ),
-                            max_steps: req.max_steps,
-                            guardrails: Vec::new(),
+                        let plan_req = build_plan_request(
+                            ws,
+                            req.goal.clone(),
+                            req.max_steps,
+                            req.guardrails,
                             planner,
-                            timeout_seconds: req.timeout_seconds,
-                        };
+                            req.timeout_seconds,
+                        );
                         match world.plan(&plan_req).await {
                             Ok(plan) => (200, ApiResponse::ok(plan)),
                             Err(e) => (500, error_response(&e.to_string())),
@@ -671,67 +771,107 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                             Err(e) => return (404, error_response(&e.to_string())),
                         };
                         let verifier = MockVerifier::new();
-                        let state_bytes = serde_json::to_vec(&ws).unwrap_or_default();
-
-                        let proof_result = match req.proof_type.as_str() {
+                        match req.proof_type.as_str() {
                             "inference" => {
-                                let model_hash = worldforge_verify::sha256_hash(b"mock-model");
-                                let input_hash =
-                                    worldforge_verify::sha256_hash(&state_bytes);
-                                let output_hash =
-                                    worldforge_verify::sha256_hash(b"mock-output");
-                                verifier.prove_inference(model_hash, input_hash, output_hash)
+                                let bundle = match (req.input_state.as_ref(), req.output_state.as_ref()) {
+                                    (Some(input_state), Some(output_state)) => {
+                                        let provider_name = req
+                                            .provider
+                                            .as_deref()
+                                            .filter(|name| !name.is_empty())
+                                            .unwrap_or(output_state.metadata.created_by.as_str());
+                                        prove_inference_transition(
+                                            &verifier,
+                                            provider_name,
+                                            input_state,
+                                            output_state,
+                                        )
+                                    }
+                                    (None, None) => {
+                                        prove_latest_inference(&verifier, &ws, req.provider.as_deref())
+                                    }
+                                    _ => {
+                                        return (
+                                            400,
+                                            error_response(
+                                                "inference verification requires both input_state and output_state when either is provided",
+                                            ),
+                                        )
+                                    }
+                                };
+                                match bundle {
+                                    Ok(bundle) => (200, ApiResponse::ok(bundle)),
+                                    Err(e) => (400, error_response(&e.to_string())),
+                                }
                             }
                             "guardrail" => {
-                                let plan = worldforge_core::prediction::Plan {
-                                    actions: Vec::new(),
-                                    predicted_states: Vec::new(),
-                                    predicted_videos: None,
-                                    total_cost: 0.0,
-                                    success_probability: 1.0,
-                                    guardrail_compliance: Vec::new(),
-                                    planning_time_ms: 0,
-                                    iterations_used: 0,
+                                let plan = if let Some(plan) = req.plan.clone() {
+                                    plan
+                                } else {
+                                    let goal = match req.goal.clone() {
+                                        Some(goal) => goal,
+                                        None => {
+                                            return (
+                                                400,
+                                                error_response(
+                                                    "guardrail verification requires either a plan or a goal",
+                                                ),
+                                            )
+                                        }
+                                    };
+                                    let provider_name =
+                                        resolve_world_provider(&ws, req.provider.as_deref()).to_string();
+                                    if let Err(e) = state.registry.get(&provider_name) {
+                                        return (404, error_response(&e.to_string()));
+                                    }
+                                    let planner = match planner_from_verify_request(&req) {
+                                        Ok(planner) => planner,
+                                        Err(error) => return (400, error_response(&error)),
+                                    };
+                                    let registry = Arc::clone(&state.registry);
+                                    let world = worldforge_core::world::World::new(
+                                        ws.clone(),
+                                        &provider_name,
+                                        registry,
+                                    );
+                                    let plan_req = build_plan_request(
+                                        ws.clone(),
+                                        goal,
+                                        req.max_steps,
+                                        req.guardrails,
+                                        planner,
+                                        req.timeout_seconds,
+                                    );
+                                    match world.plan(&plan_req).await {
+                                        Ok(plan) => plan,
+                                        Err(e) => return (500, error_response(&e.to_string())),
+                                    }
                                 };
-                                verifier.prove_guardrail_compliance(&plan, &[])
-                            }
-                            "provenance" => {
-                                let data_hash =
-                                    worldforge_verify::sha256_hash(&state_bytes);
-                                let timestamp = chrono::Utc::now().timestamp() as u64;
-                                let source_commitment =
-                                    worldforge_verify::sha256_hash(b"worldforge-server");
-                                verifier.prove_data_provenance(
-                                    data_hash,
-                                    timestamp,
-                                    source_commitment,
-                                )
-                            }
-                            other => {
-                                return (
-                                    400,
-                                    error_response(&format!(
-                                        "unknown proof type: {other}. Available: inference, guardrail, provenance"
-                                    )),
-                                )
-                            }
-                        };
 
-                        match proof_result {
-                            Ok(proof) => {
-                                let verification = verifier.verify(&proof);
-                                match verification {
-                                    Ok(result) => (
-                                        200,
-                                        ApiResponse::ok(serde_json::json!({
-                                            "proof": proof,
-                                            "verification": result,
-                                        })),
-                                    ),
+                                match prove_guardrail_plan(&verifier, &plan) {
+                                    Ok(bundle) => (200, ApiResponse::ok(bundle)),
                                     Err(e) => (500, error_response(&e.to_string())),
                                 }
                             }
-                            Err(e) => (500, error_response(&e.to_string())),
+                            "provenance" => {
+                                let target_state = req.output_state.as_ref().unwrap_or(&ws);
+                                let timestamp = chrono::Utc::now().timestamp() as u64;
+                                match prove_provenance(
+                                    &verifier,
+                                    target_state,
+                                    &req.source_label,
+                                    timestamp,
+                                ) {
+                                    Ok(bundle) => (200, ApiResponse::ok(bundle)),
+                                    Err(e) => (500, error_response(&e.to_string())),
+                                }
+                            }
+                            other => (
+                                400,
+                                error_response(&format!(
+                                    "unknown proof type: {other}. Available: inference, guardrail, provenance"
+                                )),
+                            ),
                         }
                     }
                     Err(e) => (400, error_response(&format!("invalid request: {e}"))),
@@ -1142,11 +1282,19 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
         let id = v["data"]["id"].as_str().unwrap();
 
-        let verify_body = r#"{"proof_type":"inference"}"#;
+        let input_state = WorldState::new("input", "mock");
+        let output_state = WorldState::new("output", "mock");
+        let verify_body = serde_json::json!({
+            "proof_type": "inference",
+            "input_state": input_state,
+            "output_state": output_state,
+            "provider": "mock",
+        })
+        .to_string();
         let (status, resp) = route(
             "POST",
             &format!("/v1/worlds/{id}/verify"),
-            verify_body,
+            &verify_body,
             &state,
         )
         .await;
@@ -1157,6 +1305,40 @@ mod tests {
         // Check verification is valid
         let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert!(v["data"]["verification"]["valid"].as_bool().unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_route_verify_guardrail_from_goal() {
+        let state = test_state();
+        let body = r#"{"name":"verify_guardrail","provider":"mock"}"#;
+        let (status, resp) = route("POST", "/v1/worlds", body, &state).await;
+        assert_eq!(status, 201);
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let id = value["data"]["id"].as_str().unwrap();
+
+        let verify_body = serde_json::json!({
+            "proof_type": "guardrail",
+            "goal": "spawn cube",
+            "guardrails": [
+                {
+                    "guardrail": "NoCollisions",
+                    "blocking": true
+                }
+            ]
+        })
+        .to_string();
+        let (status, resp) = route(
+            "POST",
+            &format!("/v1/worlds/{id}/verify"),
+            &verify_body,
+            &state,
+        )
+        .await;
+        assert_eq!(status, 200);
+
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert!(value["data"]["verification"]["valid"].as_bool().unwrap());
+        assert!(value["data"]["artifact"]["plan_hash"].is_array());
     }
 
     #[tokio::test]

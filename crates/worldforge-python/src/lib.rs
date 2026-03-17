@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use pyo3::prelude::*;
 
+use worldforge_core::guardrail::GuardrailConfig;
 use worldforge_core::prediction::{PlannerType, PredictionConfig};
 use worldforge_core::provider::{
     GenerationConfig, GenerationPrompt, SpatialControls, TransferConfig,
@@ -17,7 +18,10 @@ use worldforge_core::provider::{
 use worldforge_core::scene::SceneObject;
 use worldforge_core::state::{DynStateStore, StateStoreKind, WorldState};
 use worldforge_core::types::{BBox, Position, Rotation, Velocity, VideoClip};
-use worldforge_verify::ZkVerifier;
+use worldforge_verify::{
+    prove_guardrail_plan as prove_guardrail_plan_bundle,
+    prove_inference_transition as prove_inference_transition_bundle, ZkVerifier,
+};
 
 fn auto_detect_registry() -> Arc<worldforge_core::provider::ProviderRegistry> {
     Arc::new(worldforge_providers::auto_detect())
@@ -57,6 +61,19 @@ fn state_store_kind(
             "unknown state backend: {other}. Available: file, sqlite"
         ))),
     }
+}
+
+fn parse_guardrails_json(guardrails_json: Option<&str>) -> PyResult<Vec<GuardrailConfig>> {
+    guardrails_json
+        .map(|json| {
+            serde_json::from_str(json).map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "failed to parse guardrails JSON: {e}"
+                ))
+            })
+        })
+        .transpose()
+        .map(|value| value.unwrap_or_default())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -580,7 +597,7 @@ impl PyWorld {
     }
 
     /// Plan a sequence of actions to achieve a natural-language goal.
-    #[pyo3(signature = (goal, max_steps=10, timeout_seconds=30.0, provider=None, planner="sampling", num_samples=None, top_k=None, population_size=None, elite_fraction=None, num_iterations=None, learning_rate=None, horizon=None, replanning_interval=None))]
+    #[pyo3(signature = (goal, max_steps=10, timeout_seconds=30.0, provider=None, planner="sampling", num_samples=None, top_k=None, population_size=None, elite_fraction=None, num_iterations=None, learning_rate=None, horizon=None, replanning_interval=None, guardrails_json=None))]
     #[allow(clippy::too_many_arguments)]
     fn plan(
         &self,
@@ -597,6 +614,7 @@ impl PyWorld {
         learning_rate: Option<f32>,
         horizon: Option<u32>,
         replanning_interval: Option<u32>,
+        guardrails_json: Option<&str>,
     ) -> PyResult<PyPlan> {
         let rt = tokio::runtime::Runtime::new().map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("failed to create runtime: {e}"))
@@ -624,7 +642,7 @@ impl PyWorld {
             current_state: self.state.clone(),
             goal: worldforge_core::prediction::PlanGoal::Description(goal.to_string()),
             max_steps,
-            guardrails: Vec::new(),
+            guardrails: parse_guardrails_json(guardrails_json)?,
             planner,
             timeout_seconds,
         };
@@ -1343,7 +1361,7 @@ impl PyPlan {
 ///
 /// Supports sampling, CEM, MPC, gradient, and provider-native planning.
 #[pyfunction]
-#[pyo3(signature = (world, goal, max_steps=10, timeout_seconds=30.0, provider="mock", planner="sampling", num_samples=None, top_k=None, population_size=None, elite_fraction=None, num_iterations=None, learning_rate=None, horizon=None, replanning_interval=None))]
+#[pyo3(signature = (world, goal, max_steps=10, timeout_seconds=30.0, provider="mock", planner="sampling", num_samples=None, top_k=None, population_size=None, elite_fraction=None, num_iterations=None, learning_rate=None, horizon=None, replanning_interval=None, guardrails_json=None))]
 #[allow(clippy::too_many_arguments)]
 fn plan(
     world: &PyWorld,
@@ -1360,6 +1378,7 @@ fn plan(
     learning_rate: Option<f32>,
     horizon: Option<u32>,
     replanning_interval: Option<u32>,
+    guardrails_json: Option<&str>,
 ) -> PyResult<PyPlan> {
     world.plan(
         goal,
@@ -1375,6 +1394,7 @@ fn plan(
         learning_rate,
         horizon,
         replanning_interval,
+        guardrails_json,
     )
 }
 
@@ -1552,6 +1572,47 @@ fn prove_inference(
     Ok(PyZkProof { inner: proof })
 }
 
+/// Generate an inference proof from two serialized `WorldState` payloads.
+#[pyfunction]
+#[pyo3(signature = (input_state_json, output_state_json, provider=None))]
+fn prove_inference_transition(
+    input_state_json: &str,
+    output_state_json: &str,
+    provider: Option<&str>,
+) -> PyResult<PyZkProof> {
+    let verifier = worldforge_verify::MockVerifier::new();
+    let input_state: WorldState = serde_json::from_str(input_state_json).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!("invalid input state JSON: {e}"))
+    })?;
+    let output_state: WorldState = serde_json::from_str(output_state_json).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!("invalid output state JSON: {e}"))
+    })?;
+    let provider_name = provider.unwrap_or(output_state.metadata.created_by.as_str());
+
+    let bundle =
+        prove_inference_transition_bundle(&verifier, provider_name, &input_state, &output_state)
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("proof generation failed: {e}"))
+            })?;
+
+    Ok(PyZkProof {
+        inner: bundle.proof,
+    })
+}
+
+/// Generate a guardrail-compliance proof from a `Plan`.
+#[pyfunction]
+fn prove_guardrail_plan(plan: &PyPlan) -> PyResult<PyZkProof> {
+    let verifier = worldforge_verify::MockVerifier::new();
+    let bundle = prove_guardrail_plan_bundle(&verifier, &plan.inner).map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("proof generation failed: {e}"))
+    })?;
+
+    Ok(PyZkProof {
+        inner: bundle.proof,
+    })
+}
+
 /// Generate a ZK proof for data provenance.
 #[pyfunction]
 fn prove_provenance(data: &[u8], timestamp: u64, source: &[u8]) -> PyResult<PyZkProof> {
@@ -1596,6 +1657,8 @@ fn worldforge(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(plan, m)?)?;
     m.add_function(wrap_pyfunction!(run_eval, m)?)?;
     m.add_function(wrap_pyfunction!(prove_inference, m)?)?;
+    m.add_function(wrap_pyfunction!(prove_inference_transition, m)?)?;
+    m.add_function(wrap_pyfunction!(prove_guardrail_plan, m)?)?;
     m.add_function(wrap_pyfunction!(prove_provenance, m)?)?;
     Ok(())
 }
@@ -2069,6 +2132,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .unwrap();
         assert!(plan.action_count() > 0);
@@ -2094,6 +2158,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         let json = p.to_json().unwrap();
@@ -2106,7 +2171,7 @@ mod tests {
         let world = PyWorld::new("repr_test", "mock");
         let p = plan(
             &world, "go", 5, 10.0, "mock", "sampling", None, None, None, None, None, None, None,
-            None,
+            None, None,
         )
         .unwrap();
         let repr = p.__repr__();
@@ -2131,11 +2196,38 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .unwrap();
 
         assert!(plan.action_count() > 0);
         assert_eq!(plan.iterations_used(), 3);
+    }
+
+    #[test]
+    fn test_plan_world_with_guardrails_json() {
+        let world = PyWorld::new("plan_guardrails", "mock");
+        let guardrails_json = r#"[{"guardrail":"NoCollisions","blocking":true}]"#;
+        let plan = world
+            .plan(
+                "stay collision free",
+                4,
+                10.0,
+                Some("mock"),
+                "sampling",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(guardrails_json),
+            )
+            .unwrap();
+
+        assert!(plan.action_count() > 0);
     }
 
     // --- Evaluation tests ---
@@ -2178,6 +2270,45 @@ mod tests {
         let proof = prove_provenance(b"sensor-data", 1710000000, b"camera-01").unwrap();
         assert_eq!(proof.proof_size(), 72);
 
+        let (valid, _) = proof.verify().unwrap();
+        assert!(valid);
+    }
+
+    #[test]
+    fn test_prove_inference_transition_and_verify() {
+        let input = serde_json::to_string(&WorldState::new("input", "mock")).unwrap();
+        let output = serde_json::to_string(&WorldState::new("output", "mock")).unwrap();
+
+        let proof = prove_inference_transition(&input, &output, Some("mock")).unwrap();
+        assert_eq!(proof.proof_size(), 96);
+
+        let (valid, _) = proof.verify().unwrap();
+        assert!(valid);
+    }
+
+    #[test]
+    fn test_prove_guardrail_plan_and_verify() {
+        let world = PyWorld::new("verify_plan", "mock");
+        let plan = world
+            .plan(
+                "spawn cube",
+                4,
+                10.0,
+                Some("mock"),
+                "sampling",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(r#"[{"guardrail":"NoCollisions","blocking":true}]"#),
+            )
+            .unwrap();
+
+        let proof = prove_guardrail_plan(&plan).unwrap();
         let (valid, _) = proof.verify().unwrap();
         assert!(valid);
     }

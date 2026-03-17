@@ -13,6 +13,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use worldforge_core::action::{Action, Weather};
+use worldforge_core::guardrail::GuardrailConfig;
 use worldforge_core::prediction::{PlanGoal, PlanRequest, PlannerType, PredictionConfig};
 use worldforge_core::provider::{
     GenerationConfig, GenerationPrompt, ProviderRegistry, SpatialControls, TransferConfig,
@@ -21,7 +22,10 @@ use worldforge_core::provider::{
 use worldforge_core::state::{DynStateStore, StateStore, StateStoreKind, WorldState};
 use worldforge_core::types::{Position, VideoClip};
 use worldforge_eval::EvalSuite;
-use worldforge_verify::{MockVerifier, ZkVerifier};
+use worldforge_verify::{
+    prove_guardrail_plan, prove_inference_transition, prove_latest_inference, prove_provenance,
+    MockVerifier, VerificationBundle,
+};
 
 /// Persistence backend used by the CLI.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -233,16 +237,55 @@ pub enum Commands {
         /// Provider to use.
         #[arg(long, default_value = "mock")]
         provider: String,
+        /// Optional JSON file containing `Vec<GuardrailConfig>`.
+        #[arg(long)]
+        guardrails_json: Option<PathBuf>,
+        /// Optional path to write the generated `Plan` as JSON.
+        #[arg(long)]
+        output_json: Option<PathBuf>,
     },
 
     /// Generate and verify a ZK proof for a plan.
     Verify {
-        /// World ID.
+        /// World ID for state-backed proofs or plan generation.
         #[arg(long)]
-        world: String,
+        world: Option<String>,
         /// Proof type: inference, guardrail, provenance.
         #[arg(long, default_value = "inference")]
         proof_type: String,
+        /// JSON file containing the input `WorldState` for inference verification.
+        #[arg(long)]
+        input_state_json: Option<PathBuf>,
+        /// JSON file containing the output `WorldState` for inference verification.
+        #[arg(long)]
+        output_state_json: Option<PathBuf>,
+        /// JSON file containing a fully materialized `Plan` for guardrail verification.
+        #[arg(long)]
+        plan_json: Option<PathBuf>,
+        /// Natural-language goal used to generate a plan before guardrail verification.
+        #[arg(long)]
+        goal: Option<String>,
+        /// Maximum number of planning steps when generating a plan for verification.
+        #[arg(long, default_value = "10")]
+        max_steps: u32,
+        /// Planning algorithm when generating a plan for guardrail verification.
+        #[arg(long, default_value = "sampling")]
+        planner: String,
+        /// Planning timeout in seconds when generating a plan for guardrail verification.
+        #[arg(long, default_value = "30")]
+        timeout: f64,
+        /// Optional provider override for generated plans or history-backed inference proofs.
+        #[arg(long)]
+        provider: Option<String>,
+        /// Optional JSON file containing `Vec<GuardrailConfig>` for generated plans.
+        #[arg(long)]
+        guardrails_json: Option<PathBuf>,
+        /// Source label to attest for provenance proofs.
+        #[arg(long, default_value = "worldforge-cli")]
+        source_label: String,
+        /// Optional path to write the verification bundle as JSON.
+        #[arg(long)]
+        output_json: Option<PathBuf>,
     },
 
     /// Check provider health.
@@ -372,20 +415,58 @@ pub async fn run() -> Result<()> {
             planner,
             timeout,
             provider,
+            guardrails_json,
+            output_json,
         } => {
             cmd_plan(
                 store.as_ref(),
                 &world,
                 &goal,
-                max_steps,
-                &planner,
-                timeout,
-                &provider,
+                PlanOptions {
+                    max_steps,
+                    planner_name: &planner,
+                    timeout,
+                    provider: &provider,
+                    guardrails_json: guardrails_json.as_deref(),
+                    output_json: output_json.as_deref(),
+                },
             )
             .await
         }
-        Commands::Verify { world, proof_type } => {
-            cmd_verify(store.as_ref(), &world, &proof_type).await
+        Commands::Verify {
+            world,
+            proof_type,
+            input_state_json,
+            output_state_json,
+            plan_json,
+            goal,
+            max_steps,
+            planner,
+            timeout,
+            provider,
+            guardrails_json,
+            source_label,
+            output_json,
+        } => {
+            cmd_verify(
+                store.as_ref(),
+                world.as_deref(),
+                VerifyOptions {
+                    proof_type: &proof_type,
+                    input_state_json: input_state_json.as_deref(),
+                    output_state_json: output_state_json.as_deref(),
+                    plan_json: plan_json.as_deref(),
+                    goal: goal.as_deref(),
+                    max_steps,
+                    planner_name: &planner,
+                    timeout,
+                    provider: provider.as_deref(),
+                    guardrails_json: guardrails_json.as_deref(),
+                    source_label: &source_label,
+                    output_json: output_json.as_deref(),
+                },
+            )
+            .await
         }
         Commands::Health { provider } => cmd_health(&provider).await,
         Commands::Serve { .. } => unreachable!("serve command handled before store initialization"),
@@ -466,6 +547,30 @@ struct TransferOptions<'a> {
     control_strength: f32,
 }
 
+struct PlanOptions<'a> {
+    max_steps: u32,
+    planner_name: &'a str,
+    timeout: f64,
+    provider: &'a str,
+    guardrails_json: Option<&'a Path>,
+    output_json: Option<&'a Path>,
+}
+
+struct VerifyOptions<'a> {
+    proof_type: &'a str,
+    input_state_json: Option<&'a Path>,
+    output_state_json: Option<&'a Path>,
+    plan_json: Option<&'a Path>,
+    goal: Option<&'a str>,
+    max_steps: u32,
+    planner_name: &'a str,
+    timeout: f64,
+    provider: Option<&'a str>,
+    guardrails_json: Option<&'a Path>,
+    source_label: &'a str,
+    output_json: Option<&'a Path>,
+}
+
 fn require_provider<'a>(
     registry: &'a ProviderRegistry,
     provider: &str,
@@ -492,6 +597,66 @@ fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     }
     let contents = serde_json::to_string_pretty(value).context("failed to serialize JSON")?;
     fs::write(path, contents).with_context(|| format!("failed to write {}", path.display()))
+}
+
+fn read_guardrails(path: Option<&Path>) -> Result<Vec<GuardrailConfig>> {
+    match path {
+        Some(path) => read_json_file(path),
+        None => Ok(Vec::new()),
+    }
+}
+
+fn planner_from_name(planner_name: &str, max_steps: u32) -> Result<PlannerType> {
+    match planner_name {
+        "sampling" => Ok(PlannerType::Sampling {
+            num_samples: 32,
+            top_k: 5,
+        }),
+        "cem" => Ok(PlannerType::CEM {
+            population_size: 64,
+            elite_fraction: 0.1,
+            num_iterations: 5,
+        }),
+        "mpc" => Ok(PlannerType::MPC {
+            horizon: max_steps,
+            num_samples: 32,
+            replanning_interval: 1,
+        }),
+        "gradient" => Ok(PlannerType::Gradient {
+            learning_rate: 0.01,
+            num_iterations: 100,
+        }),
+        "provider-native" | "provider_native" | "native" => Ok(PlannerType::ProviderNative),
+        other => anyhow::bail!(
+            "unknown planner: {other}. Available: sampling, cem, mpc, gradient, provider-native"
+        ),
+    }
+}
+
+fn print_verification_bundle<T: Serialize>(
+    label: &str,
+    bundle: &VerificationBundle<T>,
+) -> Result<()> {
+    println!("ZK Proof generated:");
+    println!("  Type: {label}");
+    println!("  Backend: {:?}", bundle.proof.backend);
+    println!("  Proof size: {} bytes", bundle.proof.proof_data.len());
+    println!("  Generation time: {}ms", bundle.proof.generation_time_ms);
+    println!();
+    println!("Verification:");
+    println!("  Valid: {}", bundle.verification.valid);
+    println!("  Details: {}", bundle.verification.details);
+    println!(
+        "  Verification time: {}ms",
+        bundle.verification.verification_time_ms
+    );
+    println!();
+    println!("Artifact:");
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&bundle.artifact).context("failed to serialize artifact")?
+    );
+    Ok(())
 }
 
 async fn cmd_create(
@@ -824,55 +989,28 @@ async fn cmd_compare(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn cmd_plan(
     store: &(impl StateStore + ?Sized),
     world_id: &str,
     goal: &str,
-    max_steps: u32,
-    planner_name: &str,
-    timeout: f64,
-    provider: &str,
+    options: PlanOptions<'_>,
 ) -> Result<()> {
     let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
     let state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let registry = Arc::new(auto_detect_registry());
-    require_provider(&registry, provider)?;
-    let world = worldforge_core::world::World::new(state.clone(), provider, registry);
-
-    let planner = match planner_name {
-        "sampling" => PlannerType::Sampling {
-            num_samples: 32,
-            top_k: 5,
-        },
-        "cem" => PlannerType::CEM {
-            population_size: 64,
-            elite_fraction: 0.1,
-            num_iterations: 5,
-        },
-        "mpc" => PlannerType::MPC {
-            horizon: max_steps,
-            num_samples: 32,
-            replanning_interval: 1,
-        },
-        "gradient" => PlannerType::Gradient {
-            learning_rate: 0.01,
-            num_iterations: 100,
-        },
-        "provider-native" | "provider_native" | "native" => PlannerType::ProviderNative,
-        other => anyhow::bail!(
-            "unknown planner: {other}. Available: sampling, cem, mpc, gradient, provider-native"
-        ),
-    };
+    require_provider(&registry, options.provider)?;
+    let world = worldforge_core::world::World::new(state.clone(), options.provider, registry);
+    let planner = planner_from_name(options.planner_name, options.max_steps)?;
+    let guardrails = read_guardrails(options.guardrails_json)?;
 
     let request = PlanRequest {
         current_state: state,
         goal: PlanGoal::Description(goal.to_string()),
-        max_steps,
-        guardrails: Vec::new(),
+        max_steps: options.max_steps,
+        guardrails,
         planner,
-        timeout_seconds: timeout,
+        timeout_seconds: options.timeout,
     };
 
     let plan = world
@@ -896,102 +1034,121 @@ async fn cmd_plan(
         }
     }
 
+    if let Some(path) = options.output_json {
+        write_json_file(path, &plan)?;
+        println!();
+        println!("Saved plan JSON: {}", path.display());
+    }
+
     Ok(())
 }
 
 async fn cmd_verify(
     store: &(impl StateStore + ?Sized),
-    world_id: &str,
-    proof_type: &str,
+    world_id: Option<&str>,
+    options: VerifyOptions<'_>,
 ) -> Result<()> {
-    let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
-    let state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
-
     let verifier = MockVerifier::new();
-
-    match proof_type {
-        "inference" => {
-            let model_hash = worldforge_verify::sha256_hash(b"mock-model");
-            let input_hash =
-                worldforge_verify::sha256_hash(&serde_json::to_vec(&state).unwrap_or_default());
-            let output_hash = worldforge_verify::sha256_hash(b"mock-output");
-
-            let proof = verifier
-                .prove_inference(model_hash, input_hash, output_hash)
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
-
-            println!("ZK Proof generated:");
-            println!("  Type: InferenceVerification");
-            println!("  Backend: {:?}", proof.backend);
-            println!("  Proof size: {} bytes", proof.proof_data.len());
-            println!("  Generation time: {}ms", proof.generation_time_ms);
-
-            let result = verifier
-                .verify(&proof)
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
-            println!();
-            println!("Verification:");
-            println!("  Valid: {}", result.valid);
-            println!("  Details: {}", result.details);
-            println!("  Verification time: {}ms", result.verification_time_ms);
+    let loaded_state = match world_id {
+        Some(world_id) => {
+            let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
+            Some(store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?)
         }
-        "guardrail" => {
-            use worldforge_core::prediction::Plan;
+        None => None,
+    };
 
-            let plan = Plan {
-                actions: Vec::new(),
-                predicted_states: Vec::new(),
-                predicted_videos: None,
-                total_cost: 0.0,
-                success_probability: 1.0,
-                guardrail_compliance: Vec::new(),
-                planning_time_ms: 0,
-                iterations_used: 0,
+    match options.proof_type {
+        "inference" => {
+            let bundle = match (options.input_state_json, options.output_state_json) {
+                (Some(input_path), Some(output_path)) => {
+                    let input_state: WorldState = read_json_file(input_path)?;
+                    let output_state: WorldState = read_json_file(output_path)?;
+                    let provider_name = options
+                        .provider
+                        .filter(|name| !name.is_empty())
+                        .unwrap_or(output_state.metadata.created_by.as_str());
+                    prove_inference_transition(
+                        &verifier,
+                        provider_name,
+                        &input_state,
+                        &output_state,
+                    )
+                    .map_err(|e| anyhow::anyhow!("{e}"))?
+                }
+                (None, None) => {
+                    let state = loaded_state.as_ref().context(
+                        "inference verification requires either --world with at least two recorded history entries, or both --input-state-json and --output-state-json",
+                    )?;
+                    prove_latest_inference(&verifier, state, options.provider)
+                        .map_err(|e| anyhow::anyhow!("{e}"))?
+                }
+                _ => anyhow::bail!(
+                    "inference verification requires both --input-state-json and --output-state-json"
+                ),
             };
 
-            let proof = verifier
-                .prove_guardrail_compliance(&plan, &[])
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            print_verification_bundle("InferenceVerification", &bundle)?;
+            if let Some(path) = options.output_json {
+                write_json_file(path, &bundle)?;
+                println!();
+                println!("Saved verification bundle: {}", path.display());
+            }
+        }
+        "guardrail" => {
+            let plan = if let Some(plan_path) = options.plan_json {
+                read_json_file(plan_path)?
+            } else {
+                let state = loaded_state.as_ref().context(
+                    "guardrail verification requires --plan-json or --world together with --goal",
+                )?;
+                let goal = options.goal.context(
+                    "guardrail verification requires --goal when --plan-json is not provided",
+                )?;
+                let provider_name = resolve_provider_name(state, options.provider).to_string();
+                let registry = Arc::new(auto_detect_registry());
+                require_provider(&registry, &provider_name)?;
+                let world =
+                    worldforge_core::world::World::new(state.clone(), &provider_name, registry);
+                let request = PlanRequest {
+                    current_state: state.clone(),
+                    goal: PlanGoal::Description(goal.to_string()),
+                    max_steps: options.max_steps,
+                    guardrails: read_guardrails(options.guardrails_json)?,
+                    planner: planner_from_name(options.planner_name, options.max_steps)?,
+                    timeout_seconds: options.timeout,
+                };
+                world
+                    .plan(&request)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?
+            };
 
-            println!("ZK Proof generated:");
-            println!("  Type: GuardrailCompliance");
-            println!("  Backend: {:?}", proof.backend);
-            println!("  Proof size: {} bytes", proof.proof_data.len());
-            println!("  Generation time: {}ms", proof.generation_time_ms);
-
-            let result = verifier
-                .verify(&proof)
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
-            println!();
-            println!("Verification:");
-            println!("  Valid: {}", result.valid);
-            println!("  Details: {}", result.details);
-            println!("  Verification time: {}ms", result.verification_time_ms);
+            let bundle =
+                prove_guardrail_plan(&verifier, &plan).map_err(|e| anyhow::anyhow!("{e}"))?;
+            print_verification_bundle("GuardrailCompliance", &bundle)?;
+            if let Some(path) = options.output_json {
+                write_json_file(path, &bundle)?;
+                println!();
+                println!("Saved verification bundle: {}", path.display());
+            }
         }
         "provenance" => {
-            let data_hash =
-                worldforge_verify::sha256_hash(&serde_json::to_vec(&state).unwrap_or_default());
+            let state = match options.output_state_json.or(options.input_state_json) {
+                Some(state_path) => read_json_file(state_path)?,
+                None => loaded_state
+                    .as_ref()
+                    .cloned()
+                    .context("provenance verification requires --world or a state JSON input")?,
+            };
             let timestamp = chrono::Utc::now().timestamp() as u64;
-            let source_commitment = worldforge_verify::sha256_hash(b"worldforge-cli");
-
-            let proof = verifier
-                .prove_data_provenance(data_hash, timestamp, source_commitment)
+            let bundle = prove_provenance(&verifier, &state, options.source_label, timestamp)
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
-
-            println!("ZK Proof generated:");
-            println!("  Type: DataProvenance");
-            println!("  Backend: {:?}", proof.backend);
-            println!("  Proof size: {} bytes", proof.proof_data.len());
-            println!("  Generation time: {}ms", proof.generation_time_ms);
-
-            let result = verifier
-                .verify(&proof)
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
-            println!();
-            println!("Verification:");
-            println!("  Valid: {}", result.valid);
-            println!("  Details: {}", result.details);
-            println!("  Verification time: {}ms", result.verification_time_ms);
+            print_verification_bundle("DataProvenance", &bundle)?;
+            if let Some(path) = options.output_json {
+                write_json_file(path, &bundle)?;
+                println!();
+                println!("Saved verification bundle: {}", path.display());
+            }
         }
         other => anyhow::bail!(
             "unknown proof type: {other}. Available: inference, guardrail, provenance"
@@ -1377,6 +1534,70 @@ mod tests {
     }
 
     #[test]
+    fn test_cli_parse_plan_command_with_guardrails_and_output() {
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "plan",
+            "--world",
+            "123e4567-e89b-12d3-a456-426614174000",
+            "--goal",
+            "spawn cube",
+            "--guardrails-json",
+            "/tmp/guardrails.json",
+            "--output-json",
+            "/tmp/plan.json",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Plan {
+                guardrails_json,
+                output_json,
+                ..
+            } => {
+                assert_eq!(guardrails_json, Some(PathBuf::from("/tmp/guardrails.json")));
+                assert_eq!(output_json, Some(PathBuf::from("/tmp/plan.json")));
+            }
+            _ => panic!("expected Plan"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_verify_command_with_artifacts() {
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "verify",
+            "--proof-type",
+            "guardrail",
+            "--plan-json",
+            "/tmp/plan.json",
+            "--output-json",
+            "/tmp/proof.json",
+            "--source-label",
+            "ci",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Verify {
+                world,
+                proof_type,
+                plan_json,
+                output_json,
+                source_label,
+                ..
+            } => {
+                assert!(world.is_none());
+                assert_eq!(proof_type, "guardrail");
+                assert_eq!(plan_json, Some(PathBuf::from("/tmp/plan.json")));
+                assert_eq!(output_json, Some(PathBuf::from("/tmp/proof.json")));
+                assert_eq!(source_label, "ci");
+            }
+            _ => panic!("expected Verify"),
+        }
+    }
+
+    #[test]
     fn test_resolve_provider_name_defaults_to_world_provider() {
         let state = WorldState::new("default-provider", "mock");
         assert_eq!(resolve_provider_name(&state, None), "mock");
@@ -1443,6 +1664,148 @@ mod tests {
         assert_eq!(clip.duration, source.duration);
         assert_eq!(clip.resolution, source.resolution);
         assert_eq!(clip.fps, source.fps);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn test_cmd_plan_writes_output_json() {
+        let dir = std::env::temp_dir().join(format!("wf-cli-plan-{}", uuid::Uuid::new_v4()));
+        let store = StateStoreKind::File(dir.join("state"))
+            .open()
+            .await
+            .unwrap();
+        let state = WorldState::new("plan-output", "mock");
+        store.save(&state).await.unwrap();
+
+        let guardrails_path = dir.join("guardrails.json");
+        let plan_path = dir.join("plan.json");
+        write_json_file(
+            &guardrails_path,
+            &vec![GuardrailConfig {
+                guardrail: worldforge_core::guardrail::Guardrail::MaxVelocity { limit: 100.0 },
+                blocking: true,
+            }],
+        )
+        .unwrap();
+
+        cmd_plan(
+            store.as_ref(),
+            &state.id.to_string(),
+            "spawn cube",
+            PlanOptions {
+                max_steps: 4,
+                planner_name: "sampling",
+                timeout: 10.0,
+                provider: "mock",
+                guardrails_json: Some(&guardrails_path),
+                output_json: Some(&plan_path),
+            },
+        )
+        .await
+        .unwrap();
+
+        let plan: worldforge_core::prediction::Plan = read_json_file(&plan_path).unwrap();
+        assert!(!plan.actions.is_empty());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn test_cmd_verify_inference_from_state_jsons() {
+        let dir =
+            std::env::temp_dir().join(format!("wf-cli-verify-infer-{}", uuid::Uuid::new_v4()));
+        let store = StateStoreKind::File(dir.join("state"))
+            .open()
+            .await
+            .unwrap();
+        let input_state = WorldState::new("input", "mock");
+        let output_state = WorldState::new("output", "mock");
+        let input_path = dir.join("input.json");
+        let output_path = dir.join("output.json");
+        let bundle_path = dir.join("bundle.json");
+        write_json_file(&input_path, &input_state).unwrap();
+        write_json_file(&output_path, &output_state).unwrap();
+
+        cmd_verify(
+            store.as_ref(),
+            None,
+            VerifyOptions {
+                proof_type: "inference",
+                input_state_json: Some(&input_path),
+                output_state_json: Some(&output_path),
+                plan_json: None,
+                goal: None,
+                max_steps: 4,
+                planner_name: "sampling",
+                timeout: 10.0,
+                provider: Some("mock"),
+                guardrails_json: None,
+                source_label: "worldforge-cli",
+                output_json: Some(&bundle_path),
+            },
+        )
+        .await
+        .unwrap();
+
+        let bundle: serde_json::Value = read_json_file(&bundle_path).unwrap();
+        assert_eq!(bundle["verification"]["valid"], true);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn test_cmd_verify_guardrail_from_plan_json() {
+        let dir = std::env::temp_dir().join(format!("wf-cli-verify-plan-{}", uuid::Uuid::new_v4()));
+        let store = StateStoreKind::File(dir.join("state"))
+            .open()
+            .await
+            .unwrap();
+        let state = WorldState::new("verify-plan", "mock");
+        store.save(&state).await.unwrap();
+
+        let plan_path = dir.join("plan.json");
+        cmd_plan(
+            store.as_ref(),
+            &state.id.to_string(),
+            "spawn cube",
+            PlanOptions {
+                max_steps: 4,
+                planner_name: "sampling",
+                timeout: 10.0,
+                provider: "mock",
+                guardrails_json: None,
+                output_json: Some(&plan_path),
+            },
+        )
+        .await
+        .unwrap();
+
+        let bundle_path = dir.join("bundle.json");
+        cmd_verify(
+            store.as_ref(),
+            None,
+            VerifyOptions {
+                proof_type: "guardrail",
+                input_state_json: None,
+                output_state_json: None,
+                plan_json: Some(&plan_path),
+                goal: None,
+                max_steps: 4,
+                planner_name: "sampling",
+                timeout: 10.0,
+                provider: None,
+                guardrails_json: None,
+                source_label: "worldforge-cli",
+                output_json: Some(&bundle_path),
+            },
+        )
+        .await
+        .unwrap();
+
+        let bundle: serde_json::Value = read_json_file(&bundle_path).unwrap();
+        assert_eq!(bundle["verification"]["valid"], true);
+        assert!(bundle["artifact"]["plan_hash"].is_array());
 
         let _ = fs::remove_dir_all(dir);
     }

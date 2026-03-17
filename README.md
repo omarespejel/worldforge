@@ -137,9 +137,12 @@ cargo run -p worldforge-cli -- list
 cargo run -p worldforge-cli -- --state-backend sqlite --state-db-path .worldforge/worldforge.db list
 cargo run -p worldforge-cli -- predict --world <id> --action "move 1 0 0" --provider runway --fallback-provider mock --timeout-ms 500
 cargo run -p worldforge-cli -- plan --world <id> --goal "spawn cube" --planner cem
+cargo run -p worldforge-cli -- plan --world <id> --goal "spawn cube" --planner cem --guardrails-json guardrails.json --output-json plans/generated.json
 cargo run -p worldforge-cli -- generate --provider mock --prompt "A cube rolling across a table" --duration-seconds 5 --output-json clips/generated.json
 cargo run -p worldforge-cli -- transfer --provider mock --source-json clips/generated.json --output-json clips/transferred.json
 cargo run -p worldforge-cli -- reason --world <id> --query "Will the mug fall if pushed?"
+cargo run -p worldforge-cli -- verify --proof-type guardrail --plan-json plans/generated.json --output-json proofs/guardrail.json
+cargo run -p worldforge-cli -- verify --proof-type inference --input-state-json states/before.json --output-state-json states/after.json --provider mock
 cargo run -p worldforge-cli -- eval --suite physics
 cargo run -p worldforge-cli -- serve --bind 127.0.0.1:8080
 
@@ -171,7 +174,11 @@ curl -X POST http://127.0.0.1:8080/v1/worlds \
 
 curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/plan \
   -H 'content-type: application/json' \
-  -d '{"goal":"spawn cube","planner":"cem","population_size":12,"elite_fraction":0.25,"num_iterations":3}'
+  -d '{"goal":"spawn cube","planner":"cem","population_size":12,"elite_fraction":0.25,"num_iterations":3,"guardrails":[{"guardrail":"NoCollisions","blocking":true}]}'
+
+curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/verify \
+  -H 'content-type: application/json' \
+  -d '{"proof_type":"guardrail","goal":"spawn cube","guardrails":[{"guardrail":"NoCollisions","blocking":true}]}'
 
 curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/reason \
   -H 'content-type: application/json' \
@@ -204,7 +211,12 @@ the core, CLI, REST server, and Python bindings with JSON clip round-tripping
 for reusable workflows. File-backed and SQLite-backed world persistence are
 both supported through the shared `StateStore` abstraction across the core,
 CLI, REST server, and Python bindings. Cosmos and Runway adapters have API wiring in place,
-while Genie remains a research-preview stub pending public access.
+while Genie remains a research-preview stub pending public access. Planning now
+accepts serialized guardrail configurations across the CLI, REST server, and
+Python bindings, and verification now operates on explicit state transitions or
+real generated plans instead of placeholder proof inputs. The CLI can export
+plan JSON for reuse, and the REST server can generate guardrail proofs directly
+from a goal plus guardrail set.
 
 ## License
 
