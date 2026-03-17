@@ -532,6 +532,11 @@ enum GoalHint {
     ObjectExists {
         object_name: String,
     },
+    ObjectExistsAt {
+        object_name: String,
+        target: Position,
+        tolerance: f32,
+    },
     ObjectsTouching {
         a: ObjectId,
         b: ObjectId,
@@ -1052,6 +1057,19 @@ fn goal_directed_candidates(
                     },
                 }]);
             }
+            GoalHint::ObjectExistsAt {
+                object_name,
+                target,
+                ..
+            } => {
+                candidates.push(vec![Action::SpawnObject {
+                    template: object_name.clone(),
+                    pose: Pose {
+                        position: *target,
+                        ..Default::default()
+                    },
+                }]);
+            }
             GoalHint::ObjectsTouching { a, b } => {
                 if let Some(target) = state.scene.get_object(b).map(|object| object.pose.position) {
                     candidates.push(vec![Action::Place { object: *a, target }]);
@@ -1415,6 +1433,7 @@ fn parse_description_goal(description: &str, state: &WorldState) -> Vec<GoalHint
     }
 
     let mentioned_objects = mentioned_objects(state, &normalized);
+    let relative_target = parse_relative_target_hint(state, &normalized);
     if normalized.contains("touch") && mentioned_objects.len() >= 2 {
         hints.push(GoalHint::ObjectsTouching {
             a: mentioned_objects[0].id,
@@ -1432,12 +1451,41 @@ fn parse_description_goal(description: &str, state: &WorldState) -> Vec<GoalHint
     }
 
     if contains_any(&normalized, &["spawn", "create", "add"]) {
-        let object_name = mentioned_objects
-            .first()
-            .map(|object| object.name.clone())
-            .or_else(|| infer_object_name_from_verb(description, &["spawn", "create", "add"]))
+        let object_name = infer_object_name_from_verb(description, &["spawn", "create", "add"])
+            .or_else(|| {
+                mentioned_objects
+                    .iter()
+                    .find(|object| Some(object.id) != relative_target.map(|hint| hint.anchor_id))
+                    .map(|object| object.name.clone())
+            })
             .unwrap_or_else(|| "object".to_string());
-        hints.push(GoalHint::ObjectExists { object_name });
+
+        if let Some(relative_target) = relative_target {
+            hints.push(GoalHint::ObjectExistsAt {
+                object_name,
+                target: relative_target.target,
+                tolerance: relative_target.tolerance,
+            });
+        } else {
+            hints.push(GoalHint::ObjectExists { object_name });
+        }
+    } else if let Some(relative_target) = relative_target {
+        let subject = mentioned_objects
+            .iter()
+            .copied()
+            .find(|object| object.id != relative_target.anchor_id)
+            .or_else(|| {
+                primary_dynamic_object(state)
+                    .filter(|object| object.id != relative_target.anchor_id)
+            });
+        if let Some(subject) = subject {
+            hints.push(GoalHint::ObjectAt {
+                object_id: subject.id,
+                _object_name: subject.name.clone(),
+                target: relative_target.target,
+                tolerance: relative_target.tolerance,
+            });
+        }
     }
 
     if let Some(target) = parse_position_hint(description) {
@@ -1529,21 +1577,193 @@ fn first_number(input: &str) -> Option<f32> {
 
 fn infer_object_name_from_verb(input: &str, verbs: &[&str]) -> Option<String> {
     let normalized = input.to_lowercase();
+    let delimiters = [
+        " next to ",
+        " beside ",
+        " near ",
+        " on top of ",
+        " above ",
+        " below ",
+        " under ",
+        " left of ",
+        " right of ",
+        " in front of ",
+        " behind ",
+        " at ",
+        " to position ",
+        " to (",
+    ];
     for verb in verbs {
         if let Some(index) = normalized.find(verb) {
-            let remainder = input[index + verb.len()..].trim();
-            let token = remainder
-                .split_whitespace()
-                .next()
-                .map(|value| value.trim_matches(|ch: char| !ch.is_alphanumeric()));
-            if let Some(token) = token {
-                if !token.is_empty() {
-                    return Some(token.to_string());
+            let mut remainder = input[index + verb.len()..].trim();
+            let mut remainder_lower = remainder.to_lowercase();
+
+            for article in ["a ", "an ", "the "] {
+                if remainder_lower.starts_with(article) {
+                    remainder = remainder[article.len()..].trim_start();
+                    remainder_lower = remainder.to_lowercase();
+                    break;
                 }
+            }
+
+            if remainder.is_empty() {
+                continue;
+            }
+
+            let end_index = delimiters
+                .iter()
+                .filter_map(|delimiter| remainder_lower.find(delimiter))
+                .min()
+                .unwrap_or(remainder.len());
+            let token = remainder[..end_index].trim().trim_matches(|ch: char| {
+                !ch.is_alphanumeric() && ch != ' ' && ch != '_' && ch != '-'
+            });
+            if !token.is_empty() {
+                return Some(token.to_string());
             }
         }
     }
     None
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RelativePlacement {
+    NextTo,
+    OnTopOf,
+    Below,
+    LeftOf,
+    RightOf,
+    InFrontOf,
+    Behind,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RelativeTargetHint {
+    anchor_id: ObjectId,
+    target: Position,
+    tolerance: f32,
+}
+
+fn parse_relative_target_hint(state: &WorldState, description: &str) -> Option<RelativeTargetHint> {
+    let mut best: Option<(usize, usize, RelativeTargetHint)> = None;
+
+    for object in state.scene.objects.values() {
+        let mut aliases = vec![object.name.to_lowercase()];
+        if let Some(label) = &object.semantic_label {
+            let lowered = label.to_lowercase();
+            if !aliases.contains(&lowered) {
+                aliases.push(lowered);
+            }
+        }
+
+        for alias in aliases {
+            for (phrase, placement) in [
+                ("next to", RelativePlacement::NextTo),
+                ("beside", RelativePlacement::NextTo),
+                ("near", RelativePlacement::NextTo),
+                ("on top of", RelativePlacement::OnTopOf),
+                ("above", RelativePlacement::OnTopOf),
+                ("below", RelativePlacement::Below),
+                ("under", RelativePlacement::Below),
+                ("left of", RelativePlacement::LeftOf),
+                ("right of", RelativePlacement::RightOf),
+                ("in front of", RelativePlacement::InFrontOf),
+                ("behind", RelativePlacement::Behind),
+            ] {
+                let position = [
+                    format!("{phrase} {alias}"),
+                    format!("{phrase} the {alias}"),
+                    format!("{phrase} a {alias}"),
+                    format!("{phrase} an {alias}"),
+                ]
+                .into_iter()
+                .filter_map(|pattern| description.find(&pattern))
+                .min();
+                let Some(position) = position else { continue };
+
+                let target = relative_target_position(object, placement);
+                let tolerance = (approximate_radius(object) + 0.15).clamp(0.15, 0.5);
+                let candidate = (
+                    position,
+                    alias.len(),
+                    RelativeTargetHint {
+                        anchor_id: object.id,
+                        target,
+                        tolerance,
+                    },
+                );
+
+                match best {
+                    Some((best_position, best_alias_len, _)) => {
+                        if position < best_position
+                            || (position == best_position && alias.len() > best_alias_len)
+                        {
+                            best = Some(candidate);
+                        }
+                    }
+                    None => best = Some(candidate),
+                }
+            }
+        }
+    }
+
+    best.map(|(_, _, hint)| hint)
+}
+
+fn relative_target_position(anchor: &SceneObject, placement: RelativePlacement) -> Position {
+    let clearance = (approximate_radius(anchor) + 0.2).clamp(0.2, 0.8);
+    match placement {
+        RelativePlacement::NextTo => Position {
+            x: anchor.pose.position.x + clearance,
+            y: anchor.pose.position.y,
+            z: anchor.pose.position.z,
+        },
+        RelativePlacement::OnTopOf => Position {
+            x: anchor.pose.position.x,
+            y: anchor.pose.position.y + clearance,
+            z: anchor.pose.position.z,
+        },
+        RelativePlacement::Below => Position {
+            x: anchor.pose.position.x,
+            y: anchor.pose.position.y - clearance,
+            z: anchor.pose.position.z,
+        },
+        RelativePlacement::LeftOf => Position {
+            x: anchor.pose.position.x - clearance,
+            y: anchor.pose.position.y,
+            z: anchor.pose.position.z,
+        },
+        RelativePlacement::RightOf => Position {
+            x: anchor.pose.position.x + clearance,
+            y: anchor.pose.position.y,
+            z: anchor.pose.position.z,
+        },
+        RelativePlacement::InFrontOf => Position {
+            x: anchor.pose.position.x,
+            y: anchor.pose.position.y,
+            z: anchor.pose.position.z + clearance,
+        },
+        RelativePlacement::Behind => Position {
+            x: anchor.pose.position.x,
+            y: anchor.pose.position.y,
+            z: anchor.pose.position.z - clearance,
+        },
+    }
+}
+
+fn object_name_matches(object: &SceneObject, query: &str) -> bool {
+    let name = object.name.to_lowercase();
+    if name == query || name.contains(query) {
+        return true;
+    }
+    object
+        .semantic_label
+        .as_ref()
+        .map(|label| {
+            let label = label.to_lowercase();
+            label == query || label.contains(query)
+        })
+        .unwrap_or(false)
 }
 
 fn mentioned_objects<'a>(state: &'a WorldState, description: &str) -> Vec<&'a SceneObject> {
@@ -1615,6 +1835,20 @@ fn score_goal_hint(goal_hint: &GoalHint, state: &WorldState) -> f32 {
             } else {
                 1.0
             }
+        }
+        GoalHint::ObjectExistsAt {
+            object_name,
+            target,
+            tolerance,
+        } => {
+            let query = object_name.to_lowercase();
+            state
+                .scene
+                .objects
+                .values()
+                .filter(|object| object_name_matches(object, &query))
+                .map(|object| distance_score(object.pose.position, *target, *tolerance))
+                .fold(0.0, f32::max)
         }
         GoalHint::ObjectsTouching { a, b } => touching_score(state, *a, *b),
         GoalHint::Weather { weather } => {
@@ -1944,6 +2178,47 @@ mod tests {
     }
 
     #[test]
+    fn test_evaluate_goal_score_relational_spawn_requires_spawned_object() {
+        let (state, _ball_id, _mug_id) = sample_relational_state();
+        let goal = PlanGoal::Description("spawn cube next to the red mug".to_string());
+        assert_eq!(evaluate_goal_score(&goal, &state), 0.0);
+
+        let target = parse_description_goal("spawn cube next to the red mug", &state)
+            .into_iter()
+            .find_map(|hint| {
+                if let GoalHint::ObjectExistsAt { target, .. } = hint {
+                    Some(target)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+
+        let mut updated = state.clone();
+        let cube = crate::scene::SceneObject::new(
+            "cube",
+            crate::types::Pose {
+                position: target,
+                ..Default::default()
+            },
+            crate::types::BBox {
+                min: crate::types::Position {
+                    x: -0.1,
+                    y: -0.1,
+                    z: -0.1,
+                },
+                max: crate::types::Position {
+                    x: 0.1,
+                    y: 0.1,
+                    z: 0.1,
+                },
+            },
+        );
+        updated.scene.add_object(cube);
+        assert!(evaluate_goal_score(&goal, &updated) > 0.95);
+    }
+
+    #[test]
     fn test_evaluate_goal_score_target_state() {
         let mut state = WorldState::new("test", "mock");
         let obj = crate::scene::SceneObject::new(
@@ -2078,6 +2353,41 @@ mod tests {
             plan.actions.first(),
             Some(Action::SpawnObject { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn test_sampling_plan_spawns_relative_to_anchor() {
+        let (state, _ball_id, mug_id) = sample_relational_state();
+        let registry = std::sync::Arc::new({
+            let mut registry = ProviderRegistry::new();
+            registry.register(Box::new(PlanningProvider::new("planner", 1.0, false)));
+            registry
+        });
+        let world = World::new(state.clone(), "planner", registry);
+        let request = PlanRequest {
+            current_state: state,
+            goal: PlanGoal::Description("spawn cube next to the red mug".to_string()),
+            max_steps: 2,
+            guardrails: Vec::new(),
+            planner: PlannerType::Sampling {
+                num_samples: 16,
+                top_k: 4,
+            },
+            timeout_seconds: 5.0,
+        };
+
+        let plan = world.plan(&request).await.unwrap();
+        assert!(matches!(
+            plan.actions.first(),
+            Some(Action::SpawnObject { template, .. }) if template == "cube"
+        ));
+
+        let final_state = plan.predicted_states.last().unwrap();
+        let mug_position = final_state.scene.get_object(&mug_id).unwrap().pose.position;
+        let cube = final_state.scene.find_object_by_name("cube").unwrap();
+        assert!(cube.pose.position.x > mug_position.x);
+        assert!(distance(cube.pose.position, mug_position) < 1.0);
+        assert!(plan.success_probability > 0.9);
     }
 
     #[tokio::test]
@@ -2663,6 +2973,65 @@ mod tests {
         (state, object_id)
     }
 
+    fn sample_relational_state() -> (WorldState, uuid::Uuid, uuid::Uuid) {
+        let mut state = WorldState::new("relational", "planner");
+
+        let ball = crate::scene::SceneObject::new(
+            "ball",
+            crate::types::Pose {
+                position: crate::types::Position {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                ..Default::default()
+            },
+            crate::types::BBox {
+                min: crate::types::Position {
+                    x: -0.1,
+                    y: -0.1,
+                    z: -0.1,
+                },
+                max: crate::types::Position {
+                    x: 0.1,
+                    y: 0.1,
+                    z: 0.1,
+                },
+            },
+        );
+        let ball_id = ball.id;
+        state.scene.add_object(ball);
+
+        let mut mug = crate::scene::SceneObject::new(
+            "red mug",
+            crate::types::Pose {
+                position: crate::types::Position {
+                    x: 0.75,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                ..Default::default()
+            },
+            crate::types::BBox {
+                min: crate::types::Position {
+                    x: -0.08,
+                    y: -0.08,
+                    z: -0.08,
+                },
+                max: crate::types::Position {
+                    x: 0.08,
+                    y: 0.08,
+                    z: 0.08,
+                },
+            },
+        );
+        mug.semantic_label = Some("mug".to_string());
+        let mug_id = mug.id;
+        state.scene.add_object(mug);
+
+        (state, ball_id, mug_id)
+    }
+
     fn apply_planning_action(state: &mut WorldState, action: &Action, movement_scale: f32) {
         match action {
             Action::Place { object, target } => {
@@ -2806,6 +3175,22 @@ mod tests {
                         template: object_name,
                         pose: Pose {
                             position: default_spawn_position(&state),
+                            ..Pose::default()
+                        },
+                    };
+                    apply_planning_action(&mut state, &action, movement_scale);
+                    actions.push(action);
+                    predicted_states.push(state.clone());
+                }
+                GoalHint::ObjectExistsAt {
+                    object_name,
+                    target,
+                    ..
+                } => {
+                    let action = Action::SpawnObject {
+                        template: object_name,
+                        pose: Pose {
+                            position: target,
                             ..Pose::default()
                         },
                     };
