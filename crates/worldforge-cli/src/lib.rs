@@ -16,8 +16,8 @@ use worldforge_core::action::{Action, Weather};
 use worldforge_core::guardrail::GuardrailConfig;
 use worldforge_core::prediction::{PlanGoal, PlanRequest, PlannerType, PredictionConfig};
 use worldforge_core::provider::{
-    GenerationConfig, GenerationPrompt, Operation, ProviderDescriptor, ProviderRegistry,
-    SpatialControls, TransferConfig, WorldModelProvider,
+    GenerationConfig, GenerationPrompt, Operation, ProviderDescriptor, ProviderHealthReport,
+    ProviderRegistry, SpatialControls, TransferConfig, WorldModelProvider,
 };
 use worldforge_core::scene::{PhysicsProperties, SceneObject};
 use worldforge_core::state::{DynStateStore, StateStore, StateStoreKind, WorldState};
@@ -220,6 +220,9 @@ pub enum Commands {
         /// Optional capability filter (for example: predict, generate, planning, depth).
         #[arg(long)]
         capability: Option<String>,
+        /// Run live health checks for the listed providers.
+        #[arg(long, default_value_t = false)]
+        health: bool,
     },
 
     /// Estimate provider cost for an operation.
@@ -492,7 +495,9 @@ pub async fn run() -> Result<()> {
             )
             .await;
         }
-        Commands::Providers { capability } => return cmd_providers(capability.as_deref()),
+        Commands::Providers { capability, health } => {
+            return cmd_providers(capability.as_deref(), *health).await;
+        }
         Commands::Estimate {
             provider,
             operation,
@@ -1177,6 +1182,24 @@ fn print_provider_descriptor(descriptor: &ProviderDescriptor) {
         caps.latency_profile.p95_ms,
         caps.latency_profile.p99_ms
     );
+}
+
+fn print_provider_health_report(report: &ProviderHealthReport) {
+    match (&report.status, &report.error) {
+        (Some(status), None) => {
+            let icon = if status.healthy { "OK" } else { "UNHEALTHY" };
+            println!(
+                "  [{icon}] {}: {} ({}ms)",
+                report.name, status.message, status.latency_ms
+            );
+        }
+        (_, Some(error)) => {
+            println!("  [ERROR] {}: {error}", report.name);
+        }
+        (None, None) => {
+            println!("  [ERROR] {}: health check returned no status", report.name);
+        }
+    }
 }
 
 fn print_verification_bundle<T: Serialize>(
@@ -1968,36 +1991,48 @@ async fn cmd_verify_proof(options: VerifyProofOptions<'_>) -> Result<()> {
 
 async fn cmd_health(provider_name: &str) -> Result<()> {
     let registry = auto_detect_registry();
-    let providers_to_check: Vec<&str> = if provider_name == "all" {
-        registry.list()
-    } else {
-        vec![provider_name]
-    };
-
-    for name in providers_to_check {
-        match registry.get(name) {
-            Ok(provider) => match provider.health_check().await {
-                Ok(status) => {
-                    let icon = if status.healthy { "OK" } else { "UNHEALTHY" };
-                    println!(
-                        "  [{icon}] {name}: {} ({}ms)",
-                        status.message, status.latency_ms
-                    );
-                }
-                Err(e) => {
-                    println!("  [ERROR] {name}: {e}");
-                }
-            },
-            Err(e) => {
-                println!("  [NOT FOUND] {name}: {e}");
-            }
+    if provider_name == "all" {
+        for report in registry.health_check_all().await {
+            print_provider_health_report(&report);
         }
+        return Ok(());
+    }
+
+    match registry.health_check(provider_name).await {
+        Ok(report) => print_provider_health_report(&report),
+        Err(error) => println!("  [NOT FOUND] {provider_name}: {error}"),
     }
     Ok(())
 }
 
-fn cmd_providers(capability: Option<&str>) -> Result<()> {
+async fn cmd_providers(capability: Option<&str>, include_health: bool) -> Result<()> {
     let registry = auto_detect_registry();
+
+    if include_health {
+        let reports = match capability {
+            Some(capability) => {
+                let reports = registry.health_check_by_capability(capability).await;
+                if reports.is_empty() {
+                    anyhow::bail!(
+                        "no providers matched capability '{capability}'. Available capability filters: {}",
+                        available_provider_capabilities()
+                    );
+                }
+                reports
+            }
+            None => registry.health_check_all().await,
+        };
+
+        for report in reports {
+            print_provider_descriptor(&ProviderDescriptor {
+                name: report.name.clone(),
+                capabilities: report.capabilities.clone(),
+            });
+            print_provider_health_report(&report);
+        }
+        return Ok(());
+    }
+
     let descriptors = match capability {
         Some(capability) => {
             let descriptors = registry.describe_by_capability(capability);
@@ -2568,12 +2603,19 @@ mod tests {
 
     #[test]
     fn test_cli_parse_providers_command() {
-        let cli =
-            Cli::try_parse_from(["worldforge", "providers", "--capability", "planning"]).unwrap();
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "providers",
+            "--capability",
+            "planning",
+            "--health",
+        ])
+        .unwrap();
 
         match cli.command {
-            Commands::Providers { capability } => {
+            Commands::Providers { capability, health } => {
                 assert_eq!(capability.as_deref(), Some("planning"));
+                assert!(health);
             }
             _ => panic!("expected Providers"),
         }

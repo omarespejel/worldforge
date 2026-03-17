@@ -14,7 +14,7 @@ use worldforge_core::guardrail::GuardrailConfig;
 use worldforge_core::prediction::{MultiPrediction, PlannerType, PredictionConfig, ProviderScore};
 use worldforge_core::provider::{
     CostEstimate, GenerationConfig, GenerationPrompt, Operation, ProviderCapabilities,
-    ProviderDescriptor, SpatialControls, TransferConfig,
+    ProviderDescriptor, ProviderHealthReport, SpatialControls, TransferConfig,
 };
 use worldforge_core::scene::SceneObject;
 use worldforge_core::state::{DynStateStore, StateStoreKind, WorldState};
@@ -1474,6 +1474,76 @@ impl PyProviderInfo {
     }
 }
 
+/// Provider metadata paired with a live health-check result.
+#[pyclass(name = "ProviderHealthInfo")]
+#[derive(Debug, Clone)]
+pub struct PyProviderHealthInfo {
+    inner: ProviderHealthReport,
+}
+
+#[pymethods]
+impl PyProviderHealthInfo {
+    #[getter]
+    fn name(&self) -> String {
+        self.inner.name.clone()
+    }
+
+    #[getter]
+    fn capabilities(&self) -> PyProviderCapabilities {
+        PyProviderCapabilities {
+            inner: self.inner.capabilities.clone(),
+        }
+    }
+
+    #[getter]
+    fn healthy(&self) -> bool {
+        self.inner.is_healthy()
+    }
+
+    #[getter]
+    fn message(&self) -> Option<String> {
+        self.inner
+            .status
+            .as_ref()
+            .map(|status| status.message.clone())
+    }
+
+    #[getter]
+    fn latency_ms(&self) -> Option<u64> {
+        self.inner.status.as_ref().map(|status| status.latency_ms)
+    }
+
+    #[getter]
+    fn error(&self) -> Option<String> {
+        self.inner.error.clone()
+    }
+
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        match (&self.inner.status, &self.inner.error) {
+            (Some(status), None) => format!(
+                "ProviderHealthInfo(name={}, healthy={}, latency_ms={})",
+                self.inner.name, status.healthy, status.latency_ms
+            ),
+            (_, Some(error)) => {
+                format!(
+                    "ProviderHealthInfo(name={}, error={error})",
+                    self.inner.name
+                )
+            }
+            (None, None) => format!(
+                "ProviderHealthInfo(name={}, healthy=false)",
+                self.inner.name
+            ),
+        }
+    }
+}
+
 /// Cost estimate exposed to Python.
 #[pyclass(name = "CostEstimate")]
 #[derive(Debug, Clone)]
@@ -1567,6 +1637,35 @@ impl PyWorldForge {
             pyo3::exceptions::PyRuntimeError::new_err(format!("failed to describe provider: {e}"))
         })?;
         Ok(PyProviderInfo { inner: descriptor })
+    }
+
+    /// Run live health checks across all registered providers, optionally filtering by capability.
+    #[pyo3(signature = (capability=None))]
+    fn provider_healths(&self, capability: Option<&str>) -> PyResult<Vec<PyProviderHealthInfo>> {
+        let rt = new_runtime()?;
+        let reports = match capability {
+            Some(capability) => {
+                rt.block_on(self.inner.registry().health_check_by_capability(capability))
+            }
+            None => rt.block_on(self.inner.registry().health_check_all()),
+        };
+        Ok(reports
+            .into_iter()
+            .map(|inner| PyProviderHealthInfo { inner })
+            .collect())
+    }
+
+    /// Run a live health check for one registered provider.
+    fn provider_health(&self, provider: &str) -> PyResult<PyProviderHealthInfo> {
+        let rt = new_runtime()?;
+        let report = rt
+            .block_on(self.inner.registry().health_check(provider))
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "failed to check provider health: {e}"
+                ))
+            })?;
+        Ok(PyProviderHealthInfo { inner: report })
     }
 
     /// Estimate the cost of running an operation on a provider.
@@ -2469,6 +2568,7 @@ fn worldforge(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyGuardrail>()?;
     m.add_class::<PyProviderCapabilities>()?;
     m.add_class::<PyProviderInfo>()?;
+    m.add_class::<PyProviderHealthInfo>()?;
     m.add_class::<PyCostEstimate>()?;
     m.add_class::<PyWorldForge>()?;
     m.add_class::<PyPlan>()?;
@@ -2917,6 +3017,28 @@ mod tests {
         let infos = wf.provider_infos(Some("predict"));
         assert!(!infos.is_empty());
         assert!(infos.iter().any(|info| info.name() == "mock"));
+    }
+
+    #[test]
+    fn test_worldforge_provider_health() {
+        let wf = test_worldforge();
+        let health = wf.provider_health("mock").unwrap();
+        assert_eq!(health.name(), "mock");
+        assert!(health.healthy());
+        assert_eq!(
+            health.message().as_deref(),
+            Some("mock provider is always healthy")
+        );
+        assert!(health.error().is_none());
+    }
+
+    #[test]
+    fn test_worldforge_provider_healths_with_filter() {
+        let wf = test_worldforge();
+        let healths = wf.provider_healths(Some("planning")).unwrap();
+        assert!(!healths.is_empty());
+        assert!(healths.iter().any(|info| info.name() == "mock"));
+        assert!(healths.iter().all(|info| info.healthy()));
     }
 
     #[test]

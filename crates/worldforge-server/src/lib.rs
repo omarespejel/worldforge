@@ -583,6 +583,12 @@ fn query_param<'a>(query: Option<&'a str>, key: &str) -> Option<&'a str> {
     })
 }
 
+fn query_flag(query: Option<&str>, key: &str) -> bool {
+    query_param(query, key).is_some_and(|value| {
+        value.is_empty() || matches!(value, "1" | "true" | "TRUE" | "yes" | "on")
+    })
+}
+
 async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, String) {
     let (path, query) = split_path_and_query(path);
     // Trim trailing slash
@@ -648,11 +654,24 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
 
         // GET /v1/providers
         ("GET", "/v1/providers") => {
-            let providers = match query_param(query, "capability") {
-                Some(capability) => state.registry.describe_by_capability(capability),
-                None => state.registry.describe_all(),
-            };
-            (200, ApiResponse::ok(providers))
+            if query_flag(query, "health") {
+                let providers = match query_param(query, "capability") {
+                    Some(capability) => state.registry.health_check_by_capability(capability).await,
+                    None => state.registry.health_check_all().await,
+                };
+                (200, ApiResponse::ok(providers))
+            } else {
+                match query_param(query, "capability") {
+                    Some(capability) => {
+                        let providers = state.registry.describe_by_capability(capability);
+                        (200, ApiResponse::ok(providers))
+                    }
+                    None => {
+                        let providers = state.registry.describe_all();
+                        (200, ApiResponse::ok(providers))
+                    }
+                }
+            }
         }
 
         // GET /v1/providers/{name}
@@ -679,12 +698,15 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                 .strip_prefix("/v1/providers/")
                 .and_then(|s| s.strip_suffix("/health"))
                 .unwrap_or("");
-            match state.registry.get(name) {
-                Ok(provider) => match provider.health_check().await {
-                    Ok(status) => (200, ApiResponse::ok(status)),
-                    Err(e) => (503, error_response(&e.to_string())),
+            match state.registry.health_check(name).await {
+                Ok(report) => match report.status {
+                    Some(status) => (200, ApiResponse::ok(status)),
+                    None => (
+                        503,
+                        error_response(report.error.as_deref().unwrap_or("health check failed")),
+                    ),
                 },
-                Err(e) => (404, error_response(&e.to_string())),
+                Err(error) => (404, error_response(&error.to_string())),
             }
         }
 
@@ -1379,6 +1401,30 @@ mod tests {
         let (status, body) = route("GET", "/v1/providers?capability=predict", "", &state).await;
         assert_eq!(status, 200);
         assert!(body.contains("mock"));
+    }
+
+    #[tokio::test]
+    async fn test_route_list_providers_with_health() {
+        let state = test_state();
+        let (status, body) = route("GET", "/v1/providers?health=true", "", &state).await;
+        assert_eq!(status, 200);
+        assert!(body.contains("mock"));
+        assert!(body.contains("\"healthy\":true"));
+    }
+
+    #[tokio::test]
+    async fn test_route_list_providers_with_health_and_capability_filter() {
+        let state = test_state();
+        let (status, body) = route(
+            "GET",
+            "/v1/providers?capability=planning&health=1",
+            "",
+            &state,
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert!(body.contains("mock"));
+        assert!(body.contains("\"status\":"));
     }
 
     #[tokio::test]

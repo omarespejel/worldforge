@@ -75,6 +75,10 @@ comparison = world.compare(
 )
 best = comparison.best_prediction()
 
+# Check live provider health
+health = wf.provider_health("mock")
+assert health.healthy
+
 # Or compare previously captured predictions directly
 prediction_2 = world.predict(Action.move_to(0.5, 0.8, 0.0), provider="runway")
 comparison_from_predictions = wf.compare([prediction, prediction_2])
@@ -146,6 +150,7 @@ cargo run -p worldforge-cli -- objects show --world <id> --object-id <object-id>
 cargo run -p worldforge-cli -- objects remove --world <id> --object-id <object-id>
 cargo run -p worldforge-cli -- providers
 cargo run -p worldforge-cli -- providers --capability planning
+cargo run -p worldforge-cli -- providers --health
 cargo run -p worldforge-cli -- estimate --provider cosmos --operation generate --duration-seconds 5 --width 1280 --height 720
 cargo run -p worldforge-cli -- list
 cargo run -p worldforge-cli -- --state-backend sqlite --state-db-path .worldforge/worldforge.db list
@@ -234,7 +239,11 @@ curl http://127.0.0.1:8080/v1/providers
 
 curl http://127.0.0.1:8080/v1/providers?capability=predict
 
+curl http://127.0.0.1:8080/v1/providers?health=true
+
 curl http://127.0.0.1:8080/v1/providers/mock
+
+curl http://127.0.0.1:8080/v1/providers/mock/health
 
 curl -X POST http://127.0.0.1:8080/v1/providers/mock/estimate \
   -H 'content-type: application/json' \
@@ -282,7 +291,9 @@ editing, and Python scene objects can round-trip through JSON for interop with
 those workflows. Provider discovery now exposes capability metadata across the
 CLI, REST server, and Python bindings, and provider adapters' cost estimates
 are queryable end-to-end for predict, generate, reason, and transfer
-operations.
+operations. Registry-level provider health reporting is now available across
+the core, CLI, REST server, and Python bindings, including optional live
+health data when listing providers.
 The mock provider now serves as a higher-fidelity offline reference backend:
 object motion keeps bounding boxes and inferred relationships in sync,
 predictions can emit lightweight preview video/depth/segmentation outputs, and

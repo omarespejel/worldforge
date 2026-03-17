@@ -106,6 +106,26 @@ pub struct ProviderDescriptor {
     pub capabilities: ProviderCapabilities,
 }
 
+/// Provider metadata paired with the latest live health-check result.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProviderHealthReport {
+    /// Provider identifier.
+    pub name: String,
+    /// Declared capabilities for this provider.
+    pub capabilities: ProviderCapabilities,
+    /// Latest health status when the live check completed successfully.
+    pub status: Option<HealthStatus>,
+    /// Error returned while attempting the health check, if any.
+    pub error: Option<String>,
+}
+
+impl ProviderHealthReport {
+    /// Whether the provider completed a live health check and reported healthy.
+    pub fn is_healthy(&self) -> bool {
+        self.error.is_none() && self.status.as_ref().is_some_and(|status| status.healthy)
+    }
+}
+
 /// Prompt for video generation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerationPrompt {
@@ -265,6 +285,12 @@ impl ProviderRegistry {
         })
     }
 
+    /// Run a live health check for one provider.
+    pub async fn health_check(&self, name: &str) -> Result<ProviderHealthReport> {
+        let provider = self.get(name)?;
+        Ok(build_health_report(name, provider).await)
+    }
+
     /// List all registered provider names.
     pub fn list(&self) -> Vec<&str> {
         self.providers.keys().map(|k| k.as_str()).collect()
@@ -313,6 +339,16 @@ impl ProviderRegistry {
         descriptors
     }
 
+    /// Run live health checks for all registered providers.
+    pub async fn health_check_all(&self) -> Vec<ProviderHealthReport> {
+        self.health_check_filtered(None).await
+    }
+
+    /// Run live health checks for providers matching a capability filter.
+    pub async fn health_check_by_capability(&self, capability: &str) -> Vec<ProviderHealthReport> {
+        self.health_check_filtered(Some(capability)).await
+    }
+
     /// Estimate the cost of an operation on a provider.
     pub fn estimate_cost(&self, name: &str, operation: &Operation) -> Result<CostEstimate> {
         Ok(self.get(name)?.estimate_cost(operation))
@@ -331,6 +367,37 @@ impl ProviderRegistry {
     /// Consume the registry and return the registered provider instances.
     pub fn into_providers(self) -> Vec<Box<dyn WorldModelProvider>> {
         self.providers.into_values().collect()
+    }
+
+    async fn health_check_filtered(&self, capability: Option<&str>) -> Vec<ProviderHealthReport> {
+        let mut reports = Vec::new();
+
+        for (name, provider) in &self.providers {
+            let capabilities = provider.capabilities();
+            if capability.is_some_and(|capability| !supports_capability(&capabilities, capability))
+            {
+                continue;
+            }
+
+            let report = match provider.health_check().await {
+                Ok(status) => ProviderHealthReport {
+                    name: name.clone(),
+                    capabilities,
+                    status: Some(status),
+                    error: None,
+                },
+                Err(error) => ProviderHealthReport {
+                    name: name.clone(),
+                    capabilities,
+                    status: None,
+                    error: Some(error.to_string()),
+                },
+            };
+            reports.push(report);
+        }
+
+        reports.sort_by(|left, right| left.name.cmp(&right.name));
+        reports
     }
 }
 
@@ -352,6 +419,27 @@ fn supports_capability(capabilities: &ProviderCapabilities, capability: &str) ->
         "depth" => capabilities.supports_depth,
         "segmentation" => capabilities.supports_segmentation,
         _ => false,
+    }
+}
+
+async fn build_health_report(
+    name: &str,
+    provider: &dyn WorldModelProvider,
+) -> ProviderHealthReport {
+    let capabilities = provider.capabilities();
+    match provider.health_check().await {
+        Ok(status) => ProviderHealthReport {
+            name: name.to_string(),
+            capabilities,
+            status: Some(status),
+            error: None,
+        },
+        Err(error) => ProviderHealthReport {
+            name: name.to_string(),
+            capabilities,
+            status: None,
+            error: Some(error.to_string()),
+        },
     }
 }
 
@@ -397,6 +485,11 @@ mod tests {
         name: &'static str,
         capabilities: ProviderCapabilities,
         estimate: CostEstimate,
+    }
+
+    struct FailingHealthProvider {
+        name: &'static str,
+        capabilities: ProviderCapabilities,
     }
 
     #[async_trait::async_trait]
@@ -464,6 +557,70 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
+    impl WorldModelProvider for FailingHealthProvider {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            self.capabilities.clone()
+        }
+
+        async fn predict(
+            &self,
+            _state: &crate::state::WorldState,
+            _action: &crate::action::Action,
+            _config: &crate::prediction::PredictionConfig,
+        ) -> Result<crate::prediction::Prediction> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.to_string(),
+                capability: "predict".to_string(),
+            })
+        }
+
+        async fn generate(
+            &self,
+            _prompt: &GenerationPrompt,
+            _config: &GenerationConfig,
+        ) -> Result<VideoClip> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.to_string(),
+                capability: "generate".to_string(),
+            })
+        }
+
+        async fn reason(&self, _input: &ReasoningInput, _query: &str) -> Result<ReasoningOutput> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.to_string(),
+                capability: "reason".to_string(),
+            })
+        }
+
+        async fn transfer(
+            &self,
+            _source: &VideoClip,
+            _controls: &SpatialControls,
+            _config: &TransferConfig,
+        ) -> Result<VideoClip> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.to_string(),
+                capability: "transfer".to_string(),
+            })
+        }
+
+        async fn health_check(&self) -> Result<HealthStatus> {
+            Err(WorldForgeError::ProviderUnavailable {
+                provider: self.name.to_string(),
+                reason: "offline".to_string(),
+            })
+        }
+
+        fn estimate_cost(&self, _operation: &Operation) -> CostEstimate {
+            CostEstimate::default()
+        }
+    }
+
     fn test_capabilities() -> ProviderCapabilities {
         ProviderCapabilities {
             predict: true,
@@ -500,6 +657,73 @@ mod tests {
         let registry = ProviderRegistry::new();
         let result = registry.get("nonexistent");
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_health_check_returns_report_for_provider() {
+        let mut registry = ProviderRegistry::new();
+        registry.register(Box::new(TestProvider {
+            name: "alpha",
+            capabilities: test_capabilities(),
+            estimate: CostEstimate::default(),
+        }));
+
+        let report = registry.health_check("alpha").await.unwrap();
+        assert_eq!(report.name, "alpha");
+        assert!(report.is_healthy());
+        assert_eq!(report.status.unwrap().message, "healthy");
+        assert!(report.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_health_check_records_provider_errors() {
+        let mut registry = ProviderRegistry::new();
+        registry.register(Box::new(FailingHealthProvider {
+            name: "beta",
+            capabilities: test_capabilities(),
+        }));
+
+        let report = registry.health_check("beta").await.unwrap();
+        assert_eq!(report.name, "beta");
+        assert!(!report.is_healthy());
+        assert!(report.status.is_none());
+        assert!(report
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("provider unavailable")));
+    }
+
+    #[tokio::test]
+    async fn test_health_check_by_capability_filters_and_sorts() {
+        let mut registry = ProviderRegistry::new();
+
+        let mut predict_caps = test_capabilities();
+        predict_caps.supports_planning = true;
+        let mut reason_only_caps = test_capabilities();
+        reason_only_caps.predict = false;
+        reason_only_caps.generate = false;
+        reason_only_caps.reason = true;
+
+        registry.register(Box::new(TestProvider {
+            name: "gamma",
+            capabilities: reason_only_caps,
+            estimate: CostEstimate::default(),
+        }));
+        registry.register(Box::new(TestProvider {
+            name: "alpha",
+            capabilities: predict_caps.clone(),
+            estimate: CostEstimate::default(),
+        }));
+        registry.register(Box::new(TestProvider {
+            name: "beta",
+            capabilities: predict_caps,
+            estimate: CostEstimate::default(),
+        }));
+
+        let reports = registry.health_check_by_capability("planning").await;
+        let names: Vec<_> = reports.iter().map(|report| report.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "beta"]);
+        assert!(reports.iter().all(ProviderHealthReport::is_healthy));
     }
 
     #[test]
