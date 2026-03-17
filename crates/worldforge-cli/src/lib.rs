@@ -2855,6 +2855,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_cmd_plan_provider_native_with_mock() {
+        let dir = std::env::temp_dir().join(format!("wf-cli-plan-native-{}", uuid::Uuid::new_v4()));
+        let store = StateStoreKind::File(dir.join("state"))
+            .open()
+            .await
+            .unwrap();
+        let state = WorldState::new("plan-native-output", "mock");
+        store.save(&state).await.unwrap();
+        let plan_path = dir.join("plan-native.json");
+
+        let supports_native = auto_detect_registry()
+            .describe("mock")
+            .unwrap()
+            .capabilities
+            .supports_planning;
+
+        let result = cmd_plan(
+            store.as_ref(),
+            &state.id.to_string(),
+            "spawn cube",
+            PlanOptions {
+                max_steps: 4,
+                planner_name: "provider-native",
+                timeout: 10.0,
+                provider: "mock",
+                guardrails_json: None,
+                output_json: Some(&plan_path),
+            },
+        )
+        .await;
+
+        if supports_native {
+            result.unwrap();
+            let plan: worldforge_core::prediction::Plan = read_json_file(&plan_path).unwrap();
+            assert!(!plan.actions.is_empty());
+            assert_eq!(plan.actions.len(), plan.predicted_states.len());
+        } else {
+            let error = result.unwrap_err().to_string().to_lowercase();
+            assert!(error.contains("native planning") || error.contains("unsupported"));
+        }
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn test_cmd_objects_roundtrip() {
         let dir = std::env::temp_dir().join(format!("wf-cli-objects-{}", uuid::Uuid::new_v4()));
         let store = StateStoreKind::File(dir.join("state"))

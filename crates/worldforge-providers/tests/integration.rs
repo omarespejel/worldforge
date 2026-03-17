@@ -8,7 +8,9 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use worldforge_core::action::Action;
-use worldforge_core::prediction::PredictionConfig;
+use worldforge_core::error::WorldForgeError;
+use worldforge_core::guardrail::{Guardrail, GuardrailConfig};
+use worldforge_core::prediction::{PlanGoal, PlanRequest, PlannerType, PredictionConfig};
 use worldforge_core::provider::{ProviderRegistry, WorldModelProvider};
 use worldforge_core::scene::SceneObject;
 use worldforge_core::state::WorldState;
@@ -118,6 +120,10 @@ fn test_registry_find_by_capability() {
     assert!(planners.len() <= 1);
 }
 
+fn mock_supports_native_planning() -> bool {
+    MockProvider::new().capabilities().supports_planning
+}
+
 #[tokio::test]
 async fn test_mock_provider_predict_workflow() {
     let mock = MockProvider::new();
@@ -214,6 +220,85 @@ async fn test_provider_cost_estimation() {
     // Mock provider should have zero or minimal cost
     assert!(cost.usd >= 0.0);
     assert_eq!(cost.estimated_latency_ms, mock.latency_ms);
+}
+
+#[tokio::test]
+async fn test_mock_provider_native_plan_spawn_goal() {
+    let mock = MockProvider::new();
+    let request = PlanRequest {
+        current_state: WorldState::new("native-plan", "mock"),
+        goal: PlanGoal::Description("spawn cube".to_string()),
+        max_steps: 4,
+        guardrails: Vec::new(),
+        planner: PlannerType::ProviderNative,
+        timeout_seconds: 5.0,
+    };
+
+    if mock_supports_native_planning() {
+        let plan = mock.plan(&request).await.unwrap();
+        assert!(!plan.actions.is_empty());
+        assert_eq!(plan.predicted_states.len(), plan.actions.len());
+        assert_eq!(plan.guardrail_compliance.len(), plan.actions.len());
+        assert!((0.0..=1.0).contains(&plan.success_probability));
+        assert!(plan.iterations_used > 0);
+        return;
+    }
+
+    let error = mock.plan(&request).await.unwrap_err();
+    assert!(matches!(
+        error,
+        WorldForgeError::UnsupportedCapability {
+            provider,
+            capability
+        } if provider == "mock" && capability == "native planning"
+    ));
+}
+
+#[tokio::test]
+async fn test_mock_provider_native_plan_respects_blocking_guardrail() {
+    let mock = MockProvider::new();
+    let request = PlanRequest {
+        current_state: WorldState::new("native-plan-guardrails", "mock"),
+        goal: PlanGoal::Description("spawn cube".to_string()),
+        max_steps: 4,
+        guardrails: vec![GuardrailConfig {
+            guardrail: Guardrail::BoundaryConstraint {
+                bounds: BBox {
+                    min: Position {
+                        x: 100.0,
+                        y: 100.0,
+                        z: 100.0,
+                    },
+                    max: Position {
+                        x: 101.0,
+                        y: 101.0,
+                        z: 101.0,
+                    },
+                },
+            },
+            blocking: true,
+        }],
+        planner: PlannerType::ProviderNative,
+        timeout_seconds: 5.0,
+    };
+
+    if mock_supports_native_planning() {
+        let error = mock.plan(&request).await.unwrap_err();
+        assert!(matches!(
+            error,
+            WorldForgeError::NoFeasiblePlan { .. } | WorldForgeError::GuardrailBlocked { .. }
+        ));
+        return;
+    }
+
+    let error = mock.plan(&request).await.unwrap_err();
+    assert!(matches!(
+        error,
+        WorldForgeError::UnsupportedCapability {
+            provider,
+            capability
+        } if provider == "mock" && capability == "native planning"
+    ));
 }
 
 #[tokio::test]

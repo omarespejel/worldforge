@@ -3212,6 +3212,44 @@ mod tests {
     }
 
     #[test]
+    fn test_plan_world_with_provider_native() {
+        let wf = test_worldforge();
+        let supports_native = wf
+            .provider_info("mock")
+            .unwrap()
+            .capabilities()
+            .supports_planning();
+        let world = PyWorld::new("plan_native", "mock");
+        let result = world.plan(
+            "spawn cube",
+            4,
+            10.0,
+            Some("mock"),
+            "provider-native",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        if supports_native {
+            let plan = result.unwrap();
+            assert!(plan.action_count() > 0);
+            assert!(plan.iterations_used() > 0);
+            assert!((0.0..=1.0).contains(&plan.success_probability()));
+            return;
+        }
+
+        let error = result.unwrap_err().to_string().to_lowercase();
+        assert!(error.contains("native planning") || error.contains("unsupported"));
+    }
+
+    #[test]
     fn test_plan_world_with_guardrails_json() {
         let world = PyWorld::new("plan_guardrails", "mock");
         let guardrails_json = r#"[{"guardrail":"NoCollisions","blocking":true}]"#;

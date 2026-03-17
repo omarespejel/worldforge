@@ -321,6 +321,60 @@ async fn test_live_http_plan_uses_requested_planner() {
 }
 
 #[tokio::test]
+async fn test_live_http_plan_provider_native_with_mock() {
+    let server = spawn_test_server().await;
+
+    let (status, descriptor) = http_request(server.address, "GET", "/v1/providers/mock", "").await;
+    assert_eq!(status, 200);
+    let supports_native = descriptor["data"]["capabilities"]["supports_planning"]
+        .as_bool()
+        .unwrap_or(false);
+
+    let (status, create) = http_request(
+        server.address,
+        "POST",
+        "/v1/worlds",
+        r#"{"name":"native_plan_world","provider":"mock"}"#,
+    )
+    .await;
+    assert_eq!(status, 201);
+    let world_id = create["data"]["id"].as_str().unwrap().to_string();
+
+    let plan_body = r#"{
+        "goal":"spawn cube",
+        "provider":"mock",
+        "planner":"provider-native",
+        "max_steps":4
+    }"#;
+    let (status, response) = http_request(
+        server.address,
+        "POST",
+        &format!("/v1/worlds/{world_id}/plan"),
+        plan_body,
+    )
+    .await;
+
+    if supports_native {
+        assert_eq!(status, 200);
+        let actions = response["data"]["actions"].as_array().unwrap();
+        let predicted_states = response["data"]["predicted_states"].as_array().unwrap();
+        assert!(!actions.is_empty());
+        assert_eq!(actions.len(), predicted_states.len());
+        return;
+    }
+
+    assert!(status == 400 || status == 500);
+    let error_message = response["error"]
+        .as_str()
+        .unwrap_or_default()
+        .to_lowercase();
+    assert!(
+        error_message.contains("native planning") || error_message.contains("unsupported"),
+        "expected unsupported native planning error, got: {error_message}"
+    );
+}
+
+#[tokio::test]
 async fn test_live_http_plan_relational_goal_spawns_object_near_anchor() {
     let server = spawn_test_server().await;
 
