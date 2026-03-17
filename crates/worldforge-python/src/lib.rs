@@ -20,7 +20,8 @@ use worldforge_core::state::{DynStateStore, StateStoreKind, WorldState};
 use worldforge_core::types::{BBox, Position, Rotation, Velocity, VideoClip};
 use worldforge_verify::{
     prove_guardrail_plan as prove_guardrail_plan_bundle,
-    prove_inference_transition as prove_inference_transition_bundle, ZkVerifier,
+    prove_inference_transition as prove_inference_transition_bundle, verify_bundle, verify_proof,
+    VerificationBundle, ZkVerifier,
 };
 
 fn auto_detect_registry() -> Arc<worldforge_core::provider::ProviderRegistry> {
@@ -1508,6 +1509,15 @@ pub struct PyZkProof {
 
 #[pymethods]
 impl PyZkProof {
+    /// Deserialize a proof from JSON.
+    #[staticmethod]
+    fn from_json(proof_json: &str) -> PyResult<Self> {
+        let inner = serde_json::from_str(proof_json).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("invalid proof JSON: {e}"))
+        })?;
+        Ok(Self { inner })
+    }
+
     /// Size of the proof data in bytes.
     #[getter]
     fn proof_size(&self) -> usize {
@@ -1529,7 +1539,7 @@ impl PyZkProof {
     /// Verify this proof and return (valid, details).
     fn verify(&self) -> PyResult<(bool, String)> {
         let verifier = worldforge_verify::MockVerifier::new();
-        let result = verifier.verify(&self.inner).map_err(|e| {
+        let result = verify_proof(&verifier, &self.inner).map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("verification failed: {e}"))
         })?;
         Ok((result.valid, result.details))
@@ -1629,6 +1639,63 @@ fn prove_provenance(data: &[u8], timestamp: u64, source: &[u8]) -> PyResult<PyZk
     Ok(PyZkProof { inner: proof })
 }
 
+/// Re-verify a proof serialized as JSON.
+#[pyfunction]
+fn verify_proof_json(proof_json: &str) -> PyResult<(bool, String)> {
+    let proof = PyZkProof::from_json(proof_json)?;
+    proof.verify()
+}
+
+/// Re-verify a serialized verification bundle and return a JSON report.
+#[pyfunction]
+fn verify_bundle_json(bundle_json: &str, bundle_type: &str) -> PyResult<String> {
+    let verifier = worldforge_verify::MockVerifier::new();
+
+    let report_json = match bundle_type {
+        "inference" => {
+            let bundle: VerificationBundle<worldforge_verify::InferenceArtifact> =
+                serde_json::from_str(bundle_json).map_err(|e| {
+                    pyo3::exceptions::PyValueError::new_err(format!(
+                        "invalid inference bundle JSON: {e}"
+                    ))
+                })?;
+            serde_json::to_string_pretty(&verify_bundle(&verifier, &bundle).map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("verification failed: {e}"))
+            })?)
+        }
+        "guardrail" => {
+            let bundle: VerificationBundle<worldforge_verify::GuardrailArtifact> =
+                serde_json::from_str(bundle_json).map_err(|e| {
+                    pyo3::exceptions::PyValueError::new_err(format!(
+                        "invalid guardrail bundle JSON: {e}"
+                    ))
+                })?;
+            serde_json::to_string_pretty(&verify_bundle(&verifier, &bundle).map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("verification failed: {e}"))
+            })?)
+        }
+        "provenance" => {
+            let bundle: VerificationBundle<worldforge_verify::ProvenanceArtifact> =
+                serde_json::from_str(bundle_json).map_err(|e| {
+                    pyo3::exceptions::PyValueError::new_err(format!(
+                        "invalid provenance bundle JSON: {e}"
+                    ))
+                })?;
+            serde_json::to_string_pretty(&verify_bundle(&verifier, &bundle).map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("verification failed: {e}"))
+            })?)
+        }
+        other => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "unknown bundle_type: {other}. Available: inference, guardrail, provenance"
+            )));
+        }
+    }
+    .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}")))?;
+
+    Ok(report_json)
+}
+
 // ---------------------------------------------------------------------------
 // Module definition
 // ---------------------------------------------------------------------------
@@ -1660,6 +1727,8 @@ fn worldforge(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(prove_inference_transition, m)?)?;
     m.add_function(wrap_pyfunction!(prove_guardrail_plan, m)?)?;
     m.add_function(wrap_pyfunction!(prove_provenance, m)?)?;
+    m.add_function(wrap_pyfunction!(verify_proof_json, m)?)?;
+    m.add_function(wrap_pyfunction!(verify_bundle_json, m)?)?;
     Ok(())
 }
 
@@ -2318,6 +2387,10 @@ mod tests {
         let proof = prove_inference(b"m", b"i", b"o").unwrap();
         let json = proof.to_json().unwrap();
         assert!(json.contains("Mock"));
+
+        let restored = PyZkProof::from_json(&json).unwrap();
+        let (valid, _) = restored.verify().unwrap();
+        assert!(valid);
     }
 
     #[test]
@@ -2325,5 +2398,46 @@ mod tests {
         let proof = prove_inference(b"m", b"i", b"o").unwrap();
         let repr = proof.__repr__();
         assert!(repr.contains("ZkProof"));
+    }
+
+    #[test]
+    fn test_verify_proof_json() {
+        let proof = prove_inference(b"model", b"input", b"output").unwrap();
+        let json = proof.to_json().unwrap();
+
+        let (valid, details) = verify_proof_json(&json).unwrap();
+
+        assert!(valid);
+        assert!(details.contains("verified"));
+    }
+
+    #[test]
+    fn test_verify_bundle_json() {
+        let world = PyWorld::new("verify_bundle", "mock");
+        let plan = world
+            .plan(
+                "spawn cube",
+                4,
+                10.0,
+                Some("mock"),
+                "sampling",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(r#"[{"guardrail":"NoCollisions","blocking":true}]"#),
+            )
+            .unwrap();
+        let verifier = worldforge_verify::MockVerifier::new();
+        let bundle = worldforge_verify::prove_guardrail_plan(&verifier, &plan.inner).unwrap();
+        let json = serde_json::to_string(&bundle).unwrap();
+
+        let report = verify_bundle_json(&json, "guardrail").unwrap();
+
+        assert!(report.contains("\"verification_matches_recorded\": true"));
     }
 }

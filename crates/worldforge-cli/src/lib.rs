@@ -24,7 +24,8 @@ use worldforge_core::types::{Position, VideoClip};
 use worldforge_eval::EvalSuite;
 use worldforge_verify::{
     prove_guardrail_plan, prove_inference_transition, prove_latest_inference, prove_provenance,
-    MockVerifier, VerificationBundle,
+    verify_bundle, verify_proof, BundleVerificationReport, MockVerifier, VerificationBundle,
+    VerificationResult, ZkProof,
 };
 
 /// Persistence backend used by the CLI.
@@ -288,6 +289,25 @@ pub enum Commands {
         output_json: Option<PathBuf>,
     },
 
+    /// Re-verify a previously exported proof or verification bundle.
+    VerifyProof {
+        /// JSON file containing a raw `ZkProof`.
+        #[arg(long, conflicts_with_all = ["inference_bundle_json", "guardrail_bundle_json", "provenance_bundle_json"])]
+        proof_json: Option<PathBuf>,
+        /// JSON file containing `VerificationBundle<InferenceArtifact>`.
+        #[arg(long, conflicts_with_all = ["proof_json", "guardrail_bundle_json", "provenance_bundle_json"])]
+        inference_bundle_json: Option<PathBuf>,
+        /// JSON file containing `VerificationBundle<GuardrailArtifact>`.
+        #[arg(long, conflicts_with_all = ["proof_json", "inference_bundle_json", "provenance_bundle_json"])]
+        guardrail_bundle_json: Option<PathBuf>,
+        /// JSON file containing `VerificationBundle<ProvenanceArtifact>`.
+        #[arg(long, conflicts_with_all = ["proof_json", "inference_bundle_json", "guardrail_bundle_json"])]
+        provenance_bundle_json: Option<PathBuf>,
+        /// Optional path to write the verification report as JSON.
+        #[arg(long)]
+        output_json: Option<PathBuf>,
+    },
+
     /// Check provider health.
     Health {
         /// Provider name (or "all").
@@ -469,6 +489,22 @@ pub async fn run() -> Result<()> {
             .await
         }
         Commands::Health { provider } => cmd_health(&provider).await,
+        Commands::VerifyProof {
+            proof_json,
+            inference_bundle_json,
+            guardrail_bundle_json,
+            provenance_bundle_json,
+            output_json,
+        } => {
+            cmd_verify_proof(VerifyProofOptions {
+                proof_json: proof_json.as_deref(),
+                inference_bundle_json: inference_bundle_json.as_deref(),
+                guardrail_bundle_json: guardrail_bundle_json.as_deref(),
+                provenance_bundle_json: provenance_bundle_json.as_deref(),
+                output_json: output_json.as_deref(),
+            })
+            .await
+        }
         Commands::Serve { .. } => unreachable!("serve command handled before store initialization"),
     }
 }
@@ -571,6 +607,20 @@ struct VerifyOptions<'a> {
     output_json: Option<&'a Path>,
 }
 
+struct VerifyProofOptions<'a> {
+    proof_json: Option<&'a Path>,
+    inference_bundle_json: Option<&'a Path>,
+    guardrail_bundle_json: Option<&'a Path>,
+    provenance_bundle_json: Option<&'a Path>,
+    output_json: Option<&'a Path>,
+}
+
+#[derive(Serialize)]
+struct ProofVerificationReport {
+    proof: ZkProof,
+    verification: VerificationResult,
+}
+
 fn require_provider<'a>(
     registry: &'a ProviderRegistry,
     provider: &str,
@@ -655,6 +705,41 @@ fn print_verification_bundle<T: Serialize>(
     println!(
         "{}",
         serde_json::to_string_pretty(&bundle.artifact).context("failed to serialize artifact")?
+    );
+    Ok(())
+}
+
+fn print_proof_verification(report: &ProofVerificationReport) {
+    println!("Proof verified:");
+    println!("  Backend: {:?}", report.proof.backend);
+    println!("  Proof size: {} bytes", report.proof.proof_data.len());
+    println!("  Valid: {}", report.verification.valid);
+    println!("  Details: {}", report.verification.details);
+    println!(
+        "  Verification time: {}ms",
+        report.verification.verification_time_ms
+    );
+}
+
+fn print_bundle_verification<T: Serialize>(
+    label: &str,
+    report: &BundleVerificationReport<T>,
+) -> Result<()> {
+    println!("Bundle re-verified:");
+    println!("  Type: {label}");
+    println!("  Backend: {:?}", report.proof.backend);
+    println!("  Proof size: {} bytes", report.proof.proof_data.len());
+    println!(
+        "  Matches recorded verdict: {}",
+        report.verification_matches_recorded
+    );
+    println!("  Current valid: {}", report.current_verification.valid);
+    println!("  Current details: {}", report.current_verification.details);
+    println!();
+    println!("Artifact:");
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report.artifact).context("failed to serialize artifact")?
     );
     Ok(())
 }
@@ -1158,6 +1243,68 @@ async fn cmd_verify(
     Ok(())
 }
 
+async fn cmd_verify_proof(options: VerifyProofOptions<'_>) -> Result<()> {
+    let verifier = MockVerifier::new();
+
+    if let Some(path) = options.proof_json {
+        let proof: ZkProof = read_json_file(path)?;
+        let report = ProofVerificationReport {
+            verification: verify_proof(&verifier, &proof).map_err(|e| anyhow::anyhow!("{e}"))?,
+            proof,
+        };
+        print_proof_verification(&report);
+        if let Some(output_path) = options.output_json {
+            write_json_file(output_path, &report)?;
+            println!();
+            println!("Saved verification report: {}", output_path.display());
+        }
+        return Ok(());
+    }
+
+    if let Some(path) = options.inference_bundle_json {
+        let bundle: VerificationBundle<worldforge_verify::InferenceArtifact> =
+            read_json_file(path)?;
+        let report = verify_bundle(&verifier, &bundle).map_err(|e| anyhow::anyhow!("{e}"))?;
+        print_bundle_verification("InferenceVerification", &report)?;
+        if let Some(output_path) = options.output_json {
+            write_json_file(output_path, &report)?;
+            println!();
+            println!("Saved verification report: {}", output_path.display());
+        }
+        return Ok(());
+    }
+
+    if let Some(path) = options.guardrail_bundle_json {
+        let bundle: VerificationBundle<worldforge_verify::GuardrailArtifact> =
+            read_json_file(path)?;
+        let report = verify_bundle(&verifier, &bundle).map_err(|e| anyhow::anyhow!("{e}"))?;
+        print_bundle_verification("GuardrailCompliance", &report)?;
+        if let Some(output_path) = options.output_json {
+            write_json_file(output_path, &report)?;
+            println!();
+            println!("Saved verification report: {}", output_path.display());
+        }
+        return Ok(());
+    }
+
+    if let Some(path) = options.provenance_bundle_json {
+        let bundle: VerificationBundle<worldforge_verify::ProvenanceArtifact> =
+            read_json_file(path)?;
+        let report = verify_bundle(&verifier, &bundle).map_err(|e| anyhow::anyhow!("{e}"))?;
+        print_bundle_verification("DataProvenance", &report)?;
+        if let Some(output_path) = options.output_json {
+            write_json_file(output_path, &report)?;
+            println!();
+            println!("Saved verification report: {}", output_path.display());
+        }
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "verify-proof requires one of --proof-json, --inference-bundle-json, --guardrail-bundle-json, or --provenance-bundle-json"
+    )
+}
+
 async fn cmd_health(provider_name: &str) -> Result<()> {
     let registry = auto_detect_registry();
     let providers_to_check: Vec<&str> = if provider_name == "all" {
@@ -1260,6 +1407,7 @@ fn parse_action(s: &str) -> Result<Action> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use worldforge_verify::ZkVerifier;
 
     #[test]
     fn test_parse_action_move() {
@@ -1598,6 +1746,36 @@ mod tests {
     }
 
     #[test]
+    fn test_cli_parse_verify_proof_command() {
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "verify-proof",
+            "--guardrail-bundle-json",
+            "/tmp/bundle.json",
+            "--output-json",
+            "/tmp/report.json",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::VerifyProof {
+                proof_json,
+                guardrail_bundle_json,
+                output_json,
+                ..
+            } => {
+                assert!(proof_json.is_none());
+                assert_eq!(
+                    guardrail_bundle_json,
+                    Some(PathBuf::from("/tmp/bundle.json"))
+                );
+                assert_eq!(output_json, Some(PathBuf::from("/tmp/report.json")));
+            }
+            _ => panic!("expected VerifyProof"),
+        }
+    }
+
+    #[test]
     fn test_resolve_provider_name_defaults_to_world_provider() {
         let state = WorldState::new("default-provider", "mock");
         assert_eq!(resolve_provider_name(&state, None), "mock");
@@ -1807,6 +1985,68 @@ mod tests {
         assert_eq!(bundle["verification"]["valid"], true);
         assert!(bundle["artifact"]["plan_hash"].is_array());
 
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn test_cmd_verify_proof_from_json() {
+        let dir =
+            std::env::temp_dir().join(format!("wf-cli-verify-proof-{}", uuid::Uuid::new_v4()));
+        let proof_path = dir.join("proof.json");
+        let report_path = dir.join("report.json");
+        let verifier = MockVerifier::new();
+        let proof = verifier.prove_inference([1; 32], [2; 32], [3; 32]).unwrap();
+        write_json_file(&proof_path, &proof).unwrap();
+
+        cmd_verify_proof(VerifyProofOptions {
+            proof_json: Some(&proof_path),
+            inference_bundle_json: None,
+            guardrail_bundle_json: None,
+            provenance_bundle_json: None,
+            output_json: Some(&report_path),
+        })
+        .await
+        .unwrap();
+
+        let report: serde_json::Value = read_json_file(&report_path).unwrap();
+        assert_eq!(report["verification"]["valid"], true);
+        assert_eq!(report["proof"]["backend"], "Mock");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn test_cmd_verify_bundle_from_json() {
+        let dir =
+            std::env::temp_dir().join(format!("wf-cli-verify-bundle-{}", uuid::Uuid::new_v4()));
+        let bundle_path = dir.join("bundle.json");
+        let report_path = dir.join("report.json");
+        let store = StateStoreKind::File(dir.join("state"))
+            .open()
+            .await
+            .unwrap();
+        let input_state = WorldState::new("input", "mock");
+        let output_state = WorldState::new("output", "mock");
+        let bundle =
+            prove_inference_transition(&MockVerifier::new(), "mock", &input_state, &output_state)
+                .unwrap();
+        write_json_file(&bundle_path, &bundle).unwrap();
+
+        cmd_verify_proof(VerifyProofOptions {
+            proof_json: None,
+            inference_bundle_json: Some(&bundle_path),
+            guardrail_bundle_json: None,
+            provenance_bundle_json: None,
+            output_json: Some(&report_path),
+        })
+        .await
+        .unwrap();
+
+        let report: serde_json::Value = read_json_file(&report_path).unwrap();
+        assert_eq!(report["current_verification"]["valid"], true);
+        assert_eq!(report["verification_matches_recorded"], true);
+
+        drop(store);
         let _ = fs::remove_dir_all(dir);
     }
 }

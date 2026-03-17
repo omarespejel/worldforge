@@ -143,6 +143,8 @@ cargo run -p worldforge-cli -- transfer --provider mock --source-json clips/gene
 cargo run -p worldforge-cli -- reason --world <id> --query "Will the mug fall if pushed?"
 cargo run -p worldforge-cli -- verify --proof-type guardrail --plan-json plans/generated.json --output-json proofs/guardrail.json
 cargo run -p worldforge-cli -- verify --proof-type inference --input-state-json states/before.json --output-state-json states/after.json --provider mock
+cargo run -p worldforge-cli -- verify-proof --guardrail-bundle-json proofs/guardrail.json --output-json proofs/guardrail-report.json
+cargo run -p worldforge-cli -- verify-proof --proof-json proofs/raw-proof.json
 cargo run -p worldforge-cli -- eval --suite physics
 cargo run -p worldforge-cli -- serve --bind 127.0.0.1:8080
 
@@ -180,6 +182,10 @@ curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/verify \
   -H 'content-type: application/json' \
   -d '{"proof_type":"guardrail","goal":"spawn cube","guardrails":[{"guardrail":"NoCollisions","blocking":true}]}'
 
+curl -X POST http://127.0.0.1:8080/v1/verify/proof \
+  -H 'content-type: application/json' \
+  -d @proofs/verify-request.json
+
 curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/reason \
   -H 'content-type: application/json' \
   -d '{"query":"Will the spawned cube stay stable?"}'
@@ -216,7 +222,9 @@ accepts serialized guardrail configurations across the CLI, REST server, and
 Python bindings, and verification now operates on explicit state transitions or
 real generated plans instead of placeholder proof inputs. The CLI can export
 plan JSON for reuse, and the REST server can generate guardrail proofs directly
-from a goal plus guardrail set.
+from a goal plus guardrail set. Exported proofs and verification bundles can
+now be re-verified offline across the CLI, REST server, and Python bindings,
+and verification inputs are hashed with real SHA-256 digests.
 
 ## License
 

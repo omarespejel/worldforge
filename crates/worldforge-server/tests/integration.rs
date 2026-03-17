@@ -270,6 +270,22 @@ async fn test_live_http_provider_transfer() {
 }
 
 #[tokio::test]
+async fn test_live_http_verify_proof_endpoint() {
+    use worldforge_verify::{MockVerifier, ZkVerifier};
+
+    let server = spawn_test_server().await;
+    let verifier = MockVerifier::new();
+    let proof = verifier.prove_inference([1; 32], [2; 32], [3; 32]).unwrap();
+    let body = serde_json::json!({ "proof": proof }).to_string();
+
+    let (status, response) = http_request(server.address, "POST", "/v1/verify/proof", &body).await;
+
+    assert_eq!(status, 200);
+    assert_eq!(response["data"]["verification"]["valid"], true);
+    assert_eq!(response["data"]["proof"]["backend"], "Mock");
+}
+
+#[tokio::test]
 async fn test_live_http_plan_uses_requested_planner() {
     let server = spawn_test_server().await;
 

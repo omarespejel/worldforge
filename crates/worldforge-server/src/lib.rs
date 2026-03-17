@@ -24,7 +24,7 @@ use worldforge_core::types::{VideoClip, WorldId};
 use worldforge_eval::EvalSuite;
 use worldforge_verify::{
     prove_guardrail_plan, prove_inference_transition, prove_latest_inference, prove_provenance,
-    MockVerifier,
+    verify_bundle, verify_proof, MockVerifier, VerificationBundle, VerificationResult, ZkProof,
 };
 
 /// Server configuration.
@@ -361,6 +361,25 @@ struct VerifyRequest {
     source_label: String,
 }
 
+/// JSON request body for standalone proof verification.
+#[derive(Debug, Deserialize)]
+struct VerifyProofRequest {
+    #[serde(default)]
+    proof: Option<ZkProof>,
+    #[serde(default)]
+    inference_bundle: Option<VerificationBundle<worldforge_verify::InferenceArtifact>>,
+    #[serde(default)]
+    guardrail_bundle: Option<VerificationBundle<worldforge_verify::GuardrailArtifact>>,
+    #[serde(default)]
+    provenance_bundle: Option<VerificationBundle<worldforge_verify::ProvenanceArtifact>>,
+}
+
+#[derive(Debug, Serialize)]
+struct ProofVerificationReport {
+    proof: ZkProof,
+    verification: VerificationResult,
+}
+
 fn default_proof_type() -> String {
     "inference".to_string()
 }
@@ -486,6 +505,63 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
     let path = path.trim_end_matches('/');
 
     match (method, path) {
+        // POST /v1/verify/proof
+        ("POST", "/v1/verify/proof") => match serde_json::from_str::<VerifyProofRequest>(body) {
+            Ok(req) => {
+                let verifier = MockVerifier::new();
+                let provided_count = usize::from(req.proof.is_some())
+                    + usize::from(req.inference_bundle.is_some())
+                    + usize::from(req.guardrail_bundle.is_some())
+                    + usize::from(req.provenance_bundle.is_some());
+                if provided_count != 1 {
+                    return (
+                        400,
+                        error_response(
+                            "provide exactly one of proof, inference_bundle, guardrail_bundle, or provenance_bundle",
+                        ),
+                    );
+                }
+
+                if let Some(proof) = req.proof {
+                    let verification = match verify_proof(&verifier, &proof) {
+                        Ok(verification) => verification,
+                        Err(error) => return (400, error_response(&error.to_string())),
+                    };
+                    return (
+                        200,
+                        ApiResponse::ok(ProofVerificationReport {
+                            proof,
+                            verification,
+                        }),
+                    );
+                }
+
+                if let Some(bundle) = req.inference_bundle {
+                    return match verify_bundle(&verifier, &bundle) {
+                        Ok(report) => (200, ApiResponse::ok(report)),
+                        Err(error) => (400, error_response(&error.to_string())),
+                    };
+                }
+
+                if let Some(bundle) = req.guardrail_bundle {
+                    return match verify_bundle(&verifier, &bundle) {
+                        Ok(report) => (200, ApiResponse::ok(report)),
+                        Err(error) => (400, error_response(&error.to_string())),
+                    };
+                }
+
+                if let Some(bundle) = req.provenance_bundle {
+                    return match verify_bundle(&verifier, &bundle) {
+                        Ok(report) => (200, ApiResponse::ok(report)),
+                        Err(error) => (400, error_response(&error.to_string())),
+                    };
+                }
+
+                (400, error_response("missing verification payload"))
+            }
+            Err(error) => (400, error_response(&format!("invalid request: {error}"))),
+        },
+
         // GET /v1/providers
         ("GET", "/v1/providers") => {
             let names = state.registry.list();
@@ -976,6 +1052,7 @@ mod tests {
     use super::*;
     use worldforge_core::state::FileStateStore;
     use worldforge_providers::MockProvider;
+    use worldforge_verify::ZkVerifier;
 
     fn test_state() -> Arc<AppState> {
         test_state_with_provider("mock")
@@ -1381,6 +1458,39 @@ mod tests {
         )
         .await;
         assert_eq!(status, 400);
+    }
+
+    #[tokio::test]
+    async fn test_route_verify_proof_endpoint_accepts_raw_proof() {
+        let state = test_state();
+        let verifier = MockVerifier::new();
+        let proof = verifier.prove_inference([1; 32], [2; 32], [3; 32]).unwrap();
+        let body = serde_json::json!({ "proof": proof }).to_string();
+
+        let (status, resp) = route("POST", "/v1/verify/proof", &body, &state).await;
+
+        assert_eq!(status, 200);
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(value["data"]["verification"]["valid"], true);
+        assert_eq!(value["data"]["proof"]["backend"], "Mock");
+    }
+
+    #[tokio::test]
+    async fn test_route_verify_proof_endpoint_accepts_bundle() {
+        let state = test_state();
+        let input_state = WorldState::new("input", "mock");
+        let output_state = WorldState::new("output", "mock");
+        let verifier = MockVerifier::new();
+        let bundle =
+            prove_inference_transition(&verifier, "mock", &input_state, &output_state).unwrap();
+        let body = serde_json::json!({ "inference_bundle": bundle }).to_string();
+
+        let (status, resp) = route("POST", "/v1/verify/proof", &body, &state).await;
+
+        assert_eq!(status, 200);
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(value["data"]["current_verification"]["valid"], true);
+        assert_eq!(value["data"]["verification_matches_recorded"], true);
     }
 
     #[tokio::test]
