@@ -294,12 +294,23 @@ fn build_plan_request(
 /// JSON request body for evaluation.
 #[derive(Debug, Deserialize)]
 struct EvaluateRequest {
-    #[serde(default = "default_suite")]
-    suite: String,
+    #[serde(default)]
+    suite: Option<String>,
+    #[serde(default)]
+    suite_definition: Option<EvalSuite>,
+    #[serde(default)]
+    providers: Vec<String>,
 }
 
-fn default_suite() -> String {
-    "physics".to_string()
+fn resolve_eval_suite(request: &EvaluateRequest) -> std::result::Result<EvalSuite, String> {
+    match &request.suite_definition {
+        Some(suite) => suite
+            .validate()
+            .map(|_| suite.clone())
+            .map_err(|e| e.to_string()),
+        None => EvalSuite::from_builtin(request.suite.as_deref().unwrap_or("physics"))
+            .map_err(|e| e.to_string()),
+    }
 }
 
 /// JSON request body for cross-provider comparison.
@@ -570,6 +581,15 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                 .map(|n| serde_json::json!({ "name": n }))
                 .collect();
             (200, ApiResponse::ok(providers))
+        }
+
+        // GET /v1/evals/suites
+        ("GET", "/v1/evals/suites") => {
+            let suites: Vec<_> = EvalSuite::builtin_names()
+                .iter()
+                .map(|name| serde_json::json!({ "name": name }))
+                .collect();
+            (200, ApiResponse::ok(suites))
         }
 
         // GET /v1/providers/{name}/health
@@ -964,23 +984,31 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                 .unwrap_or("");
             match serde_json::from_str::<EvaluateRequest>(body) {
                 Ok(req) => {
-                    let suite = match req.suite.as_str() {
-                        "physics" => EvalSuite::physics_standard(),
-                        "manipulation" => EvalSuite::manipulation_standard(),
-                        "spatial" => EvalSuite::spatial_reasoning(),
-                        "comprehensive" => EvalSuite::comprehensive(),
-                        other => {
-                            return (400, error_response(&format!("unknown eval suite: {other}")))
-                        }
+                    let suite = match resolve_eval_suite(&req) {
+                        Ok(suite) => suite,
+                        Err(error) => return (400, error_response(&error)),
                     };
-                    // Run eval against all registered providers
-                    let provider_refs: Vec<&dyn worldforge_core::provider::WorldModelProvider> =
+
+                    let provider_names = if req.providers.is_empty() {
                         state
                             .registry
                             .list()
-                            .iter()
-                            .filter_map(|name| state.registry.get(name).ok())
-                            .collect();
+                            .into_iter()
+                            .map(str::to_string)
+                            .collect::<Vec<_>>()
+                    } else {
+                        req.providers
+                    };
+
+                    let mut provider_refs: Vec<&dyn worldforge_core::provider::WorldModelProvider> =
+                        Vec::new();
+                    for provider_name in &provider_names {
+                        match state.registry.get(provider_name) {
+                            Ok(provider) => provider_refs.push(provider),
+                            Err(error) => return (404, error_response(&error.to_string())),
+                        }
+                    }
+
                     match suite.run(&provider_refs).await {
                         Ok(report) => (200, ApiResponse::ok(report)),
                         Err(e) => (500, error_response(&e.to_string())),
@@ -1059,8 +1087,14 @@ mod tests {
     }
 
     fn test_state_with_provider(provider_name: &str) -> Arc<AppState> {
+        test_state_with_providers(&[provider_name])
+    }
+
+    fn test_state_with_providers(provider_names: &[&str]) -> Arc<AppState> {
         let mut registry = ProviderRegistry::new();
-        registry.register(Box::new(MockProvider::with_name(provider_name)));
+        for provider_name in provider_names {
+            registry.register(Box::new(MockProvider::with_name(*provider_name)));
+        }
         Arc::new(AppState {
             registry: Arc::new(registry),
             store: Arc::new(FileStateStore::new(
@@ -1104,6 +1138,15 @@ mod tests {
         let (status, body) = route("GET", "/v1/providers", "", &state).await;
         assert_eq!(status, 200);
         assert!(body.contains("mock"));
+    }
+
+    #[tokio::test]
+    async fn test_route_list_eval_suites() {
+        let state = test_state();
+        let (status, body) = route("GET", "/v1/evals/suites", "", &state).await;
+        assert_eq!(status, 200);
+        assert!(body.contains("physics"));
+        assert!(body.contains("comprehensive"));
     }
 
     #[tokio::test]
@@ -1292,6 +1335,26 @@ mod tests {
         let id = uuid::Uuid::new_v4();
         let (status, _) = route("POST", &format!("/v1/worlds/{id}/evaluate"), body, &state).await;
         assert_eq!(status, 400);
+    }
+
+    #[tokio::test]
+    async fn test_route_evaluate_custom_suite_for_selected_provider() {
+        let state = test_state_with_providers(&["mock", "alt-mock"]);
+        let suite = EvalSuite::physics_standard();
+        let body = serde_json::json!({
+            "suite_definition": suite,
+            "providers": ["alt-mock"],
+        })
+        .to_string();
+        let id = uuid::Uuid::new_v4();
+        let (status, resp) =
+            route("POST", &format!("/v1/worlds/{id}/evaluate"), &body, &state).await;
+        assert_eq!(status, 200);
+
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let leaderboard = value["data"]["leaderboard"].as_array().unwrap();
+        assert_eq!(leaderboard.len(), 1);
+        assert_eq!(leaderboard[0]["provider"], "alt-mock");
     }
 
     #[tokio::test]

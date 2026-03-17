@@ -198,11 +198,20 @@ pub enum Commands {
     /// Run an evaluation suite.
     Eval {
         /// Evaluation suite name.
-        #[arg(long, default_value = "physics")]
-        suite: String,
+        #[arg(long)]
+        suite: Option<String>,
+        /// JSON file containing a custom `EvalSuite` definition.
+        #[arg(long)]
+        suite_json: Option<PathBuf>,
         /// Comma-separated list of providers.
         #[arg(long, default_value = "mock")]
         providers: String,
+        /// Print the built-in suite names and exit.
+        #[arg(long, default_value_t = false)]
+        list_suites: bool,
+        /// Optional path to write the evaluation report as JSON.
+        #[arg(long)]
+        output_json: Option<PathBuf>,
     },
 
     /// Compare predictions across providers.
@@ -422,7 +431,22 @@ pub async fn run() -> Result<()> {
         Commands::List => cmd_list(store.as_ref()).await,
         Commands::Show { world } => cmd_show(store.as_ref(), &world).await,
         Commands::Delete { world } => cmd_delete(store.as_ref(), &world).await,
-        Commands::Eval { suite, providers } => cmd_eval(&suite, &providers).await,
+        Commands::Eval {
+            suite,
+            suite_json,
+            providers,
+            list_suites,
+            output_json,
+        } => {
+            cmd_eval(EvalOptions {
+                suite_name: suite.as_deref(),
+                suite_json: suite_json.as_deref(),
+                providers: &providers,
+                list_suites,
+                output_json: output_json.as_deref(),
+            })
+            .await
+        }
         Commands::Compare {
             world,
             action,
@@ -558,6 +582,10 @@ fn available_provider_names(registry: &ProviderRegistry) -> String {
     names.join(", ")
 }
 
+fn available_eval_suite_names() -> String {
+    EvalSuite::builtin_names().join(", ")
+}
+
 fn resolve_provider_name<'a>(state: &'a WorldState, provider: Option<&'a str>) -> &'a str {
     provider
         .filter(|name| !name.is_empty())
@@ -589,6 +617,14 @@ struct PlanOptions<'a> {
     timeout: f64,
     provider: &'a str,
     guardrails_json: Option<&'a Path>,
+    output_json: Option<&'a Path>,
+}
+
+struct EvalOptions<'a> {
+    suite_name: Option<&'a str>,
+    suite_json: Option<&'a Path>,
+    providers: &'a str,
+    list_suites: bool,
     output_json: Option<&'a Path>,
 }
 
@@ -653,6 +689,14 @@ fn read_guardrails(path: Option<&Path>) -> Result<Vec<GuardrailConfig>> {
     match path {
         Some(path) => read_json_file(path),
         None => Ok(Vec::new()),
+    }
+}
+
+fn load_eval_suite(suite_name: Option<&str>, suite_json: Option<&Path>) -> Result<EvalSuite> {
+    match suite_json {
+        Some(path) => EvalSuite::from_json_path(path).map_err(|e| anyhow::anyhow!("{e}")),
+        None => EvalSuite::from_builtin(suite_name.unwrap_or("physics"))
+            .map_err(|e| anyhow::anyhow!("{e}")),
     }
 }
 
@@ -975,19 +1019,19 @@ async fn cmd_delete(store: &(impl StateStore + ?Sized), world_id: &str) -> Resul
     Ok(())
 }
 
-async fn cmd_eval(suite_name: &str, providers_str: &str) -> Result<()> {
-    let suite = match suite_name {
-        "physics" => EvalSuite::physics_standard(),
-        "manipulation" => EvalSuite::manipulation_standard(),
-        "spatial" => EvalSuite::spatial_reasoning(),
-        "comprehensive" => EvalSuite::comprehensive(),
-        _ => anyhow::bail!(
-            "unknown eval suite: {suite_name}. Available: physics, manipulation, spatial, comprehensive"
-        ),
-    };
+async fn cmd_eval(options: EvalOptions<'_>) -> Result<()> {
+    if options.list_suites {
+        println!("Built-in evaluation suites:");
+        for suite_name in EvalSuite::builtin_names() {
+            println!("  {suite_name}");
+        }
+        return Ok(());
+    }
 
+    let suite = load_eval_suite(options.suite_name, options.suite_json)
+        .with_context(|| format!("available suites: {}", available_eval_suite_names()))?;
     let registry = auto_detect_registry();
-    let provider_names = parse_provider_names(providers_str);
+    let provider_names = parse_provider_names(options.providers);
     let mut provider_list: Vec<&dyn WorldModelProvider> = Vec::new();
     for provider_name in &provider_names {
         provider_list.push(require_provider(&registry, provider_name)?);
@@ -997,6 +1041,10 @@ async fn cmd_eval(suite_name: &str, providers_str: &str) -> Result<()> {
         .run(&provider_list)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    if let Some(path) = options.output_json {
+        write_json_file(path, &report)?;
+    }
 
     println!("Evaluation Report: {}", report.suite);
     println!();
@@ -1682,6 +1730,38 @@ mod tests {
     }
 
     #[test]
+    fn test_cli_parse_eval_with_custom_suite_and_output() {
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "eval",
+            "--suite-json",
+            "/tmp/custom-suite.json",
+            "--providers",
+            "mock,jepa",
+            "--output-json",
+            "/tmp/eval-report.json",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Eval {
+                suite,
+                suite_json,
+                providers,
+                list_suites,
+                output_json,
+            } => {
+                assert!(suite.is_none());
+                assert_eq!(suite_json, Some(PathBuf::from("/tmp/custom-suite.json")));
+                assert_eq!(providers, "mock,jepa");
+                assert!(!list_suites);
+                assert_eq!(output_json, Some(PathBuf::from("/tmp/eval-report.json")));
+            }
+            _ => panic!("expected Eval"),
+        }
+    }
+
+    #[test]
     fn test_cli_parse_plan_command_with_guardrails_and_output() {
         let cli = Cli::try_parse_from([
             "worldforge",
@@ -1807,6 +1887,31 @@ mod tests {
         assert_eq!(clip.duration, 2.5);
         assert_eq!(clip.resolution, (640, 360));
         assert_eq!(clip.fps, 12.0);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn test_cmd_eval_loads_custom_suite_and_writes_output_json() {
+        let dir = std::env::temp_dir().join(format!("wf-cli-eval-{}", uuid::Uuid::new_v4()));
+        let suite_path = dir.join("suite.json");
+        let report_path = dir.join("report.json");
+        let suite = EvalSuite::physics_standard();
+        write_json_file(&suite_path, &suite).unwrap();
+
+        cmd_eval(EvalOptions {
+            suite_name: None,
+            suite_json: Some(&suite_path),
+            providers: "mock",
+            list_suites: false,
+            output_json: Some(&report_path),
+        })
+        .await
+        .unwrap();
+
+        let report: serde_json::Value = read_json_file(&report_path).unwrap();
+        assert_eq!(report["suite"], "Physics Standard");
+        assert_eq!(report["leaderboard"][0]["provider"], "mock");
 
         let _ = fs::remove_dir_all(dir);
     }

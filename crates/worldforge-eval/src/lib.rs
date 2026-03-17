@@ -4,16 +4,20 @@
 //! dimensions like physics plausibility, spatial consistency, and
 //! temporal coherence.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
 use worldforge_core::action::Action;
-use worldforge_core::error::Result;
+use worldforge_core::error::{Result, WorldForgeError};
 use worldforge_core::prediction::{PhysicsScores, PredictionConfig};
 use worldforge_core::provider::WorldModelProvider;
 use worldforge_core::state::WorldState;
 use worldforge_core::types::VideoClip;
+
+const BUILTIN_SUITE_NAMES: [&str; 4] = ["physics", "manipulation", "spatial", "comprehensive"];
 
 /// Dimension along which a provider is evaluated.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -135,6 +139,101 @@ pub struct LeaderboardEntry {
 }
 
 impl EvalSuite {
+    /// List the built-in evaluation suites.
+    pub fn builtin_names() -> &'static [&'static str] {
+        &BUILTIN_SUITE_NAMES
+    }
+
+    /// Load one of the built-in evaluation suites by name.
+    pub fn from_builtin(name: &str) -> Result<Self> {
+        let suite = match name {
+            "physics" => Self::physics_standard(),
+            "manipulation" => Self::manipulation_standard(),
+            "spatial" => Self::spatial_reasoning(),
+            "comprehensive" => Self::comprehensive(),
+            other => {
+                return Err(WorldForgeError::InvalidState(format!(
+                    "unknown eval suite: {other}. Available: {}",
+                    Self::builtin_names().join(", ")
+                )))
+            }
+        };
+        suite.validate()?;
+        Ok(suite)
+    }
+
+    /// Deserialize an evaluation suite from JSON.
+    pub fn from_json_str(json: &str) -> Result<Self> {
+        let suite: Self = serde_json::from_str(json)
+            .map_err(|error| WorldForgeError::SerializationError(error.to_string()))?;
+        suite.validate()?;
+        Ok(suite)
+    }
+
+    /// Read and deserialize an evaluation suite from a JSON file.
+    pub fn from_json_path(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        let contents = fs::read_to_string(path).map_err(|error| {
+            WorldForgeError::SerializationError(format!(
+                "failed to read {}: {error}",
+                path.display()
+            ))
+        })?;
+        Self::from_json_str(&contents)
+    }
+
+    /// Serialize the suite to pretty JSON.
+    pub fn to_json_pretty(&self) -> Result<String> {
+        self.validate()?;
+        serde_json::to_string_pretty(self)
+            .map_err(|error| WorldForgeError::SerializationError(error.to_string()))
+    }
+
+    /// Validate that the suite is structurally usable.
+    pub fn validate(&self) -> Result<()> {
+        if self.name.trim().is_empty() {
+            return Err(WorldForgeError::InvalidState(
+                "evaluation suite name cannot be empty".to_string(),
+            ));
+        }
+        if self.scenarios.is_empty() {
+            return Err(WorldForgeError::InvalidState(format!(
+                "evaluation suite '{}' must contain at least one scenario",
+                self.name
+            )));
+        }
+        if self.dimensions.is_empty() {
+            return Err(WorldForgeError::InvalidState(format!(
+                "evaluation suite '{}' must declare at least one dimension",
+                self.name
+            )));
+        }
+
+        let mut seen_names = HashSet::new();
+        for scenario in &self.scenarios {
+            if scenario.name.trim().is_empty() {
+                return Err(WorldForgeError::InvalidState(format!(
+                    "evaluation suite '{}' contains a scenario with an empty name",
+                    self.name
+                )));
+            }
+            if scenario.description.trim().is_empty() {
+                return Err(WorldForgeError::InvalidState(format!(
+                    "scenario '{}' must include a description",
+                    scenario.name
+                )));
+            }
+            if !seen_names.insert(scenario.name.as_str()) {
+                return Err(WorldForgeError::InvalidState(format!(
+                    "duplicate evaluation scenario name: {}",
+                    scenario.name
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
     /// Create a standard physics evaluation suite.
     pub fn physics_standard() -> Self {
         Self {
@@ -542,30 +641,46 @@ impl EvalSuite {
 
     /// Run the evaluation suite against a set of providers.
     pub async fn run(&self, providers: &[&dyn WorldModelProvider]) -> Result<EvalReport> {
+        self.validate()?;
         let config = PredictionConfig::default();
         let mut all_results = Vec::new();
 
         for provider in providers {
+            if !provider.capabilities().predict {
+                for scenario in &self.scenarios {
+                    all_results.push(EvalResult {
+                        provider: provider.name().to_string(),
+                        scenario: scenario.name.clone(),
+                        scores: HashMap::new(),
+                        latency_ms: 0,
+                        outcomes: vec![OutcomeResult {
+                            description: "provider supports prediction".to_string(),
+                            passed: false,
+                            details: Some(
+                                "evaluation requires predict capability for every scenario"
+                                    .to_string(),
+                            ),
+                        }],
+                    });
+                }
+                continue;
+            }
+
             for scenario in &self.scenarios {
                 let start = std::time::Instant::now();
-
-                let mut scores = HashMap::new();
+                let mut score_accumulator = PhysicsScoreAccumulator::default();
                 let mut outcomes = Vec::new();
 
                 // Run prediction for each action
                 let mut current_state = scenario.initial_state.clone();
+                let mut last_prediction = None;
+                let mut prediction_failed = false;
                 for action in &scenario.actions {
                     match provider.predict(&current_state, action, &config).await {
                         Ok(prediction) => {
-                            // Record physics scores
-                            record_physics_scores(&prediction.physics_scores, &mut scores);
-
-                            // Check expected outcomes
-                            for expected in &scenario.expected_outcomes {
-                                outcomes.push(check_outcome(expected, &prediction));
-                            }
-
-                            current_state = prediction.output_state;
+                            score_accumulator.record(&prediction.physics_scores);
+                            current_state = prediction.output_state.clone();
+                            last_prediction = Some(prediction);
                         }
                         Err(e) => {
                             outcomes.push(OutcomeResult {
@@ -573,7 +688,24 @@ impl EvalSuite {
                                 passed: false,
                                 details: Some(e.to_string()),
                             });
+                            prediction_failed = true;
+                            break;
                         }
+                    }
+                }
+
+                let mut scores = HashMap::new();
+                if let Some(average_scores) = score_accumulator.average() {
+                    record_physics_scores(&average_scores, &mut scores);
+                }
+
+                if !prediction_failed {
+                    for expected in &scenario.expected_outcomes {
+                        outcomes.push(check_outcome(
+                            expected,
+                            last_prediction.as_ref(),
+                            &current_state,
+                        ));
                     }
                 }
 
@@ -598,6 +730,40 @@ impl EvalSuite {
     }
 }
 
+#[derive(Debug, Default)]
+struct PhysicsScoreAccumulator {
+    total: PhysicsScores,
+    count: usize,
+}
+
+impl PhysicsScoreAccumulator {
+    fn record(&mut self, scores: &PhysicsScores) {
+        self.total.overall += scores.overall;
+        self.total.object_permanence += scores.object_permanence;
+        self.total.gravity_compliance += scores.gravity_compliance;
+        self.total.collision_accuracy += scores.collision_accuracy;
+        self.total.spatial_consistency += scores.spatial_consistency;
+        self.total.temporal_consistency += scores.temporal_consistency;
+        self.count += 1;
+    }
+
+    fn average(&self) -> Option<PhysicsScores> {
+        if self.count == 0 {
+            return None;
+        }
+
+        let count = self.count as f32;
+        Some(PhysicsScores {
+            overall: self.total.overall / count,
+            object_permanence: self.total.object_permanence / count,
+            gravity_compliance: self.total.gravity_compliance / count,
+            collision_accuracy: self.total.collision_accuracy / count,
+            spatial_consistency: self.total.spatial_consistency / count,
+            temporal_consistency: self.total.temporal_consistency / count,
+        })
+    }
+}
+
 fn record_physics_scores(scores: &PhysicsScores, map: &mut HashMap<String, f32>) {
     map.insert("overall".to_string(), scores.overall);
     map.insert("object_permanence".to_string(), scores.object_permanence);
@@ -615,41 +781,57 @@ fn record_physics_scores(scores: &PhysicsScores, map: &mut HashMap<String, f32>)
 
 fn check_outcome(
     expected: &ExpectedOutcome,
-    prediction: &worldforge_core::prediction::Prediction,
+    prediction: Option<&worldforge_core::prediction::Prediction>,
+    state: &WorldState,
 ) -> OutcomeResult {
     match expected {
         ExpectedOutcome::MinPhysicsScore {
             dimension,
             threshold,
-        } => {
-            let score = match dimension {
-                EvalDimension::ObjectPermanence => prediction.physics_scores.object_permanence,
-                EvalDimension::GravityCompliance => prediction.physics_scores.gravity_compliance,
-                EvalDimension::CollisionAccuracy => prediction.physics_scores.collision_accuracy,
-                EvalDimension::SpatialConsistency => prediction.physics_scores.spatial_consistency,
-                EvalDimension::TemporalConsistency => {
-                    prediction.physics_scores.temporal_consistency
+        } => match prediction {
+            Some(prediction) => {
+                let score = match dimension {
+                    EvalDimension::ObjectPermanence => prediction.physics_scores.object_permanence,
+                    EvalDimension::GravityCompliance => {
+                        prediction.physics_scores.gravity_compliance
+                    }
+                    EvalDimension::CollisionAccuracy => {
+                        prediction.physics_scores.collision_accuracy
+                    }
+                    EvalDimension::SpatialConsistency => {
+                        prediction.physics_scores.spatial_consistency
+                    }
+                    EvalDimension::TemporalConsistency => {
+                        prediction.physics_scores.temporal_consistency
+                    }
+                    _ => prediction.physics_scores.overall,
+                };
+                OutcomeResult {
+                    description: format!("{dimension:?} >= {threshold}"),
+                    passed: score >= *threshold,
+                    details: Some(format!("score: {score:.3}")),
                 }
-                _ => prediction.physics_scores.overall,
-            };
-            OutcomeResult {
-                description: format!("{dimension:?} >= {threshold}"),
-                passed: score >= *threshold,
-                details: Some(format!("score: {score:.3}")),
             }
-        }
-        ExpectedOutcome::MinConfidence { threshold } => OutcomeResult {
-            description: format!("confidence >= {threshold}"),
-            passed: prediction.confidence >= *threshold,
-            details: Some(format!("confidence: {:.3}", prediction.confidence)),
+            None => OutcomeResult {
+                description: format!("{dimension:?} >= {threshold}"),
+                passed: false,
+                details: Some("requires at least one prediction step".to_string()),
+            },
+        },
+        ExpectedOutcome::MinConfidence { threshold } => match prediction {
+            Some(prediction) => OutcomeResult {
+                description: format!("confidence >= {threshold}"),
+                passed: prediction.confidence >= *threshold,
+                details: Some(format!("confidence: {:.3}", prediction.confidence)),
+            },
+            None => OutcomeResult {
+                description: format!("confidence >= {threshold}"),
+                passed: false,
+                details: Some("requires at least one prediction step".to_string()),
+            },
         },
         ExpectedOutcome::ObjectExists { name } => {
-            let exists = prediction
-                .output_state
-                .scene
-                .objects
-                .values()
-                .any(|o| o.name == *name);
+            let exists = state.scene.objects.values().any(|o| o.name == *name);
             OutcomeResult {
                 description: format!("object '{name}' exists"),
                 passed: exists,
@@ -657,12 +839,7 @@ fn check_outcome(
             }
         }
         ExpectedOutcome::ObjectNotExists { name } => {
-            let exists = prediction
-                .output_state
-                .scene
-                .objects
-                .values()
-                .any(|o| o.name == *name);
+            let exists = state.scene.objects.values().any(|o| o.name == *name);
             OutcomeResult {
                 description: format!("object '{name}' does not exist"),
                 passed: !exists,
@@ -794,5 +971,91 @@ mod tests {
         let report = suite.run(&providers).await.unwrap();
         assert_eq!(report.results.len(), 7);
         assert_eq!(report.leaderboard[0].total_scenarios, 7);
+    }
+
+    #[test]
+    fn test_builtin_names_are_exposed() {
+        assert_eq!(
+            EvalSuite::builtin_names(),
+            &["physics", "manipulation", "spatial", "comprehensive"]
+        );
+    }
+
+    #[test]
+    fn test_suite_json_roundtrip_and_lookup() {
+        let suite = EvalSuite::from_builtin("physics").unwrap();
+        let json = suite.to_json_pretty().unwrap();
+        let restored = EvalSuite::from_json_str(&json).unwrap();
+        assert_eq!(restored.name, suite.name);
+        assert_eq!(restored.scenarios.len(), suite.scenarios.len());
+    }
+
+    #[tokio::test]
+    async fn test_expected_outcomes_are_checked_once_per_scenario() {
+        let suite = EvalSuite {
+            name: "Two-step".to_string(),
+            scenarios: vec![EvalScenario {
+                name: "two_moves".to_string(),
+                description: "Run two actions and validate once at the end".to_string(),
+                initial_state: WorldState::new("two-step", "eval"),
+                actions: vec![
+                    Action::Move {
+                        target: worldforge_core::types::Position {
+                            x: 1.0,
+                            y: 0.0,
+                            z: 0.0,
+                        },
+                        speed: 1.0,
+                    },
+                    Action::Move {
+                        target: worldforge_core::types::Position {
+                            x: 2.0,
+                            y: 0.0,
+                            z: 0.0,
+                        },
+                        speed: 1.0,
+                    },
+                ],
+                expected_outcomes: vec![ExpectedOutcome::MinConfidence { threshold: 0.5 }],
+                ground_truth: None,
+            }],
+            dimensions: vec![EvalDimension::ActionPredictionAccuracy],
+        };
+        let provider = MockProvider::new();
+        let report = suite
+            .run(&[&provider as &dyn WorldModelProvider])
+            .await
+            .unwrap();
+        assert_eq!(report.results.len(), 1);
+        assert_eq!(report.results[0].outcomes.len(), 1);
+        assert!(report.results[0].outcomes[0].passed);
+    }
+
+    #[test]
+    fn test_validate_rejects_duplicate_scenario_names() {
+        let suite = EvalSuite {
+            name: "bad".to_string(),
+            scenarios: vec![
+                EvalScenario {
+                    name: "duplicate".to_string(),
+                    description: "first".to_string(),
+                    initial_state: WorldState::new("a", "eval"),
+                    actions: vec![],
+                    expected_outcomes: vec![],
+                    ground_truth: None,
+                },
+                EvalScenario {
+                    name: "duplicate".to_string(),
+                    description: "second".to_string(),
+                    initial_state: WorldState::new("b", "eval"),
+                    actions: vec![],
+                    expected_outcomes: vec![],
+                    ground_truth: None,
+                },
+            ],
+            dimensions: vec![EvalDimension::SpatialConsistency],
+        };
+
+        assert!(suite.validate().is_err());
     }
 }

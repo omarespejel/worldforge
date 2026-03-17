@@ -77,6 +77,38 @@ fn parse_guardrails_json(guardrails_json: Option<&str>) -> PyResult<Vec<Guardrai
         .map(|value| value.unwrap_or_default())
 }
 
+fn parse_provider_names(input: &str) -> Vec<String> {
+    let mut provider_names: Vec<String> = input
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(ToOwned::to_owned)
+        .collect();
+    if provider_names.is_empty() {
+        provider_names.push("mock".to_string());
+    }
+    provider_names
+}
+
+fn load_eval_suite(
+    suite_name: &str,
+    suite_json: Option<&str>,
+) -> PyResult<worldforge_eval::EvalSuite> {
+    match suite_json {
+        Some(json) => worldforge_eval::EvalSuite::from_json_str(json).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "failed to load custom evaluation suite: {e}"
+            ))
+        }),
+        None => worldforge_eval::EvalSuite::from_builtin(suite_name).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "unknown eval suite: {suite_name}. Available: {}. Original error: {e}",
+                worldforge_eval::EvalSuite::builtin_names().join(", ")
+            ))
+        }),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn planner_from_args(
     planner: &str,
@@ -1454,30 +1486,34 @@ impl PyEvalResult {
     }
 }
 
-/// Run an evaluation suite against the mock provider.
-///
-/// Returns a list of EvalResult entries from the leaderboard.
+/// List the built-in evaluation suite names.
 #[pyfunction]
-#[pyo3(signature = (suite_name="physics"))]
-fn run_eval(suite_name: &str) -> PyResult<Vec<PyEvalResult>> {
-    let suite = match suite_name {
-        "physics" => worldforge_eval::EvalSuite::physics_standard(),
-        "manipulation" => worldforge_eval::EvalSuite::manipulation_standard(),
-        "spatial" => worldforge_eval::EvalSuite::spatial_reasoning(),
-        "comprehensive" => worldforge_eval::EvalSuite::comprehensive(),
-        other => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "unknown eval suite: {other}. Available: physics, manipulation, spatial, comprehensive"
-        )))
-        }
-    };
+fn list_eval_suites() -> Vec<String> {
+    worldforge_eval::EvalSuite::builtin_names()
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect()
+}
 
-    let rt = tokio::runtime::Runtime::new().map_err(|e| {
-        pyo3::exceptions::PyRuntimeError::new_err(format!("failed to create runtime: {e}"))
-    })?;
-
-    let mock = worldforge_providers::MockProvider::new();
-    let provider_list: Vec<&dyn worldforge_core::provider::WorldModelProvider> = vec![&mock];
+/// Run an evaluation suite and return the leaderboard entries.
+#[pyfunction]
+#[pyo3(signature = (suite_name="physics", providers="mock", suite_json=None))]
+fn run_eval(
+    suite_name: &str,
+    providers: &str,
+    suite_json: Option<&str>,
+) -> PyResult<Vec<PyEvalResult>> {
+    let suite = load_eval_suite(suite_name, suite_json)?;
+    let rt = new_runtime()?;
+    let registry = auto_detect_registry();
+    let provider_names = parse_provider_names(providers);
+    let mut provider_list: Vec<&dyn worldforge_core::provider::WorldModelProvider> = Vec::new();
+    for provider_name in &provider_names {
+        let provider = registry.get(provider_name).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("provider lookup failed: {e}"))
+        })?;
+        provider_list.push(provider);
+    }
 
     let report = rt.block_on(suite.run(&provider_list)).map_err(|e| {
         pyo3::exceptions::PyRuntimeError::new_err(format!("evaluation failed: {e}"))
@@ -1494,6 +1530,37 @@ fn run_eval(suite_name: &str) -> PyResult<Vec<PyEvalResult>> {
             total_scenarios: entry.total_scenarios,
         })
         .collect())
+}
+
+/// Run an evaluation suite and return the full report JSON.
+#[pyfunction]
+#[pyo3(signature = (suite_name="physics", providers="mock", suite_json=None))]
+fn run_eval_report(
+    suite_name: &str,
+    providers: &str,
+    suite_json: Option<&str>,
+) -> PyResult<String> {
+    let suite = load_eval_suite(suite_name, suite_json)?;
+    let rt = new_runtime()?;
+    let registry = auto_detect_registry();
+    let provider_names = parse_provider_names(providers);
+    let mut provider_list: Vec<&dyn worldforge_core::provider::WorldModelProvider> = Vec::new();
+    for provider_name in &provider_names {
+        let provider = registry.get(provider_name).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("provider lookup failed: {e}"))
+        })?;
+        provider_list.push(provider);
+    }
+
+    let report = rt.block_on(suite.run(&provider_list)).map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("evaluation failed: {e}"))
+    })?;
+
+    serde_json::to_string_pretty(&report).map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!(
+            "failed to serialize evaluation report: {e}"
+        ))
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1722,7 +1789,9 @@ fn worldforge(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyEvalResult>()?;
     m.add_class::<PyZkProof>()?;
     m.add_function(wrap_pyfunction!(plan, m)?)?;
+    m.add_function(wrap_pyfunction!(list_eval_suites, m)?)?;
     m.add_function(wrap_pyfunction!(run_eval, m)?)?;
+    m.add_function(wrap_pyfunction!(run_eval_report, m)?)?;
     m.add_function(wrap_pyfunction!(prove_inference, m)?)?;
     m.add_function(wrap_pyfunction!(prove_inference_transition, m)?)?;
     m.add_function(wrap_pyfunction!(prove_guardrail_plan, m)?)?;
@@ -2303,22 +2372,38 @@ mod tests {
 
     #[test]
     fn test_run_eval_physics() {
-        let results = run_eval("physics").unwrap();
+        let results = run_eval("physics", "mock", None).unwrap();
         assert!(!results.is_empty());
         assert_eq!(results[0].provider(), "mock");
     }
 
     #[test]
     fn test_run_eval_invalid_suite() {
-        let result = run_eval("nonexistent");
+        let result = run_eval("nonexistent", "mock", None);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_eval_result_repr() {
-        let results = run_eval("physics").unwrap();
+        let results = run_eval("physics", "mock", None).unwrap();
         let repr = results[0].__repr__();
         assert!(repr.contains("EvalResult"));
+    }
+
+    #[test]
+    fn test_list_eval_suites_includes_builtins() {
+        let suites = list_eval_suites();
+        assert!(suites.contains(&"physics".to_string()));
+        assert!(suites.contains(&"comprehensive".to_string()));
+    }
+
+    #[test]
+    fn test_run_eval_report_with_custom_suite_json() {
+        let suite_json =
+            serde_json::to_string(&worldforge_eval::EvalSuite::physics_standard()).unwrap();
+        let report = run_eval_report("physics", "mock", Some(&suite_json)).unwrap();
+        assert!(report.contains("\"suite\": \"Physics Standard\""));
+        assert!(report.contains("\"provider\": \"mock\""));
     }
 
     // --- ZK Verification tests ---

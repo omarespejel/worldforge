@@ -145,7 +145,9 @@ cargo run -p worldforge-cli -- verify --proof-type guardrail --plan-json plans/g
 cargo run -p worldforge-cli -- verify --proof-type inference --input-state-json states/before.json --output-state-json states/after.json --provider mock
 cargo run -p worldforge-cli -- verify-proof --guardrail-bundle-json proofs/guardrail.json --output-json proofs/guardrail-report.json
 cargo run -p worldforge-cli -- verify-proof --proof-json proofs/raw-proof.json
+cargo run -p worldforge-cli -- eval --list-suites
 cargo run -p worldforge-cli -- eval --suite physics
+cargo run -p worldforge-cli -- eval --suite-json evals/custom.json --providers mock,jepa --output-json reports/custom-eval.json
 cargo run -p worldforge-cli -- serve --bind 127.0.0.1:8080
 
 # Or run the dedicated server binary
@@ -198,6 +200,12 @@ curl -X POST http://127.0.0.1:8080/v1/providers/mock/transfer \
   -H 'content-type: application/json' \
   -d '{"source":{"frames":[],"fps":12.0,"resolution":[640,360],"duration":5.0},"controls":{},"config":{"resolution":[1280,720],"fps":24.0,"control_strength":0.8}}'
 
+curl http://127.0.0.1:8080/v1/evals/suites
+
+curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/evaluate \
+  -H 'content-type: application/json' \
+  -d '{"suite":"physics","providers":["mock"]}'
+
 curl http://127.0.0.1:8080/v1/providers
 ```
 
@@ -224,7 +232,10 @@ real generated plans instead of placeholder proof inputs. The CLI can export
 plan JSON for reuse, and the REST server can generate guardrail proofs directly
 from a goal plus guardrail set. Exported proofs and verification bundles can
 now be re-verified offline across the CLI, REST server, and Python bindings,
-and verification inputs are hashed with real SHA-256 digests.
+and verification inputs are hashed with real SHA-256 digests. Evaluation now
+supports built-in suite discovery, JSON-defined custom suites, provider
+selection, and CLI report export across the CLI, REST server, and Python
+bindings.
 
 ## License
 
