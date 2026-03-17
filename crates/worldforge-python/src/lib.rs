@@ -478,6 +478,22 @@ impl PySceneObject {
         self.inner.physics.mass = Some(mass);
     }
 
+    /// Convert to JSON string.
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    }
+
+    /// Create from JSON string.
+    #[staticmethod]
+    fn from_json(json: &str) -> PyResult<Self> {
+        let inner: SceneObject = serde_json::from_str(json).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("deserialization error: {e}"))
+        })?;
+        Ok(Self { inner })
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "SceneObject(name='{}', pos=({}, {}, {}))",
@@ -552,22 +568,13 @@ impl PyWorld {
     fn get_object(&self, name: &str) -> Option<PySceneObject> {
         self.state
             .scene
-            .objects
-            .values()
-            .find(|o| o.name == name)
+            .find_object_by_name(name)
             .map(|o| PySceneObject { inner: o.clone() })
     }
 
     /// Remove an object by name. Returns True if found.
     fn remove_object(&mut self, name: &str) -> bool {
-        if let Some(id) = self
-            .state
-            .scene
-            .objects
-            .values()
-            .find(|o| o.name == name)
-            .map(|o| o.id)
-        {
+        if let Some(id) = self.state.scene.find_object_by_name(name).map(|o| o.id) {
             self.state.scene.remove_object(&id);
             true
         } else {
@@ -579,8 +586,8 @@ impl PyWorld {
     fn list_objects(&self) -> Vec<String> {
         self.state
             .scene
-            .objects
-            .values()
+            .list_objects()
+            .into_iter()
             .map(|o| o.name.clone())
             .collect()
     }
@@ -2560,6 +2567,24 @@ mod tests {
         let vel = PyVelocity::new(1.0, 2.0, 3.0);
         obj.set_velocity(&vel);
         assert_eq!(obj.velocity().x(), 1.0);
+    }
+
+    #[test]
+    fn test_scene_object_json_roundtrip() {
+        let pos = PyPosition::new(0.0, 1.0, 0.0);
+        let min = PyPosition::new(-0.5, 0.5, -0.5);
+        let max = PyPosition::new(0.5, 1.5, 0.5);
+        let bbox = PyBBox::new(&min, &max);
+        let mut obj = PySceneObject::new("crate", &pos, &bbox);
+        obj.set_semantic_label(Some("storage".to_string()));
+        obj.set_mass(5.0);
+
+        let json = obj.to_json().unwrap();
+        let restored = PySceneObject::from_json(&json).unwrap();
+
+        assert_eq!(restored.name(), "crate");
+        assert_eq!(restored.semantic_label(), Some("storage"));
+        assert_eq!(restored.position().y(), 1.0);
     }
 
     #[test]

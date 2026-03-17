@@ -50,6 +50,56 @@ impl World {
         self.state.id
     }
 
+    /// Add a new object to the world state.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WorldForgeError::InvalidState` if another object already uses
+    /// the same ID.
+    pub fn add_object(&mut self, object: SceneObject) -> Result<()> {
+        if self.state.scene.get_object(&object.id).is_some() {
+            return Err(WorldForgeError::InvalidState(format!(
+                "object already exists: {}",
+                object.id
+            )));
+        }
+
+        self.state.scene.add_object(object);
+        Ok(())
+    }
+
+    /// Get an object in the world by ID.
+    pub fn get_object(&self, object_id: &ObjectId) -> Option<&SceneObject> {
+        self.state.scene.get_object(object_id)
+    }
+
+    /// Get an object in the world by its human-readable name.
+    pub fn get_object_by_name(&self, name: &str) -> Option<&SceneObject> {
+        self.state.scene.find_object_by_name(name)
+    }
+
+    /// List all objects in the world in deterministic order.
+    pub fn list_objects(&self) -> Vec<SceneObject> {
+        self.state
+            .scene
+            .list_objects()
+            .into_iter()
+            .cloned()
+            .collect()
+    }
+
+    /// Remove an object from the world by ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WorldForgeError::InvalidState` if the object does not exist.
+    pub fn remove_object(&mut self, object_id: &ObjectId) -> Result<SceneObject> {
+        self.state
+            .scene
+            .remove_object(object_id)
+            .ok_or_else(|| WorldForgeError::InvalidState(format!("object not found: {object_id}")))
+    }
+
     /// Predict the next world state after applying an action.
     #[instrument(skip(self, config))]
     pub async fn predict(
@@ -2366,6 +2416,111 @@ mod tests {
 
         assert!(output.answer.contains("1 object"));
         assert!(output.evidence.iter().any(|item| item.contains("cube")));
+    }
+
+    #[test]
+    fn test_add_and_list_objects() {
+        let registry = std::sync::Arc::new(ProviderRegistry::new());
+        let mut world = World::new(WorldState::new("scene-edit", "mock"), "mock", registry);
+
+        let crate_object = SceneObject::new(
+            "crate",
+            Pose::default(),
+            crate::types::BBox {
+                min: Position {
+                    x: -0.5,
+                    y: -0.5,
+                    z: -0.5,
+                },
+                max: Position {
+                    x: 0.5,
+                    y: 0.5,
+                    z: 0.5,
+                },
+            },
+        );
+        let sphere = SceneObject::new(
+            "sphere",
+            Pose::default(),
+            crate::types::BBox {
+                min: Position {
+                    x: -0.25,
+                    y: -0.25,
+                    z: -0.25,
+                },
+                max: Position {
+                    x: 0.25,
+                    y: 0.25,
+                    z: 0.25,
+                },
+            },
+        );
+
+        world.add_object(sphere).unwrap();
+        world.add_object(crate_object).unwrap();
+
+        let objects = world.list_objects();
+        assert_eq!(objects.len(), 2);
+        assert_eq!(objects[0].name, "crate");
+        assert_eq!(objects[1].name, "sphere");
+        assert!(world.get_object_by_name("crate").is_some());
+    }
+
+    #[test]
+    fn test_add_object_rejects_duplicate_id() {
+        let registry = std::sync::Arc::new(ProviderRegistry::new());
+        let mut world = World::new(WorldState::new("dup", "mock"), "mock", registry);
+
+        let object = SceneObject::new(
+            "cube",
+            Pose::default(),
+            crate::types::BBox {
+                min: Position {
+                    x: -0.5,
+                    y: -0.5,
+                    z: -0.5,
+                },
+                max: Position {
+                    x: 0.5,
+                    y: 0.5,
+                    z: 0.5,
+                },
+            },
+        );
+
+        let duplicate = object.clone();
+        world.add_object(object).unwrap();
+        let error = world.add_object(duplicate).unwrap_err();
+        assert!(matches!(error, WorldForgeError::InvalidState(_)));
+    }
+
+    #[test]
+    fn test_remove_object() {
+        let registry = std::sync::Arc::new(ProviderRegistry::new());
+        let mut world = World::new(WorldState::new("remove", "mock"), "mock", registry);
+
+        let object = SceneObject::new(
+            "cube",
+            Pose::default(),
+            crate::types::BBox {
+                min: Position {
+                    x: -0.5,
+                    y: -0.5,
+                    z: -0.5,
+                },
+                max: Position {
+                    x: 0.5,
+                    y: 0.5,
+                    z: 0.5,
+                },
+            },
+        );
+        let object_id = object.id;
+        world.add_object(object).unwrap();
+
+        let removed = world.remove_object(&object_id).unwrap();
+        assert_eq!(removed.name, "cube");
+        assert!(world.get_object(&object_id).is_none());
     }
 
     #[derive(Debug, Clone)]

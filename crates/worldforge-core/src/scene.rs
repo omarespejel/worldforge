@@ -135,9 +135,30 @@ impl SceneGraph {
         self.objects.get(id)
     }
 
+    /// Find an object by its human-readable name.
+    pub fn find_object_by_name(&self, name: &str) -> Option<&SceneObject> {
+        self.objects.values().find(|object| object.name == name)
+    }
+
     /// Get a mutable reference to an object by its ID.
     pub fn get_object_mut(&mut self, id: &ObjectId) -> Option<&mut SceneObject> {
         self.objects.get_mut(id)
+    }
+
+    /// Find a mutable object by its human-readable name.
+    pub fn find_object_by_name_mut(&mut self, name: &str) -> Option<&mut SceneObject> {
+        self.objects.values_mut().find(|object| object.name == name)
+    }
+
+    /// Return objects sorted by name then ID for deterministic output.
+    pub fn list_objects(&self) -> Vec<&SceneObject> {
+        let mut objects: Vec<_> = self.objects.values().collect();
+        objects.sort_by(|left, right| {
+            left.name
+                .cmp(&right.name)
+                .then_with(|| left.id.as_bytes().cmp(right.id.as_bytes()))
+        });
+        objects
     }
 
     /// Remove an object from the scene.
@@ -243,5 +264,40 @@ mod tests {
         let json = serde_json::to_string(&sg).unwrap();
         let sg2: SceneGraph = serde_json::from_str(&json).unwrap();
         assert_eq!(sg2.objects.len(), 2);
+    }
+
+    #[test]
+    fn test_scene_graph_find_by_name_and_sorted_listing() {
+        let mut sg = SceneGraph::new();
+        let zebra = sample_object("zebra");
+        let apple = sample_object("apple");
+        let apple_id = apple.id;
+        sg.add_object(zebra);
+        sg.add_object(apple);
+
+        assert_eq!(
+            sg.find_object_by_name("apple").map(|object| object.id),
+            Some(apple_id)
+        );
+
+        let listed = sg.list_objects();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].name, "apple");
+        assert_eq!(listed[1].name, "zebra");
+    }
+
+    #[test]
+    fn test_scene_graph_find_object_by_name_mut() {
+        let mut sg = SceneGraph::new();
+        sg.add_object(sample_object("cube"));
+
+        let object = sg.find_object_by_name_mut("cube").unwrap();
+        object.semantic_label = Some("block".to_string());
+
+        assert_eq!(
+            sg.find_object_by_name("cube")
+                .and_then(|object| object.semantic_label.as_deref()),
+            Some("block")
+        );
     }
 }

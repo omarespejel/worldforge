@@ -140,6 +140,10 @@ cargo fmt
 
 # Run CLI
 cargo run -p worldforge-cli -- create --prompt "A kitchen with a mug"
+cargo run -p worldforge-cli -- objects add --world <id> --name red_mug --position 0 0.8 0 --bbox-min -0.05 0.75 -0.05 --bbox-max 0.05 0.85 0.05 --semantic-label mug
+cargo run -p worldforge-cli -- objects list --world <id>
+cargo run -p worldforge-cli -- objects show --world <id> --object-id <object-id>
+cargo run -p worldforge-cli -- objects remove --world <id> --object-id <object-id>
 cargo run -p worldforge-cli -- providers
 cargo run -p worldforge-cli -- providers --capability planning
 cargo run -p worldforge-cli -- estimate --provider cosmos --operation generate --duration-seconds 5 --width 1280 --height 720
@@ -185,6 +189,16 @@ Then call the HTTP API directly:
 curl -X POST http://127.0.0.1:8080/v1/worlds \
   -H 'content-type: application/json' \
   -d '{"name":"Kitchen counter","provider":"mock"}'
+
+curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/objects \
+  -H 'content-type: application/json' \
+  -d '{"name":"red_mug","position":{"x":0.0,"y":0.8,"z":0.0},"bbox":{"min":{"x":-0.05,"y":0.75,"z":-0.05},"max":{"x":0.05,"y":0.85,"z":0.05}},"semantic_label":"mug"}'
+
+curl http://127.0.0.1:8080/v1/worlds/<world-id>/objects
+
+curl http://127.0.0.1:8080/v1/worlds/<world-id>/objects/<object-id>
+
+curl -X DELETE http://127.0.0.1:8080/v1/worlds/<world-id>/objects/<object-id>
 
 curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/plan \
   -H 'content-type: application/json' \
@@ -258,10 +272,14 @@ comparison now reuses the same guardrail and fallback pipeline as single-provide
 prediction, with comparison config exposed in the CLI, REST server, and Python
 bindings. Evaluation now
 supports built-in suite discovery, JSON-defined custom suites, provider
-selection, CLI report export, and aggregated provider/dimension/scenario
-rollups across the CLI, REST server, and Python bindings. Provider discovery now exposes capability metadata across the CLI,
-REST server, and Python bindings, and provider adapters' cost estimates are
-queryable end-to-end for predict, generate, reason, and transfer operations.
+selection, and aggregated leaderboard, provider, scenario, and dimension
+rollups. Scene object seeding and inspection are now exposed across the CLI and
+REST server as first-class operations instead of requiring direct JSON state
+editing, and Python scene objects can round-trip through JSON for interop with
+those workflows. Provider discovery now exposes capability metadata across the
+CLI, REST server, and Python bindings, and provider adapters' cost estimates
+are queryable end-to-end for predict, generate, reason, and transfer
+operations.
 
 ## License
 

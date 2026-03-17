@@ -20,8 +20,9 @@ use worldforge_core::provider::{
     GenerationConfig, GenerationPrompt, Operation, ProviderRegistry, SpatialControls,
     TransferConfig,
 };
+use worldforge_core::scene::{PhysicsProperties, SceneObject};
 use worldforge_core::state::{DynStateStore, StateStoreKind, WorldState};
-use worldforge_core::types::{VideoClip, WorldId};
+use worldforge_core::types::{BBox, Pose, Position, Rotation, Velocity, VideoClip, WorldId};
 use worldforge_eval::EvalSuite;
 use worldforge_verify::{
     prove_guardrail_plan, prove_inference_transition, prove_latest_inference, prove_provenance,
@@ -136,6 +137,32 @@ struct PredictRequest {
     config: PredictionConfig,
     #[serde(default)]
     provider: Option<String>,
+}
+
+/// JSON request body for adding an object to a world scene.
+#[derive(Debug, Deserialize)]
+struct CreateObjectRequest {
+    name: String,
+    position: Position,
+    bbox: BBox,
+    #[serde(default)]
+    rotation: Rotation,
+    #[serde(default)]
+    velocity: Velocity,
+    #[serde(default)]
+    semantic_label: Option<String>,
+    #[serde(default)]
+    mass: Option<f32>,
+    #[serde(default)]
+    friction: Option<f32>,
+    #[serde(default)]
+    restitution: Option<f32>,
+    #[serde(default)]
+    material: Option<String>,
+    #[serde(default)]
+    is_static: bool,
+    #[serde(default)]
+    is_graspable: bool,
 }
 
 /// JSON request body for planning.
@@ -453,6 +480,28 @@ fn resolve_world_provider<'a>(state: &'a WorldState, requested: Option<&'a str>)
         .unwrap_or(state.metadata.created_by.as_str())
 }
 
+fn build_scene_object(request: CreateObjectRequest) -> SceneObject {
+    let mut object = SceneObject::new(
+        request.name,
+        Pose {
+            position: request.position,
+            rotation: request.rotation,
+        },
+        request.bbox,
+    );
+    object.velocity = request.velocity;
+    object.semantic_label = request.semantic_label;
+    object.physics = PhysicsProperties {
+        mass: request.mass,
+        friction: request.friction,
+        restitution: request.restitution,
+        is_static: request.is_static,
+        is_graspable: request.is_graspable,
+        material: request.material,
+    };
+    object
+}
+
 /// Start the WorldForge HTTP server.
 pub async fn serve(config: ServerConfig, registry: Arc<ProviderRegistry>) -> anyhow::Result<()> {
     Server::bind(config, registry).await?.run().await
@@ -754,11 +803,140 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
             (200, ApiResponse::ok(worlds))
         }
 
+        // GET /v1/worlds/{id}/objects
+        ("GET", p) if p.starts_with("/v1/worlds/") && p.ends_with("/objects") => {
+            let id_str = p
+                .strip_prefix("/v1/worlds/")
+                .and_then(|value| value.strip_suffix("/objects"))
+                .unwrap_or("");
+            match id_str.parse::<WorldId>() {
+                Ok(id) => match state.store.load(&id).await {
+                    Ok(ws) => {
+                        let provider = ws.metadata.created_by.clone();
+                        let world = worldforge_core::world::World::new(
+                            ws,
+                            provider,
+                            Arc::clone(&state.registry),
+                        );
+                        (200, ApiResponse::ok(world.list_objects()))
+                    }
+                    Err(error) => (404, error_response(&error.to_string())),
+                },
+                Err(_) => (400, error_response("invalid world ID")),
+            }
+        }
+
+        // POST /v1/worlds/{id}/objects
+        ("POST", p) if p.starts_with("/v1/worlds/") && p.ends_with("/objects") => {
+            let id_str = p
+                .strip_prefix("/v1/worlds/")
+                .and_then(|value| value.strip_suffix("/objects"))
+                .unwrap_or("");
+            match id_str.parse::<WorldId>() {
+                Ok(id) => match serde_json::from_str::<CreateObjectRequest>(body) {
+                    Ok(req) => {
+                        let ws = match state.store.load(&id).await {
+                            Ok(ws) => ws,
+                            Err(error) => return (404, error_response(&error.to_string())),
+                        };
+                        let provider = ws.metadata.created_by.clone();
+                        let mut world = worldforge_core::world::World::new(
+                            ws,
+                            provider,
+                            Arc::clone(&state.registry),
+                        );
+                        let object = build_scene_object(req);
+                        match world.add_object(object.clone()) {
+                            Ok(()) => match state.store.save(world.current_state()).await {
+                                Ok(()) => (201, ApiResponse::ok(object)),
+                                Err(error) => (500, error_response(&error.to_string())),
+                            },
+                            Err(error) => {
+                                (api_error_status(&error), error_response(&error.to_string()))
+                            }
+                        }
+                    }
+                    Err(error) => (400, error_response(&format!("invalid request: {error}"))),
+                },
+                Err(_) => (400, error_response("invalid world ID")),
+            }
+        }
+
+        // GET /v1/worlds/{id}/objects/{object_id}
+        ("GET", p) if p.starts_with("/v1/worlds/") && p.contains("/objects/") => {
+            let Some((world_part, object_part)) = p
+                .strip_prefix("/v1/worlds/")
+                .and_then(|value| value.split_once("/objects/"))
+            else {
+                return (404, error_response(&format!("not found: {method} {path}")));
+            };
+            match (
+                world_part.parse::<WorldId>(),
+                object_part.parse::<uuid::Uuid>(),
+            ) {
+                (Ok(world_id), Ok(object_id)) => match state.store.load(&world_id).await {
+                    Ok(ws) => {
+                        let provider = ws.metadata.created_by.clone();
+                        let world = worldforge_core::world::World::new(
+                            ws,
+                            provider,
+                            Arc::clone(&state.registry),
+                        );
+                        match world.get_object(&object_id) {
+                            Some(object) => (200, ApiResponse::ok(object.clone())),
+                            None => (404, error_response("object not found")),
+                        }
+                    }
+                    Err(error) => (404, error_response(&error.to_string())),
+                },
+                (Err(_), _) => (400, error_response("invalid world ID")),
+                (_, Err(_)) => (400, error_response("invalid object ID")),
+            }
+        }
+
+        // DELETE /v1/worlds/{id}/objects/{object_id}
+        ("DELETE", p) if p.starts_with("/v1/worlds/") && p.contains("/objects/") => {
+            let Some((world_part, object_part)) = p
+                .strip_prefix("/v1/worlds/")
+                .and_then(|value| value.split_once("/objects/"))
+            else {
+                return (404, error_response(&format!("not found: {method} {path}")));
+            };
+            match (
+                world_part.parse::<WorldId>(),
+                object_part.parse::<uuid::Uuid>(),
+            ) {
+                (Ok(world_id), Ok(object_id)) => match state.store.load(&world_id).await {
+                    Ok(ws) => {
+                        let provider = ws.metadata.created_by.clone();
+                        let mut world = worldforge_core::world::World::new(
+                            ws,
+                            provider,
+                            Arc::clone(&state.registry),
+                        );
+                        match world.remove_object(&object_id) {
+                            Ok(object) => match state.store.save(world.current_state()).await {
+                                Ok(()) => (200, ApiResponse::ok(object)),
+                                Err(error) => (500, error_response(&error.to_string())),
+                            },
+                            Err(error) => {
+                                (api_error_status(&error), error_response(&error.to_string()))
+                            }
+                        }
+                    }
+                    Err(error) => (404, error_response(&error.to_string())),
+                },
+                (Err(_), _) => (400, error_response("invalid world ID")),
+                (_, Err(_)) => (400, error_response("invalid object ID")),
+            }
+        }
+
         // GET /v1/worlds/{id}
         ("GET", p)
             if p.starts_with("/v1/worlds/")
                 && !p.contains("/predict")
                 && !p.contains("/plan")
+                && !p.contains("/objects")
                 && !p.contains("/evaluate")
                 && !p.contains("/verify") =>
         {
@@ -1323,6 +1501,106 @@ mod tests {
         let id = uuid::Uuid::new_v4();
         let (status, _) = route("DELETE", &format!("/v1/worlds/{id}"), "", &state).await;
         assert_eq!(status, 404);
+    }
+
+    #[tokio::test]
+    async fn test_route_add_and_list_objects() {
+        let state = test_state();
+        let body = r#"{"name":"object-world","provider":"mock"}"#;
+        let (status, resp) = route("POST", "/v1/worlds", body, &state).await;
+        assert_eq!(status, 201);
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let id = value["data"]["id"].as_str().unwrap();
+
+        let object_body = serde_json::json!({
+            "name": "crate",
+            "position": { "x": 0.0, "y": 1.0, "z": 2.0 },
+            "bbox": {
+                "min": { "x": -0.5, "y": -0.5, "z": -0.5 },
+                "max": { "x": 0.5, "y": 0.5, "z": 0.5 }
+            },
+            "velocity": { "x": 0.1, "y": 0.0, "z": 0.0 },
+            "semantic_label": "storage",
+            "mass": 5.0,
+            "is_static": true,
+            "is_graspable": true,
+            "material": "wood"
+        })
+        .to_string();
+
+        let (status, resp) = route(
+            "POST",
+            &format!("/v1/worlds/{id}/objects"),
+            &object_body,
+            &state,
+        )
+        .await;
+        assert_eq!(status, 201);
+        let created: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(created["data"]["name"], "crate");
+
+        let (status, resp) = route("GET", &format!("/v1/worlds/{id}/objects"), "", &state).await;
+        assert_eq!(status, 200);
+        let listed: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let objects = listed["data"].as_array().unwrap();
+        assert_eq!(objects.len(), 1);
+        assert_eq!(objects[0]["semantic_label"], "storage");
+    }
+
+    #[tokio::test]
+    async fn test_route_get_and_delete_object() {
+        let state = test_state();
+        let body = r#"{"name":"object-world","provider":"mock"}"#;
+        let (status, resp) = route("POST", "/v1/worlds", body, &state).await;
+        assert_eq!(status, 201);
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let id = value["data"]["id"].as_str().unwrap();
+
+        let object_body = serde_json::json!({
+            "name": "crate",
+            "position": { "x": 0.0, "y": 1.0, "z": 2.0 },
+            "bbox": {
+                "min": { "x": -0.5, "y": -0.5, "z": -0.5 },
+                "max": { "x": 0.5, "y": 0.5, "z": 0.5 }
+            }
+        })
+        .to_string();
+
+        let (status, resp) = route(
+            "POST",
+            &format!("/v1/worlds/{id}/objects"),
+            &object_body,
+            &state,
+        )
+        .await;
+        assert_eq!(status, 201);
+        let created: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let object_id = created["data"]["id"].as_str().unwrap();
+
+        let (status, resp) = route(
+            "GET",
+            &format!("/v1/worlds/{id}/objects/{object_id}"),
+            "",
+            &state,
+        )
+        .await;
+        assert_eq!(status, 200);
+        let shown: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(shown["data"]["id"], object_id);
+
+        let (status, _) = route(
+            "DELETE",
+            &format!("/v1/worlds/{id}/objects/{object_id}"),
+            "",
+            &state,
+        )
+        .await;
+        assert_eq!(status, 200);
+
+        let (status, resp) = route("GET", &format!("/v1/worlds/{id}/objects"), "", &state).await;
+        assert_eq!(status, 200);
+        let listed: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert!(listed["data"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test]

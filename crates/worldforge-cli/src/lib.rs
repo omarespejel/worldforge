@@ -19,8 +19,9 @@ use worldforge_core::provider::{
     GenerationConfig, GenerationPrompt, Operation, ProviderDescriptor, ProviderRegistry,
     SpatialControls, TransferConfig, WorldModelProvider,
 };
+use worldforge_core::scene::{PhysicsProperties, SceneObject};
 use worldforge_core::state::{DynStateStore, StateStore, StateStoreKind, WorldState};
-use worldforge_core::types::{Position, VideoClip};
+use worldforge_core::types::{BBox, Pose, Position, Rotation, Velocity, VideoClip};
 use worldforge_eval::EvalSuite;
 use worldforge_verify::{
     prove_guardrail_plan, prove_inference_transition, prove_latest_inference, prove_provenance,
@@ -208,6 +209,12 @@ pub enum Commands {
         world: String,
     },
 
+    /// Manage scene objects in a persisted world.
+    Objects {
+        #[command(subcommand)]
+        command: ObjectCommands,
+    },
+
     /// List registered providers and their capabilities.
     Providers {
         /// Optional capability filter (for example: predict, generate, planning, depth).
@@ -386,6 +393,89 @@ pub enum Commands {
     },
 }
 
+/// Object-management subcommands for persisted worlds.
+#[derive(Subcommand)]
+pub enum ObjectCommands {
+    /// Add a new object to a world scene.
+    Add {
+        /// World ID.
+        #[arg(long)]
+        world: String,
+        /// Human-readable object name.
+        #[arg(long)]
+        name: String,
+        /// Object position as `x y z`.
+        #[arg(long, num_args = 3, allow_hyphen_values = true)]
+        position: Vec<f32>,
+        /// Bounding-box minimum as `x y z`.
+        #[arg(long = "bbox-min", num_args = 3, allow_hyphen_values = true)]
+        bbox_min: Vec<f32>,
+        /// Bounding-box maximum as `x y z`.
+        #[arg(long = "bbox-max", num_args = 3, allow_hyphen_values = true)]
+        bbox_max: Vec<f32>,
+        /// Optional velocity as `x y z`.
+        #[arg(long, num_args = 3, allow_hyphen_values = true)]
+        velocity: Option<Vec<f32>>,
+        /// Optional semantic label.
+        #[arg(long)]
+        semantic_label: Option<String>,
+        /// Optional mass in kilograms.
+        #[arg(long)]
+        mass: Option<f32>,
+        /// Optional friction coefficient.
+        #[arg(long)]
+        friction: Option<f32>,
+        /// Optional restitution coefficient.
+        #[arg(long)]
+        restitution: Option<f32>,
+        /// Optional material name.
+        #[arg(long)]
+        material: Option<String>,
+        /// Mark the object as immovable.
+        #[arg(long = "static", default_value_t = false, action = clap::ArgAction::SetTrue)]
+        is_static: bool,
+        /// Mark the object as graspable.
+        #[arg(long, default_value_t = false, action = clap::ArgAction::SetTrue)]
+        graspable: bool,
+        /// Optional path to write the created object as JSON.
+        #[arg(long)]
+        output_json: Option<PathBuf>,
+    },
+
+    /// List all objects in a world scene.
+    List {
+        /// World ID.
+        #[arg(long)]
+        world: String,
+        /// Optional path to write the object list as JSON.
+        #[arg(long)]
+        output_json: Option<PathBuf>,
+    },
+
+    /// Show one object in a world scene.
+    Show {
+        /// World ID.
+        #[arg(long)]
+        world: String,
+        /// Object ID.
+        #[arg(long)]
+        object_id: String,
+        /// Optional path to write the object as JSON.
+        #[arg(long)]
+        output_json: Option<PathBuf>,
+    },
+
+    /// Remove an object from a world scene.
+    Remove {
+        /// World ID.
+        #[arg(long)]
+        world: String,
+        /// Object ID.
+        #[arg(long)]
+        object_id: String,
+    },
+}
+
 /// Run the CLI application.
 pub async fn run() -> Result<()> {
     let cli = Cli::parse();
@@ -508,6 +598,73 @@ pub async fn run() -> Result<()> {
         Commands::List => cmd_list(store.as_ref()).await,
         Commands::Show { world } => cmd_show(store.as_ref(), &world).await,
         Commands::Delete { world } => cmd_delete(store.as_ref(), &world).await,
+        Commands::Objects { command } => match command {
+            ObjectCommands::Add {
+                world,
+                name,
+                position,
+                bbox_min,
+                bbox_max,
+                velocity,
+                semantic_label,
+                mass,
+                friction,
+                restitution,
+                material,
+                is_static,
+                graspable,
+                output_json,
+            } => {
+                cmd_objects_add(
+                    store.as_ref(),
+                    &world,
+                    &name,
+                    ObjectAddOptions {
+                        position: &position,
+                        bbox_min: &bbox_min,
+                        bbox_max: &bbox_max,
+                        velocity: velocity.as_deref(),
+                        semantic_label: semantic_label.as_deref(),
+                        mass,
+                        friction,
+                        restitution,
+                        material: material.as_deref(),
+                        is_static,
+                        graspable,
+                        output_json: output_json.as_deref(),
+                    },
+                )
+                .await
+            }
+            ObjectCommands::List { world, output_json } => {
+                cmd_objects_list(
+                    store.as_ref(),
+                    &world,
+                    ObjectOutputOptions {
+                        output_json: output_json.as_deref(),
+                    },
+                )
+                .await
+            }
+            ObjectCommands::Show {
+                world,
+                object_id,
+                output_json,
+            } => {
+                cmd_objects_show(
+                    store.as_ref(),
+                    &world,
+                    &object_id,
+                    ObjectOutputOptions {
+                        output_json: output_json.as_deref(),
+                    },
+                )
+                .await
+            }
+            ObjectCommands::Remove { world, object_id } => {
+                cmd_objects_remove(store.as_ref(), &world, &object_id).await
+            }
+        },
         Commands::Providers { .. } => {
             unreachable!("providers command handled before store initialization")
         }
@@ -701,6 +858,91 @@ fn resolve_provider_name<'a>(state: &'a WorldState, provider: Option<&'a str>) -
         .unwrap_or(state.metadata.created_by.as_str())
 }
 
+fn scene_edit_world(state: WorldState) -> worldforge_core::world::World {
+    let provider = state.metadata.created_by.clone();
+    worldforge_core::world::World::new(state, provider, Arc::new(ProviderRegistry::new()))
+}
+
+fn parse_position_triplet(values: &[f32], label: &str) -> Result<Position> {
+    match values {
+        [x, y, z] => Ok(Position {
+            x: *x,
+            y: *y,
+            z: *z,
+        }),
+        _ => anyhow::bail!("{label} requires exactly 3 values"),
+    }
+}
+
+fn build_scene_object(name: &str, options: &ObjectAddOptions<'_>) -> Result<SceneObject> {
+    let position = parse_position_triplet(options.position, "--position")?;
+    let bbox_min = parse_position_triplet(options.bbox_min, "--bbox-min")?;
+    let bbox_max = parse_position_triplet(options.bbox_max, "--bbox-max")?;
+    let mut object = SceneObject::new(
+        name,
+        Pose {
+            position,
+            rotation: Rotation::default(),
+        },
+        BBox {
+            min: bbox_min,
+            max: bbox_max,
+        },
+    );
+    if let Some(velocity) = options.velocity {
+        let velocity = parse_position_triplet(velocity, "--velocity")?;
+        object.velocity = Velocity {
+            x: velocity.x,
+            y: velocity.y,
+            z: velocity.z,
+        };
+    }
+    object.semantic_label = options.semantic_label.map(ToOwned::to_owned);
+    object.physics = PhysicsProperties {
+        mass: options.mass,
+        friction: options.friction,
+        restitution: options.restitution,
+        is_static: options.is_static,
+        is_graspable: options.graspable,
+        material: options.material.map(ToOwned::to_owned),
+    };
+    Ok(object)
+}
+
+fn print_scene_object(object: &SceneObject) {
+    println!("  ID: {}", object.id);
+    println!("  Name: {}", object.name);
+    println!(
+        "  Position: {:.2}, {:.2}, {:.2}",
+        object.pose.position.x, object.pose.position.y, object.pose.position.z
+    );
+    println!(
+        "  BBox: min=({:.2}, {:.2}, {:.2}) max=({:.2}, {:.2}, {:.2})",
+        object.bbox.min.x,
+        object.bbox.min.y,
+        object.bbox.min.z,
+        object.bbox.max.x,
+        object.bbox.max.y,
+        object.bbox.max.z
+    );
+    println!(
+        "  Velocity: {:.2}, {:.2}, {:.2}",
+        object.velocity.x, object.velocity.y, object.velocity.z
+    );
+    if let Some(label) = &object.semantic_label {
+        println!("  Semantic label: {label}");
+    }
+    println!(
+        "  Physics: static={} graspable={} mass={:?} friction={:?} restitution={:?} material={:?}",
+        object.physics.is_static,
+        object.physics.is_graspable,
+        object.physics.mass,
+        object.physics.friction,
+        object.physics.restitution,
+        object.physics.material
+    );
+}
+
 struct GenerateOptions<'a> {
     negative_prompt: Option<&'a str>,
     duration_seconds: f64,
@@ -708,6 +950,25 @@ struct GenerateOptions<'a> {
     fps: f32,
     temperature: f32,
     seed: Option<u64>,
+    output_json: Option<&'a Path>,
+}
+
+struct ObjectAddOptions<'a> {
+    position: &'a [f32],
+    bbox_min: &'a [f32],
+    bbox_max: &'a [f32],
+    velocity: Option<&'a [f32]>,
+    semantic_label: Option<&'a str>,
+    mass: Option<f32>,
+    friction: Option<f32>,
+    restitution: Option<f32>,
+    material: Option<&'a str>,
+    is_static: bool,
+    graspable: bool,
+    output_json: Option<&'a Path>,
+}
+
+struct ObjectOutputOptions<'a> {
     output_json: Option<&'a Path>,
 }
 
@@ -1190,10 +1451,10 @@ async fn cmd_show(store: &(impl StateStore + ?Sized), world_id: &str) -> Result<
     println!("  Time step: {}", state.time.step);
     println!("  Time (seconds): {:.2}", state.time.seconds);
     println!("  Objects: {}", state.scene.objects.len());
-    for obj in state.scene.objects.values() {
+    for obj in state.scene.list_objects() {
         println!(
-            "    - {} (pos: {:.1}, {:.1}, {:.1})",
-            obj.name, obj.pose.position.x, obj.pose.position.y, obj.pose.position.z
+            "    - {} [{}] (pos: {:.1}, {:.1}, {:.1})",
+            obj.name, obj.id, obj.pose.position.x, obj.pose.position.y, obj.pose.position.z
         );
     }
     println!("  History entries: {}", state.history.len());
@@ -1207,6 +1468,115 @@ async fn cmd_delete(store: &(impl StateStore + ?Sized), world_id: &str) -> Resul
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     println!("Deleted world: {id}");
+    Ok(())
+}
+
+async fn cmd_objects_add(
+    store: &(impl StateStore + ?Sized),
+    world_id: &str,
+    name: &str,
+    options: ObjectAddOptions<'_>,
+) -> Result<()> {
+    let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
+    let state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let mut world = scene_edit_world(state);
+    let object = build_scene_object(name, &options)?;
+
+    world
+        .add_object(object.clone())
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    store
+        .save(world.current_state())
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    println!("Added object to world: {world_id}");
+    print_scene_object(&object);
+    if let Some(path) = options.output_json {
+        write_json_file(path, &object)?;
+        println!("  Output JSON: {}", path.display());
+    }
+    Ok(())
+}
+
+async fn cmd_objects_list(
+    store: &(impl StateStore + ?Sized),
+    world_id: &str,
+    options: ObjectOutputOptions<'_>,
+) -> Result<()> {
+    let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
+    let state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let world = scene_edit_world(state);
+    let objects = world.list_objects();
+
+    if objects.is_empty() {
+        println!("No objects found.");
+    } else {
+        println!("Objects in world {world_id}:");
+        for object in &objects {
+            println!(
+                "  {} — {} ({:.2}, {:.2}, {:.2})",
+                object.id,
+                object.name,
+                object.pose.position.x,
+                object.pose.position.y,
+                object.pose.position.z
+            );
+        }
+    }
+
+    if let Some(path) = options.output_json {
+        write_json_file(path, &objects)?;
+        println!("Saved object list: {}", path.display());
+    }
+
+    Ok(())
+}
+
+async fn cmd_objects_show(
+    store: &(impl StateStore + ?Sized),
+    world_id: &str,
+    object_id: &str,
+    options: ObjectOutputOptions<'_>,
+) -> Result<()> {
+    let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
+    let object_id: uuid::Uuid = object_id.parse().context("invalid object ID")?;
+    let state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let world = scene_edit_world(state);
+    let object = world
+        .get_object(&object_id)
+        .cloned()
+        .context("object not found")?;
+
+    println!("Object in world {world_id}:");
+    print_scene_object(&object);
+    if let Some(path) = options.output_json {
+        write_json_file(path, &object)?;
+        println!("Saved object JSON: {}", path.display());
+    }
+    Ok(())
+}
+
+async fn cmd_objects_remove(
+    store: &(impl StateStore + ?Sized),
+    world_id: &str,
+    object_id: &str,
+) -> Result<()> {
+    let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
+    let object_id: uuid::Uuid = object_id.parse().context("invalid object ID")?;
+    let state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let mut world = scene_edit_world(state);
+    let object = world
+        .remove_object(&object_id)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    store
+        .save(world.current_state())
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    println!("Removed object from world: {world_id}");
+    print_scene_object(&object);
     Ok(())
 }
 
@@ -2098,6 +2468,73 @@ mod tests {
     }
 
     #[test]
+    fn test_cli_parse_objects_add_command() {
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "objects",
+            "add",
+            "--world",
+            "123e4567-e89b-12d3-a456-426614174000",
+            "--name",
+            "crate",
+            "--position",
+            "0.0",
+            "1.0",
+            "2.0",
+            "--bbox-min",
+            "-0.5",
+            "-0.5",
+            "-0.5",
+            "--bbox-max",
+            "0.5",
+            "0.5",
+            "0.5",
+            "--velocity",
+            "0.1",
+            "0.0",
+            "0.0",
+            "--semantic-label",
+            "storage",
+            "--static",
+            "--graspable",
+            "--output-json",
+            "/tmp/object.json",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Objects { command } => match command {
+                ObjectCommands::Add {
+                    world,
+                    name,
+                    position,
+                    bbox_min,
+                    bbox_max,
+                    velocity,
+                    semantic_label,
+                    is_static,
+                    graspable,
+                    output_json,
+                    ..
+                } => {
+                    assert_eq!(world, "123e4567-e89b-12d3-a456-426614174000");
+                    assert_eq!(name, "crate");
+                    assert_eq!(position, vec![0.0, 1.0, 2.0]);
+                    assert_eq!(bbox_min, vec![-0.5, -0.5, -0.5]);
+                    assert_eq!(bbox_max, vec![0.5, 0.5, 0.5]);
+                    assert_eq!(velocity, Some(vec![0.1, 0.0, 0.0]));
+                    assert_eq!(semantic_label.as_deref(), Some("storage"));
+                    assert!(is_static);
+                    assert!(graspable);
+                    assert_eq!(output_json, Some(PathBuf::from("/tmp/object.json")));
+                }
+                _ => panic!("expected Objects::Add"),
+            },
+            _ => panic!("expected Objects command"),
+        }
+    }
+
+    #[test]
     fn test_cli_parse_eval_with_custom_suite_and_output() {
         let cli = Cli::try_parse_from([
             "worldforge",
@@ -2413,6 +2850,84 @@ mod tests {
 
         let plan: worldforge_core::prediction::Plan = read_json_file(&plan_path).unwrap();
         assert!(!plan.actions.is_empty());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn test_cmd_objects_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("wf-cli-objects-{}", uuid::Uuid::new_v4()));
+        let store = StateStoreKind::File(dir.join("state"))
+            .open()
+            .await
+            .unwrap();
+        let state = WorldState::new("objects", "mock");
+        let world_id = state.id.to_string();
+        store.save(&state).await.unwrap();
+
+        let created_path = dir.join("created.json");
+        let list_path = dir.join("objects.json");
+        let shown_path = dir.join("shown.json");
+
+        cmd_objects_add(
+            store.as_ref(),
+            &world_id,
+            "crate",
+            ObjectAddOptions {
+                position: &[0.0, 1.0, 2.0],
+                bbox_min: &[-0.5, -0.5, -0.5],
+                bbox_max: &[0.5, 0.5, 0.5],
+                velocity: Some(&[0.1, 0.0, 0.0]),
+                semantic_label: Some("storage"),
+                mass: Some(5.0),
+                friction: Some(0.3),
+                restitution: Some(0.1),
+                material: Some("wood"),
+                is_static: true,
+                graspable: true,
+                output_json: Some(&created_path),
+            },
+        )
+        .await
+        .unwrap();
+
+        let created: SceneObject = read_json_file(&created_path).unwrap();
+        assert_eq!(created.name, "crate");
+        assert_eq!(created.semantic_label.as_deref(), Some("storage"));
+        assert!(created.physics.is_static);
+
+        cmd_objects_list(
+            store.as_ref(),
+            &world_id,
+            ObjectOutputOptions {
+                output_json: Some(&list_path),
+            },
+        )
+        .await
+        .unwrap();
+        let listed: Vec<SceneObject> = read_json_file(&list_path).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, created.id);
+
+        cmd_objects_show(
+            store.as_ref(),
+            &world_id,
+            &created.id.to_string(),
+            ObjectOutputOptions {
+                output_json: Some(&shown_path),
+            },
+        )
+        .await
+        .unwrap();
+        let shown: SceneObject = read_json_file(&shown_path).unwrap();
+        assert_eq!(shown.id, created.id);
+
+        cmd_objects_remove(store.as_ref(), &world_id, &created.id.to_string())
+            .await
+            .unwrap();
+
+        let updated = store.load(&state.id).await.unwrap();
+        assert!(updated.scene.objects.is_empty());
 
         let _ = fs::remove_dir_all(dir);
     }
