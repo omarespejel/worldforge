@@ -11,7 +11,7 @@ use std::sync::Arc;
 use pyo3::prelude::*;
 
 use worldforge_core::guardrail::GuardrailConfig;
-use worldforge_core::prediction::{PlannerType, PredictionConfig};
+use worldforge_core::prediction::{MultiPrediction, PlannerType, PredictionConfig, ProviderScore};
 use worldforge_core::provider::{
     CostEstimate, GenerationConfig, GenerationPrompt, Operation, ProviderCapabilities,
     ProviderDescriptor, SpatialControls, TransferConfig,
@@ -656,6 +656,44 @@ impl PyWorld {
         Ok(PyPrediction { inner: prediction })
     }
 
+    /// Compare predictions from multiple providers without mutating the world state.
+    #[pyo3(signature = (action, providers, steps=1, return_video=false, max_latency_ms=None))]
+    fn compare(
+        &self,
+        action: &PyAction,
+        providers: Vec<String>,
+        steps: u32,
+        return_video: bool,
+        max_latency_ms: Option<u64>,
+    ) -> PyResult<PyMultiPrediction> {
+        if providers.is_empty() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "providers cannot be empty",
+            ));
+        }
+
+        let rt = new_runtime()?;
+        let world = worldforge_core::world::World::new(
+            self.state.clone(),
+            resolve_provider_name(&self.state, None),
+            auto_detect_registry(),
+        );
+        let config = PredictionConfig {
+            steps,
+            return_video,
+            max_latency_ms,
+            ..PredictionConfig::default()
+        };
+        let provider_refs: Vec<&str> = providers.iter().map(String::as_str).collect();
+        let comparison = rt
+            .block_on(world.predict_multi(&action.inner, &provider_refs, &config))
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("comparison failed: {e}"))
+            })?;
+
+        Ok(PyMultiPrediction { inner: comparison })
+    }
+
     /// Plan a sequence of actions to achieve a natural-language goal.
     #[pyo3(signature = (goal, max_steps=10, timeout_seconds=30.0, provider=None, planner="sampling", num_samples=None, top_k=None, population_size=None, elite_fraction=None, num_iterations=None, learning_rate=None, horizon=None, replanning_interval=None, guardrails_json=None))]
     #[allow(clippy::too_many_arguments)]
@@ -809,6 +847,142 @@ impl PyPrediction {
         format!(
             "Prediction(provider='{}', confidence={:.2}, physics_score={:.2})",
             self.inner.provider, self.inner.confidence, self.inner.physics_scores.overall
+        )
+    }
+}
+
+/// Provider-specific score summary within a multi-provider comparison.
+#[pyclass(name = "ProviderScore")]
+#[derive(Debug, Clone)]
+pub struct PyProviderScore {
+    inner: ProviderScore,
+}
+
+#[pymethods]
+impl PyProviderScore {
+    /// Provider name.
+    #[getter]
+    fn provider(&self) -> &str {
+        &self.inner.provider
+    }
+
+    /// Overall physics plausibility score.
+    #[getter]
+    fn physics_score(&self) -> f32 {
+        self.inner.physics_scores.overall
+    }
+
+    /// Provider latency in milliseconds.
+    #[getter]
+    fn latency_ms(&self) -> u64 {
+        self.inner.latency_ms
+    }
+
+    /// Provider cost estimate.
+    fn cost(&self) -> PyCostEstimate {
+        PyCostEstimate {
+            inner: self.inner.cost.clone(),
+        }
+    }
+
+    /// Serialize the score summary to JSON.
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ProviderScore(provider='{}', physics_score={:.2}, latency_ms={})",
+            self.inner.provider, self.inner.physics_scores.overall, self.inner.latency_ms
+        )
+    }
+}
+
+/// Result of comparing predictions across providers.
+#[pyclass(name = "MultiPrediction")]
+#[derive(Debug, Clone)]
+pub struct PyMultiPrediction {
+    inner: MultiPrediction,
+}
+
+#[pymethods]
+impl PyMultiPrediction {
+    /// Number of provider predictions included in the comparison.
+    #[getter]
+    fn prediction_count(&self) -> usize {
+        self.inner.predictions.len()
+    }
+
+    /// Agreement score across providers.
+    #[getter]
+    fn agreement_score(&self) -> f32 {
+        self.inner.agreement_score
+    }
+
+    /// Index of the best prediction within the comparison.
+    #[getter]
+    fn best_prediction_index(&self) -> usize {
+        self.inner.best_prediction
+    }
+
+    /// Human-readable comparison summary.
+    #[getter]
+    fn summary(&self) -> &str {
+        &self.inner.comparison.summary
+    }
+
+    /// Individual predictions returned by each provider.
+    fn predictions(&self) -> Vec<PyPrediction> {
+        self.inner
+            .predictions
+            .iter()
+            .cloned()
+            .map(|inner| PyPrediction { inner })
+            .collect()
+    }
+
+    /// Provider-level score summaries for the comparison.
+    fn provider_scores(&self) -> Vec<PyProviderScore> {
+        self.inner
+            .comparison
+            .scores
+            .iter()
+            .cloned()
+            .map(|inner| PyProviderScore { inner })
+            .collect()
+    }
+
+    /// The highest-quality prediction in the comparison.
+    fn best_prediction(&self) -> PyPrediction {
+        PyPrediction {
+            inner: self.inner.predictions[self.inner.best_prediction].clone(),
+        }
+    }
+
+    /// Serialize the comparison to JSON.
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    }
+
+    /// Deserialize a comparison from JSON.
+    #[staticmethod]
+    fn from_json(json: &str) -> PyResult<Self> {
+        let inner: MultiPrediction = serde_json::from_str(json).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("deserialization error: {e}"))
+        })?;
+        Ok(Self { inner })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "MultiPrediction(predictions={}, agreement_score={:.2}, best='{}')",
+            self.inner.predictions.len(),
+            self.inner.agreement_score,
+            self.inner.predictions[self.inner.best_prediction].provider
         )
     }
 }
@@ -1534,6 +1708,18 @@ impl PyWorldForge {
         Ok(PyVideoClip { inner: clip })
     }
 
+    /// Compare previously generated predictions.
+    fn compare(&self, predictions: Vec<PyPrediction>) -> PyResult<PyMultiPrediction> {
+        let raw_predictions: Vec<_> = predictions
+            .into_iter()
+            .map(|prediction| prediction.inner)
+            .collect();
+        let comparison = MultiPrediction::try_from_predictions(raw_predictions).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("comparison failed: {e}"))
+        })?;
+        Ok(PyMultiPrediction { inner: comparison })
+    }
+
     fn __repr__(&self) -> String {
         format!("WorldForge(providers={:?})", self.inner.providers())
     }
@@ -2005,6 +2191,8 @@ fn worldforge(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySceneObject>()?;
     m.add_class::<PyWorld>()?;
     m.add_class::<PyPrediction>()?;
+    m.add_class::<PyProviderScore>()?;
+    m.add_class::<PyMultiPrediction>()?;
     m.add_class::<PyVideoClip>()?;
     m.add_class::<PyReasoningOutput>()?;
     m.add_class::<PyAction>()?;
@@ -2214,6 +2402,39 @@ mod tests {
     }
 
     #[test]
+    fn test_world_compare_returns_multi_prediction() {
+        let world = PyWorld::new("compare_world", "mock");
+        let comparison = world
+            .compare(
+                &PyAction::move_to(1.0, 0.0, 0.0, 1.0),
+                vec!["mock".to_string(), "mock".to_string()],
+                1,
+                false,
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(comparison.prediction_count(), 2);
+        assert_eq!(comparison.best_prediction().provider(), "mock");
+        assert!(comparison.summary().contains("Compared 2 providers"));
+        assert_eq!(comparison.provider_scores().len(), 2);
+    }
+
+    #[test]
+    fn test_world_compare_rejects_empty_provider_list() {
+        let world = PyWorld::new("compare_world", "mock");
+        let result = world.compare(
+            &PyAction::move_to(0.0, 0.0, 0.0, 1.0),
+            Vec::new(),
+            1,
+            false,
+            None,
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn test_world_reason() {
         let world = PyWorld::new("reason_world", "mock");
         let output = world.reason("will it fall?", None).unwrap();
@@ -2385,6 +2606,57 @@ mod tests {
         let wf = test_worldforge();
         let repr = wf.__repr__();
         assert!(repr.contains("WorldForge"));
+    }
+
+    #[test]
+    fn test_worldforge_compare_predictions() {
+        let wf = test_worldforge();
+        let mut world_a = wf.create_world("compare-a", "mock").unwrap();
+        let mut world_b = wf.create_world("compare-b", "mock").unwrap();
+        let action = PyAction::move_to(1.0, 0.0, 0.0, 1.0);
+        let prediction_a = world_a
+            .predict(&action, 1, None, None, false, None)
+            .unwrap();
+        let prediction_b = world_b
+            .predict(&action, 1, None, None, false, None)
+            .unwrap();
+
+        let comparison = wf.compare(vec![prediction_a, prediction_b]).unwrap();
+
+        assert_eq!(comparison.prediction_count(), 2);
+        assert!(comparison.best_prediction_index() < comparison.prediction_count());
+        assert_eq!(comparison.best_prediction().provider(), "mock");
+        assert_eq!(comparison.provider_scores()[0].provider(), "mock");
+    }
+
+    #[test]
+    fn test_multi_prediction_json_roundtrip() {
+        let wf = test_worldforge();
+        let mut world_a = wf.create_world("compare-a", "mock").unwrap();
+        let mut world_b = wf.create_world("compare-b", "mock").unwrap();
+        let action = PyAction::move_to(1.0, 0.0, 0.0, 1.0);
+        let prediction_a = world_a
+            .predict(&action, 1, None, None, false, None)
+            .unwrap();
+        let prediction_b = world_b
+            .predict(&action, 1, None, None, false, None)
+            .unwrap();
+        let comparison = wf.compare(vec![prediction_a, prediction_b]).unwrap();
+
+        let json = comparison.to_json().unwrap();
+        let restored = PyMultiPrediction::from_json(&json).unwrap();
+
+        assert_eq!(restored.prediction_count(), 2);
+        assert_eq!(restored.best_prediction().provider(), "mock");
+        assert!(restored.__repr__().contains("MultiPrediction"));
+    }
+
+    #[test]
+    fn test_worldforge_compare_rejects_empty_predictions() {
+        let wf = test_worldforge();
+        let result = wf.compare(Vec::new());
+
+        assert!(result.is_err());
     }
 
     #[test]

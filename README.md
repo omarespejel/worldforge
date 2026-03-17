@@ -39,38 +39,45 @@ A `Guardrail` is a safety constraint. Define forbidden states, energy thresholds
 ## Quick Example
 
 ```python
-from worldforge import WorldForge, World, Action
-from worldforge.providers import CosmosProvider, RunwayProvider
+from worldforge import Action, BBox, Position, SceneObject, WorldForge
 
-# Initialize with any provider
-wf = WorldForge(provider=CosmosProvider(model="cosmos-predict-2.5"))
+# Initialize with auto-detected providers
+wf = WorldForge()
 
-# Create a world from a text description
-world = wf.create_world("A kitchen counter with a red mug and a plate")
-
-# Predict what happens if we push the mug
-prediction = world.predict(
-    action=Action.push(target="red_mug", direction="left", force=0.5),
-    steps=10
+# Create a world and seed it with a scene object
+world = wf.create_world("kitchen-counter", provider="mock")
+world.add_object(
+    SceneObject(
+        "red_mug",
+        Position(0.0, 0.8, 0.0),
+        BBox(Position(-0.05, 0.75, -0.05), Position(0.05, 0.85, 0.05)),
+    )
 )
 
+# Predict the next state
+prediction = world.predict(Action.move_to(0.25, 0.8, 0.0), steps=10)
+
 # Check physics plausibility
-score = prediction.physics_score()  # 0.0 - 1.0
+score = prediction.physics_score  # 0.0 - 1.0
 
 # Plan a sequence of actions to achieve a goal
 plan = world.plan(
-    goal="The red mug is inside the dishwasher",
-    max_steps=20,
+    goal="spawn cube next to the red mug",
+    max_steps=8,
     planner="cem",
-    guardrails=["no_collisions", "mug_stays_upright"]
 )
 
-# Switch providers seamlessly
-world.set_provider(RunwayProvider(model="gwm-1-robotics"))
-prediction_2 = world.predict(action=plan.actions[0])
+# Compare provider outputs for the same action
+comparison = world.compare(
+    Action.move_to(0.5, 0.8, 0.0),
+    providers=["mock", "runway"],
+    steps=4,
+)
+best = comparison.best_prediction()
 
-# Compare predictions across providers
-comparison = wf.compare([prediction, prediction_2])
+# Or compare previously captured predictions directly
+prediction_2 = world.predict(Action.move_to(0.5, 0.8, 0.0), provider="runway")
+comparison_from_predictions = wf.compare([prediction, prediction_2])
 
 # Transfer camera controls onto a generated clip
 clip = wf.generate("A robot arm reaching across a workbench", provider="mock")

@@ -11,8 +11,7 @@ use crate::action::{Action, Condition, Weather};
 use crate::error::{Result, WorldForgeError};
 use crate::guardrail::{evaluate_guardrails, has_blocking_violation};
 use crate::prediction::{
-    ComparisonReport, MultiPrediction, Plan, PlanRequest, PlannerType, Prediction,
-    PredictionConfig, ProviderScore,
+    MultiPrediction, Plan, PlanRequest, PlannerType, Prediction, PredictionConfig,
 };
 use crate::provider::{
     GenerationConfig, GenerationPrompt, Operation, ProviderRegistry, ReasoningInput,
@@ -142,65 +141,7 @@ impl World {
                 "no predictions generated".to_string(),
             ));
         }
-
-        // Find best prediction by overall physics score
-        let best_idx = predictions
-            .iter()
-            .enumerate()
-            .max_by(|(_, a), (_, b)| {
-                a.physics_scores
-                    .overall
-                    .partial_cmp(&b.physics_scores.overall)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .map(|(i, _)| i)
-            .unwrap_or(0);
-
-        // Compute agreement score as average pairwise physics score similarity
-        let agreement = if predictions.len() > 1 {
-            let mut total = 0.0f32;
-            let mut count = 0;
-            for i in 0..predictions.len() {
-                for j in (i + 1)..predictions.len() {
-                    let diff = (predictions[i].physics_scores.overall
-                        - predictions[j].physics_scores.overall)
-                        .abs();
-                    total += 1.0 - diff;
-                    count += 1;
-                }
-            }
-            if count > 0 {
-                total / count as f32
-            } else {
-                1.0
-            }
-        } else {
-            1.0
-        };
-
-        let scores = predictions
-            .iter()
-            .map(|p| ProviderScore {
-                provider: p.provider.clone(),
-                physics_scores: p.physics_scores,
-                latency_ms: p.latency_ms,
-                cost: p.cost.clone(),
-            })
-            .collect();
-
-        Ok(MultiPrediction {
-            agreement_score: agreement,
-            best_prediction: best_idx,
-            comparison: ComparisonReport {
-                scores,
-                summary: format!(
-                    "Compared {} providers, best: {}",
-                    predictions.len(),
-                    predictions[best_idx].provider
-                ),
-            },
-            predictions,
-        })
+        MultiPrediction::try_from_predictions(predictions)
     }
 
     /// Generate a video clip with the world's default provider.

@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::action::Action;
+use crate::error::{Result, WorldForgeError};
 use crate::guardrail::GuardrailResult;
 use crate::provider::CostEstimate;
 use crate::state::WorldState;
@@ -120,6 +121,79 @@ pub struct ProviderScore {
     pub latency_ms: u64,
     /// Cost estimate.
     pub cost: CostEstimate,
+}
+
+impl MultiPrediction {
+    /// Build a comparison from a set of previously generated predictions.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WorldForgeError::InvalidState` if no predictions are supplied.
+    pub fn try_from_predictions(predictions: Vec<Prediction>) -> Result<Self> {
+        if predictions.is_empty() {
+            return Err(WorldForgeError::InvalidState(
+                "multi-provider comparison requires at least one prediction".to_string(),
+            ));
+        }
+
+        let best_prediction = predictions
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| {
+                a.physics_scores
+                    .overall
+                    .partial_cmp(&b.physics_scores.overall)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(index, _)| index)
+            .unwrap_or(0);
+        let agreement_score = compute_agreement_score(&predictions);
+        let summary = format!(
+            "Compared {} providers, best: {}",
+            predictions.len(),
+            predictions[best_prediction].provider
+        );
+        let scores = predictions
+            .iter()
+            .map(|prediction| ProviderScore {
+                provider: prediction.provider.clone(),
+                physics_scores: prediction.physics_scores,
+                latency_ms: prediction.latency_ms,
+                cost: prediction.cost.clone(),
+            })
+            .collect();
+
+        Ok(Self {
+            predictions,
+            agreement_score,
+            best_prediction,
+            comparison: ComparisonReport { scores, summary },
+        })
+    }
+}
+
+fn compute_agreement_score(predictions: &[Prediction]) -> f32 {
+    if predictions.len() <= 1 {
+        return 1.0;
+    }
+
+    let mut total = 0.0f32;
+    let mut count = 0usize;
+    for i in 0..predictions.len() {
+        for j in (i + 1)..predictions.len() {
+            let diff = (predictions[i].physics_scores.overall
+                - predictions[j].physics_scores.overall)
+                .abs();
+            total += 1.0 - diff;
+            count += 1;
+        }
+    }
+
+    if count == 0 {
+        1.0
+    } else {
+        total / count as f32
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -237,6 +311,40 @@ impl Default for PhysicsScores {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::WorldState;
+
+    fn sample_prediction(provider: &str, physics_score: f32, latency_ms: u64) -> Prediction {
+        let state = WorldState::new(format!("{provider}-state"), provider);
+        Prediction {
+            id: uuid::Uuid::new_v4(),
+            provider: provider.to_string(),
+            model: format!("{provider}-model"),
+            input_state: state.clone(),
+            action: Action::Move {
+                target: crate::types::Position::default(),
+                speed: 1.0,
+            },
+            output_state: state,
+            video: None,
+            confidence: physics_score,
+            physics_scores: PhysicsScores {
+                overall: physics_score,
+                object_permanence: physics_score,
+                gravity_compliance: physics_score,
+                collision_accuracy: physics_score,
+                spatial_consistency: physics_score,
+                temporal_consistency: physics_score,
+            },
+            latency_ms,
+            cost: CostEstimate {
+                usd: latency_ms as f64 / 1_000.0,
+                credits: 1.0,
+                estimated_latency_ms: latency_ms,
+            },
+            guardrail_results: Vec::new(),
+            timestamp: chrono::Utc::now(),
+        }
+    }
 
     #[test]
     fn test_prediction_config_default() {
@@ -288,6 +396,33 @@ mod tests {
             PlanGoal::Description(s) => assert_eq!(s, "stack the blocks"),
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn test_multi_prediction_try_from_predictions_picks_best_provider() {
+        let multi = MultiPrediction::try_from_predictions(vec![
+            sample_prediction("provider-a", 0.52, 90),
+            sample_prediction("provider-b", 0.81, 110),
+            sample_prediction("provider-c", 0.73, 70),
+        ])
+        .unwrap();
+
+        assert_eq!(multi.predictions.len(), 3);
+        assert_eq!(multi.best_prediction, 1);
+        assert_eq!(multi.comparison.scores.len(), 3);
+        assert_eq!(
+            multi.comparison.summary,
+            "Compared 3 providers, best: provider-b"
+        );
+        assert!(multi.agreement_score > 0.0);
+        assert!(multi.agreement_score <= 1.0);
+    }
+
+    #[test]
+    fn test_multi_prediction_try_from_predictions_rejects_empty_input() {
+        let error = MultiPrediction::try_from_predictions(Vec::new()).unwrap_err();
+
+        assert!(matches!(error, WorldForgeError::InvalidState(_)));
     }
 
     mod proptests {
