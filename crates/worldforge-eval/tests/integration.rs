@@ -17,6 +17,9 @@ async fn test_physics_suite_with_mock() {
     assert_eq!(report.suite, "Physics Standard");
     assert!(!report.results.is_empty());
     assert!(!report.leaderboard.is_empty());
+    assert_eq!(report.provider_summaries.len(), 1);
+    assert_eq!(report.dimension_summaries.len(), suite.dimensions.len());
+    assert_eq!(report.scenario_summaries.len(), suite.scenarios.len());
 
     let entry = &report.leaderboard[0];
     assert_eq!(entry.provider, "mock");
@@ -86,4 +89,8 @@ async fn test_eval_report_serialization() {
     // Should be deserializable
     let deserialized: worldforge_eval::EvalReport = serde_json::from_str(&json).unwrap();
     assert_eq!(deserialized.suite, report.suite);
+    assert_eq!(
+        deserialized.provider_summaries[0].provider,
+        report.provider_summaries[0].provider
+    );
 }

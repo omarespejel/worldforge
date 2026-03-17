@@ -258,8 +258,8 @@ comparison now reuses the same guardrail and fallback pipeline as single-provide
 prediction, with comparison config exposed in the CLI, REST server, and Python
 bindings. Evaluation now
 supports built-in suite discovery, JSON-defined custom suites, provider
-selection, and CLI report export across the CLI, REST server, and Python
-bindings. Provider discovery now exposes capability metadata across the CLI,
+selection, CLI report export, and aggregated provider/dimension/scenario
+rollups across the CLI, REST server, and Python bindings. Provider discovery now exposes capability metadata across the CLI,
 REST server, and Python bindings, and provider adapters' cost estimates are
 queryable end-to-end for predict, generate, reason, and transfer operations.
 

@@ -1865,6 +1865,18 @@ pub struct PyEvalResult {
     scenarios_passed: usize,
     /// Total scenarios.
     total_scenarios: usize,
+    /// Fraction of scenarios that fully passed.
+    scenario_pass_rate: f32,
+    /// Number of passed outcomes.
+    outcomes_passed: usize,
+    /// Total number of outcomes.
+    total_outcomes: usize,
+    /// Fraction of individual outcomes that passed.
+    outcome_pass_rate: f32,
+    /// Average score per dimension.
+    dimension_scores: std::collections::HashMap<String, f32>,
+    /// Scenario-level overall scores.
+    scenario_scores: std::collections::HashMap<String, f32>,
 }
 
 #[pymethods]
@@ -1894,11 +1906,236 @@ impl PyEvalResult {
         self.total_scenarios
     }
 
+    #[getter]
+    fn scenario_pass_rate(&self) -> f32 {
+        self.scenario_pass_rate
+    }
+
+    #[getter]
+    fn outcomes_passed(&self) -> usize {
+        self.outcomes_passed
+    }
+
+    #[getter]
+    fn total_outcomes(&self) -> usize {
+        self.total_outcomes
+    }
+
+    #[getter]
+    fn outcome_pass_rate(&self) -> f32 {
+        self.outcome_pass_rate
+    }
+
+    #[getter]
+    fn dimension_scores(&self) -> std::collections::HashMap<String, f32> {
+        self.dimension_scores.clone()
+    }
+
+    #[getter]
+    fn scenario_scores(&self) -> std::collections::HashMap<String, f32> {
+        self.scenario_scores.clone()
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "EvalResult(provider='{}', score={:.2}, passed={}/{})",
             self.provider, self.average_score, self.scenarios_passed, self.total_scenarios
         )
+    }
+}
+
+/// Aggregated dimension-level evaluation metrics.
+#[pyclass(name = "EvalDimensionSummary")]
+#[derive(Debug, Clone)]
+pub struct PyEvalDimensionSummary {
+    dimension: String,
+    provider_scores: std::collections::HashMap<String, f32>,
+    best_provider: Option<String>,
+    best_score: Option<f32>,
+}
+
+#[pymethods]
+impl PyEvalDimensionSummary {
+    #[getter]
+    fn dimension(&self) -> &str {
+        &self.dimension
+    }
+
+    #[getter]
+    fn provider_scores(&self) -> std::collections::HashMap<String, f32> {
+        self.provider_scores.clone()
+    }
+
+    #[getter]
+    fn best_provider(&self) -> Option<String> {
+        self.best_provider.clone()
+    }
+
+    #[getter]
+    fn best_score(&self) -> Option<f32> {
+        self.best_score
+    }
+}
+
+/// Aggregated scenario-level evaluation metrics.
+#[pyclass(name = "EvalScenarioSummary")]
+#[derive(Debug, Clone)]
+pub struct PyEvalScenarioSummary {
+    scenario: String,
+    description: String,
+    provider_scores: std::collections::HashMap<String, f32>,
+    passed_by: Vec<String>,
+    failed_by: Vec<String>,
+    best_provider: Option<String>,
+    best_score: Option<f32>,
+    outcomes_passed: usize,
+    total_outcomes: usize,
+}
+
+#[pymethods]
+impl PyEvalScenarioSummary {
+    #[getter]
+    fn scenario(&self) -> &str {
+        &self.scenario
+    }
+
+    #[getter]
+    fn description(&self) -> &str {
+        &self.description
+    }
+
+    #[getter]
+    fn provider_scores(&self) -> std::collections::HashMap<String, f32> {
+        self.provider_scores.clone()
+    }
+
+    #[getter]
+    fn passed_by(&self) -> Vec<String> {
+        self.passed_by.clone()
+    }
+
+    #[getter]
+    fn failed_by(&self) -> Vec<String> {
+        self.failed_by.clone()
+    }
+
+    #[getter]
+    fn best_provider(&self) -> Option<String> {
+        self.best_provider.clone()
+    }
+
+    #[getter]
+    fn best_score(&self) -> Option<f32> {
+        self.best_score
+    }
+
+    #[getter]
+    fn outcomes_passed(&self) -> usize {
+        self.outcomes_passed
+    }
+
+    #[getter]
+    fn total_outcomes(&self) -> usize {
+        self.total_outcomes
+    }
+}
+
+/// Full structured evaluation report.
+#[pyclass(name = "EvalReport")]
+#[derive(Debug, Clone)]
+pub struct PyEvalReport {
+    suite: String,
+    provider_summaries: Vec<PyEvalResult>,
+    dimension_summaries: Vec<PyEvalDimensionSummary>,
+    scenario_summaries: Vec<PyEvalScenarioSummary>,
+    outcomes_passed: usize,
+    total_outcomes: usize,
+}
+
+#[pymethods]
+impl PyEvalReport {
+    #[getter]
+    fn suite(&self) -> &str {
+        &self.suite
+    }
+
+    #[getter]
+    fn provider_summaries(&self) -> Vec<PyEvalResult> {
+        self.provider_summaries.clone()
+    }
+
+    #[getter]
+    fn dimension_summaries(&self) -> Vec<PyEvalDimensionSummary> {
+        self.dimension_summaries.clone()
+    }
+
+    #[getter]
+    fn scenario_summaries(&self) -> Vec<PyEvalScenarioSummary> {
+        self.scenario_summaries.clone()
+    }
+
+    #[getter]
+    fn outcomes_passed(&self) -> usize {
+        self.outcomes_passed
+    }
+
+    #[getter]
+    fn total_outcomes(&self) -> usize {
+        self.total_outcomes
+    }
+}
+
+fn to_py_eval_result(summary: &worldforge_eval::ProviderSummary) -> PyEvalResult {
+    PyEvalResult {
+        provider: summary.provider.clone(),
+        average_score: summary.average_score,
+        average_latency_ms: summary.average_latency_ms,
+        scenarios_passed: summary.scenarios_passed,
+        total_scenarios: summary.total_scenarios,
+        scenario_pass_rate: summary.scenario_pass_rate,
+        outcomes_passed: summary.outcomes_passed,
+        total_outcomes: summary.total_outcomes,
+        outcome_pass_rate: summary.outcome_pass_rate,
+        dimension_scores: summary.dimension_scores.clone(),
+        scenario_scores: summary.scenario_scores.clone(),
+    }
+}
+
+fn to_py_eval_report(report: worldforge_eval::EvalReport) -> PyEvalReport {
+    PyEvalReport {
+        suite: report.suite,
+        provider_summaries: report
+            .provider_summaries
+            .iter()
+            .map(to_py_eval_result)
+            .collect(),
+        dimension_summaries: report
+            .dimension_summaries
+            .into_iter()
+            .map(|summary| PyEvalDimensionSummary {
+                dimension: summary.dimension,
+                provider_scores: summary.provider_scores,
+                best_provider: summary.best_provider,
+                best_score: summary.best_score,
+            })
+            .collect(),
+        scenario_summaries: report
+            .scenario_summaries
+            .into_iter()
+            .map(|summary| PyEvalScenarioSummary {
+                scenario: summary.scenario,
+                description: summary.description,
+                provider_scores: summary.provider_scores,
+                passed_by: summary.passed_by,
+                failed_by: summary.failed_by,
+                best_provider: summary.best_provider,
+                best_score: summary.best_score,
+                outcomes_passed: summary.outcomes_passed,
+                total_outcomes: summary.total_outcomes,
+            })
+            .collect(),
+        outcomes_passed: report.outcomes_passed,
+        total_outcomes: report.total_outcomes,
     }
 }
 
@@ -1911,7 +2148,7 @@ fn list_eval_suites() -> Vec<String> {
         .collect()
 }
 
-/// Run an evaluation suite and return the leaderboard entries.
+/// Run an evaluation suite and return provider summaries.
 #[pyfunction]
 #[pyo3(signature = (suite_name="physics", providers="mock", suite_json=None))]
 fn run_eval(
@@ -1936,15 +2173,9 @@ fn run_eval(
     })?;
 
     Ok(report
-        .leaderboard
+        .provider_summaries
         .iter()
-        .map(|entry| PyEvalResult {
-            provider: entry.provider.clone(),
-            average_score: entry.average_score,
-            average_latency_ms: entry.average_latency_ms,
-            scenarios_passed: entry.scenarios_passed,
-            total_scenarios: entry.total_scenarios,
-        })
+        .map(to_py_eval_result)
         .collect())
 }
 
@@ -1977,6 +2208,33 @@ fn run_eval_report(
             "failed to serialize evaluation report: {e}"
         ))
     })
+}
+
+/// Run an evaluation suite and return the structured report object.
+#[pyfunction]
+#[pyo3(signature = (suite_name="physics", providers="mock", suite_json=None))]
+fn run_eval_report_data(
+    suite_name: &str,
+    providers: &str,
+    suite_json: Option<&str>,
+) -> PyResult<PyEvalReport> {
+    let suite = load_eval_suite(suite_name, suite_json)?;
+    let rt = new_runtime()?;
+    let registry = auto_detect_registry();
+    let provider_names = parse_provider_names(providers);
+    let mut provider_list: Vec<&dyn worldforge_core::provider::WorldModelProvider> = Vec::new();
+    for provider_name in &provider_names {
+        let provider = registry.get(provider_name).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("provider lookup failed: {e}"))
+        })?;
+        provider_list.push(provider);
+    }
+
+    let report = rt.block_on(suite.run(&provider_list)).map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("evaluation failed: {e}"))
+    })?;
+
+    Ok(to_py_eval_report(report))
 }
 
 // ---------------------------------------------------------------------------
@@ -2208,11 +2466,15 @@ fn worldforge(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyWorldForge>()?;
     m.add_class::<PyPlan>()?;
     m.add_class::<PyEvalResult>()?;
+    m.add_class::<PyEvalDimensionSummary>()?;
+    m.add_class::<PyEvalScenarioSummary>()?;
+    m.add_class::<PyEvalReport>()?;
     m.add_class::<PyZkProof>()?;
     m.add_function(wrap_pyfunction!(plan, m)?)?;
     m.add_function(wrap_pyfunction!(list_eval_suites, m)?)?;
     m.add_function(wrap_pyfunction!(run_eval, m)?)?;
     m.add_function(wrap_pyfunction!(run_eval_report, m)?)?;
+    m.add_function(wrap_pyfunction!(run_eval_report_data, m)?)?;
     m.add_function(wrap_pyfunction!(prove_inference, m)?)?;
     m.add_function(wrap_pyfunction!(prove_inference_transition, m)?)?;
     m.add_function(wrap_pyfunction!(prove_guardrail_plan, m)?)?;
@@ -2957,6 +3219,8 @@ mod tests {
         let results = run_eval("physics", "mock", None).unwrap();
         assert!(!results.is_empty());
         assert_eq!(results[0].provider(), "mock");
+        assert!(results[0].dimension_scores().contains_key("overall"));
+        assert!(results[0].scenario_pass_rate() > 0.0);
     }
 
     #[test]
@@ -2986,6 +3250,21 @@ mod tests {
         let report = run_eval_report("physics", "mock", Some(&suite_json)).unwrap();
         assert!(report.contains("\"suite\": \"Physics Standard\""));
         assert!(report.contains("\"provider\": \"mock\""));
+    }
+
+    #[test]
+    fn test_run_eval_report_data_exposes_rollups() {
+        let report = run_eval_report_data("physics", "mock", None).unwrap();
+        assert_eq!(report.suite(), "Physics Standard");
+        assert_eq!(report.provider_summaries().len(), 1);
+        assert!(report
+            .dimension_summaries()
+            .iter()
+            .any(|summary| summary.dimension() == "gravity_compliance"));
+        assert!(report
+            .scenario_summaries()
+            .iter()
+            .any(|summary| summary.scenario() == "object_drop"));
     }
 
     // --- ZK Verification tests ---

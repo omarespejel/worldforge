@@ -42,6 +42,22 @@ pub enum EvalDimension {
     Custom { name: String },
 }
 
+impl EvalDimension {
+    fn key(&self) -> String {
+        match self {
+            Self::ObjectPermanence => "object_permanence".to_string(),
+            Self::GravityCompliance => "gravity_compliance".to_string(),
+            Self::CollisionAccuracy => "collision_accuracy".to_string(),
+            Self::SpatialConsistency => "spatial_consistency".to_string(),
+            Self::TemporalConsistency => "temporal_consistency".to_string(),
+            Self::ActionPredictionAccuracy => "action_prediction_accuracy".to_string(),
+            Self::MaterialUnderstanding => "material_understanding".to_string(),
+            Self::SpatialReasoning => "spatial_reasoning".to_string(),
+            Self::Custom { name } => name.clone(),
+        }
+    }
+}
+
 /// A single evaluation scenario.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvalScenario {
@@ -121,6 +137,16 @@ pub struct EvalReport {
     pub results: Vec<EvalResult>,
     /// Leaderboard ranking.
     pub leaderboard: Vec<LeaderboardEntry>,
+    /// Per-provider rollups across the suite.
+    pub provider_summaries: Vec<ProviderSummary>,
+    /// Per-dimension rollups across all providers.
+    pub dimension_summaries: Vec<DimensionSummary>,
+    /// Per-scenario comparisons across providers.
+    pub scenario_summaries: Vec<ScenarioSummary>,
+    /// Number of outcomes that passed across the full report.
+    pub outcomes_passed: usize,
+    /// Total number of evaluated outcomes across the full report.
+    pub total_outcomes: usize,
 }
 
 /// One row in the evaluation leaderboard.
@@ -136,6 +162,69 @@ pub struct LeaderboardEntry {
     pub scenarios_passed: usize,
     /// Total number of scenarios.
     pub total_scenarios: usize,
+}
+
+/// Aggregated metrics for a single provider across a suite.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderSummary {
+    /// Provider name.
+    pub provider: String,
+    /// Average overall score across all scenarios with scores.
+    pub average_score: f32,
+    /// Average end-to-end latency across all scenarios.
+    pub average_latency_ms: u64,
+    /// Number of scenarios where every outcome passed.
+    pub scenarios_passed: usize,
+    /// Total number of scenarios in the suite.
+    pub total_scenarios: usize,
+    /// Fraction of scenarios that fully passed.
+    pub scenario_pass_rate: f32,
+    /// Number of passed outcomes across all scenarios.
+    pub outcomes_passed: usize,
+    /// Total number of outcomes across all scenarios.
+    pub total_outcomes: usize,
+    /// Fraction of individual outcomes that passed.
+    pub outcome_pass_rate: f32,
+    /// Average score per dimension across the suite.
+    pub dimension_scores: HashMap<String, f32>,
+    /// Scenario-level overall scores keyed by scenario name.
+    pub scenario_scores: HashMap<String, f32>,
+}
+
+/// Aggregated metrics for a dimension across all providers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DimensionSummary {
+    /// Dimension identifier.
+    pub dimension: String,
+    /// Average score for each provider on this dimension.
+    pub provider_scores: HashMap<String, f32>,
+    /// Provider with the highest average score for this dimension.
+    pub best_provider: Option<String>,
+    /// Highest average score observed for this dimension.
+    pub best_score: Option<f32>,
+}
+
+/// Aggregated comparison for a scenario across all providers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScenarioSummary {
+    /// Scenario identifier.
+    pub scenario: String,
+    /// Human-readable scenario description.
+    pub description: String,
+    /// Average overall score by provider.
+    pub provider_scores: HashMap<String, f32>,
+    /// Providers that passed every outcome for this scenario.
+    pub passed_by: Vec<String>,
+    /// Providers that failed at least one outcome for this scenario.
+    pub failed_by: Vec<String>,
+    /// Best-performing provider for this scenario, if any.
+    pub best_provider: Option<String>,
+    /// Best overall score recorded for this scenario, if any.
+    pub best_score: Option<f32>,
+    /// Number of passed outcomes across every provider evaluated on this scenario.
+    pub outcomes_passed: usize,
+    /// Total number of evaluated outcomes across every provider for this scenario.
+    pub total_outcomes: usize,
 }
 
 impl EvalSuite {
@@ -668,19 +757,17 @@ impl EvalSuite {
 
             for scenario in &self.scenarios {
                 let start = std::time::Instant::now();
-                let mut score_accumulator = PhysicsScoreAccumulator::default();
+                let mut score_accumulator = ScenarioAccumulator::default();
                 let mut outcomes = Vec::new();
 
                 // Run prediction for each action
                 let mut current_state = scenario.initial_state.clone();
-                let mut last_prediction = None;
                 let mut prediction_failed = false;
                 for action in &scenario.actions {
                     match provider.predict(&current_state, action, &config).await {
                         Ok(prediction) => {
-                            score_accumulator.record(&prediction.physics_scores);
+                            score_accumulator.record(&prediction);
                             current_state = prediction.output_state.clone();
-                            last_prediction = Some(prediction);
                         }
                         Err(e) => {
                             outcomes.push(OutcomeResult {
@@ -694,17 +781,20 @@ impl EvalSuite {
                     }
                 }
 
+                let average_scores = score_accumulator.average_scores();
+                let average_confidence = score_accumulator.average_confidence();
                 let mut scores = HashMap::new();
-                if let Some(average_scores) = score_accumulator.average() {
-                    record_physics_scores(&average_scores, &mut scores);
+                if let Some(average_scores) = average_scores.as_ref() {
+                    record_physics_scores(average_scores, &mut scores);
                 }
 
                 if !prediction_failed {
                     for expected in &scenario.expected_outcomes {
                         outcomes.push(check_outcome(
                             expected,
-                            last_prediction.as_ref(),
                             &current_state,
+                            average_scores.as_ref(),
+                            average_confidence,
                         ));
                     }
                 }
@@ -719,14 +809,50 @@ impl EvalSuite {
             }
         }
 
-        // Build leaderboard
-        let leaderboard = build_leaderboard(&all_results, self.scenarios.len());
+        let provider_summaries = build_provider_summaries(&all_results, self.scenarios.len());
+        let leaderboard = build_leaderboard(&provider_summaries);
+        let dimension_summaries = build_dimension_summaries(&all_results, &self.dimensions);
+        let scenario_summaries = build_scenario_summaries(&all_results, &self.scenarios);
+        let (outcomes_passed, total_outcomes) = all_results
+            .iter()
+            .flat_map(|result| result.outcomes.iter())
+            .fold((0usize, 0usize), |(passed, total), outcome| {
+                (passed + usize::from(outcome.passed), total + 1)
+            });
 
         Ok(EvalReport {
             suite: self.name.clone(),
             results: all_results,
             leaderboard,
+            provider_summaries,
+            dimension_summaries,
+            scenario_summaries,
+            outcomes_passed,
+            total_outcomes,
         })
+    }
+}
+
+#[derive(Debug, Default)]
+struct ScenarioAccumulator {
+    physics: PhysicsScoreAccumulator,
+    total_confidence: f32,
+    count: usize,
+}
+
+impl ScenarioAccumulator {
+    fn record(&mut self, prediction: &worldforge_core::prediction::Prediction) {
+        self.physics.record(&prediction.physics_scores);
+        self.total_confidence += prediction.confidence;
+        self.count += 1;
+    }
+
+    fn average_scores(&self) -> Option<PhysicsScores> {
+        self.physics.average()
+    }
+
+    fn average_confidence(&self) -> Option<f32> {
+        (self.count > 0).then_some(self.total_confidence / self.count as f32)
     }
 }
 
@@ -781,48 +907,41 @@ fn record_physics_scores(scores: &PhysicsScores, map: &mut HashMap<String, f32>)
 
 fn check_outcome(
     expected: &ExpectedOutcome,
-    prediction: Option<&worldforge_core::prediction::Prediction>,
     state: &WorldState,
+    average_scores: Option<&PhysicsScores>,
+    average_confidence: Option<f32>,
 ) -> OutcomeResult {
     match expected {
         ExpectedOutcome::MinPhysicsScore {
             dimension,
             threshold,
-        } => match prediction {
-            Some(prediction) => {
+        } => match average_scores {
+            Some(scores) => {
                 let score = match dimension {
-                    EvalDimension::ObjectPermanence => prediction.physics_scores.object_permanence,
-                    EvalDimension::GravityCompliance => {
-                        prediction.physics_scores.gravity_compliance
-                    }
-                    EvalDimension::CollisionAccuracy => {
-                        prediction.physics_scores.collision_accuracy
-                    }
-                    EvalDimension::SpatialConsistency => {
-                        prediction.physics_scores.spatial_consistency
-                    }
-                    EvalDimension::TemporalConsistency => {
-                        prediction.physics_scores.temporal_consistency
-                    }
-                    _ => prediction.physics_scores.overall,
+                    EvalDimension::ObjectPermanence => scores.object_permanence,
+                    EvalDimension::GravityCompliance => scores.gravity_compliance,
+                    EvalDimension::CollisionAccuracy => scores.collision_accuracy,
+                    EvalDimension::SpatialConsistency => scores.spatial_consistency,
+                    EvalDimension::TemporalConsistency => scores.temporal_consistency,
+                    _ => scores.overall,
                 };
                 OutcomeResult {
-                    description: format!("{dimension:?} >= {threshold}"),
+                    description: format!("{} >= {threshold}", dimension.key()),
                     passed: score >= *threshold,
                     details: Some(format!("score: {score:.3}")),
                 }
             }
             None => OutcomeResult {
-                description: format!("{dimension:?} >= {threshold}"),
+                description: format!("{} >= {threshold}", dimension.key()),
                 passed: false,
                 details: Some("requires at least one prediction step".to_string()),
             },
         },
-        ExpectedOutcome::MinConfidence { threshold } => match prediction {
-            Some(prediction) => OutcomeResult {
+        ExpectedOutcome::MinConfidence { threshold } => match average_confidence {
+            Some(confidence) => OutcomeResult {
                 description: format!("confidence >= {threshold}"),
-                passed: prediction.confidence >= *threshold,
-                details: Some(format!("confidence: {:.3}", prediction.confidence)),
+                passed: confidence >= *threshold,
+                details: Some(format!("confidence: {confidence:.3}")),
             },
             None => OutcomeResult {
                 description: format!("confidence >= {threshold}"),
@@ -849,20 +968,63 @@ fn check_outcome(
     }
 }
 
-fn build_leaderboard(results: &[EvalResult], total_scenarios: usize) -> Vec<LeaderboardEntry> {
+fn build_leaderboard(provider_summaries: &[ProviderSummary]) -> Vec<LeaderboardEntry> {
+    provider_summaries
+        .iter()
+        .map(|summary| LeaderboardEntry {
+            provider: summary.provider.clone(),
+            average_score: summary.average_score,
+            average_latency_ms: summary.average_latency_ms,
+            scenarios_passed: summary.scenarios_passed,
+            total_scenarios: summary.total_scenarios,
+        })
+        .collect()
+}
+
+fn build_provider_summaries(
+    results: &[EvalResult],
+    total_scenarios: usize,
+) -> Vec<ProviderSummary> {
     let mut by_provider: HashMap<String, Vec<&EvalResult>> = HashMap::new();
     for r in results {
         by_provider.entry(r.provider.clone()).or_default().push(r);
     }
 
-    let mut entries: Vec<LeaderboardEntry> = by_provider
+    let mut summaries: Vec<ProviderSummary> = by_provider
         .into_iter()
         .map(|(provider, results)| {
-            let avg_score = if results.is_empty() {
+            let mut overall_total = 0.0;
+            let mut overall_count = 0usize;
+            let mut dimension_scores: HashMap<String, (f32, usize)> = HashMap::new();
+            let mut scenario_scores = HashMap::new();
+            let mut outcomes_passed = 0usize;
+            let mut total_outcomes = 0usize;
+
+            for result in &results {
+                if let Some(score) = result.scores.get("overall") {
+                    overall_total += score;
+                    overall_count += 1;
+                    scenario_scores.insert(result.scenario.clone(), *score);
+                }
+
+                for (dimension, score) in &result.scores {
+                    let entry = dimension_scores
+                        .entry(dimension.clone())
+                        .or_insert((0.0, 0));
+                    entry.0 += score;
+                    entry.1 += 1;
+                }
+
+                for outcome in &result.outcomes {
+                    outcomes_passed += usize::from(outcome.passed);
+                    total_outcomes += 1;
+                }
+            }
+
+            let average_score = if overall_count == 0 {
                 0.0
             } else {
-                let total: f32 = results.iter().filter_map(|r| r.scores.get("overall")).sum();
-                total / results.len() as f32
+                overall_total / overall_count as f32
             };
             let avg_latency = if results.is_empty() {
                 0
@@ -874,28 +1036,277 @@ fn build_leaderboard(results: &[EvalResult], total_scenarios: usize) -> Vec<Lead
                 .filter(|r| r.outcomes.iter().all(|o| o.passed))
                 .count();
 
-            LeaderboardEntry {
+            ProviderSummary {
                 provider,
-                average_score: avg_score,
+                average_score,
                 average_latency_ms: avg_latency,
                 scenarios_passed: passed,
                 total_scenarios,
+                scenario_pass_rate: if total_scenarios == 0 {
+                    0.0
+                } else {
+                    passed as f32 / total_scenarios as f32
+                },
+                outcomes_passed,
+                total_outcomes,
+                outcome_pass_rate: if total_outcomes == 0 {
+                    1.0
+                } else {
+                    outcomes_passed as f32 / total_outcomes as f32
+                },
+                dimension_scores: dimension_scores
+                    .into_iter()
+                    .map(|(dimension, (total, count))| (dimension, total / count as f32))
+                    .collect(),
+                scenario_scores,
             }
         })
         .collect();
 
-    entries.sort_by(|a, b| {
+    summaries.sort_by(|a, b| {
         b.average_score
             .partial_cmp(&a.average_score)
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.provider.cmp(&b.provider))
     });
-    entries
+    summaries
+}
+
+fn build_dimension_summaries(
+    results: &[EvalResult],
+    dimensions: &[EvalDimension],
+) -> Vec<DimensionSummary> {
+    dimensions
+        .iter()
+        .map(|dimension| {
+            let key = dimension.key();
+            let mut by_provider: HashMap<String, (f32, usize)> = HashMap::new();
+            for result in results {
+                if let Some(score) = result.scores.get(&key) {
+                    let entry = by_provider
+                        .entry(result.provider.clone())
+                        .or_insert((0.0, 0));
+                    entry.0 += score;
+                    entry.1 += 1;
+                }
+            }
+
+            let provider_scores: HashMap<String, f32> = by_provider
+                .into_iter()
+                .map(|(provider, (total, count))| (provider, total / count as f32))
+                .collect();
+
+            let best = provider_scores.iter().max_by(|a, b| {
+                a.1.partial_cmp(b.1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| b.0.cmp(a.0))
+            });
+            let best_provider = best.map(|(provider, _)| provider.clone());
+            let best_score = best.map(|(_, score)| *score);
+
+            DimensionSummary {
+                dimension: key,
+                provider_scores,
+                best_provider,
+                best_score,
+            }
+        })
+        .collect()
+}
+
+fn build_scenario_summaries(
+    results: &[EvalResult],
+    scenarios: &[EvalScenario],
+) -> Vec<ScenarioSummary> {
+    scenarios
+        .iter()
+        .map(|scenario| {
+            let scenario_results: Vec<_> = results
+                .iter()
+                .filter(|result| result.scenario == scenario.name)
+                .collect();
+            let provider_scores: HashMap<String, f32> = scenario_results
+                .iter()
+                .filter_map(|result| {
+                    result
+                        .scores
+                        .get("overall")
+                        .map(|score| (result.provider.clone(), *score))
+                })
+                .collect();
+            let mut passed_by = Vec::new();
+            let mut failed_by = Vec::new();
+            let mut outcomes_passed = 0usize;
+            let mut total_outcomes = 0usize;
+
+            for result in &scenario_results {
+                if result.outcomes.iter().all(|outcome| outcome.passed) {
+                    passed_by.push(result.provider.clone());
+                } else {
+                    failed_by.push(result.provider.clone());
+                }
+
+                for outcome in &result.outcomes {
+                    outcomes_passed += usize::from(outcome.passed);
+                    total_outcomes += 1;
+                }
+            }
+
+            passed_by.sort();
+            failed_by.sort();
+
+            let best = provider_scores.iter().max_by(|a, b| {
+                a.1.partial_cmp(b.1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| b.0.cmp(a.0))
+            });
+            let best_provider = best.map(|(provider, _)| provider.clone());
+            let best_score = best.map(|(_, score)| *score);
+
+            ScenarioSummary {
+                scenario: scenario.name.clone(),
+                description: scenario.description.clone(),
+                provider_scores,
+                passed_by,
+                failed_by,
+                best_provider,
+                best_score,
+                outcomes_passed,
+                total_outcomes,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    use async_trait::async_trait;
+    use worldforge_core::error::WorldForgeError;
+    use worldforge_core::prediction::Prediction;
+    use worldforge_core::provider::{
+        CostEstimate, GenerationConfig, GenerationPrompt, HealthStatus, LatencyProfile, Operation,
+        ProviderCapabilities, ReasoningInput, ReasoningOutput, SpatialControls, TransferConfig,
+    };
     use worldforge_providers::MockProvider;
+
+    #[derive(Debug)]
+    struct SequencedEvalProvider {
+        name: String,
+        steps: Mutex<Vec<(PhysicsScores, f32)>>,
+    }
+
+    impl SequencedEvalProvider {
+        fn new(name: &str, steps: Vec<(PhysicsScores, f32)>) -> Self {
+            Self {
+                name: name.to_string(),
+                steps: Mutex::new(steps),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl WorldModelProvider for SequencedEvalProvider {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities {
+                predict: true,
+                generate: false,
+                reason: false,
+                transfer: false,
+                action_conditioned: true,
+                multi_view: false,
+                max_video_length_seconds: 0.0,
+                max_resolution: (0, 0),
+                fps_range: (0.0, 0.0),
+                supported_action_spaces: Vec::new(),
+                supports_depth: false,
+                supports_segmentation: false,
+                supports_planning: false,
+                latency_profile: LatencyProfile {
+                    p50_ms: 1,
+                    p95_ms: 1,
+                    p99_ms: 1,
+                    throughput_fps: 1.0,
+                },
+            }
+        }
+
+        async fn predict(
+            &self,
+            state: &WorldState,
+            action: &Action,
+            _config: &PredictionConfig,
+        ) -> Result<Prediction> {
+            let (physics_scores, confidence) =
+                self.steps.lock().expect("sequence poisoned").remove(0);
+            let mut output_state = state.clone();
+            output_state.time.step += 1;
+
+            Ok(Prediction {
+                id: uuid::Uuid::new_v4(),
+                provider: self.name.clone(),
+                model: "sequenced".to_string(),
+                input_state: state.clone(),
+                action: action.clone(),
+                output_state,
+                video: None,
+                confidence,
+                physics_scores,
+                latency_ms: 1,
+                cost: CostEstimate::default(),
+                guardrail_results: Vec::new(),
+                timestamp: chrono::Utc::now(),
+            })
+        }
+
+        async fn generate(
+            &self,
+            _prompt: &GenerationPrompt,
+            _config: &GenerationConfig,
+        ) -> Result<VideoClip> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.clone(),
+                capability: "generate".to_string(),
+            })
+        }
+
+        async fn reason(&self, _input: &ReasoningInput, _query: &str) -> Result<ReasoningOutput> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.clone(),
+                capability: "reason".to_string(),
+            })
+        }
+
+        async fn transfer(
+            &self,
+            _source: &VideoClip,
+            _controls: &SpatialControls,
+            _config: &TransferConfig,
+        ) -> Result<VideoClip> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.clone(),
+                capability: "transfer".to_string(),
+            })
+        }
+
+        async fn health_check(&self) -> Result<HealthStatus> {
+            Ok(HealthStatus {
+                healthy: true,
+                message: "healthy".to_string(),
+                latency_ms: 1,
+            })
+        }
+
+        fn estimate_cost(&self, _operation: &Operation) -> CostEstimate {
+            CostEstimate::default()
+        }
+    }
 
     #[test]
     fn test_eval_suite_creation() {
@@ -913,6 +1324,9 @@ mod tests {
         let report = suite.run(&providers).await.unwrap();
         assert!(!report.results.is_empty());
         assert!(!report.leaderboard.is_empty());
+        assert_eq!(report.provider_summaries.len(), 1);
+        assert_eq!(report.dimension_summaries.len(), suite.dimensions.len());
+        assert_eq!(report.scenario_summaries.len(), suite.scenarios.len());
         assert_eq!(report.leaderboard[0].provider, "mock");
     }
 
@@ -971,6 +1385,7 @@ mod tests {
         let report = suite.run(&providers).await.unwrap();
         assert_eq!(report.results.len(), 7);
         assert_eq!(report.leaderboard[0].total_scenarios, 7);
+        assert!(report.total_outcomes >= report.outcomes_passed);
     }
 
     #[test]
@@ -1029,6 +1444,95 @@ mod tests {
         assert_eq!(report.results.len(), 1);
         assert_eq!(report.results[0].outcomes.len(), 1);
         assert!(report.results[0].outcomes[0].passed);
+    }
+
+    #[tokio::test]
+    async fn test_eval_report_builds_rollups() {
+        let suite = EvalSuite::physics_standard();
+        let provider = MockProvider::new();
+        let providers: Vec<&dyn WorldModelProvider> = vec![&provider];
+        let report = suite.run(&providers).await.unwrap();
+
+        let provider_summary = &report.provider_summaries[0];
+        assert_eq!(provider_summary.provider, "mock");
+        assert!(provider_summary.dimension_scores.contains_key("overall"));
+        assert_eq!(provider_summary.total_scenarios, suite.scenarios.len());
+
+        let dimension_summary = report
+            .dimension_summaries
+            .iter()
+            .find(|summary| summary.dimension == "gravity_compliance")
+            .unwrap();
+        assert_eq!(dimension_summary.best_provider.as_deref(), Some("mock"));
+
+        let scenario_summary = report
+            .scenario_summaries
+            .iter()
+            .find(|summary| summary.scenario == "object_drop")
+            .unwrap();
+        assert!(scenario_summary.provider_scores.contains_key("mock"));
+        assert!(scenario_summary.passed_by.contains(&"mock".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_min_threshold_outcomes_use_multi_step_averages() {
+        let scenario = EvalScenario {
+            name: "two_step_average".to_string(),
+            description: "Average scores and confidence should drive threshold checks".to_string(),
+            initial_state: WorldState::new("two_step_average", "eval"),
+            actions: vec![
+                Action::SetLighting { time_of_day: 0.25 },
+                Action::SetLighting { time_of_day: 0.75 },
+            ],
+            expected_outcomes: vec![
+                ExpectedOutcome::MinPhysicsScore {
+                    dimension: EvalDimension::GravityCompliance,
+                    threshold: 0.55,
+                },
+                ExpectedOutcome::MinConfidence { threshold: 0.60 },
+            ],
+            ground_truth: None,
+        };
+        let suite = EvalSuite {
+            name: "Average Threshold".to_string(),
+            scenarios: vec![scenario],
+            dimensions: vec![EvalDimension::GravityCompliance],
+        };
+        let provider = SequencedEvalProvider::new(
+            "sequenced",
+            vec![
+                (
+                    PhysicsScores {
+                        overall: 0.2,
+                        object_permanence: 0.2,
+                        gravity_compliance: 0.2,
+                        collision_accuracy: 0.2,
+                        spatial_consistency: 0.2,
+                        temporal_consistency: 0.2,
+                    },
+                    0.9,
+                ),
+                (
+                    PhysicsScores {
+                        overall: 0.9,
+                        object_permanence: 0.9,
+                        gravity_compliance: 0.9,
+                        collision_accuracy: 0.9,
+                        spatial_consistency: 0.9,
+                        temporal_consistency: 0.9,
+                    },
+                    0.3,
+                ),
+            ],
+        );
+        let providers: Vec<&dyn WorldModelProvider> = vec![&provider];
+
+        let report = suite.run(&providers).await.unwrap();
+        let result = &report.results[0];
+
+        assert_eq!(result.scores["gravity_compliance"], 0.55);
+        assert_eq!(result.scores["overall"], 0.55);
+        assert!(result.outcomes.iter().all(|outcome| outcome.passed));
     }
 
     #[test]

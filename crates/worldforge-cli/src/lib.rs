@@ -1250,6 +1250,48 @@ async fn cmd_eval(options: EvalOptions<'_>) -> Result<()> {
         );
     }
     println!();
+    println!("Provider summaries:");
+    for summary in &report.provider_summaries {
+        println!(
+            "  {} — scenario pass: {:.0}%, outcome pass: {:.0}%",
+            summary.provider,
+            summary.scenario_pass_rate * 100.0,
+            summary.outcome_pass_rate * 100.0
+        );
+        let mut dimensions: Vec<_> = summary.dimension_scores.iter().collect();
+        dimensions.sort_by(|a, b| a.0.cmp(b.0));
+        for (dimension, score) in dimensions {
+            println!("    {dimension}: {:.2}", score);
+        }
+    }
+    println!();
+    println!("Dimension summaries:");
+    for summary in &report.dimension_summaries {
+        match (&summary.best_provider, summary.best_score) {
+            (Some(provider), Some(score)) => {
+                println!(
+                    "  {} — best: {} ({:.2})",
+                    summary.dimension, provider, score
+                );
+            }
+            _ => println!("  {} — no scores recorded", summary.dimension),
+        }
+    }
+    println!();
+    println!("Scenario summaries:");
+    for summary in &report.scenario_summaries {
+        match (&summary.best_provider, summary.best_score) {
+            (Some(provider), Some(score)) => println!(
+                "  {} — best: {} ({:.2}), passed by: {}",
+                summary.scenario,
+                provider,
+                score,
+                summary.passed_by.join(", ")
+            ),
+            _ => println!("  {} — no scored providers", summary.scenario),
+        }
+    }
+    println!();
     for result in &report.results {
         println!(
             "  Scenario: {} (provider: {})",
@@ -2288,6 +2330,11 @@ mod tests {
         let report: serde_json::Value = read_json_file(&report_path).unwrap();
         assert_eq!(report["suite"], "Physics Standard");
         assert_eq!(report["leaderboard"][0]["provider"], "mock");
+        assert_eq!(report["provider_summaries"][0]["provider"], "mock");
+        assert_eq!(
+            report["dimension_summaries"][0]["dimension"],
+            "object_permanence"
+        );
 
         let _ = fs::remove_dir_all(dir);
     }

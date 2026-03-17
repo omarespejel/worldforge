@@ -1412,7 +1412,13 @@ mod tests {
         let (status, resp) =
             route("POST", &format!("/v1/worlds/{id}/evaluate"), body, &state).await;
         assert_eq!(status, 200);
-        assert!(resp.contains("success"));
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(value["data"]["suite"], "Physics Standard");
+        assert_eq!(value["data"]["provider_summaries"][0]["provider"], "mock");
+        assert_eq!(
+            value["data"]["dimension_summaries"][0]["dimension"],
+            "object_permanence"
+        );
     }
 
     #[tokio::test]
@@ -1442,6 +1448,10 @@ mod tests {
         let leaderboard = value["data"]["leaderboard"].as_array().unwrap();
         assert_eq!(leaderboard.len(), 1);
         assert_eq!(leaderboard[0]["provider"], "alt-mock");
+        assert_eq!(
+            value["data"]["provider_summaries"][0]["provider"],
+            "alt-mock"
+        );
     }
 
     #[tokio::test]
