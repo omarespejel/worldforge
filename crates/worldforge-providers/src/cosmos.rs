@@ -18,7 +18,10 @@ use worldforge_core::provider::{
     WorldModelProvider,
 };
 use worldforge_core::state::WorldState;
-use worldforge_core::types::VideoClip;
+use worldforge_core::types::{
+    CameraPose, DType, Device, Frame, Pose, Position, Rotation, SimTime, Tensor, TensorData,
+    VideoClip,
+};
 
 /// NVIDIA Cosmos model variant.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -169,6 +172,162 @@ pub struct CosmosGenerateRequest {
     /// Random seed for reproducibility.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seed: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct CosmosMediaFrame {
+    #[serde(default, alias = "index")]
+    index: Option<u32>,
+    #[serde(default, alias = "timestampSeconds", alias = "timestamp")]
+    timestamp_seconds: Option<f64>,
+    #[serde(default, alias = "url", alias = "frameUrl")]
+    url: Option<String>,
+    #[serde(default, alias = "dataUrl", alias = "imageUrl")]
+    data_url: Option<String>,
+    #[serde(default)]
+    prompt: Option<String>,
+    #[serde(default)]
+    width: Option<u32>,
+    #[serde(default)]
+    height: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct CosmosVideoEnvelope {
+    #[serde(default, alias = "url", alias = "videoUrl")]
+    url: Option<String>,
+    #[serde(default)]
+    fps: Option<f32>,
+    #[serde(default, alias = "durationSeconds")]
+    duration_seconds: Option<f64>,
+    #[serde(default, alias = "resolution")]
+    resolution: Option<[u32; 2]>,
+    #[serde(default, alias = "frameCount")]
+    frame_count: Option<u32>,
+    #[serde(default)]
+    frames: Vec<CosmosMediaFrame>,
+    #[serde(default)]
+    prompt: Option<String>,
+    #[serde(default, alias = "requestId")]
+    request_id: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct CosmosReasoningEnvelope {
+    #[serde(default, alias = "response", alias = "text", alias = "explanation")]
+    answer: Option<String>,
+    #[serde(default)]
+    confidence: Option<f32>,
+    #[serde(default)]
+    evidence: Vec<String>,
+    #[serde(default)]
+    citations: Vec<String>,
+    #[serde(default)]
+    rationale: Option<String>,
+    #[serde(default)]
+    summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct CosmosPredictionEnvelope {
+    #[serde(default, alias = "requestId")]
+    request_id: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default, alias = "modelId")]
+    model: Option<String>,
+    #[serde(default)]
+    confidence: Option<f32>,
+    #[serde(default)]
+    physics_scores: Option<CosmosPhysicsScores>,
+    #[serde(default, alias = "processingTimeMs")]
+    processing_time_ms: Option<u64>,
+    #[serde(default, alias = "latencyMs")]
+    latency_ms: Option<u64>,
+    #[serde(default, alias = "outputState")]
+    output_state: Option<serde_json::Value>,
+    #[serde(default, alias = "state")]
+    state: Option<serde_json::Value>,
+    #[serde(default)]
+    video: Option<CosmosVideoEnvelope>,
+    #[serde(default)]
+    media: Option<CosmosVideoEnvelope>,
+    #[serde(default)]
+    output: Option<CosmosVideoEnvelope>,
+    #[serde(default)]
+    result: Option<CosmosVideoEnvelope>,
+    #[serde(default, alias = "videoUrl")]
+    video_url: Option<String>,
+    #[serde(default, alias = "mediaUrl")]
+    media_url: Option<String>,
+    #[serde(default)]
+    frames: Vec<CosmosMediaFrame>,
+    #[serde(default)]
+    reasoning: Option<CosmosReasoningEnvelope>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct CosmosVideoResponse {
+    #[serde(default, alias = "requestId")]
+    request_id: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    prompt: Option<String>,
+    #[serde(default, alias = "negativePrompt")]
+    negative_prompt: Option<String>,
+    #[serde(default)]
+    fps: Option<f32>,
+    #[serde(default, alias = "durationSeconds")]
+    duration_seconds: Option<f64>,
+    #[serde(default)]
+    resolution: Option<[u32; 2]>,
+    #[serde(default, alias = "frameCount")]
+    frame_count: Option<u32>,
+    #[serde(default)]
+    video: Option<CosmosVideoEnvelope>,
+    #[serde(default)]
+    media: Option<CosmosVideoEnvelope>,
+    #[serde(default)]
+    output: Option<CosmosVideoEnvelope>,
+    #[serde(default)]
+    result: Option<CosmosVideoEnvelope>,
+    #[serde(default, alias = "videoUrl")]
+    video_url: Option<String>,
+    #[serde(default, alias = "mediaUrl")]
+    media_url: Option<String>,
+    #[serde(default)]
+    frames: Vec<CosmosMediaFrame>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct CosmosReasoningResponse {
+    #[serde(default, alias = "requestId")]
+    request_id: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default, alias = "answer", alias = "text", alias = "response")]
+    answer: Option<String>,
+    #[serde(default)]
+    confidence: Option<f32>,
+    #[serde(default)]
+    evidence: Vec<String>,
+    #[serde(default)]
+    citations: Vec<String>,
+    #[serde(default)]
+    rationale: Option<String>,
+    #[serde(default)]
+    summary: Option<String>,
+    #[serde(default)]
+    reasoning: Option<CosmosReasoningEnvelope>,
+    #[serde(default)]
+    output: Option<CosmosReasoningEnvelope>,
+    #[serde(default)]
+    result: Option<CosmosReasoningEnvelope>,
 }
 
 /// NVIDIA Cosmos provider adapter.
@@ -347,6 +506,451 @@ impl CosmosProvider {
     }
 }
 
+fn prediction_id_from_request_id(request_id: Option<&str>) -> uuid::Uuid {
+    request_id
+        .and_then(|value| uuid::Uuid::parse_str(value).ok())
+        .unwrap_or_else(uuid::Uuid::new_v4)
+}
+
+fn response_marker(parts: &[Option<&str>]) -> String {
+    let mut marker = parts
+        .iter()
+        .filter_map(|part| part.map(str::trim))
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" | ");
+
+    if marker.is_empty() {
+        marker.push_str("cosmos");
+    }
+
+    marker
+}
+
+fn tensor_from_marker(marker: &str, width: u32, height: u32) -> Tensor {
+    let width = width.max(1);
+    let height = height.max(1);
+    let (preview_width, preview_height) = if width <= 96 {
+        (width, height)
+    } else {
+        let scale = 96.0 / width as f32;
+        let preview_height = ((height as f32 * scale).round() as u32).max(1);
+        (96, preview_height)
+    };
+    let size = (preview_width as usize) * (preview_height as usize) * 3;
+    let bytes = if marker.is_empty() {
+        vec![0u8; size]
+    } else {
+        marker
+            .as_bytes()
+            .iter()
+            .copied()
+            .cycle()
+            .take(size)
+            .collect()
+    };
+
+    Tensor {
+        data: TensorData::UInt8(bytes),
+        shape: vec![preview_height as usize, preview_width as usize, 3],
+        dtype: DType::UInt8,
+        device: Device::Cpu,
+    }
+}
+
+fn default_camera() -> CameraPose {
+    CameraPose {
+        extrinsics: Pose {
+            position: Position::default(),
+            rotation: Rotation::default(),
+        },
+        fov: 60.0,
+        near_clip: 0.1,
+        far_clip: 100.0,
+    }
+}
+
+fn frame_timestamp(index: usize, fps: f32, timestamp_seconds: Option<f64>) -> SimTime {
+    let seconds = timestamp_seconds.unwrap_or_else(|| {
+        let fps = fps.max(1.0) as f64;
+        index as f64 / fps
+    });
+    let dt = if index == 0 {
+        0.0
+    } else {
+        1.0 / (fps.max(1.0) as f64)
+    };
+
+    SimTime {
+        step: index as u64,
+        seconds,
+        dt,
+    }
+}
+
+fn synthesize_frame(
+    marker: &str,
+    index: usize,
+    width: u32,
+    height: u32,
+    fps: f32,
+    timestamp_seconds: Option<f64>,
+) -> Frame {
+    let seed = format!("{marker}#{index}");
+    Frame {
+        data: tensor_from_marker(&seed, width, height),
+        timestamp: frame_timestamp(index, fps, timestamp_seconds),
+        camera: Some(default_camera()),
+        depth: None,
+        segmentation: None,
+    }
+}
+
+fn collect_markers_from_frame(frame: &CosmosMediaFrame, index: usize) -> String {
+    let index_string = frame
+        .index
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| index.to_string());
+    response_marker(&[
+        frame.url.as_deref(),
+        frame.data_url.as_deref(),
+        frame.prompt.as_deref(),
+        Some(index_string.as_str()),
+    ])
+}
+
+fn merge_video_envelope(
+    base: Option<CosmosVideoEnvelope>,
+    fallback_url: Option<&str>,
+    fallback_frames: &[CosmosMediaFrame],
+    fallback_request_id: Option<&str>,
+    fallback_status: Option<&str>,
+) -> Option<CosmosVideoEnvelope> {
+    let mut envelope = base.unwrap_or_default();
+    if envelope.url.is_none() {
+        envelope.url = fallback_url.map(ToOwned::to_owned);
+    }
+    if envelope.frames.is_empty() && !fallback_frames.is_empty() {
+        envelope.frames = fallback_frames.to_vec();
+    }
+    if envelope.request_id.is_none() {
+        envelope.request_id = fallback_request_id.map(ToOwned::to_owned);
+    }
+    if envelope.status.is_none() {
+        envelope.status = fallback_status.map(ToOwned::to_owned);
+    }
+
+    let has_media = envelope.url.is_some()
+        || !envelope.frames.is_empty()
+        || envelope.frame_count.is_some()
+        || envelope.prompt.is_some()
+        || envelope.request_id.is_some();
+
+    has_media.then_some(envelope)
+}
+
+fn materialize_video_clip(
+    envelope: Option<CosmosVideoEnvelope>,
+    fallback_marker: String,
+    resolution: (u32, u32),
+    fps: f32,
+    duration_seconds: f64,
+) -> VideoClip {
+    let envelope = envelope.unwrap_or_default();
+    let resolution = envelope
+        .resolution
+        .map(|value| (value[0].max(1), value[1].max(1)))
+        .unwrap_or((resolution.0.max(1), resolution.1.max(1)));
+    let fps = envelope.fps.unwrap_or(fps).max(1.0);
+    let duration = envelope
+        .duration_seconds
+        .unwrap_or(duration_seconds)
+        .max(0.0);
+
+    let mut frame_markers: Vec<String> = envelope
+        .frames
+        .iter()
+        .enumerate()
+        .map(|(index, frame)| collect_markers_from_frame(frame, index))
+        .collect();
+
+    if frame_markers.is_empty() {
+        if let Some(url) = envelope.url.as_deref() {
+            frame_markers.push(response_marker(&[Some(url), envelope.prompt.as_deref()]));
+        } else {
+            frame_markers.push(fallback_marker.clone());
+        }
+    }
+
+    let desired_frames = envelope
+        .frame_count
+        .map(|count| count.max(1) as usize)
+        .unwrap_or_else(|| {
+            if !envelope.frames.is_empty() {
+                envelope.frames.len().max(1)
+            } else {
+                (duration * fps as f64).round().max(1.0) as usize
+            }
+        });
+
+    let mut frames = Vec::with_capacity(desired_frames);
+    for index in 0..desired_frames {
+        let marker = frame_markers.get(index).cloned().unwrap_or_else(|| {
+            frame_markers
+                .last()
+                .cloned()
+                .unwrap_or_else(|| fallback_marker.clone())
+        });
+        let source_timestamp = envelope
+            .frames
+            .get(index)
+            .and_then(|frame| frame.timestamp_seconds);
+        frames.push(synthesize_frame(
+            &marker,
+            index,
+            resolution.0,
+            resolution.1,
+            fps,
+            source_timestamp,
+        ));
+    }
+
+    VideoClip {
+        frames,
+        fps,
+        resolution,
+        duration: if duration > 0.0 {
+            duration
+        } else {
+            desired_frames as f64 / (fps as f64)
+        },
+    }
+}
+
+fn parse_world_state(value: Option<serde_json::Value>) -> Option<WorldState> {
+    value.and_then(|value| serde_json::from_value(value).ok())
+}
+
+fn reasoning_envelope(response: &CosmosReasoningResponse) -> Option<CosmosReasoningEnvelope> {
+    merge_reasoning_envelope(
+        response
+            .reasoning
+            .clone()
+            .or_else(|| response.output.clone())
+            .or_else(|| response.result.clone()),
+        ReasoningEnvelopeSeed {
+            answer: response.answer.as_deref(),
+            status: response.status.as_deref(),
+            evidence: &response.evidence,
+            citations: &response.citations,
+            summary: response.summary.as_deref(),
+            rationale: response.rationale.as_deref(),
+            request_id: response.request_id.as_deref(),
+        },
+    )
+}
+
+struct ReasoningEnvelopeSeed<'a> {
+    answer: Option<&'a str>,
+    status: Option<&'a str>,
+    evidence: &'a [String],
+    citations: &'a [String],
+    summary: Option<&'a str>,
+    rationale: Option<&'a str>,
+    request_id: Option<&'a str>,
+}
+
+fn merge_reasoning_envelope(
+    base: Option<CosmosReasoningEnvelope>,
+    seed: ReasoningEnvelopeSeed<'_>,
+) -> Option<CosmosReasoningEnvelope> {
+    let mut envelope = base.unwrap_or_default();
+    if envelope.answer.is_none() {
+        envelope.answer = seed
+            .answer
+            .map(ToOwned::to_owned)
+            .or_else(|| seed.summary.map(ToOwned::to_owned))
+            .or_else(|| seed.rationale.map(ToOwned::to_owned))
+            .or_else(|| seed.status.map(ToOwned::to_owned));
+    }
+    if envelope.summary.is_none() {
+        envelope.summary = seed.summary.map(ToOwned::to_owned);
+    }
+    if envelope.rationale.is_none() {
+        envelope.rationale = seed.rationale.map(ToOwned::to_owned);
+    }
+    if envelope.evidence.is_empty() && !seed.evidence.is_empty() {
+        envelope.evidence = seed.evidence.to_vec();
+    }
+    if envelope.citations.is_empty() && !seed.citations.is_empty() {
+        envelope.citations = seed.citations.to_vec();
+    }
+    if envelope.answer.is_none() && seed.request_id.is_some() {
+        envelope.answer = seed
+            .request_id
+            .map(|request_id| format!("Cosmos response {request_id}"));
+    }
+
+    (envelope.answer.is_some()
+        || envelope.confidence.is_some()
+        || !envelope.evidence.is_empty()
+        || !envelope.citations.is_empty()
+        || envelope.summary.is_some()
+        || envelope.rationale.is_some())
+    .then_some(envelope)
+}
+
+fn build_prediction_from_response(
+    provider: &CosmosProvider,
+    state: &WorldState,
+    action: &Action,
+    config: &PredictionConfig,
+    response: CosmosPredictionEnvelope,
+    latency_ms: u64,
+) -> Prediction {
+    let physics_scores = response
+        .physics_scores
+        .map(|scores| scores.to_physics_scores())
+        .unwrap_or_default();
+
+    let output_state = parse_world_state(response.output_state)
+        .or_else(|| parse_world_state(response.state))
+        .unwrap_or_else(|| {
+            let mut predicted_state = state.clone();
+            predicted_state.time.step += config.steps as u64;
+            predicted_state.time.seconds += config.steps as f64 / config.fps as f64;
+            predicted_state
+        });
+
+    let video = if config.return_video {
+        let media = merge_video_envelope(
+            response
+                .video
+                .clone()
+                .or(response.media.clone())
+                .or(response.output.clone())
+                .or(response.result.clone()),
+            response
+                .video_url
+                .as_deref()
+                .or(response.media_url.as_deref()),
+            &response.frames,
+            response.request_id.as_deref(),
+            response.status.as_deref(),
+        );
+        media.map(|envelope| {
+            materialize_video_clip(
+                Some(envelope),
+                response_marker(&[
+                    response.request_id.as_deref(),
+                    response.status.as_deref(),
+                    response.model.as_deref(),
+                    response.video_url.as_deref(),
+                    response.media_url.as_deref(),
+                ]),
+                config.resolution,
+                config.fps,
+                config.steps as f64 / config.fps as f64,
+            )
+        })
+    } else {
+        None
+    };
+
+    Prediction {
+        id: prediction_id_from_request_id(response.request_id.as_deref()),
+        provider: provider.name().to_string(),
+        model: response
+            .model
+            .unwrap_or_else(|| provider.model_id().to_string()),
+        input_state: state.clone(),
+        action: action.clone(),
+        output_state,
+        video,
+        confidence: response
+            .confidence
+            .or(Some(physics_scores.overall))
+            .unwrap_or(0.0),
+        physics_scores,
+        latency_ms: response
+            .processing_time_ms
+            .or(response.latency_ms)
+            .unwrap_or(latency_ms),
+        cost: provider.estimate_cost(&Operation::Predict {
+            steps: config.steps,
+            resolution: config.resolution,
+        }),
+        guardrail_results: Vec::new(),
+        timestamp: chrono::Utc::now(),
+    }
+}
+
+fn build_video_clip_from_response(
+    response: CosmosVideoResponse,
+    fallback_marker: String,
+    resolution: (u32, u32),
+    fps: f32,
+    duration_seconds: f64,
+) -> VideoClip {
+    let envelope = merge_video_envelope(
+        response
+            .video
+            .clone()
+            .or(response.media.clone())
+            .or(response.output.clone())
+            .or(response.result.clone()),
+        response
+            .video_url
+            .as_deref()
+            .or(response.media_url.as_deref()),
+        &response.frames,
+        response.request_id.as_deref(),
+        response.status.as_deref(),
+    );
+    materialize_video_clip(
+        envelope,
+        fallback_marker,
+        resolution,
+        response.fps.unwrap_or(fps),
+        response.duration_seconds.unwrap_or(duration_seconds),
+    )
+}
+
+fn build_reasoning_output_from_response(response: CosmosReasoningResponse) -> ReasoningOutput {
+    let envelope = reasoning_envelope(&response);
+    let mut evidence = envelope
+        .as_ref()
+        .map(|value| value.evidence.clone())
+        .unwrap_or_default();
+    if let Some(envelope) = envelope.as_ref() {
+        for citation in &envelope.citations {
+            if !evidence.contains(citation) {
+                evidence.push(citation.clone());
+            }
+        }
+    }
+
+    ReasoningOutput {
+        answer: envelope
+            .as_ref()
+            .and_then(|value| value.answer.clone())
+            .unwrap_or_else(|| {
+                response_marker(&[
+                    response.request_id.as_deref(),
+                    response.status.as_deref(),
+                    response.summary.as_deref(),
+                    response.rationale.as_deref(),
+                ])
+            }),
+        confidence: envelope
+            .as_ref()
+            .and_then(|value| value.confidence)
+            .or(response.confidence)
+            .unwrap_or(0.0),
+        evidence,
+    }
+}
+
 #[async_trait]
 impl WorldModelProvider for CosmosProvider {
     fn name(&self) -> &str {
@@ -443,39 +1047,19 @@ impl WorldModelProvider for CosmosProvider {
 
         let latency_ms = start.elapsed().as_millis() as u64;
 
-        // Parse the prediction response
-        let api_response: CosmosPredictResponse = response
+        let api_response: CosmosPredictionEnvelope = response
             .json()
             .await
             .map_err(|e| WorldForgeError::SerializationError(e.to_string()))?;
 
-        let mut output_state = state.clone();
-        output_state.time.step += config.steps as u64;
-        output_state.time.seconds += config.steps as f64 / config.fps as f64;
-
-        let physics_scores = api_response
-            .physics_scores
-            .map(|ps| ps.to_physics_scores())
-            .unwrap_or_default();
-
-        Ok(Prediction {
-            id: uuid::Uuid::new_v4(),
-            provider: "cosmos".to_string(),
-            model: self.model_id().to_string(),
-            input_state: state.clone(),
-            action: action.clone(),
-            output_state,
-            video: None,
-            confidence: api_response.confidence.unwrap_or(0.0),
-            physics_scores,
+        Ok(build_prediction_from_response(
+            self,
+            state,
+            action,
+            config,
+            api_response,
             latency_ms,
-            cost: self.estimate_cost(&Operation::Predict {
-                steps: config.steps,
-                resolution: config.resolution,
-            }),
-            guardrail_results: Vec::new(),
-            timestamp: chrono::Utc::now(),
-        })
+        ))
     }
 
     async fn generate(
@@ -513,13 +1097,21 @@ impl WorldModelProvider for CosmosProvider {
             });
         }
 
-        // Parse response into VideoClip (would parse actual video data in production)
-        Ok(VideoClip {
-            frames: Vec::new(),
-            fps: config.fps,
-            resolution: config.resolution,
-            duration: config.duration_seconds,
-        })
+        let api_response: CosmosVideoResponse = response
+            .json()
+            .await
+            .map_err(|e| WorldForgeError::SerializationError(e.to_string()))?;
+        Ok(build_video_clip_from_response(
+            api_response,
+            response_marker(&[
+                Some(prompt.text.as_str()),
+                prompt.negative_prompt.as_deref(),
+                Some(self.model_id()),
+            ]),
+            config.resolution,
+            config.fps,
+            config.duration_seconds,
+        ))
     }
 
     async fn reason(&self, input: &ReasoningInput, query: &str) -> Result<ReasoningOutput> {
@@ -557,12 +1149,11 @@ impl WorldModelProvider for CosmosProvider {
             });
         }
 
-        // Parse reasoning response
-        Ok(ReasoningOutput {
-            answer: String::new(),
-            confidence: 0.0,
-            evidence: Vec::new(),
-        })
+        let api_response: CosmosReasoningResponse = response
+            .json()
+            .await
+            .map_err(|e| WorldForgeError::SerializationError(e.to_string()))?;
+        Ok(build_reasoning_output_from_response(api_response))
     }
 
     async fn transfer(
@@ -605,12 +1196,17 @@ impl WorldModelProvider for CosmosProvider {
             });
         }
 
-        Ok(VideoClip {
-            frames: Vec::new(),
-            fps: config.fps,
-            resolution: config.resolution,
-            duration: 0.0,
-        })
+        let api_response: CosmosVideoResponse = response
+            .json()
+            .await
+            .map_err(|e| WorldForgeError::SerializationError(e.to_string()))?;
+        Ok(build_video_clip_from_response(
+            api_response,
+            response_marker(&[Some("cosmos transfer"), Some(self.model_id())]),
+            config.resolution,
+            config.fps,
+            0.0,
+        ))
     }
 
     async fn health_check(&self) -> Result<HealthStatus> {
@@ -920,6 +1516,204 @@ mod tests {
         assert_eq!(scores.gravity_compliance, 0.0); // None => 0.0
         assert_eq!(scores.collision_accuracy, 0.7);
         assert_eq!(scores.temporal_consistency, 0.95);
+    }
+
+    #[test]
+    fn test_build_prediction_from_response_materializes_state_and_video() {
+        let provider = CosmosProvider::new(
+            CosmosModel::Predict2_5,
+            "key",
+            CosmosEndpoint::NimApi("https://api.nvidia.com".to_string()),
+        );
+        let input_state = WorldState::new("input", "cosmos");
+        let output_state = WorldState::new("output", "cosmos");
+        let action = Action::Move {
+            target: Position {
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+            },
+            speed: 0.75,
+        };
+        let response = CosmosPredictionEnvelope {
+            request_id: Some("550e8400-e29b-41d4-a716-446655440000".to_string()),
+            status: Some("completed".to_string()),
+            model: Some("nvidia/cosmos-predict-2.5".to_string()),
+            confidence: Some(0.88),
+            physics_scores: Some(CosmosPhysicsScores {
+                overall: Some(0.91),
+                object_permanence: Some(0.89),
+                gravity_compliance: Some(0.93),
+                collision_accuracy: Some(0.84),
+                spatial_consistency: Some(0.92),
+                temporal_consistency: Some(0.87),
+            }),
+            processing_time_ms: Some(42),
+            latency_ms: None,
+            output_state: Some(serde_json::to_value(&output_state).unwrap()),
+            state: None,
+            video: Some(CosmosVideoEnvelope {
+                url: Some("https://example.com/cosmos-prediction.mp4".to_string()),
+                fps: Some(12.0),
+                duration_seconds: Some(1.5),
+                resolution: Some([320, 180]),
+                frame_count: Some(2),
+                frames: vec![
+                    CosmosMediaFrame {
+                        index: Some(0),
+                        timestamp_seconds: Some(0.0),
+                        url: Some("https://example.com/frame-0.png".to_string()),
+                        data_url: None,
+                        prompt: Some("frame zero".to_string()),
+                        width: Some(320),
+                        height: Some(180),
+                    },
+                    CosmosMediaFrame {
+                        index: Some(1),
+                        timestamp_seconds: Some(0.5),
+                        url: None,
+                        data_url: Some("data:image/png;base64,frame-1".to_string()),
+                        prompt: Some("frame one".to_string()),
+                        width: Some(320),
+                        height: Some(180),
+                    },
+                ],
+                prompt: Some("predict a cube rolling".to_string()),
+                request_id: Some("550e8400-e29b-41d4-a716-446655440000".to_string()),
+                status: Some("completed".to_string()),
+            }),
+            media: None,
+            output: None,
+            result: None,
+            video_url: None,
+            media_url: None,
+            frames: Vec::new(),
+            reasoning: None,
+        };
+        let config = PredictionConfig {
+            return_video: true,
+            steps: 4,
+            resolution: (640, 360),
+            fps: 24.0,
+            ..Default::default()
+        };
+
+        let prediction =
+            build_prediction_from_response(&provider, &input_state, &action, &config, response, 17);
+
+        assert_eq!(
+            prediction.id.to_string(),
+            "550e8400-e29b-41d4-a716-446655440000"
+        );
+        assert_eq!(prediction.output_state.metadata.name, "output");
+        assert_eq!(prediction.confidence, 0.88);
+        assert_eq!(prediction.physics_scores.overall, 0.91);
+        assert_eq!(prediction.latency_ms, 42);
+        let clip = prediction
+            .video
+            .expect("expected response media to be materialized");
+        assert_eq!(clip.frames.len(), 2);
+        assert_eq!(clip.resolution, (320, 180));
+        assert!((clip.duration - 1.5).abs() < f64::EPSILON);
+        match &clip.frames[0].data.data {
+            TensorData::UInt8(bytes) => assert!(bytes.iter().any(|byte| *byte != 0)),
+            other => panic!("unexpected tensor data: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_build_video_clip_from_response_preserves_metadata() {
+        let response = CosmosVideoResponse {
+            request_id: Some("clip-request".to_string()),
+            status: Some("finished".to_string()),
+            model: Some("nvidia/cosmos-transfer-2.5".to_string()),
+            prompt: Some("transfer motion".to_string()),
+            negative_prompt: None,
+            fps: Some(15.0),
+            duration_seconds: Some(2.0),
+            resolution: Some([640, 360]),
+            frame_count: None,
+            video: None,
+            media: Some(CosmosVideoEnvelope {
+                url: Some("https://example.com/transfer.mp4".to_string()),
+                fps: Some(15.0),
+                duration_seconds: Some(2.0),
+                resolution: Some([640, 360]),
+                frame_count: Some(2),
+                frames: vec![CosmosMediaFrame {
+                    index: Some(0),
+                    timestamp_seconds: Some(0.0),
+                    url: Some("https://example.com/transfer-0.png".to_string()),
+                    data_url: None,
+                    prompt: Some("first frame".to_string()),
+                    width: Some(640),
+                    height: Some(360),
+                }],
+                prompt: Some("transfer motion".to_string()),
+                request_id: Some("clip-request".to_string()),
+                status: Some("finished".to_string()),
+            }),
+            output: None,
+            result: None,
+            video_url: None,
+            media_url: None,
+            frames: vec![CosmosMediaFrame {
+                index: Some(1),
+                timestamp_seconds: Some(1.0),
+                url: None,
+                data_url: Some("data:image/png;base64,transfer-1".to_string()),
+                prompt: Some("second frame".to_string()),
+                width: Some(640),
+                height: Some(360),
+            }],
+        };
+
+        let clip = build_video_clip_from_response(
+            response,
+            "transfer fallback".to_string(),
+            (1280, 720),
+            24.0,
+            4.0,
+        );
+
+        assert_eq!(clip.fps, 15.0);
+        assert_eq!(clip.resolution, (640, 360));
+        assert_eq!(clip.frames.len(), 2);
+        assert!((clip.duration - 2.0).abs() < f64::EPSILON);
+        match &clip.frames[1].data.data {
+            TensorData::UInt8(bytes) => assert!(bytes.iter().any(|byte| *byte != 0)),
+            other => panic!("unexpected tensor data: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_build_reasoning_output_from_response_collects_evidence() {
+        let response = CosmosReasoningResponse {
+            request_id: Some("reason-request".to_string()),
+            status: Some("ok".to_string()),
+            answer: None,
+            confidence: Some(0.77),
+            evidence: vec!["surface is stable".to_string()],
+            citations: vec!["frame-12".to_string()],
+            rationale: Some("The mug remains supported".to_string()),
+            summary: Some("stable mug".to_string()),
+            reasoning: Some(CosmosReasoningEnvelope {
+                answer: Some("The mug stays upright".to_string()),
+                confidence: Some(0.82),
+                evidence: vec!["support surface".to_string()],
+                citations: vec!["frame-1".to_string()],
+                rationale: None,
+                summary: None,
+            }),
+            output: None,
+            result: None,
+        };
+
+        let output = build_reasoning_output_from_response(response);
+        assert_eq!(output.answer, "The mug stays upright");
+        assert_eq!(output.confidence, 0.82);
+        assert!(output.evidence.iter().any(|item| item == "support surface"));
+        assert!(output.evidence.iter().any(|item| item == "frame-1"));
     }
 
     #[test]
