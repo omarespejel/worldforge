@@ -95,6 +95,24 @@ wf.save_world(world)
 same_world = wf.load_world(world.id)
 ```
 
+## Python Installation
+
+The Python bindings now ship as an installable package from this repository via
+[`maturin`](https://github.com/PyO3/maturin):
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+python -m unittest discover -s python/tests
+```
+
+This builds the `worldforge` extension module from
+[`crates/worldforge-python/Cargo.toml`](./crates/worldforge-python/Cargo.toml)
+using the root [`pyproject.toml`](./pyproject.toml). `pip install -e .` resolves
+the `maturin` build backend automatically, so no separate global install is
+required.
+
 ## Architecture
 
 ```
@@ -174,6 +192,12 @@ cargo run -p worldforge-cli -- serve --bind 127.0.0.1:8080
 
 # Or run the dedicated server binary
 cargo run -p worldforge-server -- --bind 127.0.0.1:8080 --state-dir .worldforge
+
+# Build and smoke-test the Python package
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+python -m unittest discover -s python/tests
 
 # Use auto-detected local JEPA weights from the CLI
 JEPA_MODEL_PATH=/path/to/v-jepa-2 cargo run -p worldforge-cli -- create --prompt "A lab bench" --provider jepa

@@ -11,6 +11,21 @@ Thank you for your interest in contributing to WorldForge!
 5. Lint: `cargo clippy`
 6. Format: `cargo fmt`
 
+### Python bindings
+
+The PyO3 module is packaged from the workspace root with `maturin` via
+[`pyproject.toml`](./pyproject.toml):
+
+1. Create a virtual environment: `python3 -m venv .venv`
+2. Activate it: `source .venv/bin/activate`
+3. Build an editable install: `pip install -e .`
+4. Run the installed-module smoke tests: `python -m unittest discover -s python/tests`
+
+The root [`pyproject.toml`](./pyproject.toml) points at
+`crates/worldforge-python/Cargo.toml`, so Python consumers can install the
+package without knowing the Rust crate layout. `pip` resolves the `maturin`
+build backend automatically during the editable install.
+
 ## Project Structure
 
 - `crates/worldforge-core/` - Core library (types, traits, state management)
