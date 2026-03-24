@@ -319,17 +319,20 @@ prediction, with comparison config exposed in the CLI, REST server, and Python
 bindings. Evaluation now
 supports built-in suite discovery, JSON-defined custom suites, provider
 selection, and aggregated leaderboard, provider, scenario, and dimension
-rollups. Scene object seeding and inspection are now exposed across the CLI and
-REST server as first-class operations instead of requiring direct JSON state
-editing, and Python scene objects can round-trip through JSON for interop with
-those workflows. Provider discovery now exposes capability metadata across the
-CLI, REST server, and Python bindings, and provider adapters' cost estimates
-are queryable end-to-end for predict, generate, reason, and transfer
-operations. Registry-level provider health reporting is now available across
-the core, CLI, REST server, and Python bindings, including optional live
-health data when listing providers. The Python bindings now reuse the shared
-Rust core facade for provider discovery, health checks, prediction comparison,
-and state persistence instead of duplicating orchestration logic.
+rollups. Custom suites can now assert concrete scene outcomes such as final
+object positions and semantic labels, and can score deterministic clips against
+optional ground-truth video references. Scene object seeding and inspection are
+now exposed across the CLI and REST server as first-class operations instead of
+requiring direct JSON state editing, and Python scene objects can round-trip
+through JSON for interop with those workflows. Provider discovery now exposes
+capability metadata across the CLI, REST server, and Python bindings, and
+provider adapters' cost estimates are queryable end-to-end for predict,
+generate, reason, and transfer operations. Registry-level provider health
+reporting is now available across the core, CLI, REST server, and Python
+bindings, including optional live health data when listing providers. The
+Python bindings now reuse the shared Rust core facade for provider discovery,
+health checks, prediction comparison, and state persistence instead of
+duplicating orchestration logic.
 The mock provider now serves as a higher-fidelity offline reference backend:
 object motion keeps bounding boxes and inferred relationships in sync,
 predictions can emit lightweight preview video/depth/segmentation outputs, and

@@ -15,7 +15,7 @@ use worldforge_core::error::{Result, WorldForgeError};
 use worldforge_core::prediction::{PhysicsScores, PredictionConfig};
 use worldforge_core::provider::WorldModelProvider;
 use worldforge_core::state::WorldState;
-use worldforge_core::types::VideoClip;
+use worldforge_core::types::{Position, Tensor, TensorData, VideoClip};
 
 const BUILTIN_SUITE_NAMES: [&str; 4] = ["physics", "manipulation", "spatial", "comprehensive"];
 
@@ -82,6 +82,22 @@ pub enum ExpectedOutcome {
     ObjectExists { name: String },
     /// An object should not exist in the scene.
     ObjectNotExists { name: String },
+    /// An object should end up near the target position.
+    ObjectPosition {
+        /// Human-readable object name.
+        name: String,
+        /// Expected world-space position.
+        position: Position,
+        /// Maximum allowed Euclidean distance from the target.
+        tolerance: f32,
+    },
+    /// An object should carry the expected semantic label.
+    ObjectSemanticLabel {
+        /// Human-readable object name.
+        name: String,
+        /// Expected semantic label value.
+        label: String,
+    },
     /// The minimum physics score threshold.
     MinPhysicsScore {
         dimension: EvalDimension,
@@ -89,6 +105,8 @@ pub enum ExpectedOutcome {
     },
     /// The prediction confidence should be above a threshold.
     MinConfidence { threshold: f32 },
+    /// The predicted clip should be sufficiently similar to the supplied ground truth.
+    MinVideoSimilarity { threshold: f32 },
 }
 
 /// A suite of evaluation scenarios.
@@ -113,8 +131,35 @@ pub struct EvalResult {
     pub scores: HashMap<String, f32>,
     /// Latency of the evaluation in milliseconds.
     pub latency_ms: u64,
+    /// Final predicted clip retained for this scenario, when requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub video: Option<VideoClip>,
+    /// Derived similarity metrics between the predicted clip and ground truth.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub video_metrics: Option<VideoMetrics>,
     /// Whether each expected outcome was met.
     pub outcomes: Vec<OutcomeResult>,
+}
+
+/// Ground-truth comparison metrics for a predicted clip.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VideoMetrics {
+    /// Aggregate similarity score across metadata and aligned frame content.
+    pub overall_similarity: f32,
+    /// Similarity of the declared resolution.
+    pub resolution_similarity: f32,
+    /// Similarity of the declared FPS.
+    pub fps_similarity: f32,
+    /// Similarity of the declared duration.
+    pub duration_similarity: f32,
+    /// Similarity of frame counts.
+    pub frame_count_similarity: f32,
+    /// Average similarity of aligned RGB frame tensors.
+    pub frame_similarity: Option<f32>,
+    /// Average similarity of aligned depth tensors when present in both clips.
+    pub depth_similarity: Option<f32>,
+    /// Average similarity of aligned segmentation tensors when present in both clips.
+    pub segmentation_similarity: Option<f32>,
 }
 
 /// Whether an expected outcome was met.
@@ -315,6 +360,17 @@ impl EvalSuite {
             if !seen_names.insert(scenario.name.as_str()) {
                 return Err(WorldForgeError::InvalidState(format!(
                     "duplicate evaluation scenario name: {}",
+                    scenario.name
+                )));
+            }
+            if scenario.ground_truth.is_none()
+                && scenario
+                    .expected_outcomes
+                    .iter()
+                    .any(|expected| matches!(expected, ExpectedOutcome::MinVideoSimilarity { .. }))
+            {
+                return Err(WorldForgeError::InvalidState(format!(
+                    "scenario '{}' uses video similarity checks but does not provide ground truth",
                     scenario.name
                 )));
             }
@@ -731,7 +787,6 @@ impl EvalSuite {
     /// Run the evaluation suite against a set of providers.
     pub async fn run(&self, providers: &[&dyn WorldModelProvider]) -> Result<EvalReport> {
         self.validate()?;
-        let config = PredictionConfig::default();
         let mut all_results = Vec::new();
 
         for provider in providers {
@@ -742,6 +797,8 @@ impl EvalSuite {
                         scenario: scenario.name.clone(),
                         scores: HashMap::new(),
                         latency_ms: 0,
+                        video: None,
+                        video_metrics: None,
                         outcomes: vec![OutcomeResult {
                             description: "provider supports prediction".to_string(),
                             passed: false,
@@ -757,6 +814,7 @@ impl EvalSuite {
 
             for scenario in &self.scenarios {
                 let start = std::time::Instant::now();
+                let config = prediction_config_for_scenario(scenario);
                 let mut score_accumulator = ScenarioAccumulator::default();
                 let mut outcomes = Vec::new();
 
@@ -787,6 +845,25 @@ impl EvalSuite {
                 if let Some(average_scores) = average_scores.as_ref() {
                     record_physics_scores(average_scores, &mut scores);
                 }
+                let predicted_video = if prediction_failed {
+                    None
+                } else {
+                    score_accumulator.final_video.clone()
+                };
+                let video_metrics = if prediction_failed {
+                    None
+                } else {
+                    predicted_video
+                        .as_ref()
+                        .zip(scenario.ground_truth.as_ref())
+                        .map(|(predicted, ground_truth)| {
+                            compare_video_clips(predicted, ground_truth)
+                        })
+                };
+                if let Some(metrics) = video_metrics.as_ref() {
+                    scores.insert("video_similarity".to_string(), metrics.overall_similarity);
+                }
+                ensure_overall_score(&mut scores);
 
                 if !prediction_failed {
                     for expected in &scenario.expected_outcomes {
@@ -795,6 +872,8 @@ impl EvalSuite {
                             &current_state,
                             average_scores.as_ref(),
                             average_confidence,
+                            scenario.ground_truth.as_ref(),
+                            video_metrics.as_ref(),
                         ));
                     }
                 }
@@ -804,6 +883,8 @@ impl EvalSuite {
                     scenario: scenario.name.clone(),
                     scores,
                     latency_ms: start.elapsed().as_millis() as u64,
+                    video: predicted_video,
+                    video_metrics,
                     outcomes,
                 });
             }
@@ -838,6 +919,7 @@ struct ScenarioAccumulator {
     physics: PhysicsScoreAccumulator,
     total_confidence: f32,
     count: usize,
+    final_video: Option<VideoClip>,
 }
 
 impl ScenarioAccumulator {
@@ -845,6 +927,9 @@ impl ScenarioAccumulator {
         self.physics.record(&prediction.physics_scores);
         self.total_confidence += prediction.confidence;
         self.count += 1;
+        if let Some(video) = &prediction.video {
+            self.final_video = Some(video.clone());
+        }
     }
 
     fn average_scores(&self) -> Option<PhysicsScores> {
@@ -905,11 +990,48 @@ fn record_physics_scores(scores: &PhysicsScores, map: &mut HashMap<String, f32>)
     );
 }
 
+fn prediction_config_for_scenario(scenario: &EvalScenario) -> PredictionConfig {
+    let needs_video = scenario_requires_video_artifacts(scenario);
+    PredictionConfig {
+        return_video: needs_video,
+        return_depth: scenario
+            .ground_truth
+            .as_ref()
+            .is_some_and(video_has_depth_maps),
+        return_segmentation: scenario
+            .ground_truth
+            .as_ref()
+            .is_some_and(video_has_segmentation_maps),
+        ..PredictionConfig::default()
+    }
+}
+
+fn scenario_requires_video_artifacts(scenario: &EvalScenario) -> bool {
+    scenario.ground_truth.is_some()
+        || scenario
+            .expected_outcomes
+            .iter()
+            .any(|expected| matches!(expected, ExpectedOutcome::MinVideoSimilarity { .. }))
+}
+
+fn video_has_depth_maps(video: &VideoClip) -> bool {
+    video.frames.iter().any(|frame| frame.depth.is_some())
+}
+
+fn video_has_segmentation_maps(video: &VideoClip) -> bool {
+    video
+        .frames
+        .iter()
+        .any(|frame| frame.segmentation.is_some())
+}
+
 fn check_outcome(
     expected: &ExpectedOutcome,
     state: &WorldState,
     average_scores: Option<&PhysicsScores>,
     average_confidence: Option<f32>,
+    ground_truth: Option<&VideoClip>,
+    video_metrics: Option<&VideoMetrics>,
 ) -> OutcomeResult {
     match expected {
         ExpectedOutcome::MinPhysicsScore {
@@ -965,6 +1087,242 @@ fn check_outcome(
                 details: None,
             }
         }
+        ExpectedOutcome::ObjectPosition {
+            name,
+            position,
+            tolerance,
+        } => match state
+            .scene
+            .objects
+            .values()
+            .find(|object| object.name == *name)
+        {
+            Some(object) => {
+                let distance = object.pose.position.distance(*position);
+                OutcomeResult {
+                    description: format!("object '{name}' is within {tolerance}m of target"),
+                    passed: distance <= *tolerance,
+                    details: Some(format!(
+                        "actual=({:.3}, {:.3}, {:.3}), expected=({:.3}, {:.3}, {:.3}), distance={distance:.3}",
+                        object.pose.position.x,
+                        object.pose.position.y,
+                        object.pose.position.z,
+                        position.x,
+                        position.y,
+                        position.z,
+                    )),
+                }
+            }
+            None => OutcomeResult {
+                description: format!("object '{name}' is within {tolerance}m of target"),
+                passed: false,
+                details: Some("object not found".to_string()),
+            },
+        },
+        ExpectedOutcome::ObjectSemanticLabel { name, label } => {
+            match state
+                .scene
+                .objects
+                .values()
+                .find(|object| object.name == *name)
+            {
+                Some(object) => {
+                    let actual = object.semantic_label.as_deref();
+                    OutcomeResult {
+                        description: format!("object '{name}' has semantic label '{label}'"),
+                        passed: actual == Some(label.as_str()),
+                        details: Some(format!("actual label: {}", actual.unwrap_or("<missing>"))),
+                    }
+                }
+                None => OutcomeResult {
+                    description: format!("object '{name}' has semantic label '{label}'"),
+                    passed: false,
+                    details: Some("object not found".to_string()),
+                },
+            }
+        }
+        ExpectedOutcome::MinVideoSimilarity { threshold } => match (ground_truth, video_metrics) {
+            (None, _) => OutcomeResult {
+                description: format!("video similarity >= {threshold}"),
+                passed: false,
+                details: Some("scenario does not define ground truth video".to_string()),
+            },
+            (Some(_), Some(metrics)) => OutcomeResult {
+                description: format!("video similarity >= {threshold}"),
+                passed: metrics.overall_similarity >= *threshold,
+                details: Some(format!(
+                    "video similarity: {:.3}",
+                    metrics.overall_similarity
+                )),
+            },
+            (Some(_), None) => OutcomeResult {
+                description: format!("video similarity >= {threshold}"),
+                passed: false,
+                details: Some("provider did not return a comparable video clip".to_string()),
+            },
+        },
+    }
+}
+
+fn ensure_overall_score(scores: &mut HashMap<String, f32>) {
+    if scores.contains_key("overall") || scores.is_empty() {
+        return;
+    }
+
+    let total: f32 = scores.values().copied().sum();
+    scores.insert("overall".to_string(), total / scores.len() as f32);
+}
+
+fn compare_video_clips(predicted: &VideoClip, ground_truth: &VideoClip) -> VideoMetrics {
+    let resolution_similarity = resolution_similarity(predicted, ground_truth);
+    let fps_similarity = ratio_similarity(predicted.fps as f64, ground_truth.fps as f64);
+    let duration_similarity = ratio_similarity(predicted.duration, ground_truth.duration);
+    let frame_count_similarity =
+        count_similarity(predicted.frames.len(), ground_truth.frames.len());
+    let frame_similarity = average_frame_similarity(predicted, ground_truth, |pred, truth| {
+        tensor_similarity(&pred.data, &truth.data)
+    });
+    let depth_similarity = average_frame_similarity(predicted, ground_truth, |pred, truth| {
+        pred.depth
+            .as_ref()
+            .zip(truth.depth.as_ref())
+            .and_then(|(left, right)| tensor_similarity(left, right))
+    });
+    let segmentation_similarity =
+        average_frame_similarity(predicted, ground_truth, |pred, truth| {
+            pred.segmentation
+                .as_ref()
+                .zip(truth.segmentation.as_ref())
+                .and_then(|(left, right)| tensor_similarity(left, right))
+        });
+
+    let mut components = vec![
+        resolution_similarity,
+        fps_similarity,
+        duration_similarity,
+        frame_count_similarity,
+    ];
+    if let Some(score) = frame_similarity {
+        components.push(score);
+    }
+    if let Some(score) = depth_similarity {
+        components.push(score);
+    }
+    if let Some(score) = segmentation_similarity {
+        components.push(score);
+    }
+    let overall_similarity = if components.is_empty() {
+        0.0
+    } else {
+        components.iter().copied().sum::<f32>() / components.len() as f32
+    };
+
+    VideoMetrics {
+        overall_similarity,
+        resolution_similarity,
+        fps_similarity,
+        duration_similarity,
+        frame_count_similarity,
+        frame_similarity,
+        depth_similarity,
+        segmentation_similarity,
+    }
+}
+
+fn resolution_similarity(predicted: &VideoClip, ground_truth: &VideoClip) -> f32 {
+    let width = ratio_similarity(
+        predicted.resolution.0 as f64,
+        ground_truth.resolution.0 as f64,
+    );
+    let height = ratio_similarity(
+        predicted.resolution.1 as f64,
+        ground_truth.resolution.1 as f64,
+    );
+    (width + height) / 2.0
+}
+
+fn ratio_similarity(left: f64, right: f64) -> f32 {
+    if left == 0.0 && right == 0.0 {
+        return 1.0;
+    }
+
+    let baseline = left.abs().max(right.abs()).max(1.0);
+    (1.0 - ((left - right).abs() / baseline) as f32).clamp(0.0, 1.0)
+}
+
+fn count_similarity(left: usize, right: usize) -> f32 {
+    ratio_similarity(left as f64, right as f64)
+}
+
+fn average_frame_similarity(
+    predicted: &VideoClip,
+    ground_truth: &VideoClip,
+    cmp: impl Fn(&worldforge_core::types::Frame, &worldforge_core::types::Frame) -> Option<f32>,
+) -> Option<f32> {
+    let frame_count = predicted.frames.len().min(ground_truth.frames.len());
+    if frame_count == 0 {
+        return None;
+    }
+
+    let sample_count = frame_count.min(8);
+    let mut total = 0.0;
+    let mut seen = 0usize;
+    for sample_index in 0..sample_count {
+        let frame_index = sample_index * frame_count / sample_count;
+        if let Some(score) = cmp(
+            &predicted.frames[frame_index],
+            &ground_truth.frames[frame_index],
+        ) {
+            total += score;
+            seen += 1;
+        }
+    }
+
+    (seen > 0).then_some(total / seen as f32)
+}
+
+fn tensor_similarity(left: &Tensor, right: &Tensor) -> Option<f32> {
+    if left.shape != right.shape {
+        return Some(0.0);
+    }
+
+    let left_values = tensor_values(&left.data);
+    let right_values = tensor_values(&right.data);
+    let value_count = left_values.len().min(right_values.len());
+    if value_count == 0 {
+        return Some(1.0);
+    }
+
+    let baseline = left_values
+        .iter()
+        .chain(right_values.iter())
+        .map(|value| value.abs())
+        .fold(0.0f64, f64::max)
+        .max(default_tensor_scale(left))
+        .max(default_tensor_scale(right));
+    let total_error = left_values
+        .iter()
+        .zip(right_values.iter())
+        .take(value_count)
+        .map(|(lhs, rhs)| (lhs - rhs).abs())
+        .sum::<f64>();
+    Some((1.0 - (total_error / value_count as f64 / baseline) as f32).clamp(0.0, 1.0))
+}
+
+fn tensor_values(data: &TensorData) -> Vec<f64> {
+    match data {
+        TensorData::Float32(values) => values.iter().map(|value| *value as f64).collect(),
+        TensorData::Float64(values) => values.clone(),
+        TensorData::UInt8(values) => values.iter().map(|value| *value as f64).collect(),
+        TensorData::Int32(values) => values.iter().map(|value| *value as f64).collect(),
+        TensorData::Int64(values) => values.iter().map(|value| *value as f64).collect(),
+    }
+}
+
+fn default_tensor_scale(tensor: &Tensor) -> f64 {
+    match tensor.dtype {
+        worldforge_core::types::DType::UInt8 => 255.0,
+        _ => 1.0,
     }
 }
 
@@ -1190,6 +1548,7 @@ mod tests {
         CostEstimate, GenerationConfig, GenerationPrompt, HealthStatus, LatencyProfile, Operation,
         ProviderCapabilities, ReasoningInput, ReasoningOutput, SpatialControls, TransferConfig,
     };
+    use worldforge_core::types::{BBox, DType, Device, Frame, Pose, SimTime, Tensor, TensorData};
     use worldforge_providers::MockProvider;
 
     #[derive(Debug)]
@@ -1204,6 +1563,94 @@ mod tests {
                 name: name.to_string(),
                 steps: Mutex::new(steps),
             }
+        }
+    }
+
+    #[derive(Debug)]
+    struct VisualFixtureProvider {
+        name: String,
+        output_state: WorldState,
+        video: VideoClip,
+        last_config: Mutex<Option<PredictionConfig>>,
+    }
+
+    impl VisualFixtureProvider {
+        fn new(name: &str, output_state: WorldState, video: VideoClip) -> Self {
+            Self {
+                name: name.to_string(),
+                output_state,
+                video,
+                last_config: Mutex::new(None),
+            }
+        }
+
+        fn last_config(&self) -> Option<PredictionConfig> {
+            self.last_config
+                .lock()
+                .expect("fixture config poisoned")
+                .clone()
+        }
+    }
+
+    fn visual_fixture_state(position: Position, semantic_label: Option<&str>) -> WorldState {
+        use worldforge_core::scene::SceneObject;
+
+        let mut state = WorldState::new("visual-fixture", "eval");
+        let mut mug = SceneObject::new(
+            "mug",
+            Pose {
+                position,
+                ..Default::default()
+            },
+            BBox {
+                min: Position {
+                    x: position.x - 0.05,
+                    y: position.y - 0.05,
+                    z: position.z - 0.05,
+                },
+                max: Position {
+                    x: position.x + 0.05,
+                    y: position.y + 0.05,
+                    z: position.z + 0.05,
+                },
+            },
+        );
+        mug.semantic_label = semantic_label.map(ToOwned::to_owned);
+        state.scene.add_object(mug);
+        state
+    }
+
+    fn visual_fixture_clip() -> VideoClip {
+        VideoClip {
+            frames: vec![Frame {
+                data: Tensor {
+                    data: TensorData::Float32(vec![0.1, 0.2, 0.3]),
+                    shape: vec![1, 1, 3],
+                    dtype: DType::Float32,
+                    device: Device::Cpu,
+                },
+                timestamp: SimTime {
+                    step: 0,
+                    seconds: 0.0,
+                    dt: 0.0,
+                },
+                camera: None,
+                depth: Some(Tensor {
+                    data: TensorData::Float32(vec![0.5]),
+                    shape: vec![1, 1],
+                    dtype: DType::Float32,
+                    device: Device::Cpu,
+                }),
+                segmentation: Some(Tensor {
+                    data: TensorData::UInt8(vec![7]),
+                    shape: vec![1, 1],
+                    dtype: DType::UInt8,
+                    device: Device::Cpu,
+                }),
+            }],
+            fps: 24.0,
+            resolution: (1, 1),
+            duration: 0.5,
         }
     }
 
@@ -1258,6 +1705,111 @@ mod tests {
                 video: None,
                 confidence,
                 physics_scores,
+                latency_ms: 1,
+                cost: CostEstimate::default(),
+                guardrail_results: Vec::new(),
+                timestamp: chrono::Utc::now(),
+            })
+        }
+
+        async fn generate(
+            &self,
+            _prompt: &GenerationPrompt,
+            _config: &GenerationConfig,
+        ) -> Result<VideoClip> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.clone(),
+                capability: "generate".to_string(),
+            })
+        }
+
+        async fn reason(&self, _input: &ReasoningInput, _query: &str) -> Result<ReasoningOutput> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.clone(),
+                capability: "reason".to_string(),
+            })
+        }
+
+        async fn transfer(
+            &self,
+            _source: &VideoClip,
+            _controls: &SpatialControls,
+            _config: &TransferConfig,
+        ) -> Result<VideoClip> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.clone(),
+                capability: "transfer".to_string(),
+            })
+        }
+
+        async fn health_check(&self) -> Result<HealthStatus> {
+            Ok(HealthStatus {
+                healthy: true,
+                message: "healthy".to_string(),
+                latency_ms: 1,
+            })
+        }
+
+        fn estimate_cost(&self, _operation: &Operation) -> CostEstimate {
+            CostEstimate::default()
+        }
+    }
+
+    #[async_trait]
+    impl WorldModelProvider for VisualFixtureProvider {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities {
+                predict: true,
+                generate: false,
+                reason: false,
+                transfer: false,
+                action_conditioned: true,
+                multi_view: false,
+                max_video_length_seconds: 10.0,
+                max_resolution: (1, 1),
+                fps_range: (24.0, 24.0),
+                supported_action_spaces: Vec::new(),
+                supports_depth: true,
+                supports_segmentation: true,
+                supports_planning: false,
+                latency_profile: LatencyProfile {
+                    p50_ms: 1,
+                    p95_ms: 1,
+                    p99_ms: 1,
+                    throughput_fps: 1.0,
+                },
+            }
+        }
+
+        async fn predict(
+            &self,
+            state: &WorldState,
+            action: &Action,
+            config: &PredictionConfig,
+        ) -> Result<Prediction> {
+            *self.last_config.lock().expect("fixture config poisoned") = Some(config.clone());
+
+            Ok(Prediction {
+                id: uuid::Uuid::new_v4(),
+                provider: self.name.clone(),
+                model: "visual-fixture".to_string(),
+                input_state: state.clone(),
+                action: action.clone(),
+                output_state: self.output_state.clone(),
+                video: config.return_video.then_some(self.video.clone()),
+                confidence: 0.95,
+                physics_scores: PhysicsScores {
+                    overall: 0.92,
+                    object_permanence: 0.9,
+                    gravity_compliance: 0.91,
+                    collision_accuracy: 0.92,
+                    spatial_consistency: 0.93,
+                    temporal_consistency: 0.94,
+                },
                 latency_ms: 1,
                 cost: CostEstimate::default(),
                 guardrail_results: Vec::new(),
@@ -1535,6 +2087,107 @@ mod tests {
         assert!(result.outcomes.iter().all(|outcome| outcome.passed));
     }
 
+    #[tokio::test]
+    async fn test_object_position_and_label_outcomes_pass_for_mock_provider() {
+        let mut initial_state = WorldState::new("scene_assertions", "mock");
+        let target = Position {
+            x: 0.4,
+            y: 0.8,
+            z: 0.1,
+        };
+        let mut object = worldforge_core::scene::SceneObject::new(
+            "red_mug",
+            worldforge_core::types::Pose::default(),
+            worldforge_core::types::BBox::from_center_half_extents(
+                Position::default(),
+                worldforge_core::types::Vec3 {
+                    x: 0.05,
+                    y: 0.05,
+                    z: 0.05,
+                },
+            ),
+        );
+        object.semantic_label = Some("mug".to_string());
+        initial_state.scene.add_object(object);
+
+        let suite = EvalSuite {
+            name: "Scene Assertions".to_string(),
+            scenarios: vec![EvalScenario {
+                name: "move_and_check".to_string(),
+                description: "Move a labeled object and verify the final scene".to_string(),
+                initial_state,
+                actions: vec![Action::Move { target, speed: 1.0 }],
+                expected_outcomes: vec![
+                    ExpectedOutcome::ObjectExists {
+                        name: "red_mug".to_string(),
+                    },
+                    ExpectedOutcome::ObjectPosition {
+                        name: "red_mug".to_string(),
+                        position: target,
+                        tolerance: 0.001,
+                    },
+                    ExpectedOutcome::ObjectSemanticLabel {
+                        name: "red_mug".to_string(),
+                        label: "mug".to_string(),
+                    },
+                ],
+                ground_truth: None,
+            }],
+            dimensions: vec![EvalDimension::ActionPredictionAccuracy],
+        };
+        let provider = MockProvider::new();
+        let report = suite
+            .run(&[&provider as &dyn WorldModelProvider])
+            .await
+            .unwrap();
+        let result = &report.results[0];
+
+        assert!(result.outcomes.iter().all(|outcome| outcome.passed));
+    }
+
+    #[tokio::test]
+    async fn test_ground_truth_video_similarity_is_reported() {
+        let provider = MockProvider::new();
+        let state = WorldState::new("ground_truth_video", "mock");
+        let action = Action::SetLighting { time_of_day: 0.4 };
+        let config = PredictionConfig {
+            return_video: true,
+            ..PredictionConfig::default()
+        };
+        let prediction = provider.predict(&state, &action, &config).await.unwrap();
+        let ground_truth = prediction.video.clone().unwrap();
+
+        let suite = EvalSuite {
+            name: "Ground Truth Video".to_string(),
+            scenarios: vec![EvalScenario {
+                name: "video_match".to_string(),
+                description: "Compare the generated clip against known ground truth".to_string(),
+                initial_state: state,
+                actions: vec![action],
+                expected_outcomes: vec![ExpectedOutcome::MinVideoSimilarity { threshold: 0.95 }],
+                ground_truth: Some(ground_truth),
+            }],
+            dimensions: vec![EvalDimension::Custom {
+                name: "video_similarity".to_string(),
+            }],
+        };
+
+        let report = suite
+            .run(&[&provider as &dyn WorldModelProvider])
+            .await
+            .unwrap();
+        let result = &report.results[0];
+
+        assert!(result.video.is_some());
+        assert!(result.video_metrics.is_some());
+        assert!(result.scores["video_similarity"] >= 0.95);
+        assert!(result.outcomes.iter().all(|outcome| outcome.passed));
+        assert_eq!(
+            report.dimension_summaries[0].best_provider.as_deref(),
+            Some("mock")
+        );
+    }
+
     #[test]
     fn test_validate_rejects_duplicate_scenario_names() {
         let suite = EvalSuite {
@@ -1561,5 +2214,104 @@ mod tests {
         };
 
         assert!(suite.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_rejects_video_similarity_without_ground_truth() {
+        let suite = EvalSuite {
+            name: "video-bad".to_string(),
+            scenarios: vec![EvalScenario {
+                name: "needs_video".to_string(),
+                description: "requires a reference clip".to_string(),
+                initial_state: WorldState::new("needs_video", "eval"),
+                actions: vec![],
+                expected_outcomes: vec![ExpectedOutcome::MinVideoSimilarity { threshold: 0.9 }],
+                ground_truth: None,
+            }],
+            dimensions: vec![EvalDimension::SpatialConsistency],
+        };
+
+        assert!(suite.validate().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_visual_scenario_requests_and_scores_video_artifacts() {
+        let target = Position {
+            x: 1.0,
+            y: 2.0,
+            z: 3.0,
+        };
+        let ground_truth = visual_fixture_clip();
+        let suite = EvalSuite {
+            name: "visual-fixture".to_string(),
+            scenarios: vec![EvalScenario {
+                name: "mug_alignment".to_string(),
+                description: "The mug should move to the target pose and preserve its label"
+                    .to_string(),
+                initial_state: visual_fixture_state(
+                    Position {
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    },
+                    Some("cup"),
+                ),
+                actions: vec![Action::Move { target, speed: 1.0 }],
+                expected_outcomes: vec![
+                    ExpectedOutcome::ObjectPosition {
+                        name: "mug".to_string(),
+                        position: target,
+                        tolerance: 0.001,
+                    },
+                    ExpectedOutcome::ObjectSemanticLabel {
+                        name: "mug".to_string(),
+                        label: "mug".to_string(),
+                    },
+                    ExpectedOutcome::MinVideoSimilarity { threshold: 0.99 },
+                ],
+                ground_truth: Some(ground_truth.clone()),
+            }],
+            dimensions: vec![EvalDimension::SpatialConsistency],
+        };
+        let provider = VisualFixtureProvider::new(
+            "visual-fixture",
+            visual_fixture_state(target, Some("mug")),
+            ground_truth,
+        );
+
+        let report = suite
+            .run(&[&provider as &dyn WorldModelProvider])
+            .await
+            .unwrap();
+        let result = &report.results[0];
+        let last_config = provider.last_config().expect("config should be captured");
+
+        assert!(last_config.return_video);
+        assert!(last_config.return_depth);
+        assert!(last_config.return_segmentation);
+        assert!(result.video.is_some());
+        assert!(result.video_metrics.is_some());
+        assert_eq!(
+            result.video_metrics.as_ref().unwrap().overall_similarity,
+            1.0
+        );
+        assert_eq!(result.scores["video_similarity"], 1.0);
+        assert_eq!(
+            result.video_metrics.as_ref().unwrap().frame_similarity,
+            Some(1.0)
+        );
+        assert_eq!(
+            result.video_metrics.as_ref().unwrap().depth_similarity,
+            Some(1.0)
+        );
+        assert_eq!(
+            result
+                .video_metrics
+                .as_ref()
+                .unwrap()
+                .segmentation_similarity,
+            Some(1.0)
+        );
+        assert!(result.outcomes.iter().all(|outcome| outcome.passed));
     }
 }
