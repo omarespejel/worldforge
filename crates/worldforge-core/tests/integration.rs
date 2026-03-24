@@ -3,19 +3,40 @@
 //! Tests the end-to-end flow from WorldForge creation through
 //! world state management, scene manipulation, and state persistence.
 
+use std::sync::Arc;
 use worldforge_core::action::Action;
 use worldforge_core::error::WorldForgeError;
 use worldforge_core::guardrail::{
     evaluate_guardrails, has_blocking_violation, Guardrail, GuardrailConfig,
 };
 use worldforge_core::prediction::PredictionConfig;
+use worldforge_core::provider::Operation;
+use worldforge_core::provider::WorldModelProvider;
 use worldforge_core::scene::{PhysicsProperties, SceneObject};
-use worldforge_core::state::{FileStateStore, StateStore, WorldState};
+use worldforge_core::state::{DynStateStore, FileStateStore, StateStore, WorldState};
 use worldforge_core::types::{BBox, Pose, Position};
+use worldforge_core::WorldForge;
+use worldforge_providers::MockProvider;
 
 // ---------------------------------------------------------------------------
 // State persistence integration tests
 // ---------------------------------------------------------------------------
+
+fn worldforge_with_mock_provider() -> WorldForge {
+    let mut worldforge = WorldForge::new();
+    worldforge
+        .register_provider(Box::new(MockProvider::new()))
+        .unwrap();
+    worldforge
+}
+
+fn worldforge_with_mock_provider_and_store(store: DynStateStore) -> WorldForge {
+    let mut worldforge = WorldForge::with_state_store(store);
+    worldforge
+        .register_provider(Box::new(MockProvider::new()))
+        .unwrap();
+    worldforge
+}
 
 #[tokio::test]
 async fn test_state_store_save_load_roundtrip() {
@@ -99,6 +120,169 @@ async fn test_state_store_save_load_roundtrip() {
     assert!(store.load(&id).await.is_err());
 
     let _ = tokio::fs::remove_dir_all(&dir).await;
+}
+
+// ---------------------------------------------------------------------------
+// WorldForge facade integration tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_worldforge_provider_facade_and_cost_estimation() {
+    let worldforge = worldforge_with_mock_provider();
+
+    let infos = worldforge.provider_infos(Some("predict"));
+    assert_eq!(infos.len(), 1);
+    assert_eq!(infos[0].name, "mock");
+    assert!(infos[0].capabilities.predict);
+
+    let info = worldforge.provider_info("mock").unwrap();
+    assert_eq!(info.name, "mock");
+    assert!(info.capabilities.generate);
+
+    let cost = worldforge
+        .estimate_cost(
+            "mock",
+            &Operation::Predict {
+                steps: 4,
+                resolution: (640, 360),
+            },
+        )
+        .unwrap();
+    assert_eq!(cost.usd, 0.0);
+    assert_eq!(cost.estimated_latency_ms, 10);
+}
+
+#[tokio::test]
+async fn test_worldforge_provider_health_facade() {
+    let worldforge = worldforge_with_mock_provider();
+
+    let report = worldforge.provider_health("mock").await.unwrap();
+    assert_eq!(report.name, "mock");
+    assert!(report.is_healthy());
+
+    let reports = worldforge.provider_healths(Some("predict")).await;
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0].name, "mock");
+    assert!(reports[0].is_healthy());
+}
+
+#[tokio::test]
+async fn test_worldforge_compare_facade() {
+    let worldforge = worldforge_with_mock_provider();
+    let provider = MockProvider::new();
+    let state = WorldState::new("compare-test", "mock");
+    let action = Action::Move {
+        target: Position {
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        speed: 1.0,
+    };
+    let config = PredictionConfig::default();
+
+    let template = provider.predict(&state, &action, &config).await.unwrap();
+
+    let mut weaker = template.clone();
+    weaker.provider = "mock-low".to_string();
+    weaker.physics_scores.overall = 0.25;
+
+    let mut stronger = template;
+    stronger.provider = "mock-high".to_string();
+    stronger.physics_scores.overall = 0.95;
+
+    let comparison = worldforge.compare(vec![weaker, stronger]).unwrap();
+    assert_eq!(comparison.predictions.len(), 2);
+    assert_eq!(comparison.best_prediction, 1);
+    assert_eq!(
+        comparison.comparison.summary,
+        "Compared 2 providers, best: mock-high"
+    );
+}
+
+#[tokio::test]
+async fn test_worldforge_state_store_facade_roundtrip() {
+    let dir = std::env::temp_dir().join(format!("wf-core-facade-{}", uuid::Uuid::new_v4()));
+    let store: DynStateStore = Arc::new(FileStateStore::new(&dir));
+    let worldforge = worldforge_with_mock_provider_and_store(store);
+
+    let mut world = worldforge.create_world("facade-roundtrip", "mock").unwrap();
+    let object = SceneObject::new(
+        "mug",
+        Pose {
+            position: Position {
+                x: 0.5,
+                y: 1.25,
+                z: 0.0,
+            },
+            ..Pose::default()
+        },
+        BBox {
+            min: Position {
+                x: 0.4,
+                y: 1.15,
+                z: -0.1,
+            },
+            max: Position {
+                x: 0.6,
+                y: 1.35,
+                z: 0.1,
+            },
+        },
+    );
+    let object_id = object.id;
+    world.add_object(object).unwrap();
+
+    let saved_id = worldforge.save_world(&world).await.unwrap();
+    assert_eq!(saved_id, world.id());
+
+    let saved_state_id = worldforge.save_state(&world.state).await.unwrap();
+    assert_eq!(saved_state_id, world.id());
+
+    let loaded_state = worldforge.load_state(&saved_id).await.unwrap();
+    assert_eq!(loaded_state.id, saved_id);
+    assert_eq!(loaded_state.metadata.name, "facade-roundtrip");
+    assert_eq!(loaded_state.metadata.created_by, "mock");
+    assert_eq!(loaded_state.scene.objects.len(), 1);
+    assert!(loaded_state.scene.get_object(&object_id).is_some());
+
+    let loaded_world = worldforge.load_world_from_store(&saved_id).await.unwrap();
+    assert_eq!(loaded_world.id(), saved_id);
+    assert_eq!(loaded_world.default_provider, "mock");
+    assert_eq!(loaded_world.state.metadata.created_by, "mock");
+
+    let ids = worldforge.list_worlds().await.unwrap();
+    assert_eq!(ids, vec![saved_id]);
+
+    worldforge.delete_world(&saved_id).await.unwrap();
+    assert!(worldforge.list_worlds().await.unwrap().is_empty());
+    assert!(worldforge.load_state(&saved_id).await.is_err());
+
+    let _ = tokio::fs::remove_dir_all(&dir).await;
+}
+
+#[tokio::test]
+async fn test_worldforge_persistence_requires_configured_store() {
+    let worldforge = worldforge_with_mock_provider();
+    let state = WorldState::new("no-store", "mock");
+
+    let save_error = worldforge.save_state(&state).await.unwrap_err();
+    assert!(matches!(
+        save_error,
+        WorldForgeError::InvalidState(message) if message.contains("state store")
+    ));
+
+    let load_error = worldforge.load_state(&state.id).await.unwrap_err();
+    assert!(matches!(
+        load_error,
+        WorldForgeError::InvalidState(message) if message.contains("state store")
+    ));
+
+    let list_error = worldforge.list_worlds().await.unwrap_err();
+    assert!(matches!(
+        list_error,
+        WorldForgeError::InvalidState(message) if message.contains("state store")
+    ));
 }
 
 #[tokio::test]
