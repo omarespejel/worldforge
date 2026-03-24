@@ -16,6 +16,84 @@ use crate::error::{Result, WorldForgeError};
 use crate::scene::SceneGraph;
 use crate::types::{SimTime, WorldId};
 
+const SHA256_INITIAL_STATE: [u32; 8] = [
+    0x6a09e667,
+    0xbb67ae85,
+    0x3c6ef372,
+    0xa54ff53a,
+    0x510e527f,
+    0x9b05688c,
+    0x1f83d9ab,
+    0x5be0cd19,
+];
+
+const SHA256_ROUND_CONSTANTS: [u32; 64] = [
+    0x428a2f98,
+    0x71374491,
+    0xb5c0fbcf,
+    0xe9b5dba5,
+    0x3956c25b,
+    0x59f111f1,
+    0x923f82a4,
+    0xab1c5ed5,
+    0xd807aa98,
+    0x12835b01,
+    0x243185be,
+    0x550c7dc3,
+    0x72be5d74,
+    0x80deb1fe,
+    0x9bdc06a7,
+    0xc19bf174,
+    0xe49b69c1,
+    0xefbe4786,
+    0x0fc19dc6,
+    0x240ca1cc,
+    0x2de92c6f,
+    0x4a7484aa,
+    0x5cb0a9dc,
+    0x76f988da,
+    0x983e5152,
+    0xa831c66d,
+    0xb00327c8,
+    0xbf597fc7,
+    0xc6e00bf3,
+    0xd5a79147,
+    0x06ca6351,
+    0x14292967,
+    0x27b70a85,
+    0x2e1b2138,
+    0x4d2c6dfc,
+    0x53380d13,
+    0x650a7354,
+    0x766a0abb,
+    0x81c2c92e,
+    0x92722c85,
+    0xa2bfe8a1,
+    0xa81a664b,
+    0xc24b8b70,
+    0xc76c51a3,
+    0xd192e819,
+    0xd6990624,
+    0xf40e3585,
+    0x106aa070,
+    0x19a4c116,
+    0x1e376c08,
+    0x2748774c,
+    0x34b0bcb5,
+    0x391c0cb3,
+    0x4ed8aa4a,
+    0x5b9cca4f,
+    0x682e6ff3,
+    0x748f82ee,
+    0x78a5636f,
+    0x84c87814,
+    0x8cc70208,
+    0x90befffa,
+    0xa4506ceb,
+    0xbef9a3f7,
+    0xc67178f2,
+];
+
 /// Complete state of a world instance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorldState {
@@ -62,7 +140,7 @@ pub struct StateHistory {
 pub struct HistoryEntry {
     /// Simulation time of this entry.
     pub time: SimTime,
-    /// Fingerprint of the serialized state (non-cryptographic).
+    /// SHA-256 fingerprint of the serialized state snapshot.
     pub state_hash: [u8; 32],
     /// Action that caused this transition (if any).
     pub action: Option<Action>,
@@ -147,6 +225,158 @@ impl WorldState {
             },
         }
     }
+
+    /// Return the provider most likely responsible for the current state snapshot.
+    pub fn current_state_provider(&self) -> String {
+        self.history
+            .latest()
+            .map(|entry| entry.provider.clone())
+            .filter(|provider| !provider.is_empty())
+            .unwrap_or_else(|| self.metadata.created_by.clone())
+    }
+
+    /// Record the current state as a history checkpoint.
+    pub fn record_current_state(
+        &mut self,
+        action: Option<Action>,
+        prediction: Option<PredictionSummary>,
+        provider: impl Into<String>,
+    ) -> Result<()> {
+        let state_hash = canonical_state_hash(self)?;
+        self.history.push(HistoryEntry {
+            time: self.time,
+            state_hash,
+            action,
+            prediction,
+            provider: provider.into(),
+        });
+        Ok(())
+    }
+
+    /// Ensure the initial snapshot exists in history.
+    pub fn ensure_history_initialized(&mut self, provider: impl Into<String>) -> Result<bool> {
+        if self.history.is_empty() {
+            self.record_current_state(None, None, provider)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Ensure the current state matches the latest history entry.
+    ///
+    /// This repairs legacy states whose last checkpoint was recorded with the
+    /// previous non-canonical hash format before a new provider transition is appended.
+    pub fn ensure_current_state_recorded(&mut self, provider: impl Into<String>) -> Result<bool> {
+        if current_state_matches_latest_history(self)? {
+            return Ok(false);
+        }
+
+        self.record_current_state(None, None, provider)?;
+        Ok(true)
+    }
+}
+
+/// Compute the SHA-256 hash of a byte slice.
+pub fn sha256_hash(data: &[u8]) -> [u8; 32] {
+    let mut message = data.to_vec();
+    let bit_len = (message.len() as u64) * 8;
+    message.push(0x80);
+    while (message.len() % 64) != 56 {
+        message.push(0);
+    }
+    message.extend_from_slice(&bit_len.to_be_bytes());
+
+    let mut hash = SHA256_INITIAL_STATE;
+    let mut schedule = [0u32; 64];
+
+    for chunk in message.chunks(64) {
+        for (index, word) in schedule.iter_mut().take(16).enumerate() {
+            let offset = index * 4;
+            *word = u32::from_be_bytes([
+                chunk[offset],
+                chunk[offset + 1],
+                chunk[offset + 2],
+                chunk[offset + 3],
+            ]);
+        }
+
+        for index in 16..64 {
+            let s0 = schedule[index - 15].rotate_right(7)
+                ^ schedule[index - 15].rotate_right(18)
+                ^ (schedule[index - 15] >> 3);
+            let s1 = schedule[index - 2].rotate_right(17)
+                ^ schedule[index - 2].rotate_right(19)
+                ^ (schedule[index - 2] >> 10);
+            schedule[index] = schedule[index - 16]
+                .wrapping_add(s0)
+                .wrapping_add(schedule[index - 7])
+                .wrapping_add(s1);
+        }
+
+        let mut a = hash[0];
+        let mut b = hash[1];
+        let mut c = hash[2];
+        let mut d = hash[3];
+        let mut e = hash[4];
+        let mut f = hash[5];
+        let mut g = hash[6];
+        let mut h = hash[7];
+
+        for index in 0..64 {
+            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+            let ch = (e & f) ^ ((!e) & g);
+            let temp1 = h
+                .wrapping_add(s1)
+                .wrapping_add(ch)
+                .wrapping_add(SHA256_ROUND_CONSTANTS[index])
+                .wrapping_add(schedule[index]);
+            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+            let maj = (a & b) ^ (a & c) ^ (b & c);
+            let temp2 = s0.wrapping_add(maj);
+
+            h = g;
+            g = f;
+            f = e;
+            e = d.wrapping_add(temp1);
+            d = c;
+            c = b;
+            b = a;
+            a = temp1.wrapping_add(temp2);
+        }
+
+        hash[0] = hash[0].wrapping_add(a);
+        hash[1] = hash[1].wrapping_add(b);
+        hash[2] = hash[2].wrapping_add(c);
+        hash[3] = hash[3].wrapping_add(d);
+        hash[4] = hash[4].wrapping_add(e);
+        hash[5] = hash[5].wrapping_add(f);
+        hash[6] = hash[6].wrapping_add(g);
+        hash[7] = hash[7].wrapping_add(h);
+    }
+
+    let mut output = [0u8; 32];
+    for (index, word) in hash.iter().enumerate() {
+        output[index * 4..(index + 1) * 4].copy_from_slice(&word.to_be_bytes());
+    }
+    output
+}
+
+/// Compute the canonical SHA-256 hash for a serialized world-state snapshot.
+pub fn canonical_state_hash(state: &WorldState) -> Result<[u8; 32]> {
+    let bytes = serde_json::to_vec(state)
+        .map_err(|error| WorldForgeError::SerializationError(error.to_string()))?;
+    Ok(sha256_hash(&bytes))
+}
+
+fn current_state_matches_latest_history(state: &WorldState) -> Result<bool> {
+    let Some(latest) = state.history.latest() else {
+        return Ok(false);
+    };
+
+    let mut snapshot = state.clone();
+    snapshot.history.states.pop_back();
+    Ok(snapshot.time == latest.time && canonical_state_hash(&snapshot)? == latest.state_hash)
 }
 
 /// Trait for persisting world state.
@@ -210,12 +440,15 @@ impl FileStateStore {
 #[async_trait::async_trait]
 impl StateStore for FileStateStore {
     async fn save(&self, state: &WorldState) -> Result<()> {
+        let mut normalized = state.clone();
+        let provider = normalized.current_state_provider();
+        normalized.ensure_history_initialized(provider)?;
         tokio::fs::create_dir_all(&self.path)
             .await
             .map_err(|e| WorldForgeError::InternalError(format!("failed to create dir: {e}")))?;
-        let json = serde_json::to_string_pretty(state)
+        let json = serde_json::to_string_pretty(&normalized)
             .map_err(|e| WorldForgeError::SerializationError(e.to_string()))?;
-        tokio::fs::write(self.state_path(&state.id), json)
+        tokio::fs::write(self.state_path(&normalized.id), json)
             .await
             .map_err(|e| WorldForgeError::InternalError(format!("failed to write state: {e}")))?;
         Ok(())
@@ -340,8 +573,11 @@ impl SqliteStateStore {
 #[async_trait::async_trait]
 impl StateStore for SqliteStateStore {
     async fn save(&self, state: &WorldState) -> Result<()> {
-        let id = state.id.to_string();
-        let json = serde_json::to_string(state)
+        let mut normalized = state.clone();
+        let provider = normalized.current_state_provider();
+        normalized.ensure_history_initialized(provider)?;
+        let id = normalized.id.to_string();
+        let json = serde_json::to_string(&normalized)
             .map_err(|e| WorldForgeError::SerializationError(e.to_string()))?;
 
         sqlx::query("INSERT OR REPLACE INTO world_states (id, state) VALUES (?, ?)")
@@ -409,6 +645,38 @@ mod tests {
         assert_eq!(ws.metadata.name, "test-world");
         assert_eq!(ws.metadata.created_by, "mock");
         assert_eq!(ws.time.step, 0);
+        assert!(ws.history.is_empty());
+    }
+
+    #[test]
+    fn test_world_state_ensure_history_initialized_records_initial_snapshot() {
+        let mut state = WorldState::new("test-world", "mock");
+
+        let recorded = state.ensure_history_initialized("mock").unwrap();
+
+        assert!(recorded);
+        assert_eq!(state.history.len(), 1);
+        let latest = state.history.latest().unwrap();
+        assert_eq!(latest.provider, "mock");
+        assert_eq!(latest.time, state.time);
+    }
+
+    #[test]
+    fn test_world_state_ensure_current_state_recorded_repairs_stale_latest_hash() {
+        let mut state = WorldState::new("legacy", "mock");
+        state.history.push(HistoryEntry {
+            time: state.time,
+            state_hash: [7; 32],
+            action: None,
+            prediction: None,
+            provider: "mock".to_string(),
+        });
+
+        let repaired = state.ensure_current_state_recorded("mock").unwrap();
+
+        assert!(repaired);
+        assert_eq!(state.history.len(), 2);
+        assert_ne!(state.history.latest().unwrap().state_hash, [7; 32]);
     }
 
     #[test]
@@ -490,6 +758,7 @@ mod tests {
         store.save(&state).await.unwrap();
         let loaded = store.load(&id).await.unwrap();
         assert_eq!(loaded.id, id);
+        assert_eq!(loaded.history.len(), 1);
 
         let ids = store.list().await.unwrap();
         assert!(ids.contains(&id));
@@ -518,6 +787,7 @@ mod tests {
         store.save(&state).await.unwrap();
         let loaded = store.load(&state.id).await.unwrap();
         assert_eq!(loaded.id, state.id);
+        assert_eq!(loaded.history.len(), 1);
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }
