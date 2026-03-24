@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::types::{BBox, Mesh, ObjectId, Pose, Position, Tensor, Vec3, Velocity};
+use crate::types::{BBox, Mesh, ObjectId, Pose, Position, Rotation, Tensor, Vec3, Velocity};
 
 const RELATIONSHIP_EPSILON: f32 = 0.05;
 
@@ -54,6 +54,36 @@ pub struct SceneObject {
     pub semantic_label: Option<String>,
     /// Provider-specific visual embedding vector.
     pub visual_embedding: Option<Tensor>,
+}
+
+/// Partial updates for an existing scene object.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SceneObjectPatch {
+    /// Replacement human-readable name.
+    pub name: Option<String>,
+    /// Replacement world position.
+    pub position: Option<Position>,
+    /// Replacement axis-aligned bounding box.
+    pub bbox: Option<BBox>,
+    /// Replacement world rotation.
+    pub rotation: Option<Rotation>,
+    /// Replacement velocity vector.
+    pub velocity: Option<Velocity>,
+    /// Replacement semantic label.
+    pub semantic_label: Option<String>,
+    /// Replacement mass in kilograms.
+    pub mass: Option<f32>,
+    /// Replacement friction coefficient.
+    pub friction: Option<f32>,
+    /// Replacement restitution coefficient.
+    pub restitution: Option<f32>,
+    /// Replacement material name.
+    pub material: Option<String>,
+    /// Replacement immovable flag.
+    pub is_static: Option<bool>,
+    /// Replacement graspable flag.
+    pub is_graspable: Option<bool>,
 }
 
 /// Physical properties of a scene object.
@@ -174,6 +204,29 @@ impl SceneGraph {
         removed
     }
 
+    /// Update an object in the scene and refresh relationships.
+    ///
+    /// Returns the updated object when it exists, or `None` if the object ID is unknown.
+    pub fn update_object(&mut self, id: &ObjectId, patch: SceneObjectPatch) -> Option<SceneObject> {
+        let updated = {
+            let object = self.objects.get_mut(id)?;
+            object.apply_patch(&patch);
+            object.clone()
+        };
+
+        if let Some(node) = self
+            .root
+            .children
+            .iter_mut()
+            .find(|node| node.object_id.as_ref() == Some(id))
+        {
+            node.name = updated.name.clone();
+        }
+
+        self.refresh_relationships();
+        Some(updated)
+    }
+
     /// Set the world position for an object and recompute relationships.
     pub fn set_object_position(&mut self, id: &ObjectId, position: Position) -> bool {
         if let Some(object) = self.objects.get_mut(id) {
@@ -248,6 +301,53 @@ impl SceneObject {
     pub fn translate_by(&mut self, delta: Vec3) {
         self.pose.position = self.pose.position.offset(delta);
         self.bbox.translate(delta);
+    }
+
+    fn apply_patch(&mut self, patch: &SceneObjectPatch) {
+        if let Some(name) = &patch.name {
+            self.name = name.clone();
+        }
+        if let Some(rotation) = patch.rotation {
+            self.pose.rotation = rotation;
+        }
+        match (patch.position, patch.bbox) {
+            (Some(position), Some(bbox)) => {
+                self.pose.position = position;
+                self.bbox = bbox;
+            }
+            (Some(position), None) => {
+                self.set_position(position);
+            }
+            (None, Some(bbox)) => {
+                self.bbox = bbox;
+                self.pose.position = bbox.center();
+            }
+            (None, None) => {}
+        }
+        if let Some(velocity) = patch.velocity {
+            self.velocity = velocity;
+        }
+        if let Some(label) = &patch.semantic_label {
+            self.semantic_label = Some(label.clone());
+        }
+        if let Some(mass) = patch.mass {
+            self.physics.mass = Some(mass);
+        }
+        if let Some(friction) = patch.friction {
+            self.physics.friction = Some(friction);
+        }
+        if let Some(restitution) = patch.restitution {
+            self.physics.restitution = Some(restitution);
+        }
+        if let Some(material) = &patch.material {
+            self.physics.material = Some(material.clone());
+        }
+        if let Some(is_static) = patch.is_static {
+            self.physics.is_static = is_static;
+        }
+        if let Some(is_graspable) = patch.is_graspable {
+            self.physics.is_graspable = is_graspable;
+        }
     }
 }
 
@@ -448,6 +548,69 @@ mod tests {
         assert_eq!(object.bbox.center().x, 2.0);
         assert_eq!(object.bbox.center().y, 1.0);
         assert_eq!(object.bbox.center().z, -1.0);
+    }
+
+    #[test]
+    fn test_scene_graph_update_object_translates_bbox_with_position() {
+        let mut sg = SceneGraph::new();
+        let object = sample_object("cube");
+        let id = object.id;
+        sg.add_object(object);
+
+        let updated = sg
+            .update_object(
+                &id,
+                SceneObjectPatch {
+                    position: Some(Position {
+                        x: 2.0,
+                        y: 1.0,
+                        z: -1.0,
+                    }),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(updated.pose.position.x, 2.0);
+        assert_eq!(updated.bbox.center().x, 2.0);
+        assert_eq!(updated.bbox.min.x, 1.5);
+        assert_eq!(updated.bbox.max.z, -0.5);
+        assert_eq!(sg.root.children[0].name, "cube");
+    }
+
+    #[test]
+    fn test_scene_graph_update_object_snaps_pose_to_bbox_center() {
+        let mut sg = SceneGraph::new();
+        let object = sample_object("cube");
+        let id = object.id;
+        sg.add_object(object);
+
+        let updated = sg
+            .update_object(
+                &id,
+                SceneObjectPatch {
+                    bbox: Some(BBox {
+                        min: Position {
+                            x: 1.0,
+                            y: 2.0,
+                            z: 3.0,
+                        },
+                        max: Position {
+                            x: 5.0,
+                            y: 6.0,
+                            z: 7.0,
+                        },
+                    }),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(updated.pose.position.x, 3.0);
+        assert_eq!(updated.pose.position.y, 4.0);
+        assert_eq!(updated.pose.position.z, 5.0);
+        assert_eq!(updated.bbox.min.x, 1.0);
+        assert_eq!(updated.bbox.max.z, 7.0);
     }
 
     #[test]

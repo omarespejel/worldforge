@@ -149,6 +149,7 @@ cargo run -p worldforge-cli -- create --prompt "A kitchen with a mug"
 cargo run -p worldforge-cli -- objects add --world <id> --name red_mug --position 0 0.8 0 --bbox-min -0.05 0.75 -0.05 --bbox-max 0.05 0.85 0.05 --semantic-label mug
 cargo run -p worldforge-cli -- objects list --world <id>
 cargo run -p worldforge-cli -- objects show --world <id> --object-id <object-id>
+cargo run -p worldforge-cli -- objects update --world <id> --object-id <object-id> --position 0.25 0.8 0.0 --semantic-label mug
 cargo run -p worldforge-cli -- objects remove --world <id> --object-id <object-id>
 cargo run -p worldforge-cli -- providers
 cargo run -p worldforge-cli -- providers --capability planning
@@ -204,6 +205,10 @@ curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/objects \
 curl http://127.0.0.1:8080/v1/worlds/<world-id>/objects
 
 curl http://127.0.0.1:8080/v1/worlds/<world-id>/objects/<object-id>
+
+curl -X PATCH http://127.0.0.1:8080/v1/worlds/<world-id>/objects/<object-id> \
+  -H 'content-type: application/json' \
+  -d '{"position":{"x":0.25,"y":0.8,"z":0.0},"semantic_label":"mug"}'
 
 curl -X DELETE http://127.0.0.1:8080/v1/worlds/<world-id>/objects/<object-id>
 

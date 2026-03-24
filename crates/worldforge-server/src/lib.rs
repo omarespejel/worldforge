@@ -20,7 +20,7 @@ use worldforge_core::provider::{
     GenerationConfig, GenerationPrompt, Operation, ProviderRegistry, SpatialControls,
     TransferConfig,
 };
-use worldforge_core::scene::{PhysicsProperties, SceneObject};
+use worldforge_core::scene::{PhysicsProperties, SceneObject, SceneObjectPatch};
 use worldforge_core::state::{DynStateStore, StateStoreKind, WorldState};
 use worldforge_core::types::{BBox, Pose, Position, Rotation, Velocity, VideoClip, WorldId};
 use worldforge_eval::EvalSuite;
@@ -906,6 +906,58 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
             }
         }
 
+        // PATCH /v1/worlds/{id}/objects/{object_id}
+        ("PATCH", p) if p.starts_with("/v1/worlds/") && p.contains("/objects/") => {
+            let Some((world_part, object_part)) = p
+                .strip_prefix("/v1/worlds/")
+                .and_then(|value| value.split_once("/objects/"))
+            else {
+                return (404, error_response(&format!("not found: {method} {path}")));
+            };
+            match (
+                world_part.parse::<WorldId>(),
+                object_part.parse::<uuid::Uuid>(),
+            ) {
+                (Ok(world_id), Ok(object_id)) => {
+                    match serde_json::from_str::<SceneObjectPatch>(body) {
+                        Ok(req) => match state.store.load(&world_id).await {
+                            Ok(ws) => {
+                                let provider = ws.metadata.created_by.clone();
+                                let mut world = worldforge_core::world::World::new(
+                                    ws,
+                                    provider,
+                                    Arc::clone(&state.registry),
+                                );
+                                match world.update_object(&object_id, req) {
+                                    Ok(object) => {
+                                        match state.store.save(world.current_state()).await {
+                                            Ok(()) => (200, ApiResponse::ok(object)),
+                                            Err(error) => (500, error_response(&error.to_string())),
+                                        }
+                                    }
+                                    Err(error) => {
+                                        let status = match &error {
+                                            WorldForgeError::InvalidState(message)
+                                                if message.starts_with("object not found: ") =>
+                                            {
+                                                404
+                                            }
+                                            _ => api_error_status(&error),
+                                        };
+                                        (status, error_response(&error.to_string()))
+                                    }
+                                }
+                            }
+                            Err(error) => (404, error_response(&error.to_string())),
+                        },
+                        Err(error) => (400, error_response(&format!("invalid request: {error}"))),
+                    }
+                }
+                (Err(_), _) => (400, error_response("invalid world ID")),
+                (_, Err(_)) => (400, error_response("invalid object ID")),
+            }
+        }
+
         // GET /v1/worlds/{id}/objects/{object_id}
         ("GET", p) if p.starts_with("/v1/worlds/") && p.contains("/objects/") => {
             let Some((world_part, object_part)) = p
@@ -1721,6 +1773,65 @@ mod tests {
         assert_eq!(status, 200);
         let listed: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert!(listed["data"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_route_patch_object_updates_persisted_state() {
+        let state = test_state();
+        let body = r#"{"name":"object-world","provider":"mock"}"#;
+        let (status, resp) = route("POST", "/v1/worlds", body, &state).await;
+        assert_eq!(status, 201);
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let id = value["data"]["id"].as_str().unwrap();
+
+        let object_body = serde_json::json!({
+            "name": "crate",
+            "position": { "x": 0.0, "y": 1.0, "z": 2.0 },
+            "bbox": {
+                "min": { "x": -0.5, "y": -0.5, "z": -0.5 },
+                "max": { "x": 0.5, "y": 0.5, "z": 0.5 }
+            }
+        })
+        .to_string();
+
+        let (status, resp) = route(
+            "POST",
+            &format!("/v1/worlds/{id}/objects"),
+            &object_body,
+            &state,
+        )
+        .await;
+        assert_eq!(status, 201);
+        let created: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let object_id = created["data"]["id"].as_str().unwrap();
+
+        let patch_body = serde_json::json!({
+            "position": { "x": 2.0, "y": 3.0, "z": 4.0 }
+        })
+        .to_string();
+
+        let (status, resp) = route(
+            "PATCH",
+            &format!("/v1/worlds/{id}/objects/{object_id}"),
+            &patch_body,
+            &state,
+        )
+        .await;
+        assert_eq!(status, 200);
+        let patched: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(patched["data"]["id"], object_id);
+        assert_eq!(patched["data"]["pose"]["position"]["x"], 2.0);
+        assert_eq!(patched["data"]["bbox"]["min"]["x"], 1.5);
+        assert_eq!(patched["data"]["bbox"]["max"]["z"], 2.5);
+
+        let world_id = id.parse::<WorldId>().unwrap();
+        let persisted = state.store.load(&world_id).await.unwrap();
+        let world =
+            worldforge_core::world::World::new(persisted, "mock", Arc::clone(&state.registry));
+        let object = world.get_object(&object_id.parse().unwrap()).unwrap();
+        assert_eq!(object.pose.position.x, 2.0);
+        assert_eq!(object.bbox.min.x, 1.5);
+        assert_eq!(object.bbox.max.z, 2.5);
     }
 
     #[tokio::test]

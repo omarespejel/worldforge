@@ -428,6 +428,12 @@ impl PySceneObject {
         &self.inner.name
     }
 
+    /// Set the object's name.
+    #[setter]
+    fn set_name(&mut self, name: String) {
+        self.inner.name = name;
+    }
+
     /// Get the object's position.
     #[getter]
     fn position(&self) -> PyPosition {
@@ -439,7 +445,36 @@ impl PySceneObject {
     /// Set the object's position.
     #[setter]
     fn set_position(&mut self, pos: &PyPosition) {
-        self.inner.pose.position = pos.inner;
+        self.inner.set_position(pos.inner);
+    }
+
+    /// Get the object's rotation.
+    #[getter]
+    fn rotation(&self) -> PyRotation {
+        PyRotation {
+            inner: self.inner.pose.rotation,
+        }
+    }
+
+    /// Set the object's rotation.
+    #[setter]
+    fn set_rotation(&mut self, rotation: &PyRotation) {
+        self.inner.pose.rotation = rotation.inner;
+    }
+
+    /// Get the object's bounding box.
+    #[getter]
+    fn bbox(&self) -> PyBBox {
+        PyBBox {
+            inner: self.inner.bbox,
+        }
+    }
+
+    /// Set the object's bounding box.
+    #[setter]
+    fn set_bbox(&mut self, bbox: &PyBBox) {
+        self.inner.bbox = bbox.inner;
+        self.inner.pose.position = self.inner.bbox.center();
     }
 
     /// Get the object's velocity.
@@ -468,14 +503,73 @@ impl PySceneObject {
         self.inner.semantic_label = label;
     }
 
+    /// Whether the object is static (immovable).
+    #[getter]
+    fn is_static(&self) -> bool {
+        self.inner.physics.is_static
+    }
+
     /// Set the object as static (immovable).
     fn set_static(&mut self, is_static: bool) {
         self.inner.physics.is_static = is_static;
     }
 
+    /// Get the object's mass in kilograms.
+    #[getter]
+    fn mass(&self) -> Option<f32> {
+        self.inner.physics.mass
+    }
+
     /// Set the object's mass in kilograms.
     fn set_mass(&mut self, mass: f32) {
         self.inner.physics.mass = Some(mass);
+    }
+
+    /// Get the object's friction coefficient.
+    #[getter]
+    fn friction(&self) -> Option<f32> {
+        self.inner.physics.friction
+    }
+
+    /// Set the object's friction coefficient.
+    #[pyo3(signature = (friction=None))]
+    fn set_friction(&mut self, friction: Option<f32>) {
+        self.inner.physics.friction = friction;
+    }
+
+    /// Get the object's restitution coefficient.
+    #[getter]
+    fn restitution(&self) -> Option<f32> {
+        self.inner.physics.restitution
+    }
+
+    /// Set the object's restitution coefficient.
+    #[pyo3(signature = (restitution=None))]
+    fn set_restitution(&mut self, restitution: Option<f32>) {
+        self.inner.physics.restitution = restitution;
+    }
+
+    /// Whether the object can be grasped.
+    #[getter]
+    fn is_graspable(&self) -> bool {
+        self.inner.physics.is_graspable
+    }
+
+    /// Set whether the object can be grasped.
+    fn set_graspable(&mut self, is_graspable: bool) {
+        self.inner.physics.is_graspable = is_graspable;
+    }
+
+    /// Get the object's material.
+    #[getter]
+    fn material(&self) -> Option<&str> {
+        self.inner.physics.material.as_deref()
+    }
+
+    /// Set the object's material.
+    #[pyo3(signature = (material=None))]
+    fn set_material(&mut self, material: Option<String>) {
+        self.inner.physics.material = material;
     }
 
     /// Convert to JSON string.
@@ -562,6 +656,42 @@ impl PyWorld {
     /// Add an object to the world.
     fn add_object(&mut self, obj: &PySceneObject) {
         self.state.scene.add_object(obj.inner.clone());
+    }
+
+    /// Update an existing object in the world using a mutated scene object.
+    fn update_object(&mut self, obj: &PySceneObject) -> PyResult<()> {
+        let object_id = obj.inner.id;
+        let object_name = obj.inner.name.clone();
+
+        if let Some(existing) = self.state.scene.get_object_mut(&object_id) {
+            existing.name = obj.inner.name.clone();
+            existing.pose = obj.inner.pose;
+            existing.bbox = obj.inner.bbox;
+            existing.mesh = obj.inner.mesh.clone();
+            existing.physics = obj.inner.physics.clone();
+            existing.velocity = obj.inner.velocity;
+            existing.semantic_label = obj.inner.semantic_label.clone();
+            existing.visual_embedding = obj.inner.visual_embedding.clone();
+        } else {
+            return Err(pyo3::exceptions::PyKeyError::new_err(format!(
+                "object not found: {} ({})",
+                object_name, object_id
+            )));
+        }
+
+        if let Some(node) = self
+            .state
+            .scene
+            .root
+            .children
+            .iter_mut()
+            .find(|node| node.object_id == Some(object_id))
+        {
+            node.name = object_name;
+        }
+
+        self.state.scene.refresh_relationships();
+        Ok(())
     }
 
     /// Get an object by name.
@@ -2677,6 +2807,29 @@ mod tests {
     }
 
     #[test]
+    fn test_scene_object_set_position_keeps_bbox_coherent() {
+        let pos = PyPosition::new(0.0, 0.0, 0.0);
+        let min = PyPosition::new(-1.0, -1.0, -1.0);
+        let max = PyPosition::new(1.0, 1.0, 1.0);
+        let bbox = PyBBox::new(&min, &max);
+        let mut obj = PySceneObject::new("crate", &pos, &bbox);
+
+        let new_pos = PyPosition::new(2.0, 3.0, 4.0);
+        obj.set_position(&new_pos);
+        let updated_bbox = obj.bbox();
+
+        assert_eq!(obj.position().x(), 2.0);
+        assert_eq!(obj.position().y(), 3.0);
+        assert_eq!(obj.position().z(), 4.0);
+        assert_eq!(updated_bbox.min().x(), 1.0);
+        assert_eq!(updated_bbox.min().y(), 2.0);
+        assert_eq!(updated_bbox.min().z(), 3.0);
+        assert_eq!(updated_bbox.max().x(), 3.0);
+        assert_eq!(updated_bbox.max().y(), 4.0);
+        assert_eq!(updated_bbox.max().z(), 5.0);
+    }
+
+    #[test]
     fn test_scene_object_json_roundtrip() {
         let pos = PyPosition::new(0.0, 1.0, 0.0);
         let min = PyPosition::new(-0.5, 0.5, -0.5);
@@ -2715,6 +2868,57 @@ mod tests {
         assert_eq!(world.object_count(), 1);
         assert!(world.get_object("cube").is_some());
         assert!(world.get_object("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_world_update_object_applies_mutations() {
+        let mut world = PyWorld::new("test", "mock");
+        let pos = PyPosition::new(0.0, 0.0, 0.0);
+        let min = PyPosition::new(-1.0, -1.0, -1.0);
+        let max = PyPosition::new(1.0, 1.0, 1.0);
+        let bbox = PyBBox::new(&min, &max);
+        world.add_object(&PySceneObject::new("cube", &pos, &bbox));
+
+        let mut obj = world.get_object("cube").unwrap();
+        let new_pos = PyPosition::new(2.0, 3.0, 4.0);
+        obj.set_name("crate".to_string());
+        obj.set_position(&new_pos);
+        obj.set_rotation(&PyRotation::new(0.0, 1.0, 0.0, 0.0));
+        obj.set_mass(2.5);
+        obj.set_friction(Some(0.25));
+        obj.set_restitution(Some(0.75));
+        obj.set_graspable(true);
+        obj.set_material(Some("wood".to_string()));
+        world.update_object(&obj).unwrap();
+
+        assert!(world.get_object("cube").is_none());
+        let updated = world.get_object("crate").unwrap();
+        assert_eq!(updated.name(), "crate");
+        assert_eq!(updated.position().x(), 2.0);
+        assert_eq!(updated.position().y(), 3.0);
+        assert_eq!(updated.position().z(), 4.0);
+        assert_eq!(updated.bbox().min().x(), 1.0);
+        assert_eq!(updated.bbox().max().z(), 5.0);
+        assert_eq!(updated.mass(), Some(2.5));
+        assert_eq!(updated.friction(), Some(0.25));
+        assert_eq!(updated.restitution(), Some(0.75));
+        assert!(updated.is_graspable());
+        assert_eq!(updated.material(), Some("wood"));
+        assert_eq!(updated.rotation().x(), 1.0);
+        assert_eq!(updated.id(), obj.id());
+    }
+
+    #[test]
+    fn test_world_update_object_missing_returns_error() {
+        let mut world = PyWorld::new("test", "mock");
+        let pos = PyPosition::new(0.0, 0.0, 0.0);
+        let min = PyPosition::new(-1.0, -1.0, -1.0);
+        let max = PyPosition::new(1.0, 1.0, 1.0);
+        let bbox = PyBBox::new(&min, &max);
+        let obj = PySceneObject::new("ghost", &pos, &bbox);
+
+        let err = world.update_object(&obj).unwrap_err();
+        assert!(err.to_string().contains("object not found"));
     }
 
     #[test]

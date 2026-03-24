@@ -17,7 +17,7 @@ use crate::provider::{
     GenerationConfig, GenerationPrompt, Operation, ProviderRegistry, ReasoningInput,
     ReasoningOutput, SpatialControls, TransferConfig, WorldModelProvider,
 };
-use crate::scene::SceneObject;
+use crate::scene::{SceneObject, SceneObjectPatch};
 use crate::state::{HistoryEntry, PredictionSummary, WorldState};
 use crate::types::{ObjectId, Pose, Position, SimTime, Vec3};
 
@@ -97,6 +97,24 @@ impl World {
         self.state
             .scene
             .remove_object(object_id)
+            .ok_or_else(|| WorldForgeError::InvalidState(format!("object not found: {object_id}")))
+    }
+
+    /// Update an object in the world by ID.
+    ///
+    /// The returned object preserves the original ID and reflects the updated scene state.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WorldForgeError::InvalidState` if the object does not exist.
+    pub fn update_object(
+        &mut self,
+        object_id: &ObjectId,
+        patch: SceneObjectPatch,
+    ) -> Result<SceneObject> {
+        self.state
+            .scene
+            .update_object(object_id, patch)
             .ok_or_else(|| WorldForgeError::InvalidState(format!("object not found: {object_id}")))
     }
 
@@ -2894,6 +2912,83 @@ mod tests {
         let removed = world.remove_object(&object_id).unwrap();
         assert_eq!(removed.name, "cube");
         assert!(world.get_object(&object_id).is_none());
+    }
+
+    #[test]
+    fn test_update_object() {
+        let registry = std::sync::Arc::new(ProviderRegistry::new());
+        let mut world = World::new(WorldState::new("update", "mock"), "mock", registry);
+
+        let object = SceneObject::new(
+            "cube",
+            Pose::default(),
+            crate::types::BBox {
+                min: Position {
+                    x: -0.5,
+                    y: -0.5,
+                    z: -0.5,
+                },
+                max: Position {
+                    x: 0.5,
+                    y: 0.5,
+                    z: 0.5,
+                },
+            },
+        );
+        let object_id = object.id;
+        world.add_object(object).unwrap();
+
+        let updated = world
+            .update_object(
+                &object_id,
+                SceneObjectPatch {
+                    name: Some("cube_renamed".to_string()),
+                    position: Some(Position {
+                        x: 2.0,
+                        y: 1.0,
+                        z: -1.0,
+                    }),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(updated.id, object_id);
+        assert_eq!(updated.name, "cube_renamed");
+        assert_eq!(updated.pose.position.x, 2.0);
+        assert_eq!(
+            world
+                .current_state()
+                .scene
+                .get_object(&object_id)
+                .unwrap()
+                .name,
+            "cube_renamed"
+        );
+        assert_eq!(world.current_state().history.len(), 0);
+        assert_eq!(world.current_state().time.step, 0);
+    }
+
+    #[test]
+    fn test_update_object_missing() {
+        let registry = std::sync::Arc::new(ProviderRegistry::new());
+        let mut world = World::new(WorldState::new("missing", "mock"), "mock", registry);
+
+        let error = world
+            .update_object(
+                &uuid::Uuid::new_v4(),
+                SceneObjectPatch {
+                    position: Some(Position {
+                        x: 1.0,
+                        y: 2.0,
+                        z: 3.0,
+                    }),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, WorldForgeError::InvalidState(_)));
     }
 
     #[derive(Debug, Clone)]

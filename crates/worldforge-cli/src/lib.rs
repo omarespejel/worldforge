@@ -19,7 +19,7 @@ use worldforge_core::provider::{
     GenerationConfig, GenerationPrompt, Operation, ProviderDescriptor, ProviderHealthReport,
     ProviderRegistry, SpatialControls, TransferConfig, WorldModelProvider,
 };
-use worldforge_core::scene::{PhysicsProperties, SceneObject};
+use worldforge_core::scene::{PhysicsProperties, SceneObject, SceneObjectPatch};
 use worldforge_core::state::{DynStateStore, StateStore, StateStoreKind, WorldState};
 use worldforge_core::types::{BBox, Pose, Position, Rotation, Velocity, VideoClip};
 use worldforge_eval::EvalSuite;
@@ -480,6 +480,58 @@ pub enum ObjectCommands {
         output_json: Option<PathBuf>,
     },
 
+    /// Update an object in a world scene.
+    Update {
+        /// World ID.
+        #[arg(long)]
+        world: String,
+        /// Object ID.
+        #[arg(long)]
+        object_id: String,
+        /// Optional replacement name.
+        #[arg(long)]
+        name: Option<String>,
+        /// Optional replacement position as `x y z`.
+        #[arg(long, num_args = 3, allow_hyphen_values = true)]
+        position: Option<Vec<f32>>,
+        /// Optional replacement rotation as quaternion `w x y z`.
+        #[arg(long, num_args = 4, allow_hyphen_values = true)]
+        rotation: Option<Vec<f32>>,
+        /// Optional replacement bounding-box minimum as `x y z`.
+        #[arg(long = "bbox-min", num_args = 3, allow_hyphen_values = true)]
+        bbox_min: Option<Vec<f32>>,
+        /// Optional replacement bounding-box maximum as `x y z`.
+        #[arg(long = "bbox-max", num_args = 3, allow_hyphen_values = true)]
+        bbox_max: Option<Vec<f32>>,
+        /// Optional replacement velocity as `x y z`.
+        #[arg(long, num_args = 3, allow_hyphen_values = true)]
+        velocity: Option<Vec<f32>>,
+        /// Optional replacement semantic label.
+        #[arg(long)]
+        semantic_label: Option<String>,
+        /// Optional replacement mass in kilograms.
+        #[arg(long)]
+        mass: Option<f32>,
+        /// Optional replacement friction coefficient.
+        #[arg(long)]
+        friction: Option<f32>,
+        /// Optional replacement restitution coefficient.
+        #[arg(long)]
+        restitution: Option<f32>,
+        /// Optional replacement material name.
+        #[arg(long)]
+        material: Option<String>,
+        /// Optional replacement immovable flag.
+        #[arg(long = "static", num_args = 1)]
+        is_static: Option<bool>,
+        /// Optional replacement graspable flag.
+        #[arg(long, num_args = 1)]
+        graspable: Option<bool>,
+        /// Optional path to write the updated object as JSON.
+        #[arg(long)]
+        output_json: Option<PathBuf>,
+    },
+
     /// Remove an object from a world scene.
     Remove {
         /// World ID.
@@ -675,6 +727,47 @@ pub async fn run() -> Result<()> {
                     &world,
                     &object_id,
                     ObjectOutputOptions {
+                        output_json: output_json.as_deref(),
+                    },
+                )
+                .await
+            }
+            ObjectCommands::Update {
+                world,
+                object_id,
+                name,
+                position,
+                rotation,
+                bbox_min,
+                bbox_max,
+                velocity,
+                semantic_label,
+                mass,
+                friction,
+                restitution,
+                material,
+                is_static,
+                graspable,
+                output_json,
+            } => {
+                cmd_objects_update(
+                    store.as_ref(),
+                    &world,
+                    &object_id,
+                    ObjectUpdateOptions {
+                        name: name.as_deref(),
+                        position: position.as_deref(),
+                        rotation: rotation.as_deref(),
+                        bbox_min: bbox_min.as_deref(),
+                        bbox_max: bbox_max.as_deref(),
+                        velocity: velocity.as_deref(),
+                        semantic_label: semantic_label.as_deref(),
+                        mass,
+                        friction,
+                        restitution,
+                        material: material.as_deref(),
+                        is_static,
+                        graspable,
                         output_json: output_json.as_deref(),
                     },
                 )
@@ -899,6 +992,18 @@ fn parse_position_triplet(values: &[f32], label: &str) -> Result<Position> {
     }
 }
 
+fn parse_rotation_quaternion(values: &[f32], label: &str) -> Result<Rotation> {
+    match values {
+        [w, x, y, z] => Ok(Rotation {
+            w: *w,
+            x: *x,
+            y: *y,
+            z: *z,
+        }),
+        _ => anyhow::bail!("{label} requires exactly 4 values"),
+    }
+}
+
 fn build_scene_object(name: &str, options: &ObjectAddOptions<'_>) -> Result<SceneObject> {
     let position = parse_position_triplet(options.position, "--position")?;
     let bbox_min = parse_position_triplet(options.bbox_min, "--bbox-min")?;
@@ -932,6 +1037,49 @@ fn build_scene_object(name: &str, options: &ObjectAddOptions<'_>) -> Result<Scen
         material: options.material.map(ToOwned::to_owned),
     };
     Ok(object)
+}
+
+fn build_scene_object_patch(options: &ObjectUpdateOptions<'_>) -> Result<SceneObjectPatch> {
+    let position = options
+        .position
+        .map(|values| parse_position_triplet(values, "--position"))
+        .transpose()?;
+    let rotation = options
+        .rotation
+        .map(|values| parse_rotation_quaternion(values, "--rotation"))
+        .transpose()?;
+    let bbox = match (options.bbox_min, options.bbox_max) {
+        (Some(min), Some(max)) => Some(BBox {
+            min: parse_position_triplet(min, "--bbox-min")?,
+            max: parse_position_triplet(max, "--bbox-max")?,
+        }),
+        (None, None) => None,
+        _ => anyhow::bail!("--bbox-min and --bbox-max must be provided together"),
+    };
+
+    Ok(SceneObjectPatch {
+        name: options.name.map(ToOwned::to_owned),
+        position,
+        rotation,
+        bbox,
+        velocity: options
+            .velocity
+            .map(|values| {
+                parse_position_triplet(values, "--velocity").map(|velocity| Velocity {
+                    x: velocity.x,
+                    y: velocity.y,
+                    z: velocity.z,
+                })
+            })
+            .transpose()?,
+        semantic_label: options.semantic_label.map(ToOwned::to_owned),
+        mass: options.mass,
+        friction: options.friction,
+        restitution: options.restitution,
+        material: options.material.map(ToOwned::to_owned),
+        is_static: options.is_static,
+        is_graspable: options.graspable,
+    })
 }
 
 fn print_scene_object(object: &SceneObject) {
@@ -990,6 +1138,23 @@ struct ObjectAddOptions<'a> {
     material: Option<&'a str>,
     is_static: bool,
     graspable: bool,
+    output_json: Option<&'a Path>,
+}
+
+struct ObjectUpdateOptions<'a> {
+    name: Option<&'a str>,
+    position: Option<&'a [f32]>,
+    rotation: Option<&'a [f32]>,
+    bbox_min: Option<&'a [f32]>,
+    bbox_max: Option<&'a [f32]>,
+    velocity: Option<&'a [f32]>,
+    semantic_label: Option<&'a str>,
+    mass: Option<f32>,
+    friction: Option<f32>,
+    restitution: Option<f32>,
+    material: Option<&'a str>,
+    is_static: Option<bool>,
+    graspable: Option<bool>,
     output_json: Option<&'a Path>,
 }
 
@@ -1556,6 +1721,35 @@ async fn cmd_objects_add(
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     println!("Added object to world: {world_id}");
+    print_scene_object(&object);
+    if let Some(path) = options.output_json {
+        write_json_file(path, &object)?;
+        println!("  Output JSON: {}", path.display());
+    }
+    Ok(())
+}
+
+async fn cmd_objects_update(
+    store: &(impl StateStore + ?Sized),
+    world_id: &str,
+    object_id: &str,
+    options: ObjectUpdateOptions<'_>,
+) -> Result<()> {
+    let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
+    let object_id: uuid::Uuid = object_id.parse().context("invalid object ID")?;
+    let state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let mut world = scene_edit_world(state);
+    let patch = build_scene_object_patch(&options)?;
+    let object = world
+        .update_object(&object_id, patch)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    store
+        .save(world.current_state())
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    println!("Updated object in world: {world_id}");
     print_scene_object(&object);
     if let Some(path) = options.output_json {
         write_json_file(path, &object)?;
@@ -2623,6 +2817,60 @@ mod tests {
     }
 
     #[test]
+    fn test_cli_parse_objects_update_command() {
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "objects",
+            "update",
+            "--world",
+            "123e4567-e89b-12d3-a456-426614174000",
+            "--object-id",
+            "123e4567-e89b-12d3-a456-426614174001",
+            "--position",
+            "1.0",
+            "2.0",
+            "3.0",
+            "--rotation",
+            "0.0",
+            "1.0",
+            "0.0",
+            "0.0",
+            "--semantic-label",
+            "container",
+            "--static",
+            "true",
+            "--output-json",
+            "/tmp/object.json",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Objects { command } => match command {
+                ObjectCommands::Update {
+                    world,
+                    object_id,
+                    position,
+                    rotation,
+                    semantic_label,
+                    is_static,
+                    output_json,
+                    ..
+                } => {
+                    assert_eq!(world, "123e4567-e89b-12d3-a456-426614174000");
+                    assert_eq!(object_id, "123e4567-e89b-12d3-a456-426614174001");
+                    assert_eq!(position, Some(vec![1.0, 2.0, 3.0]));
+                    assert_eq!(rotation, Some(vec![0.0, 1.0, 0.0, 0.0]));
+                    assert_eq!(semantic_label.as_deref(), Some("container"));
+                    assert_eq!(is_static, Some(true));
+                    assert_eq!(output_json, Some(PathBuf::from("/tmp/object.json")));
+                }
+                _ => panic!("expected Objects::Update"),
+            },
+            _ => panic!("expected Objects command"),
+        }
+    }
+
+    #[test]
     fn test_cli_parse_eval_with_custom_suite_and_output() {
         let cli = Cli::try_parse_from([
             "worldforge",
@@ -3087,6 +3335,7 @@ mod tests {
         store.save(&state).await.unwrap();
 
         let created_path = dir.join("created.json");
+        let updated_path = dir.join("updated.json");
         let list_path = dir.join("objects.json");
         let shown_path = dir.join("shown.json");
 
@@ -3117,6 +3366,39 @@ mod tests {
         assert_eq!(created.semantic_label.as_deref(), Some("storage"));
         assert!(created.physics.is_static);
 
+        cmd_objects_update(
+            store.as_ref(),
+            &world_id,
+            &created.id.to_string(),
+            ObjectUpdateOptions {
+                name: Some("crate-updated"),
+                position: Some(&[2.0, 3.0, 4.0]),
+                rotation: Some(&[0.0, 1.0, 0.0, 0.0]),
+                bbox_min: None,
+                bbox_max: None,
+                velocity: Some(&[0.2, 0.0, 0.0]),
+                semantic_label: Some("updated-storage"),
+                mass: Some(7.5),
+                friction: Some(0.4),
+                restitution: Some(0.2),
+                material: Some("metal"),
+                is_static: Some(false),
+                graspable: Some(false),
+                output_json: Some(&updated_path),
+            },
+        )
+        .await
+        .unwrap();
+
+        let updated: SceneObject = read_json_file(&updated_path).unwrap();
+        assert_eq!(updated.id, created.id);
+        assert_eq!(updated.name, "crate-updated");
+        assert_eq!(updated.pose.position.x, 2.0);
+        assert_eq!(updated.pose.rotation.x, 1.0);
+        assert_eq!(updated.bbox.center().x, 2.0);
+        assert_eq!(updated.semantic_label.as_deref(), Some("updated-storage"));
+        assert_eq!(updated.physics.mass, Some(7.5));
+
         cmd_objects_list(
             store.as_ref(),
             &world_id,
@@ -3129,6 +3411,7 @@ mod tests {
         let listed: Vec<SceneObject> = read_json_file(&list_path).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, created.id);
+        assert_eq!(listed[0].name, "crate-updated");
 
         cmd_objects_show(
             store.as_ref(),
@@ -3142,6 +3425,7 @@ mod tests {
         .unwrap();
         let shown: SceneObject = read_json_file(&shown_path).unwrap();
         assert_eq!(shown.id, created.id);
+        assert_eq!(shown.name, "crate-updated");
 
         cmd_objects_remove(store.as_ref(), &world_id, &created.id.to_string())
             .await

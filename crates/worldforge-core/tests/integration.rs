@@ -262,6 +262,130 @@ async fn test_worldforge_state_store_facade_roundtrip() {
 }
 
 #[tokio::test]
+async fn test_state_store_object_position_update_preserves_bbox_extents() {
+    let dir = std::env::temp_dir().join(format!("wf-integ-update-{}", uuid::Uuid::new_v4()));
+    let store = FileStateStore::new(&dir);
+
+    let mut state = WorldState::new("update-position", "mock");
+    let object = SceneObject::new(
+        "crate",
+        Pose {
+            position: Position {
+                x: 0.0,
+                y: 1.0,
+                z: 0.0,
+            },
+            ..Pose::default()
+        },
+        BBox {
+            min: Position {
+                x: -0.5,
+                y: 0.5,
+                z: -0.25,
+            },
+            max: Position {
+                x: 0.5,
+                y: 1.5,
+                z: 0.25,
+            },
+        },
+    );
+    let object_id = object.id;
+    let original_size = object.bbox.size();
+    state.scene.add_object(object);
+
+    store.save(&state).await.unwrap();
+
+    let mut loaded = store.load(&state.id).await.unwrap();
+    let updated_position = Position {
+        x: 2.0,
+        y: 3.0,
+        z: -1.0,
+    };
+    let updated_object = loaded.scene.get_object_mut(&object_id).unwrap();
+    updated_object.set_position(updated_position);
+    assert_eq!(updated_object.bbox.size(), original_size);
+    store.save(&loaded).await.unwrap();
+
+    let reloaded = store.load(&state.id).await.unwrap();
+    let persisted = reloaded.scene.get_object(&object_id).unwrap();
+    assert_eq!(persisted.pose.position, updated_position);
+    assert_eq!(persisted.bbox.center(), updated_position);
+    assert_eq!(persisted.bbox.size(), original_size);
+
+    let _ = tokio::fs::remove_dir_all(&dir).await;
+}
+
+#[tokio::test]
+async fn test_state_store_object_bbox_and_metadata_update_roundtrip() {
+    let dir = std::env::temp_dir().join(format!("wf-integ-metadata-{}", uuid::Uuid::new_v4()));
+    let store = FileStateStore::new(&dir);
+
+    let mut state = WorldState::new("update-bbox-metadata", "mock");
+    let object = SceneObject::new(
+        "mug",
+        Pose {
+            position: Position {
+                x: 0.5,
+                y: 1.0,
+                z: 0.0,
+            },
+            ..Pose::default()
+        },
+        BBox {
+            min: Position {
+                x: 0.25,
+                y: 0.75,
+                z: -0.25,
+            },
+            max: Position {
+                x: 0.75,
+                y: 1.25,
+                z: 0.25,
+            },
+        },
+    );
+    let object_id = object.id;
+    state.scene.add_object(object);
+
+    store.save(&state).await.unwrap();
+
+    let mut loaded = store.load(&state.id).await.unwrap();
+    let updated_bbox = BBox {
+        min: Position {
+            x: 1.5,
+            y: 2.0,
+            z: -0.4,
+        },
+        max: Position {
+            x: 1.9,
+            y: 2.6,
+            z: 0.4,
+        },
+    };
+    let updated_position = updated_bbox.center();
+    {
+        let object = loaded.scene.get_object_mut(&object_id).unwrap();
+        object.pose.position = updated_position;
+        object.bbox = updated_bbox;
+        object.semantic_label = Some("storage".to_string());
+        object.physics.mass = Some(4.5);
+        object.physics.material = Some("wood".to_string());
+    }
+    store.save(&loaded).await.unwrap();
+
+    let reloaded = store.load(&state.id).await.unwrap();
+    let persisted = reloaded.scene.get_object(&object_id).unwrap();
+    assert_eq!(persisted.pose.position, updated_position);
+    assert_eq!(persisted.bbox, updated_bbox);
+    assert_eq!(persisted.semantic_label.as_deref(), Some("storage"));
+    assert_eq!(persisted.physics.mass, Some(4.5));
+    assert_eq!(persisted.physics.material.as_deref(), Some("wood"));
+
+    let _ = tokio::fs::remove_dir_all(&dir).await;
+}
+
+#[tokio::test]
 async fn test_worldforge_persistence_requires_configured_store() {
     let worldforge = worldforge_with_mock_provider();
     let state = WorldState::new("no-store", "mock");

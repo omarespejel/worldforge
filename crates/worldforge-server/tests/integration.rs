@@ -13,7 +13,7 @@ use tokio::net::TcpStream;
 use tokio::task::JoinHandle;
 
 use worldforge_core::provider::ProviderRegistry;
-use worldforge_core::state::FileStateStore;
+use worldforge_core::state::{FileStateStore, StateStore};
 use worldforge_providers::MockProvider;
 use worldforge_server::{Server, ServerConfig};
 
@@ -88,6 +88,33 @@ async fn spawn_test_server_sqlite() -> TestServer {
         state_dir,
         task,
     }
+}
+
+async fn create_test_world(address: SocketAddr, name: &str) -> String {
+    let body = serde_json::json!({
+        "name": name,
+        "provider": "mock",
+    })
+    .to_string();
+    let (status, create) = http_request(address, "POST", "/v1/worlds", &body).await;
+    assert_eq!(status, 201);
+    create["data"]["id"].as_str().unwrap().to_string()
+}
+
+async fn create_test_object(
+    address: SocketAddr,
+    world_id: &str,
+    body: serde_json::Value,
+) -> String {
+    let (status, created) = http_request(
+        address,
+        "POST",
+        &format!("/v1/worlds/{world_id}/objects"),
+        &body.to_string(),
+    )
+    .await;
+    assert_eq!(status, 201);
+    created["data"]["id"].as_str().unwrap().to_string()
 }
 
 async fn http_request(address: SocketAddr, method: &str, path: &str, body: &str) -> (u16, Value) {
@@ -218,6 +245,143 @@ async fn test_live_http_world_lifecycle_sqlite() {
         .unwrap()
         .iter()
         .any(|entry| entry["id"] == world_id));
+}
+
+#[tokio::test]
+async fn test_live_http_patch_object_persists_position_updates() {
+    let server = spawn_test_server().await;
+    let world_id = create_test_world(server.address, "patch_world").await;
+
+    let object_id = create_test_object(
+        server.address,
+        &world_id,
+        serde_json::json!({
+            "name": "crate",
+            "position": { "x": 0.0, "y": 1.0, "z": 0.0 },
+            "bbox": {
+                "min": { "x": -0.5, "y": 0.5, "z": -0.25 },
+                "max": { "x": 0.5, "y": 1.5, "z": 0.25 }
+            },
+            "semantic_label": "storage"
+        }),
+    )
+    .await;
+
+    let patch_body = serde_json::json!({
+        "position": { "x": 2.0, "y": 3.0, "z": -1.0 }
+    })
+    .to_string();
+    let (status, updated) = http_request(
+        server.address,
+        "PATCH",
+        &format!("/v1/worlds/{world_id}/objects/{object_id}"),
+        &patch_body,
+    )
+    .await;
+
+    assert_eq!(status, 200);
+    assert_eq!(updated["data"]["id"], object_id);
+    assert_eq!(updated["data"]["pose"]["position"]["x"], 2.0);
+    assert_eq!(updated["data"]["pose"]["position"]["y"], 3.0);
+    assert_eq!(updated["data"]["pose"]["position"]["z"], -1.0);
+
+    let bbox_width = updated["data"]["bbox"]["max"]["x"].as_f64().unwrap()
+        - updated["data"]["bbox"]["min"]["x"].as_f64().unwrap();
+    let bbox_height = updated["data"]["bbox"]["max"]["y"].as_f64().unwrap()
+        - updated["data"]["bbox"]["min"]["y"].as_f64().unwrap();
+    let bbox_depth = updated["data"]["bbox"]["max"]["z"].as_f64().unwrap()
+        - updated["data"]["bbox"]["min"]["z"].as_f64().unwrap();
+    assert!((bbox_width - 1.0).abs() < f64::EPSILON);
+    assert!((bbox_height - 1.0).abs() < f64::EPSILON);
+    assert!((bbox_depth - 0.5).abs() < f64::EPSILON);
+
+    let store = FileStateStore::new(&server.state_dir);
+    let persisted = store.load(&world_id.parse().unwrap()).await.unwrap();
+    let persisted_object = persisted
+        .scene
+        .get_object(&object_id.parse().unwrap())
+        .unwrap();
+    assert_eq!(persisted_object.pose.position.x, 2.0);
+    assert_eq!(persisted_object.pose.position.y, 3.0);
+    assert_eq!(persisted_object.pose.position.z, -1.0);
+    assert_eq!(persisted_object.bbox.center().x, 2.0);
+    assert_eq!(persisted_object.bbox.center().y, 3.0);
+    assert_eq!(persisted_object.bbox.center().z, -1.0);
+}
+
+#[tokio::test]
+async fn test_live_http_patch_object_validation_errors() {
+    let server = spawn_test_server().await;
+    let world_id = create_test_world(server.address, "patch_errors").await;
+    let object_id = create_test_object(
+        server.address,
+        &world_id,
+        serde_json::json!({
+            "name": "cube",
+            "position": { "x": 0.0, "y": 0.5, "z": 0.0 },
+            "bbox": {
+                "min": { "x": -0.25, "y": 0.25, "z": -0.25 },
+                "max": { "x": 0.25, "y": 0.75, "z": 0.25 }
+            }
+        }),
+    )
+    .await;
+
+    let patch_body = serde_json::json!({
+        "position": { "x": 1.0, "y": 1.0, "z": 1.0 }
+    })
+    .to_string();
+
+    let (status, invalid_world) = http_request(
+        server.address,
+        "PATCH",
+        &format!("/v1/worlds/not-a-uuid/objects/{object_id}"),
+        &patch_body,
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert_eq!(invalid_world["success"], false);
+    assert_eq!(invalid_world["error"], "invalid world ID");
+
+    let (status, invalid_object) = http_request(
+        server.address,
+        "PATCH",
+        &format!("/v1/worlds/{world_id}/objects/not-a-uuid"),
+        &patch_body,
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert_eq!(invalid_object["success"], false);
+    assert_eq!(invalid_object["error"], "invalid object ID");
+
+    let missing_world_id = uuid::Uuid::new_v4();
+    let (status, missing_world) = http_request(
+        server.address,
+        "PATCH",
+        &format!("/v1/worlds/{missing_world_id}/objects/{object_id}"),
+        &patch_body,
+    )
+    .await;
+    assert_eq!(status, 404);
+    assert_eq!(missing_world["success"], false);
+    assert!(missing_world["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("world not found"));
+
+    let (status, missing_object) = http_request(
+        server.address,
+        "PATCH",
+        &format!("/v1/worlds/{world_id}/objects/{}", uuid::Uuid::new_v4()),
+        &patch_body,
+    )
+    .await;
+    assert_eq!(status, 404);
+    assert_eq!(missing_object["success"], false);
+    assert!(missing_object["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("object not found"));
 }
 
 #[tokio::test]
