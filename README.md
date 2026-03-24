@@ -295,7 +295,9 @@ CLI, REST server, and Python bindings, and provider adapters' cost estimates
 are queryable end-to-end for predict, generate, reason, and transfer
 operations. Registry-level provider health reporting is now available across
 the core, CLI, REST server, and Python bindings, including optional live
-health data when listing providers.
+health data when listing providers. The Python bindings now reuse the shared
+Rust core facade for provider discovery, health checks, prediction comparison,
+and state persistence instead of duplicating orchestration logic.
 The mock provider now serves as a higher-fidelity offline reference backend:
 object motion keeps bounding boxes and inferred relationships in sync,
 predictions can emit lightweight preview video/depth/segmentation outputs, and

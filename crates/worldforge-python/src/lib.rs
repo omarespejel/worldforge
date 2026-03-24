@@ -17,7 +17,7 @@ use worldforge_core::provider::{
     ProviderDescriptor, ProviderHealthReport, SpatialControls, TransferConfig,
 };
 use worldforge_core::scene::SceneObject;
-use worldforge_core::state::{DynStateStore, StateStoreKind, WorldState};
+use worldforge_core::state::{StateStoreKind, WorldState};
 use worldforge_core::types::{BBox, Position, Rotation, Velocity, VideoClip};
 use worldforge_verify::{
     prove_guardrail_plan as prove_guardrail_plan_bundle,
@@ -1601,7 +1601,6 @@ impl PyCostEstimate {
 #[pyclass(name = "WorldForge")]
 pub struct PyWorldForge {
     inner: worldforge_core::WorldForge,
-    store: DynStateStore,
 }
 
 #[pymethods]
@@ -1615,11 +1614,11 @@ impl PyWorldForge {
         let store = rt.block_on(store_kind.open()).map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("failed to open state store: {e}"))
         })?;
-        let mut wf = worldforge_core::WorldForge::new();
+        let mut wf = worldforge_core::WorldForge::with_state_store(store);
         for provider in worldforge_providers::auto_detect().into_providers() {
             let _ = wf.register_provider(provider);
         }
-        Ok(Self { inner: wf, store })
+        Ok(Self { inner: wf })
     }
 
     /// List all registered provider names.
@@ -1634,10 +1633,7 @@ impl PyWorldForge {
     /// Describe all registered providers, optionally filtering by capability.
     #[pyo3(signature = (capability=None))]
     fn provider_infos(&self, capability: Option<&str>) -> Vec<PyProviderInfo> {
-        let descriptors = match capability {
-            Some(capability) => self.inner.registry().describe_by_capability(capability),
-            None => self.inner.registry().describe_all(),
-        };
+        let descriptors = self.inner.provider_infos(capability);
         descriptors
             .into_iter()
             .map(|inner| PyProviderInfo { inner })
@@ -1646,7 +1642,7 @@ impl PyWorldForge {
 
     /// Describe one registered provider.
     fn provider_info(&self, provider: &str) -> PyResult<PyProviderInfo> {
-        let descriptor = self.inner.registry().describe(provider).map_err(|e| {
+        let descriptor = self.inner.provider_info(provider).map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("failed to describe provider: {e}"))
         })?;
         Ok(PyProviderInfo { inner: descriptor })
@@ -1656,12 +1652,7 @@ impl PyWorldForge {
     #[pyo3(signature = (capability=None))]
     fn provider_healths(&self, capability: Option<&str>) -> PyResult<Vec<PyProviderHealthInfo>> {
         let rt = new_runtime()?;
-        let reports = match capability {
-            Some(capability) => {
-                rt.block_on(self.inner.registry().health_check_by_capability(capability))
-            }
-            None => rt.block_on(self.inner.registry().health_check_all()),
-        };
+        let reports = rt.block_on(self.inner.provider_healths(capability));
         Ok(reports
             .into_iter()
             .map(|inner| PyProviderHealthInfo { inner })
@@ -1672,7 +1663,7 @@ impl PyWorldForge {
     fn provider_health(&self, provider: &str) -> PyResult<PyProviderHealthInfo> {
         let rt = new_runtime()?;
         let report = rt
-            .block_on(self.inner.registry().health_check(provider))
+            .block_on(self.inner.provider_health(provider))
             .map_err(|e| {
                 pyo3::exceptions::PyRuntimeError::new_err(format!(
                     "failed to check provider health: {e}"
@@ -1696,7 +1687,6 @@ impl PyWorldForge {
         let operation = operation_from_args(operation, steps, duration_seconds, width, height)?;
         let estimate = self
             .inner
-            .registry()
             .estimate_cost(provider, &operation)
             .map_err(|e| {
                 pyo3::exceptions::PyRuntimeError::new_err(format!(
@@ -1720,17 +1710,19 @@ impl PyWorldForge {
     /// Persist a world snapshot to the configured state store.
     fn save_world(&self, world: &PyWorld) -> PyResult<String> {
         let rt = new_runtime()?;
-        rt.block_on(self.store.save(&world.state)).map_err(|e| {
-            pyo3::exceptions::PyRuntimeError::new_err(format!("failed to save world: {e}"))
-        })?;
-        Ok(world.state.id.to_string())
+        let id = rt
+            .block_on(self.inner.save_state(&world.state))
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("failed to save world: {e}"))
+            })?;
+        Ok(id.to_string())
     }
 
     /// Load a world snapshot from the configured state store.
     fn load_world(&self, world_id: &str) -> PyResult<PyWorld> {
         let id = parse_world_id(world_id)?;
         let rt = new_runtime()?;
-        let state = rt.block_on(self.store.load(&id)).map_err(|e| {
+        let state = rt.block_on(self.inner.load_state(&id)).map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("failed to load world: {e}"))
         })?;
         Ok(PyWorld { state })
@@ -1739,7 +1731,7 @@ impl PyWorldForge {
     /// List all persisted world IDs in the configured state store.
     fn list_worlds(&self) -> PyResult<Vec<String>> {
         let rt = new_runtime()?;
-        let ids = rt.block_on(self.store.list()).map_err(|e| {
+        let ids = rt.block_on(self.inner.list_worlds()).map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("failed to list worlds: {e}"))
         })?;
         Ok(ids.into_iter().map(|id| id.to_string()).collect())
@@ -1749,7 +1741,7 @@ impl PyWorldForge {
     fn delete_world(&self, world_id: &str) -> PyResult<()> {
         let id = parse_world_id(world_id)?;
         let rt = new_runtime()?;
-        rt.block_on(self.store.delete(&id)).map_err(|e| {
+        rt.block_on(self.inner.delete_world(&id)).map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("failed to delete world: {e}"))
         })?;
         Ok(())
@@ -1838,7 +1830,7 @@ impl PyWorldForge {
             .into_iter()
             .map(|prediction| prediction.inner)
             .collect();
-        let comparison = MultiPrediction::try_from_predictions(raw_predictions).map_err(|e| {
+        let comparison = self.inner.compare(raw_predictions).map_err(|e| {
             pyo3::exceptions::PyValueError::new_err(format!("comparison failed: {e}"))
         })?;
         Ok(PyMultiPrediction { inner: comparison })
