@@ -18,7 +18,7 @@ use crate::provider::{
     ReasoningOutput, SpatialControls, TransferConfig, WorldModelProvider,
 };
 use crate::scene::{SceneObject, SceneObjectPatch};
-use crate::state::{HistoryEntry, PredictionSummary, WorldState};
+use crate::state::{PredictionSummary, WorldState};
 use crate::types::{ObjectId, Pose, Position, SimTime, Vec3};
 
 /// A live world instance backed by one or more providers.
@@ -141,26 +141,36 @@ impl World {
             .predict_from_state(&self.state, action, config, provider_name)
             .await?;
 
-        // Update world state and history
-        let hash = compute_state_hash(&prediction.output_state);
-        self.state.history.push(HistoryEntry {
-            time: self.state.time,
-            state_hash: hash,
-            action: Some(action.clone()),
-            prediction: Some(PredictionSummary {
+        let mut next_state = prediction.output_state.clone();
+        let collapse_initial_checkpoint = next_state.history.len() == 1
+            && next_state
+                .history
+                .latest()
+                .is_some_and(|entry| entry.action.is_none() && entry.prediction.is_none());
+        if collapse_initial_checkpoint {
+            next_state.history.states.clear();
+        }
+
+        if next_state.time == prediction.input_state.time {
+            next_state.time = SimTime {
+                step: prediction.input_state.time.step + config.steps as u64,
+                seconds: prediction.input_state.time.seconds
+                    + (config.steps as f64 / config.fps as f64),
+                dt: 1.0 / config.fps as f64,
+            };
+        }
+
+        next_state.record_current_state(
+            Some(action.clone()),
+            Some(PredictionSummary {
                 confidence: prediction.confidence,
                 physics_score: prediction.physics_scores.overall,
                 latency_ms: prediction.latency_ms,
             }),
-            provider: prediction.provider.clone(),
-        });
+            prediction.provider.clone(),
+        )?;
 
-        self.state.time = SimTime {
-            step: self.state.time.step + config.steps as u64,
-            seconds: self.state.time.seconds + (config.steps as f64 / config.fps as f64),
-            dt: 1.0 / config.fps as f64,
-        };
-        self.state.scene = prediction.output_state.scene.clone();
+        self.state = next_state;
 
         Ok(prediction)
     }
@@ -2044,46 +2054,6 @@ fn evaluate_goal_score(goal: &crate::prediction::PlanGoal, state: &WorldState) -
     }
 }
 
-/// Compute a non-cryptographic fingerprint of a world state for history tracking.
-///
-/// Uses multiple independent hash rounds to populate all 32 bytes. This is
-/// **not** a cryptographic hash — it is only used for quick equality checks
-/// and deduplication within the state history.
-fn compute_state_hash(state: &WorldState) -> [u8; 32] {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    let mut result = [0u8; 32];
-
-    // Round 1: world identity
-    let mut h1 = DefaultHasher::new();
-    state.id.hash(&mut h1);
-    state.time.step.hash(&mut h1);
-    result[..8].copy_from_slice(&h1.finish().to_le_bytes());
-
-    // Round 2: scene contents
-    let mut h2 = DefaultHasher::new();
-    state.scene.objects.len().hash(&mut h2);
-    for name in state.scene.objects.values().map(|o| &o.name) {
-        name.hash(&mut h2);
-    }
-    result[8..16].copy_from_slice(&h2.finish().to_le_bytes());
-
-    // Round 3: temporal state
-    let mut h3 = DefaultHasher::new();
-    state.time.seconds.to_bits().hash(&mut h3);
-    state.history.len().hash(&mut h3);
-    result[16..24].copy_from_slice(&h3.finish().to_le_bytes());
-
-    // Round 4: metadata
-    let mut h4 = DefaultHasher::new();
-    state.metadata.name.hash(&mut h4);
-    state.metadata.created_by.hash(&mut h4);
-    result[24..32].copy_from_slice(&h4.finish().to_le_bytes());
-
-    result
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2098,13 +2068,6 @@ mod tests {
         WorldModelProvider,
     };
     use crate::types::VideoClip;
-
-    #[test]
-    fn test_compute_state_hash() {
-        let state = WorldState::new("test", "mock");
-        let hash = compute_state_hash(&state);
-        assert_ne!(hash, [0u8; 32]);
-    }
 
     #[test]
     fn test_generate_candidate_actions_empty_scene() {

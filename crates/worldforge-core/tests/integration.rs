@@ -122,6 +122,54 @@ async fn test_state_store_save_load_roundtrip() {
     let _ = tokio::fs::remove_dir_all(&dir).await;
 }
 
+#[tokio::test]
+async fn test_first_prediction_on_persisted_world_keeps_single_history_entry() {
+    let dir = std::env::temp_dir().join(format!("wf-integ-predict-{}", uuid::Uuid::new_v4()));
+    let store: DynStateStore = Arc::new(FileStateStore::new(&dir));
+    let worldforge = worldforge_with_mock_provider_and_store(store);
+
+    let world = worldforge
+        .create_world("persisted-predict", "mock")
+        .unwrap();
+    let world_id = world.id();
+
+    let saved_id = worldforge.save_world(&world).await.unwrap();
+    assert_eq!(saved_id, world_id);
+
+    let mut loaded_world = worldforge.load_world_from_store(&saved_id).await.unwrap();
+    assert_eq!(loaded_world.current_state().history.len(), 1);
+
+    let action = Action::SetWeather {
+        weather: worldforge_core::action::Weather::Rain,
+    };
+    let config = PredictionConfig::default();
+
+    let prediction = loaded_world.predict(&action, &config).await.unwrap();
+    assert_eq!(prediction.provider, "mock");
+    assert_eq!(loaded_world.current_state().history.len(), 1);
+
+    let latest = loaded_world.current_state().history.latest().unwrap();
+    assert!(matches!(
+        latest.action.as_ref(),
+        Some(worldforge_core::action::Action::SetWeather {
+            weather: worldforge_core::action::Weather::Rain
+        })
+    ));
+    assert!(latest.prediction.is_some());
+
+    worldforge.save_world(&loaded_world).await.unwrap();
+    let reloaded = worldforge.load_state(&saved_id).await.unwrap();
+    assert_eq!(reloaded.history.len(), 1);
+    assert!(matches!(
+        reloaded.history.latest().unwrap().action.as_ref(),
+        Some(worldforge_core::action::Action::SetWeather {
+            weather: worldforge_core::action::Weather::Rain
+        })
+    ));
+
+    let _ = tokio::fs::remove_dir_all(&dir).await;
+}
+
 // ---------------------------------------------------------------------------
 // WorldForge facade integration tests
 // ---------------------------------------------------------------------------

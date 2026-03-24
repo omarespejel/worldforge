@@ -1917,6 +1917,12 @@ mod tests {
     async fn test_route_predict_disable_guardrails_allows_colliding_scene() {
         let state = test_state();
         let id = seed_colliding_world(&state).await;
+        let baseline = state.store.load(&id).await.unwrap();
+        assert_eq!(baseline.history.len(), 1);
+        let initial_entry = baseline.history.latest().unwrap();
+        assert!(initial_entry.action.is_none());
+        assert!(initial_entry.prediction.is_none());
+
         let pred_body = r#"{"action":{"SetWeather":{"weather":"Rain"}}}"#;
 
         let (status, _) = route(
@@ -1942,6 +1948,19 @@ mod tests {
             prediction["data"]["guardrail_results"],
             serde_json::json!([])
         );
+
+        let persisted = state.store.load(&id).await.unwrap();
+        assert_eq!(persisted.time.step, 1);
+        assert_eq!(persisted.history.len(), 1);
+        let transition = persisted.history.latest().unwrap();
+        assert_eq!(transition.provider, "mock");
+        assert!(transition.prediction.is_some());
+        assert!(matches!(
+            transition.action,
+            Some(worldforge_core::action::Action::SetWeather {
+                weather: worldforge_core::action::Weather::Rain
+            })
+        ));
     }
 
     #[tokio::test]

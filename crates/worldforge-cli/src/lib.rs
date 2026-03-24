@@ -3290,6 +3290,12 @@ mod tests {
         ));
         store.save(&state).await.unwrap();
 
+        let persisted_before = store.load(&state.id).await.unwrap();
+        assert_eq!(persisted_before.history.len(), 1);
+        let initial_entry = persisted_before.history.latest().unwrap();
+        assert!(initial_entry.action.is_none());
+        assert!(initial_entry.prediction.is_none());
+
         let result = cmd_predict(
             store.as_ref(),
             &state.id.to_string(),
@@ -3319,6 +3325,15 @@ mod tests {
         let updated = store.load(&state.id).await.unwrap();
         assert_eq!(updated.time.step, 1);
         assert_eq!(updated.history.len(), 1);
+        let transition = updated.history.latest().unwrap();
+        assert_eq!(transition.provider, "mock");
+        assert!(transition.prediction.is_some());
+        assert!(matches!(
+            transition.action,
+            Some(worldforge_core::action::Action::SetWeather {
+                weather: worldforge_core::action::Weather::Rain
+            })
+        ));
 
         let _ = fs::remove_dir_all(dir);
     }
