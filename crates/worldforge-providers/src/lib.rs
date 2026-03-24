@@ -9,7 +9,7 @@
 //! - [`cosmos`] — NVIDIA Cosmos (Predict, Transfer, Reason, Embed)
 //! - [`runway`] — Runway GWM (Worlds, Robotics, Avatars)
 //! - [`jepa`] — Meta JEPA (local deterministic inference, ZK-compatible)
-//! - [`genie`] — Google Genie (research preview, stubbed)
+//! - [`genie`] — Google Genie (deterministic local surrogate for predict/generate)
 
 pub mod cosmos;
 pub mod genie;
@@ -34,9 +34,11 @@ use worldforge_core::provider::ProviderRegistry;
 /// - `RUNWAY_API_SECRET` → registers `RunwayProvider` (GWM-1 Worlds)
 /// - `JEPA_MODEL_PATH` → registers `JepaProvider`
 /// - `JEPA_BACKEND` → optional backend override (`burn`, `pytorch`, `onnx`, `safetensors`)
-/// - `GENIE_API_KEY` → registers `GenieProvider` (Genie 3)
+/// - `GENIE_API_KEY` → registers `GenieProvider` (Genie 3 surrogate + future remote hint)
 ///
 /// A `MockProvider` is always registered for testing.
+/// The Genie surrogate currently supports `predict` and `generate`; `reason`,
+/// `transfer`, and native planning remain unsupported.
 ///
 /// # Examples
 ///
@@ -84,7 +86,8 @@ pub fn auto_detect() -> ProviderRegistry {
         registry.register(Box::new(JepaProvider::new(path, backend)));
     }
 
-    // Genie: requires GENIE_API_KEY (research preview)
+    // Genie: optional credentials act as a future remote hint, but the
+    // local surrogate is what actually powers the adapter today.
     if let Ok(api_key) = std::env::var("GENIE_API_KEY") {
         registry.register(Box::new(GenieProvider::new(
             genie::GenieModel::Genie3,

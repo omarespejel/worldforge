@@ -13,11 +13,13 @@ use std::thread;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use worldforge_core::action::Action;
+use worldforge_core::action::{Action, ActionSpaceType, Weather};
 use worldforge_core::error::WorldForgeError;
 use worldforge_core::guardrail::{Guardrail, GuardrailConfig};
 use worldforge_core::prediction::{PlanGoal, PlanRequest, PlannerType, PredictionConfig};
-use worldforge_core::provider::{ProviderRegistry, WorldModelProvider};
+use worldforge_core::provider::{
+    GenerationConfig, GenerationPrompt, ProviderRegistry, WorldModelProvider,
+};
 use worldforge_core::scene::SceneObject;
 use worldforge_core::state::WorldState;
 use worldforge_core::types::{BBox, DType, Pose, Position, SimTime, Tensor, Vec3, VideoClip};
@@ -25,6 +27,7 @@ use worldforge_core::world::World;
 use worldforge_providers::cosmos::{
     CosmosConfig, CosmosEndpoint, CosmosModel, CosmosPhysicsScores, CosmosPredictResponse,
 };
+use worldforge_providers::genie::{GenieModel, GenieProvider};
 use worldforge_providers::runway::RunwayModel;
 use worldforge_providers::{
     auto_detect, CosmosProvider, JepaBackend, JepaProvider, MockProvider, RunwayProvider,
@@ -193,6 +196,48 @@ fn sample_video_clip() -> VideoClip {
     }
 }
 
+fn sample_genie_state() -> WorldState {
+    let mut state = WorldState::new("genie-world", "genie");
+    state.scene.add_object(SceneObject::new(
+        "cube",
+        Pose {
+            position: Position {
+                x: 0.0,
+                y: 0.5,
+                z: 0.0,
+            },
+            ..Default::default()
+        },
+        BBox {
+            min: Position {
+                x: -0.1,
+                y: 0.4,
+                z: -0.1,
+            },
+            max: Position {
+                x: 0.1,
+                y: 0.6,
+                z: 0.1,
+            },
+        },
+    ));
+    state
+}
+
+fn sample_genie_action() -> Action {
+    Action::SetWeather {
+        weather: Weather::Cloudy,
+    }
+}
+
+fn sample_genie_prompt() -> GenerationPrompt {
+    GenerationPrompt {
+        text: "A small robot exploring a playable kitchen".to_string(),
+        reference_image: None,
+        negative_prompt: Some("blurry".to_string()),
+    }
+}
+
 #[test]
 fn test_auto_detect_registry_mock_present() {
     let registry = auto_detect();
@@ -221,6 +266,25 @@ fn test_registry_find_by_capability() {
     let planners = registry.find_by_capability("planning");
     // MockProvider may or may not support planning
     assert!(planners.len() <= 1);
+}
+
+#[test]
+fn test_genie_provider_capabilities_are_distinctive() {
+    let provider = GenieProvider::new(GenieModel::Genie3, "test-key");
+    let caps = provider.capabilities();
+
+    assert_eq!(provider.name(), "genie");
+    assert!(caps.predict);
+    assert!(caps.generate);
+    assert!(!caps.reason);
+    assert!(!caps.transfer);
+    assert!(caps.action_conditioned);
+    assert_eq!(
+        caps.supported_action_spaces,
+        vec![ActionSpaceType::Discrete, ActionSpaceType::Language]
+    );
+    assert_eq!(caps.max_resolution, (256, 256));
+    assert_eq!(caps.fps_range, (6.0, 12.0));
 }
 
 fn mock_supports_native_planning() -> bool {
@@ -472,6 +536,71 @@ async fn test_world_predict_with_jepa() {
     assert_eq!(prediction.provider, "jepa");
     assert!(world.current_state().time.step > 0);
     assert!(updated.pose.position.y <= 1.0);
+}
+
+#[tokio::test]
+async fn test_genie_predict_flow_uses_discrete_actions() {
+    let provider = GenieProvider::new(GenieModel::Genie3, "genie-test-key");
+    let state = sample_genie_state();
+    let action = sample_genie_action();
+    let config = PredictionConfig {
+        steps: 4,
+        resolution: (1024, 768),
+        fps: 12.0,
+        return_video: true,
+        return_depth: false,
+        return_segmentation: false,
+        ..PredictionConfig::default()
+    };
+
+    let prediction = provider.predict(&state, &action, &config).await.unwrap();
+
+    assert_eq!(prediction.provider, "genie");
+    assert!(prediction.model.to_lowercase().contains("genie"));
+    assert_eq!(prediction.input_state.id, state.id);
+    assert_eq!(
+        prediction.output_state.time.step,
+        state.time.step + u64::from(config.steps)
+    );
+    assert!(prediction.confidence >= 0.0 && prediction.confidence <= 1.0);
+    assert!(prediction.physics_scores.overall >= 0.0 && prediction.physics_scores.overall <= 1.0);
+
+    let video = prediction
+        .video
+        .as_ref()
+        .expect("genie predict should return a video when requested");
+    assert!(!video.frames.is_empty());
+    assert!(video.resolution.0 <= 256);
+    assert!(video.resolution.1 <= 256);
+    assert!(video.fps >= 6.0 && video.fps <= 12.0);
+    assert!(prediction
+        .output_state
+        .metadata
+        .tags
+        .iter()
+        .any(|tag| tag == "weather:cloudy"));
+}
+
+#[tokio::test]
+async fn test_genie_generate_flow_respects_genie_limits() {
+    let provider = GenieProvider::new(GenieModel::Genie3, "genie-test-key");
+    let prompt = sample_genie_prompt();
+    let config = GenerationConfig {
+        resolution: (1920, 1080),
+        fps: 24.0,
+        duration_seconds: 6.0,
+        temperature: 0.8,
+        seed: Some(42),
+    };
+
+    let clip = provider.generate(&prompt, &config).await.unwrap();
+
+    assert!(!clip.frames.is_empty());
+    assert!(clip.resolution.0 <= 256);
+    assert!(clip.resolution.1 <= 256);
+    assert!(clip.fps >= 6.0 && clip.fps <= 12.0);
+    assert!(clip.duration > 0.0);
+    assert!(clip.duration <= config.duration_seconds);
 }
 
 #[test]
