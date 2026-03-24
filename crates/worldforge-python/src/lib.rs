@@ -624,7 +624,8 @@ impl PyWorld {
     }
 
     /// Predict the next world state after applying an action.
-    #[pyo3(signature = (action, steps=1, provider=None, fallback_provider=None, return_video=false, max_latency_ms=None))]
+    #[pyo3(signature = (action, steps=1, provider=None, fallback_provider=None, return_video=false, max_latency_ms=None, disable_guardrails=false))]
+    #[allow(clippy::too_many_arguments)]
     fn predict(
         &mut self,
         action: &PyAction,
@@ -633,6 +634,7 @@ impl PyWorld {
         fallback_provider: Option<&str>,
         return_video: bool,
         max_latency_ms: Option<u64>,
+        disable_guardrails: bool,
     ) -> PyResult<PyPrediction> {
         let rt = tokio::runtime::Runtime::new().map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("failed to create runtime: {e}"))
@@ -644,13 +646,16 @@ impl PyWorld {
             provider_name,
             auto_detect_registry(),
         );
-        let config = PredictionConfig {
+        let mut config = PredictionConfig {
             steps,
             return_video,
             max_latency_ms,
             fallback_provider: fallback_provider.map(ToOwned::to_owned),
             ..PredictionConfig::default()
         };
+        if disable_guardrails {
+            config = config.disable_guardrails();
+        }
 
         let prediction = rt
             .block_on(world.predict(&action.inner, &config))
@@ -664,7 +669,7 @@ impl PyWorld {
     }
 
     /// Compare predictions from multiple providers without mutating the world state.
-    #[pyo3(signature = (action, providers, steps=1, fallback_provider=None, return_video=false, max_latency_ms=None, guardrails_json=None))]
+    #[pyo3(signature = (action, providers, steps=1, fallback_provider=None, return_video=false, max_latency_ms=None, guardrails_json=None, disable_guardrails=false))]
     #[allow(clippy::too_many_arguments)]
     fn compare(
         &self,
@@ -675,6 +680,7 @@ impl PyWorld {
         return_video: bool,
         max_latency_ms: Option<u64>,
         guardrails_json: Option<&str>,
+        disable_guardrails: bool,
     ) -> PyResult<PyMultiPrediction> {
         if providers.is_empty() {
             return Err(pyo3::exceptions::PyValueError::new_err(
@@ -688,7 +694,7 @@ impl PyWorld {
             resolve_provider_name(&self.state, None),
             auto_detect_registry(),
         );
-        let config = PredictionConfig {
+        let mut config = PredictionConfig {
             steps,
             return_video,
             max_latency_ms,
@@ -696,6 +702,9 @@ impl PyWorld {
             guardrails: parse_guardrails_json(guardrails_json)?,
             ..PredictionConfig::default()
         };
+        if disable_guardrails {
+            config = config.disable_guardrails();
+        }
         let provider_refs: Vec<&str> = providers.iter().map(String::as_str).collect();
         let comparison = rt
             .block_on(world.predict_multi(&action.inner, &provider_refs, &config))
@@ -707,7 +716,7 @@ impl PyWorld {
     }
 
     /// Plan a sequence of actions to achieve a natural-language goal.
-    #[pyo3(signature = (goal, max_steps=10, timeout_seconds=30.0, provider=None, planner="sampling", num_samples=None, top_k=None, population_size=None, elite_fraction=None, num_iterations=None, learning_rate=None, horizon=None, replanning_interval=None, guardrails_json=None))]
+    #[pyo3(signature = (goal, max_steps=10, timeout_seconds=30.0, provider=None, planner="sampling", num_samples=None, top_k=None, population_size=None, elite_fraction=None, num_iterations=None, learning_rate=None, horizon=None, replanning_interval=None, guardrails_json=None, disable_guardrails=false))]
     #[allow(clippy::too_many_arguments)]
     fn plan(
         &self,
@@ -725,6 +734,7 @@ impl PyWorld {
         horizon: Option<u32>,
         replanning_interval: Option<u32>,
         guardrails_json: Option<&str>,
+        disable_guardrails: bool,
     ) -> PyResult<PyPlan> {
         let rt = tokio::runtime::Runtime::new().map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("failed to create runtime: {e}"))
@@ -748,7 +758,7 @@ impl PyWorld {
             horizon,
             replanning_interval,
         )?;
-        let request = worldforge_core::prediction::PlanRequest {
+        let mut request = worldforge_core::prediction::PlanRequest {
             current_state: self.state.clone(),
             goal: worldforge_core::prediction::PlanGoal::Description(goal.to_string()),
             max_steps,
@@ -756,6 +766,9 @@ impl PyWorld {
             planner,
             timeout_seconds,
         };
+        if disable_guardrails {
+            request = request.disable_guardrails();
+        }
 
         let plan = rt.block_on(world.plan(&request)).map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("planning failed: {e}"))
@@ -1916,7 +1929,7 @@ impl PyPlan {
 ///
 /// Supports sampling, CEM, MPC, gradient, and provider-native planning.
 #[pyfunction]
-#[pyo3(signature = (world, goal, max_steps=10, timeout_seconds=30.0, provider="mock", planner="sampling", num_samples=None, top_k=None, population_size=None, elite_fraction=None, num_iterations=None, learning_rate=None, horizon=None, replanning_interval=None, guardrails_json=None))]
+#[pyo3(signature = (world, goal, max_steps=10, timeout_seconds=30.0, provider="mock", planner="sampling", num_samples=None, top_k=None, population_size=None, elite_fraction=None, num_iterations=None, learning_rate=None, horizon=None, replanning_interval=None, guardrails_json=None, disable_guardrails=false))]
 #[allow(clippy::too_many_arguments)]
 fn plan(
     world: &PyWorld,
@@ -1934,6 +1947,7 @@ fn plan(
     horizon: Option<u32>,
     replanning_interval: Option<u32>,
     guardrails_json: Option<&str>,
+    disable_guardrails: bool,
 ) -> PyResult<PyPlan> {
     world.plan(
         goal,
@@ -1950,6 +1964,7 @@ fn plan(
         horizon,
         replanning_interval,
         guardrails_json,
+        disable_guardrails,
     )
 }
 
@@ -2767,6 +2782,7 @@ mod tests {
                 None,
                 false,
                 None,
+                false,
             )
             .unwrap();
 
@@ -2786,6 +2802,7 @@ mod tests {
                 Some("mock"),
                 false,
                 None,
+                false,
             )
             .unwrap();
 
@@ -2805,6 +2822,7 @@ mod tests {
                 false,
                 None,
                 None,
+                false,
             )
             .unwrap();
 
@@ -2825,6 +2843,7 @@ mod tests {
             false,
             None,
             None,
+            false,
         );
 
         assert!(result.is_err());
@@ -2842,6 +2861,7 @@ mod tests {
                 false,
                 None,
                 None,
+                false,
             )
             .unwrap();
 
@@ -2871,10 +2891,57 @@ mod tests {
             Some(
                 r#"[{"guardrail":{"BoundaryConstraint":{"bounds":{"min":{"x":-0.25,"y":-0.25,"z":-0.25},"max":{"x":0.25,"y":0.25,"z":0.25}}}},"blocking":true}]"#,
             ),
+            false,
         );
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("guardrail"));
+    }
+
+    #[test]
+    fn test_world_predict_disable_guardrails_skips_defaults() {
+        let mut world = PyWorld::new("predict_guardrails", "mock");
+        world.add_object(&PySceneObject::new(
+            "left",
+            &PyPosition::new(0.0, 0.0, 0.0),
+            &PyBBox::new(
+                &PyPosition::new(0.0, 0.0, 0.0),
+                &PyPosition::new(1.0, 1.0, 1.0),
+            ),
+        ));
+        world.add_object(&PySceneObject::new(
+            "right",
+            &PyPosition::new(0.0, 0.0, 0.0),
+            &PyBBox::new(
+                &PyPosition::new(0.5, 0.5, 0.5),
+                &PyPosition::new(1.5, 1.5, 1.5),
+            ),
+        ));
+
+        let default_result = world.predict(
+            &PyAction::set_weather("rain").unwrap(),
+            1,
+            None,
+            None,
+            false,
+            None,
+            false,
+        );
+        assert!(default_result.is_err());
+
+        let prediction = world
+            .predict(
+                &PyAction::set_weather("rain").unwrap(),
+                1,
+                None,
+                None,
+                false,
+                None,
+                true,
+            )
+            .unwrap();
+
+        assert_eq!(prediction.guardrail_count(), 0);
     }
 
     #[test]
@@ -3080,10 +3147,10 @@ mod tests {
         let mut world_b = wf.create_world("compare-b", "mock").unwrap();
         let action = PyAction::move_to(1.0, 0.0, 0.0, 1.0);
         let prediction_a = world_a
-            .predict(&action, 1, None, None, false, None)
+            .predict(&action, 1, None, None, false, None, false)
             .unwrap();
         let prediction_b = world_b
-            .predict(&action, 1, None, None, false, None)
+            .predict(&action, 1, None, None, false, None, false)
             .unwrap();
 
         let comparison = wf.compare(vec![prediction_a, prediction_b]).unwrap();
@@ -3101,10 +3168,10 @@ mod tests {
         let mut world_b = wf.create_world("compare-b", "mock").unwrap();
         let action = PyAction::move_to(1.0, 0.0, 0.0, 1.0);
         let prediction_a = world_a
-            .predict(&action, 1, None, None, false, None)
+            .predict(&action, 1, None, None, false, None, false)
             .unwrap();
         let prediction_b = world_b
-            .predict(&action, 1, None, None, false, None)
+            .predict(&action, 1, None, None, false, None, false)
             .unwrap();
         let comparison = wf.compare(vec![prediction_a, prediction_b]).unwrap();
 
@@ -3262,6 +3329,7 @@ mod tests {
                 None,
                 None,
                 None,
+                false,
             )
             .unwrap();
         assert!(plan.action_count() > 0);
@@ -3288,6 +3356,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .unwrap();
         let json = p.to_json().unwrap();
@@ -3300,7 +3369,7 @@ mod tests {
         let world = PyWorld::new("repr_test", "mock");
         let p = plan(
             &world, "go", 5, 10.0, "mock", "sampling", None, None, None, None, None, None, None,
-            None, None,
+            None, None, false,
         )
         .unwrap();
         let repr = p.__repr__();
@@ -3326,6 +3395,7 @@ mod tests {
                 None,
                 None,
                 None,
+                false,
             )
             .unwrap();
 
@@ -3357,6 +3427,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         );
 
         if supports_native {
@@ -3391,6 +3462,7 @@ mod tests {
                 None,
                 None,
                 Some(guardrails_json),
+                false,
             )
             .unwrap();
 
@@ -3505,6 +3577,7 @@ mod tests {
                 None,
                 None,
                 Some(r#"[{"guardrail":"NoCollisions","blocking":true}]"#),
+                false,
             )
             .unwrap();
 
@@ -3561,6 +3634,7 @@ mod tests {
                 None,
                 None,
                 Some(r#"[{"guardrail":"NoCollisions","blocking":true}]"#),
+                false,
             )
             .unwrap();
         let verifier = worldforge_verify::MockVerifier::new();

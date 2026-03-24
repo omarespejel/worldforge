@@ -14,7 +14,7 @@ use tokio::sync::RwLock;
 
 use worldforge_core::action::Action;
 use worldforge_core::error::WorldForgeError;
-use worldforge_core::guardrail::GuardrailConfig;
+use worldforge_core::guardrail::{Guardrail, GuardrailConfig};
 use worldforge_core::prediction::{PlannerType, PredictionConfig};
 use worldforge_core::provider::{
     GenerationConfig, GenerationPrompt, Operation, ProviderRegistry, SpatialControls,
@@ -137,6 +137,8 @@ struct PredictRequest {
     config: PredictionConfig,
     #[serde(default)]
     provider: Option<String>,
+    #[serde(default)]
+    disable_guardrails: bool,
 }
 
 /// JSON request body for adding an object to a world scene.
@@ -195,6 +197,8 @@ struct PlanRequest {
     replanning_interval: Option<u32>,
     #[serde(default)]
     guardrails: Vec<GuardrailConfig>,
+    #[serde(default)]
+    disable_guardrails: bool,
 }
 
 fn default_max_steps() -> u32 {
@@ -325,6 +329,20 @@ fn build_plan_request(
     }
 }
 
+fn resolve_guardrails(
+    guardrails: Vec<GuardrailConfig>,
+    disable_guardrails: bool,
+) -> Vec<GuardrailConfig> {
+    if disable_guardrails {
+        vec![GuardrailConfig {
+            guardrail: Guardrail::Disabled,
+            blocking: false,
+        }]
+    } else {
+        guardrails
+    }
+}
+
 /// JSON request body for evaluation.
 #[derive(Debug, Deserialize)]
 struct EvaluateRequest {
@@ -355,6 +373,8 @@ struct CompareRequest {
     providers: Vec<String>,
     #[serde(default)]
     config: PredictionConfig,
+    #[serde(default)]
+    disable_guardrails: bool,
 }
 
 /// JSON request body for ZK verification.
@@ -402,6 +422,8 @@ struct VerifyRequest {
     replanning_interval: Option<u32>,
     #[serde(default)]
     guardrails: Vec<GuardrailConfig>,
+    #[serde(default)]
+    disable_guardrails: bool,
     #[serde(default = "default_source_label")]
     source_label: String,
 }
@@ -986,6 +1008,11 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                                 Ok(ws) => ws,
                                 Err(e) => return (404, error_response(&e.to_string())),
                             };
+                            let config = if req.disable_guardrails {
+                                req.config.disable_guardrails()
+                            } else {
+                                req.config
+                            };
                             let provider_name =
                                 resolve_world_provider(&ws, req.provider.as_deref()).to_string();
                             let mut world = worldforge_core::world::World::new(
@@ -993,7 +1020,7 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                                 provider_name,
                                 Arc::clone(&state.registry),
                             );
-                            match world.predict(&req.action, &req.config).await {
+                            match world.predict(&req.action, &config).await {
                                 Ok(prediction) => {
                                     // Save updated state
                                     let _ = state.store.save(world.current_state()).await;
@@ -1092,7 +1119,7 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                             ws,
                             req.goal.clone(),
                             req.max_steps,
-                            req.guardrails,
+                            resolve_guardrails(req.guardrails, req.disable_guardrails),
                             planner,
                             req.timeout_seconds,
                         );
@@ -1188,7 +1215,10 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                                         ws.clone(),
                                         goal,
                                         req.max_steps,
-                                        req.guardrails,
+                                        resolve_guardrails(
+                                            req.guardrails.clone(),
+                                            req.disable_guardrails,
+                                        ),
                                         planner,
                                         req.timeout_seconds,
                                     );
@@ -1287,8 +1317,13 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                 let registry = Arc::clone(&state.registry);
                 let world = worldforge_core::world::World::new(ws, first_provider, registry);
                 let provider_refs: Vec<&str> = req.providers.iter().map(|s| s.as_str()).collect();
+                let config = if req.disable_guardrails {
+                    req.config.disable_guardrails()
+                } else {
+                    req.config
+                };
                 match world
-                    .predict_multi(&req.action, &provider_refs, &req.config)
+                    .predict_multi(&req.action, &provider_refs, &config)
                     .await
                 {
                     Ok(multi) => (200, ApiResponse::ok(multi)),
@@ -1356,6 +1391,45 @@ mod tests {
             )),
             worlds: RwLock::new(HashMap::new()),
         })
+    }
+
+    async fn seed_colliding_world(state: &Arc<AppState>) -> WorldId {
+        let mut world = WorldState::new("colliding-world", "mock");
+        world.scene.add_object(SceneObject::new(
+            "left",
+            Pose::default(),
+            BBox {
+                min: Position {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                max: Position {
+                    x: 1.0,
+                    y: 1.0,
+                    z: 1.0,
+                },
+            },
+        ));
+        world.scene.add_object(SceneObject::new(
+            "right",
+            Pose::default(),
+            BBox {
+                min: Position {
+                    x: 0.5,
+                    y: 0.5,
+                    z: 0.5,
+                },
+                max: Position {
+                    x: 1.5,
+                    y: 1.5,
+                    z: 1.5,
+                },
+            },
+        ));
+        let id = world.id;
+        state.store.save(&world).await.unwrap();
+        id
     }
 
     #[test]
@@ -1726,6 +1800,37 @@ mod tests {
         assert_eq!(status, 200);
         let prediction: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert_eq!(prediction["data"]["provider"], "mock");
+    }
+
+    #[tokio::test]
+    async fn test_route_predict_disable_guardrails_allows_colliding_scene() {
+        let state = test_state();
+        let id = seed_colliding_world(&state).await;
+        let pred_body = r#"{"action":{"SetWeather":{"weather":"Rain"}}}"#;
+
+        let (status, _) = route(
+            "POST",
+            &format!("/v1/worlds/{id}/predict"),
+            pred_body,
+            &state,
+        )
+        .await;
+        assert_eq!(status, 409);
+
+        let (status, resp) = route(
+            "POST",
+            &format!("/v1/worlds/{id}/predict"),
+            r#"{"action":{"SetWeather":{"weather":"Rain"}},"disable_guardrails":true}"#,
+            &state,
+        )
+        .await;
+        assert_eq!(status, 200);
+
+        let prediction: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(
+            prediction["data"]["guardrail_results"],
+            serde_json::json!([])
+        );
     }
 
     #[tokio::test]

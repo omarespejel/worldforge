@@ -13,7 +13,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use worldforge_core::action::{Action, Weather};
-use worldforge_core::guardrail::GuardrailConfig;
+use worldforge_core::guardrail::{Guardrail, GuardrailConfig};
 use worldforge_core::prediction::{PlanGoal, PlanRequest, PlannerType, PredictionConfig};
 use worldforge_core::provider::{
     GenerationConfig, GenerationPrompt, Operation, ProviderDescriptor, ProviderHealthReport,
@@ -117,6 +117,9 @@ pub enum Commands {
         /// Maximum time to wait for a provider response before timing out.
         #[arg(long)]
         timeout_ms: Option<u64>,
+        /// Disable WorldForge's automatic guardrail checks.
+        #[arg(long, default_value_t = false)]
+        disable_guardrails: bool,
     },
 
     /// Generate a video clip directly from a prompt.
@@ -289,6 +292,9 @@ pub enum Commands {
         /// Optional JSON file containing `Vec<GuardrailConfig>`.
         #[arg(long)]
         guardrails_json: Option<PathBuf>,
+        /// Disable WorldForge's automatic guardrail checks.
+        #[arg(long, default_value_t = false)]
+        disable_guardrails: bool,
     },
 
     /// Plan a sequence of actions to achieve a goal.
@@ -314,6 +320,9 @@ pub enum Commands {
         /// Optional JSON file containing `Vec<GuardrailConfig>`.
         #[arg(long)]
         guardrails_json: Option<PathBuf>,
+        /// Disable WorldForge's automatic guardrail checks.
+        #[arg(long, default_value_t = false)]
+        disable_guardrails: bool,
         /// Optional path to write the generated `Plan` as JSON.
         #[arg(long)]
         output_json: Option<PathBuf>,
@@ -354,6 +363,9 @@ pub enum Commands {
         /// Optional JSON file containing `Vec<GuardrailConfig>` for generated plans.
         #[arg(long)]
         guardrails_json: Option<PathBuf>,
+        /// Disable WorldForge's automatic guardrail checks.
+        #[arg(long, default_value_t = false)]
+        disable_guardrails: bool,
         /// Source label to attest for provenance proofs.
         #[arg(long, default_value = "worldforge-cli")]
         source_label: String,
@@ -533,6 +545,7 @@ pub async fn run() -> Result<()> {
             provider,
             fallback_provider,
             timeout_ms,
+            disable_guardrails,
         } => {
             cmd_predict(
                 store.as_ref(),
@@ -542,6 +555,7 @@ pub async fn run() -> Result<()> {
                 &provider,
                 fallback_provider.as_deref(),
                 timeout_ms,
+                disable_guardrails,
             )
             .await
         }
@@ -700,6 +714,7 @@ pub async fn run() -> Result<()> {
             fallback_provider,
             timeout_ms,
             guardrails_json,
+            disable_guardrails,
         } => {
             cmd_compare(
                 store.as_ref(),
@@ -711,6 +726,7 @@ pub async fn run() -> Result<()> {
                     fallback_provider: fallback_provider.as_deref(),
                     timeout_ms,
                     guardrails_json: guardrails_json.as_deref(),
+                    disable_guardrails,
                 },
             )
             .await
@@ -723,6 +739,7 @@ pub async fn run() -> Result<()> {
             timeout,
             provider,
             guardrails_json,
+            disable_guardrails,
             output_json,
         } => {
             cmd_plan(
@@ -735,6 +752,7 @@ pub async fn run() -> Result<()> {
                     timeout,
                     provider: &provider,
                     guardrails_json: guardrails_json.as_deref(),
+                    disable_guardrails,
                     output_json: output_json.as_deref(),
                 },
             )
@@ -752,6 +770,7 @@ pub async fn run() -> Result<()> {
             timeout,
             provider,
             guardrails_json,
+            disable_guardrails,
             source_label,
             output_json,
         } => {
@@ -769,6 +788,7 @@ pub async fn run() -> Result<()> {
                     timeout,
                     provider: provider.as_deref(),
                     guardrails_json: guardrails_json.as_deref(),
+                    disable_guardrails,
                     source_label: &source_label,
                     output_json: output_json.as_deref(),
                 },
@@ -999,6 +1019,7 @@ struct PlanOptions<'a> {
     timeout: f64,
     provider: &'a str,
     guardrails_json: Option<&'a Path>,
+    disable_guardrails: bool,
     output_json: Option<&'a Path>,
 }
 
@@ -1007,6 +1028,7 @@ struct CompareOptions<'a> {
     fallback_provider: Option<&'a str>,
     timeout_ms: Option<u64>,
     guardrails_json: Option<&'a Path>,
+    disable_guardrails: bool,
 }
 
 struct EvalOptions<'a> {
@@ -1028,6 +1050,7 @@ struct VerifyOptions<'a> {
     timeout: f64,
     provider: Option<&'a str>,
     guardrails_json: Option<&'a Path>,
+    disable_guardrails: bool,
     source_label: &'a str,
     output_json: Option<&'a Path>,
 }
@@ -1078,6 +1101,20 @@ fn read_guardrails(path: Option<&Path>) -> Result<Vec<GuardrailConfig>> {
     match path {
         Some(path) => read_json_file(path),
         None => Ok(Vec::new()),
+    }
+}
+
+fn resolve_guardrails(
+    guardrails: Vec<GuardrailConfig>,
+    disable_guardrails: bool,
+) -> Vec<GuardrailConfig> {
+    if disable_guardrails {
+        vec![GuardrailConfig {
+            guardrail: Guardrail::Disabled,
+            blocking: false,
+        }]
+    } else {
+        guardrails
     }
 }
 
@@ -1281,6 +1318,7 @@ async fn cmd_create(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn cmd_predict(
     store: &(impl StateStore + ?Sized),
     world_id: &str,
@@ -1289,6 +1327,7 @@ async fn cmd_predict(
     provider: &str,
     fallback_provider: Option<&str>,
     timeout_ms: Option<u64>,
+    disable_guardrails: bool,
 ) -> Result<()> {
     let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
     let state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -1304,12 +1343,15 @@ async fn cmd_predict(
     let mut world = worldforge_core::world::World::new(state, provider, registry);
 
     let action = parse_action(action_str)?;
-    let config = PredictionConfig {
+    let mut config = PredictionConfig {
         steps,
         fallback_provider: fallback_provider.map(ToOwned::to_owned),
         max_latency_ms: timeout_ms,
         ..PredictionConfig::default()
     };
+    if disable_guardrails {
+        config = config.disable_guardrails();
+    }
 
     let prediction = world
         .predict(&action, &config)
@@ -1730,7 +1772,10 @@ async fn cmd_compare(
     let action = parse_action(action_str)?;
     let config = PredictionConfig {
         steps: options.steps,
-        guardrails: read_guardrails(options.guardrails_json)?,
+        guardrails: resolve_guardrails(
+            read_guardrails(options.guardrails_json)?,
+            options.disable_guardrails,
+        ),
         max_latency_ms: options.timeout_ms,
         fallback_provider: options.fallback_provider.map(ToOwned::to_owned),
         ..PredictionConfig::default()
@@ -1771,7 +1816,10 @@ async fn cmd_plan(
     require_provider(&registry, options.provider)?;
     let world = worldforge_core::world::World::new(state.clone(), options.provider, registry);
     let planner = planner_from_name(options.planner_name, options.max_steps)?;
-    let guardrails = read_guardrails(options.guardrails_json)?;
+    let guardrails = resolve_guardrails(
+        read_guardrails(options.guardrails_json)?,
+        options.disable_guardrails,
+    );
 
     let request = PlanRequest {
         current_state: state,
@@ -1882,7 +1930,10 @@ async fn cmd_verify(
                     current_state: state.clone(),
                     goal: PlanGoal::Description(goal.to_string()),
                     max_steps: options.max_steps,
-                    guardrails: read_guardrails(options.guardrails_json)?,
+                    guardrails: resolve_guardrails(
+                        read_guardrails(options.guardrails_json)?,
+                        options.disable_guardrails,
+                    ),
                     planner: planner_from_name(options.planner_name, options.max_steps)?,
                     timeout_seconds: options.timeout,
                 };
@@ -2324,11 +2375,13 @@ mod tests {
                 provider,
                 fallback_provider,
                 timeout_ms,
+                disable_guardrails,
                 ..
             } => {
                 assert_eq!(provider, "runway");
                 assert_eq!(fallback_provider.as_deref(), Some("mock"));
                 assert_eq!(timeout_ms, Some(250));
+                assert!(!disable_guardrails);
             }
             _ => panic!("expected Predict"),
         }
@@ -2677,10 +2730,12 @@ mod tests {
         match cli.command {
             Commands::Plan {
                 guardrails_json,
+                disable_guardrails,
                 output_json,
                 ..
             } => {
                 assert_eq!(guardrails_json, Some(PathBuf::from("/tmp/guardrails.json")));
+                assert!(!disable_guardrails);
                 assert_eq!(output_json, Some(PathBuf::from("/tmp/plan.json")));
             }
             _ => panic!("expected Plan"),
@@ -2708,6 +2763,7 @@ mod tests {
                 world,
                 proof_type,
                 plan_json,
+                disable_guardrails,
                 output_json,
                 source_label,
                 ..
@@ -2715,6 +2771,7 @@ mod tests {
                 assert!(world.is_none());
                 assert_eq!(proof_type, "guardrail");
                 assert_eq!(plan_json, Some(PathBuf::from("/tmp/plan.json")));
+                assert!(!disable_guardrails);
                 assert_eq!(output_json, Some(PathBuf::from("/tmp/proof.json")));
                 assert_eq!(source_label, "ci");
             }
@@ -2884,6 +2941,7 @@ mod tests {
                 timeout: 10.0,
                 provider: "mock",
                 guardrails_json: Some(&guardrails_path),
+                disable_guardrails: false,
                 output_json: Some(&plan_path),
             },
         )
@@ -2923,6 +2981,7 @@ mod tests {
                 timeout: 10.0,
                 provider: "mock",
                 guardrails_json: None,
+                disable_guardrails: false,
                 output_json: Some(&plan_path),
             },
         )
@@ -2937,6 +2996,81 @@ mod tests {
             let error = result.unwrap_err().to_string().to_lowercase();
             assert!(error.contains("native planning") || error.contains("unsupported"));
         }
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn test_cmd_predict_disable_guardrails_allows_colliding_scene() {
+        let dir = std::env::temp_dir().join(format!("wf-cli-predict-{}", uuid::Uuid::new_v4()));
+        let store = StateStoreKind::File(dir.join("state"))
+            .open()
+            .await
+            .unwrap();
+        let mut state = WorldState::new("predict-guardrails", "mock");
+        state.scene.add_object(SceneObject::new(
+            "left",
+            Pose::default(),
+            BBox {
+                min: Position {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                max: Position {
+                    x: 1.0,
+                    y: 1.0,
+                    z: 1.0,
+                },
+            },
+        ));
+        state.scene.add_object(SceneObject::new(
+            "right",
+            Pose::default(),
+            BBox {
+                min: Position {
+                    x: 0.5,
+                    y: 0.5,
+                    z: 0.5,
+                },
+                max: Position {
+                    x: 1.5,
+                    y: 1.5,
+                    z: 1.5,
+                },
+            },
+        ));
+        store.save(&state).await.unwrap();
+
+        let result = cmd_predict(
+            store.as_ref(),
+            &state.id.to_string(),
+            "set-weather rain",
+            1,
+            "mock",
+            None,
+            None,
+            false,
+        )
+        .await;
+        assert!(result.is_err());
+
+        cmd_predict(
+            store.as_ref(),
+            &state.id.to_string(),
+            "set-weather rain",
+            1,
+            "mock",
+            None,
+            None,
+            true,
+        )
+        .await
+        .unwrap();
+
+        let updated = store.load(&state.id).await.unwrap();
+        assert_eq!(updated.time.step, 1);
+        assert_eq!(updated.history.len(), 1);
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -3049,6 +3183,7 @@ mod tests {
                 timeout: 10.0,
                 provider: Some("mock"),
                 guardrails_json: None,
+                disable_guardrails: false,
                 source_label: "worldforge-cli",
                 output_json: Some(&bundle_path),
             },
@@ -3083,6 +3218,7 @@ mod tests {
                 timeout: 10.0,
                 provider: "mock",
                 guardrails_json: None,
+                disable_guardrails: false,
                 output_json: Some(&plan_path),
             },
         )
@@ -3104,6 +3240,7 @@ mod tests {
                 timeout: 10.0,
                 provider: None,
                 guardrails_json: None,
+                disable_guardrails: false,
                 source_label: "worldforge-cli",
                 output_json: Some(&bundle_path),
             },

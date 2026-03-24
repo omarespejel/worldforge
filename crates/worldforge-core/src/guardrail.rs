@@ -7,9 +7,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::{BBox, ObjectId};
 
+const DEFAULT_ENERGY_TOLERANCE_JOULES: f32 = 5_000.0;
+
 /// A safety or physics constraint to enforce.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Guardrail {
+    /// Disable all guardrail evaluation for an operation.
+    Disabled,
+
     /// No collisions between objects.
     NoCollisions,
 
@@ -77,10 +82,43 @@ pub fn evaluate_guardrails(
     configs: &[GuardrailConfig],
     state: &crate::state::WorldState,
 ) -> Vec<GuardrailResult> {
-    configs
+    resolve_guardrails(configs)
         .iter()
         .map(|config| evaluate_single(&config.guardrail, config.blocking, state))
         .collect()
+}
+
+/// Return the core default guardrails used when a request omits guardrails.
+pub fn default_guardrails() -> Vec<GuardrailConfig> {
+    vec![
+        GuardrailConfig {
+            guardrail: Guardrail::NoCollisions,
+            blocking: true,
+        },
+        GuardrailConfig {
+            guardrail: Guardrail::EnergyConservation {
+                tolerance: DEFAULT_ENERGY_TOLERANCE_JOULES,
+            },
+            blocking: true,
+        },
+    ]
+}
+
+/// Resolve guardrail configs into the effective set used by core evaluation.
+///
+/// Empty input uses the default guardrail set. The explicit
+/// [`Guardrail::Disabled`] sentinel disables guardrail evaluation entirely.
+pub fn resolve_guardrails(configs: &[GuardrailConfig]) -> Vec<GuardrailConfig> {
+    if configs
+        .iter()
+        .any(|config| matches!(config.guardrail, Guardrail::Disabled))
+    {
+        Vec::new()
+    } else if configs.is_empty() {
+        default_guardrails()
+    } else {
+        configs.to_vec()
+    }
 }
 
 /// Check if any guardrail results contain a blocking violation.
@@ -96,6 +134,7 @@ fn evaluate_single(
     state: &crate::state::WorldState,
 ) -> GuardrailResult {
     let (name, passed, details) = match guardrail {
+        Guardrail::Disabled => ("Disabled".to_string(), true, None),
         Guardrail::NoCollisions => {
             // Check bounding box overlaps between all object pairs
             let objects: Vec<_> = state.scene.objects.values().collect();
@@ -103,7 +142,7 @@ fn evaluate_single(
             let mut detail = None;
             for i in 0..objects.len() {
                 for j in (i + 1)..objects.len() {
-                    if bbox_overlaps(&objects[i].bbox, &objects[j].bbox) {
+                    if bbox_intersects(&objects[i].bbox, &objects[j].bbox) {
                         collision_found = true;
                         detail = Some(format!(
                             "collision between '{}' and '{}'",
@@ -275,13 +314,8 @@ fn evaluate_single(
     }
 }
 
-fn bbox_overlaps(a: &BBox, b: &BBox) -> bool {
-    a.min.x <= b.max.x
-        && a.max.x >= b.min.x
-        && a.min.y <= b.max.y
-        && a.max.y >= b.min.y
-        && a.min.z <= b.max.z
-        && a.max.z >= b.min.z
+fn bbox_intersects(a: &BBox, b: &BBox) -> bool {
+    a.intersects(b)
 }
 
 #[cfg(test)]
@@ -386,6 +420,81 @@ mod tests {
         let results = evaluate_guardrails(&configs, &state);
         assert!(!results[0].passed);
         assert_eq!(results[0].severity, ViolationSeverity::Blocking);
+    }
+
+    #[test]
+    fn test_no_collisions_touching_faces_pass() {
+        let state = make_state_with_objects(vec![
+            SceneObject::new(
+                "left",
+                Pose::default(),
+                BBox {
+                    min: Position {
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    },
+                    max: Position {
+                        x: 1.0,
+                        y: 1.0,
+                        z: 1.0,
+                    },
+                },
+            ),
+            SceneObject::new(
+                "right",
+                Pose::default(),
+                BBox {
+                    min: Position {
+                        x: 1.0,
+                        y: 0.25,
+                        z: 0.25,
+                    },
+                    max: Position {
+                        x: 2.0,
+                        y: 0.75,
+                        z: 0.75,
+                    },
+                },
+            ),
+        ]);
+        let results = evaluate_guardrails(
+            &[GuardrailConfig {
+                guardrail: Guardrail::NoCollisions,
+                blocking: true,
+            }],
+            &state,
+        );
+
+        assert!(results[0].passed);
+    }
+
+    #[test]
+    fn test_default_guardrails_include_collision_and_energy() {
+        let defaults = default_guardrails();
+        assert_eq!(defaults.len(), 2);
+        assert!(matches!(defaults[0].guardrail, Guardrail::NoCollisions));
+        assert!(matches!(
+            defaults[1].guardrail,
+            Guardrail::EnergyConservation { tolerance }
+                if (tolerance - DEFAULT_ENERGY_TOLERANCE_JOULES).abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
+    fn test_resolve_guardrails_empty_uses_defaults() {
+        let resolved = resolve_guardrails(&[]);
+        assert_eq!(resolved.len(), default_guardrails().len());
+    }
+
+    #[test]
+    fn test_resolve_guardrails_disabled_returns_empty() {
+        let resolved = resolve_guardrails(&[GuardrailConfig {
+            guardrail: Guardrail::Disabled,
+            blocking: false,
+        }]);
+
+        assert!(resolved.is_empty());
     }
 
     #[test]

@@ -338,26 +338,24 @@ impl World {
             .run_prediction_with_fallback(state, action, config, provider_name)
             .await?;
 
-        if !config.guardrails.is_empty() {
-            let results = evaluate_guardrails(&config.guardrails, &prediction.output_state);
-            if has_blocking_violation(&results) {
-                return Err(WorldForgeError::GuardrailBlocked {
-                    reason: results
-                        .iter()
-                        .filter(|result| !result.passed)
-                        .map(|result| {
-                            format!(
-                                "{}: {}",
-                                result.guardrail_name,
-                                result.violation_details.as_deref().unwrap_or("violation")
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join("; "),
-                });
-            }
-            prediction.guardrail_results = results;
+        let results = evaluate_guardrails(&config.guardrails, &prediction.output_state);
+        if has_blocking_violation(&results) {
+            return Err(WorldForgeError::GuardrailBlocked {
+                reason: results
+                    .iter()
+                    .filter(|result| !result.passed)
+                    .map(|result| {
+                        format!(
+                            "{}: {}",
+                            result.guardrail_name,
+                            result.violation_details.as_deref().unwrap_or("violation")
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            });
         }
+        prediction.guardrail_results = results;
 
         Ok(prediction)
     }
@@ -465,37 +463,32 @@ fn finalize_provider_plan(
         }
     }
 
-    let computed_guardrails = if request.guardrails.is_empty() {
-        vec![Vec::new(); step_count]
-    } else {
-        let mut per_step = Vec::with_capacity(step_count);
-        for (index, state) in plan.predicted_states.iter().enumerate() {
-            let results = evaluate_guardrails(&request.guardrails, state);
-            if has_blocking_violation(&results) {
-                let reason = results
-                    .iter()
-                    .filter(|result| !result.passed)
-                    .map(|result| {
-                        format!(
-                            "{}: {}",
-                            result.guardrail_name,
-                            result.violation_details.as_deref().unwrap_or("violation")
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("; ");
-                return Err(WorldForgeError::NoFeasiblePlan {
-                    goal: format!("{:?}", request.goal),
-                    reason: format!(
-                        "provider-native plan from '{provider_name}' violated blocking guardrails at step {}: {reason}",
-                        index + 1
-                    ),
-                });
-            }
-            per_step.push(results);
+    let mut computed_guardrails = Vec::with_capacity(step_count);
+    for (index, state) in plan.predicted_states.iter().enumerate() {
+        let results = evaluate_guardrails(&request.guardrails, state);
+        if has_blocking_violation(&results) {
+            let reason = results
+                .iter()
+                .filter(|result| !result.passed)
+                .map(|result| {
+                    format!(
+                        "{}: {}",
+                        result.guardrail_name,
+                        result.violation_details.as_deref().unwrap_or("violation")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(WorldForgeError::NoFeasiblePlan {
+                goal: format!("{:?}", request.goal),
+                reason: format!(
+                    "provider-native plan from '{provider_name}' violated blocking guardrails at step {}: {reason}",
+                    index + 1
+                ),
+            });
         }
-        per_step
-    };
+        computed_guardrails.push(results);
+    }
 
     if !plan.guardrail_compliance.is_empty() && plan.guardrail_compliance.len() != step_count {
         return Err(WorldForgeError::PlanningFailed {
@@ -899,16 +892,10 @@ async fn evaluate_candidate_sequence(
             .provider
             .predict(&simulated_state, action, &config)
             .await?;
-        let gr_results = if context.request.guardrails.is_empty() {
-            Vec::new()
-        } else {
-            let results =
-                evaluate_guardrails(&context.request.guardrails, &prediction.output_state);
-            if has_blocking_violation(&results) {
-                return Ok(None);
-            }
-            results
-        };
+        let gr_results = evaluate_guardrails(&context.request.guardrails, &prediction.output_state);
+        if has_blocking_violation(&gr_results) {
+            return Ok(None);
+        }
 
         total_physics += prediction.physics_scores.overall;
         total_cost += prediction.cost.usd as f32;
@@ -2390,6 +2377,32 @@ mod tests {
         assert!(plan.success_probability > 0.9);
     }
 
+    #[test]
+    fn test_planning_spawn_object_bbox_tracks_pose() {
+        let mut state = WorldState::new("spawn-bbox", "planner");
+        let pose = Pose {
+            position: Position {
+                x: 1.25,
+                y: 0.75,
+                z: -0.5,
+            },
+            ..Pose::default()
+        };
+
+        apply_planning_action(
+            &mut state,
+            &Action::SpawnObject {
+                template: "cube".to_string(),
+                pose,
+            },
+            1.0,
+        );
+
+        let cube = state.scene.find_object_by_name("cube").unwrap();
+        assert_eq!(cube.pose.position, pose.position);
+        assert_eq!(cube.bbox.center(), pose.position);
+    }
+
     #[tokio::test]
     async fn test_provider_native_uses_planning_capability() {
         let (state, object_id) = sample_planning_state();
@@ -2637,6 +2650,56 @@ mod tests {
 
         assert_eq!(prediction.guardrail_results.len(), 1);
         assert!(prediction.guardrail_results[0].passed);
+    }
+
+    #[tokio::test]
+    async fn test_predict_applies_default_guardrails() {
+        let state = WorldState::new("default-guardrails", "mock");
+        let registry = std::sync::Arc::new({
+            let mut registry = ProviderRegistry::new();
+            registry.register(Box::new(SuccessfulProvider::new("mock")));
+            registry
+        });
+        let mut world = World::new(state, "mock", registry);
+        let action = Action::SetWeather {
+            weather: Weather::Rain,
+        };
+
+        let prediction = world
+            .predict(&action, &PredictionConfig::default())
+            .await
+            .unwrap();
+
+        assert_eq!(prediction.guardrail_results.len(), 2);
+        assert_eq!(
+            prediction.guardrail_results[0].guardrail_name,
+            "NoCollisions"
+        );
+        assert_eq!(
+            prediction.guardrail_results[1].guardrail_name,
+            "EnergyConservation"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_predict_disable_guardrails_skips_defaults() {
+        let state = WorldState::new("disabled-guardrails", "mock");
+        let registry = std::sync::Arc::new({
+            let mut registry = ProviderRegistry::new();
+            registry.register(Box::new(SuccessfulProvider::new("mock")));
+            registry
+        });
+        let mut world = World::new(state, "mock", registry);
+        let action = Action::SetWeather {
+            weather: Weather::Rain,
+        };
+
+        let prediction = world
+            .predict(&action, &PredictionConfig::default().disable_guardrails())
+            .await
+            .unwrap();
+
+        assert!(prediction.guardrail_results.is_empty());
     }
 
     #[tokio::test]
@@ -2986,18 +3049,18 @@ mod tests {
                 },
                 ..Default::default()
             },
-            crate::types::BBox {
-                min: crate::types::Position {
-                    x: -0.1,
-                    y: -0.1,
-                    z: -0.1,
+            crate::types::BBox::from_center_half_extents(
+                crate::types::Position {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
                 },
-                max: crate::types::Position {
+                crate::types::Vec3 {
                     x: 0.1,
                     y: 0.1,
                     z: 0.1,
                 },
-            },
+            ),
         );
         let ball_id = ball.id;
         state.scene.add_object(ball);
@@ -3012,18 +3075,18 @@ mod tests {
                 },
                 ..Default::default()
             },
-            crate::types::BBox {
-                min: crate::types::Position {
-                    x: -0.08,
-                    y: -0.08,
-                    z: -0.08,
+            crate::types::BBox::from_center_half_extents(
+                crate::types::Position {
+                    x: 0.75,
+                    y: 0.0,
+                    z: 0.0,
                 },
-                max: crate::types::Position {
+                crate::types::Vec3 {
                     x: 0.08,
                     y: 0.08,
                     z: 0.08,
                 },
-            },
+            ),
         );
         mug.semantic_label = Some("mug".to_string());
         let mug_id = mug.id;
@@ -3064,18 +3127,14 @@ mod tests {
                 let object = crate::scene::SceneObject::new(
                     template,
                     *pose,
-                    crate::types::BBox {
-                        min: crate::types::Position {
-                            x: -0.1,
-                            y: -0.1,
-                            z: -0.1,
-                        },
-                        max: crate::types::Position {
+                    crate::types::BBox::from_center_half_extents(
+                        pose.position,
+                        crate::types::Vec3 {
                             x: 0.1,
                             y: 0.1,
                             z: 0.1,
                         },
-                    },
+                    ),
                 );
                 state.scene.add_object(object);
             }

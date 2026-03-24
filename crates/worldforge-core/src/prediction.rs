@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::action::Action;
 use crate::error::{Result, WorldForgeError};
-use crate::guardrail::GuardrailResult;
+use crate::guardrail::{Guardrail, GuardrailConfig, GuardrailResult};
 use crate::provider::CostEstimate;
 use crate::state::WorldState;
 use crate::types::{PredictionId, VideoClip};
@@ -254,6 +254,34 @@ pub enum PlannerType {
     },
     /// Use the provider's native planner.
     ProviderNative,
+}
+
+impl PredictionConfig {
+    /// Disable guardrail evaluation for this request.
+    ///
+    /// This sets an explicit sentinel so core can distinguish opt-out from
+    /// the default safety path used when the list is empty.
+    pub fn disable_guardrails(mut self) -> Self {
+        self.guardrails = vec![GuardrailConfig {
+            guardrail: Guardrail::Disabled,
+            blocking: false,
+        }];
+        self
+    }
+}
+
+impl PlanRequest {
+    /// Disable guardrail evaluation for this planning request.
+    ///
+    /// This sets an explicit sentinel so core can distinguish opt-out from
+    /// the default safety path used when the list is empty.
+    pub fn disable_guardrails(mut self) -> Self {
+        self.guardrails = vec![GuardrailConfig {
+            guardrail: Guardrail::Disabled,
+            blocking: false,
+        }];
+        self
+    }
 }
 
 /// Result of a planning operation.

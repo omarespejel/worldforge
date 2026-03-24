@@ -423,6 +423,19 @@ impl BBox {
         }
     }
 
+    /// Check whether this box intersects another box with non-zero volume.
+    ///
+    /// Boxes that only touch at a face, edge, or point are not considered
+    /// intersecting.
+    pub fn intersects(&self, other: &Self) -> bool {
+        self.min.x < other.max.x
+            && self.max.x > other.min.x
+            && self.min.y < other.max.y
+            && self.max.y > other.min.y
+            && self.min.z < other.max.z
+            && self.max.z > other.min.z
+    }
+
     /// Return a translated copy of the box.
     pub fn translated(&self, delta: Vec3) -> Self {
         Self {
@@ -619,6 +632,49 @@ mod tests {
                 z: 0.25,
             },
         )));
+    }
+
+    #[test]
+    fn test_bbox_intersects_excludes_touching_faces() {
+        let a = BBox {
+            min: Position {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            max: Position {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
+        };
+        let touching = BBox {
+            min: Position {
+                x: 1.0,
+                y: 0.25,
+                z: 0.25,
+            },
+            max: Position {
+                x: 2.0,
+                y: 0.75,
+                z: 0.75,
+            },
+        };
+        let overlapping = BBox {
+            min: Position {
+                x: 0.5,
+                y: 0.5,
+                z: 0.5,
+            },
+            max: Position {
+                x: 1.5,
+                y: 1.5,
+                z: 1.5,
+            },
+        };
+
+        assert!(!a.intersects(&touching));
+        assert!(a.intersects(&overlapping));
     }
 
     mod proptests {

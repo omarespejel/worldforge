@@ -36,6 +36,8 @@ A `Plan` is a sequence of actions optimized to reach a goal state. WorldForge ca
 ### Guardrails
 A `Guardrail` is a safety constraint. Define forbidden states, energy thresholds, or physical laws. WorldForge checks every prediction against guardrails before returning results. Optional: ZK verification of guardrail compliance for safety-critical applications.
 
+Prediction and planning requests apply conservative collision and energy checks by default. Use `disable_guardrails=True` in Python, `--disable-guardrails` in the CLI, or `"disable_guardrails": true` in REST payloads to opt out explicitly.
+
 ## Quick Example
 
 ```python
