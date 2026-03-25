@@ -23,6 +23,7 @@ use worldforge_core::provider::{
 use worldforge_core::scene::{PhysicsProperties, SceneObject, SceneObjectPatch};
 use worldforge_core::state::{DynStateStore, StateStoreKind, WorldState};
 use worldforge_core::types::{BBox, Pose, Position, Rotation, Velocity, VideoClip, WorldId};
+use worldforge_core::world::World;
 use worldforge_eval::EvalSuite;
 use worldforge_verify::{
     prove_guardrail_plan, prove_inference_transition, prove_latest_inference, prove_provenance,
@@ -223,6 +224,8 @@ struct GenerateRequest {
     #[serde(default)]
     negative_prompt: Option<String>,
     #[serde(default)]
+    fallback_provider: Option<String>,
+    #[serde(default)]
     config: GenerationConfig,
 }
 
@@ -233,6 +236,8 @@ struct EmbedRequest {
     text: Option<String>,
     #[serde(default)]
     video: Option<VideoClip>,
+    #[serde(default)]
+    fallback_provider: Option<String>,
 }
 
 /// JSON request body for provider transfer.
@@ -241,6 +246,8 @@ struct TransferRequest {
     source: VideoClip,
     #[serde(default)]
     controls: SpatialControls,
+    #[serde(default)]
+    fallback_provider: Option<String>,
     #[serde(default)]
     config: TransferConfig,
 }
@@ -257,6 +264,8 @@ struct ReasonRequest {
     query: String,
     #[serde(default)]
     provider: Option<String>,
+    #[serde(default)]
+    fallback_provider: Option<String>,
 }
 
 fn planner_from_request(request: &PlanRequest) -> std::result::Result<PlannerType, String> {
@@ -839,22 +848,32 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                 .and_then(|value| value.strip_suffix("/generate"))
                 .unwrap_or("");
             match serde_json::from_str::<GenerateRequest>(body) {
-                Ok(req) => match state.registry.get(provider_name) {
-                    Ok(provider) => {
-                        let prompt = GenerationPrompt {
-                            text: req.prompt,
-                            reference_image: None,
-                            negative_prompt: req.negative_prompt,
-                        };
-                        match provider.generate(&prompt, &req.config).await {
-                            Ok(clip) => (200, ApiResponse::ok(clip)),
-                            Err(error) => {
-                                (api_error_status(&error), error_response(&error.to_string()))
-                            }
+                Ok(req) => {
+                    let prompt = GenerationPrompt {
+                        text: req.prompt,
+                        reference_image: None,
+                        negative_prompt: req.negative_prompt,
+                    };
+                    let world = World::new(
+                        WorldState::new("server-generate", provider_name),
+                        provider_name,
+                        Arc::clone(&state.registry),
+                    );
+                    match world
+                        .generate_with_provider_and_fallback(
+                            &prompt,
+                            &req.config,
+                            provider_name,
+                            req.fallback_provider.as_deref(),
+                        )
+                        .await
+                    {
+                        Ok((_, clip)) => (200, ApiResponse::ok(clip)),
+                        Err(error) => {
+                            (api_error_status(&error), error_response(&error.to_string()))
                         }
                     }
-                    Err(error) => (404, error_response(&error.to_string())),
-                },
+                }
                 Err(e) => (400, error_response(&format!("invalid request: {e}"))),
             }
         }
@@ -866,21 +885,102 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                 .and_then(|value| value.strip_suffix("/embed"))
                 .unwrap_or("");
             match serde_json::from_str::<EmbedRequest>(body) {
-                Ok(req) => match state.registry.get(provider_name) {
-                    Ok(provider) => {
-                        let input = match EmbeddingInput::new(req.text, req.video) {
-                            Ok(input) => input,
-                            Err(error) => return (400, error_response(&error.to_string())),
-                        };
-                        match provider.embed(&input).await {
+                Ok(req) => {
+                    let input = match EmbeddingInput::new(req.text, req.video) {
+                        Ok(input) => input,
+                        Err(error) => return (400, error_response(&error.to_string())),
+                    };
+
+                    match state.registry.get(provider_name) {
+                        Ok(provider) => match provider.embed(&input).await {
                             Ok(output) => (200, ApiResponse::ok(output)),
-                            Err(error) => {
-                                (api_error_status(&error), error_response(&error.to_string()))
+                            Err(primary_error) => {
+                                let Some(fallback_provider) = req
+                                    .fallback_provider
+                                    .as_deref()
+                                    .filter(|fallback| *fallback != provider_name)
+                                else {
+                                    return (
+                                        api_error_status(&primary_error),
+                                        error_response(&primary_error.to_string()),
+                                    );
+                                };
+
+                                match state.registry.get(fallback_provider) {
+                                    Ok(provider) => match provider.embed(&input).await {
+                                        Ok(output) => (200, ApiResponse::ok(output)),
+                                        Err(fallback_error) => (
+                                            api_error_status(&fallback_error),
+                                            error_response(
+                                                &WorldForgeError::ProviderUnavailable {
+                                                    provider: provider_name.to_string(),
+                                                    reason: format!(
+                                                        "primary provider error: {primary_error}; fallback provider '{fallback_provider}' error: {fallback_error}"
+                                                    ),
+                                                }
+                                                .to_string(),
+                                            ),
+                                        ),
+                                    },
+                                    Err(fallback_error) => (
+                                        api_error_status(&fallback_error),
+                                        error_response(
+                                            &WorldForgeError::ProviderUnavailable {
+                                                provider: provider_name.to_string(),
+                                                reason: format!(
+                                                    "primary provider error: {primary_error}; fallback provider '{fallback_provider}' error: {fallback_error}"
+                                                ),
+                                            }
+                                            .to_string(),
+                                        ),
+                                    ),
+                                }
+                            }
+                        },
+                        Err(primary_error) => {
+                            let Some(fallback_provider) = req
+                                .fallback_provider
+                                .as_deref()
+                                .filter(|fallback| *fallback != provider_name)
+                            else {
+                                return (
+                                    api_error_status(&primary_error),
+                                    error_response(&primary_error.to_string()),
+                                );
+                            };
+
+                            match state.registry.get(fallback_provider) {
+                                Ok(provider) => match provider.embed(&input).await {
+                                    Ok(output) => (200, ApiResponse::ok(output)),
+                                    Err(fallback_error) => (
+                                        api_error_status(&fallback_error),
+                                        error_response(
+                                            &WorldForgeError::ProviderUnavailable {
+                                                provider: provider_name.to_string(),
+                                                reason: format!(
+                                                    "primary provider error: {primary_error}; fallback provider '{fallback_provider}' error: {fallback_error}"
+                                                ),
+                                            }
+                                            .to_string(),
+                                        ),
+                                    ),
+                                },
+                                Err(fallback_error) => (
+                                    api_error_status(&fallback_error),
+                                    error_response(
+                                        &WorldForgeError::ProviderUnavailable {
+                                            provider: provider_name.to_string(),
+                                            reason: format!(
+                                                "primary provider error: {primary_error}; fallback provider '{fallback_provider}' error: {fallback_error}"
+                                            ),
+                                        }
+                                        .to_string(),
+                                    ),
+                                ),
                             }
                         }
                     }
-                    Err(error) => (404, error_response(&error.to_string())),
-                },
+                }
                 Err(e) => (400, error_response(&format!("invalid request: {e}"))),
             }
         }
@@ -892,20 +992,28 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                 .and_then(|value| value.strip_suffix("/transfer"))
                 .unwrap_or("");
             match serde_json::from_str::<TransferRequest>(body) {
-                Ok(req) => match state.registry.get(provider_name) {
-                    Ok(provider) => {
-                        match provider
-                            .transfer(&req.source, &req.controls, &req.config)
-                            .await
-                        {
-                            Ok(clip) => (200, ApiResponse::ok(clip)),
-                            Err(error) => {
-                                (api_error_status(&error), error_response(&error.to_string()))
-                            }
+                Ok(req) => {
+                    let world = World::new(
+                        WorldState::new("server-transfer", provider_name),
+                        provider_name,
+                        Arc::clone(&state.registry),
+                    );
+                    match world
+                        .transfer_with_provider_and_fallback(
+                            &req.source,
+                            &req.controls,
+                            &req.config,
+                            provider_name,
+                            req.fallback_provider.as_deref(),
+                        )
+                        .await
+                    {
+                        Ok((_, clip)) => (200, ApiResponse::ok(clip)),
+                        Err(error) => {
+                            (api_error_status(&error), error_response(&error.to_string()))
                         }
                     }
-                    Err(error) => (404, error_response(&error.to_string())),
-                },
+                }
                 Err(e) => (400, error_response(&format!("invalid request: {e}"))),
             }
         }
@@ -1221,11 +1329,18 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                             resolve_world_provider(&ws, req.provider.as_deref()).to_string();
                         let world = worldforge_core::world::World::new(
                             ws,
-                            provider_name,
+                            provider_name.clone(),
                             Arc::clone(&state.registry),
                         );
-                        match world.reason(&req.query).await {
-                            Ok(output) => (200, ApiResponse::ok(output)),
+                        match world
+                            .reason_with_provider_and_fallback(
+                                &req.query,
+                                &provider_name,
+                                req.fallback_provider.as_deref(),
+                            )
+                            .await
+                        {
+                            Ok((_, output)) => (200, ApiResponse::ok(output)),
                             Err(error) => {
                                 (api_error_status(&error), error_response(&error.to_string()))
                             }
@@ -2232,6 +2347,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_route_generate_uses_fallback_provider() {
+        let state = test_state();
+        let body = r#"{
+            "prompt":"a cube rolling across the floor",
+            "fallback_provider":"mock",
+            "config":{"duration_seconds":2.0,"resolution":[320,180],"fps":12.0}
+        }"#;
+        let (status, resp) = route("POST", "/v1/providers/missing/generate", body, &state).await;
+        assert_eq!(status, 200);
+
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(value["data"]["duration"], 2.0);
+        assert_eq!(value["data"]["resolution"], serde_json::json!([320, 180]));
+    }
+
+    #[tokio::test]
     async fn test_route_transfer() {
         let state = test_state();
         let body = r#"{
@@ -2258,6 +2389,30 @@ mod tests {
         let id = value["data"]["id"].as_str().unwrap();
 
         let reason_body = r#"{"query":"what happens next?"}"#;
+        let (status, resp) = route(
+            "POST",
+            &format!("/v1/worlds/{id}/reason"),
+            reason_body,
+            &state,
+        )
+        .await;
+        assert_eq!(status, 200);
+
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert!(value["data"]["answer"].as_str().unwrap().contains("empty"));
+    }
+
+    #[tokio::test]
+    async fn test_route_reason_uses_fallback_provider() {
+        let state = test_state();
+        let body = r#"{"name":"reason_world","provider":"mock"}"#;
+        let (status, resp) = route("POST", "/v1/worlds", body, &state).await;
+        assert_eq!(status, 201);
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let id = value["data"]["id"].as_str().unwrap();
+
+        let reason_body =
+            r#"{"query":"what happens next?","provider":"missing","fallback_provider":"mock"}"#;
         let (status, resp) = route(
             "POST",
             &format!("/v1/worlds/{id}/reason"),

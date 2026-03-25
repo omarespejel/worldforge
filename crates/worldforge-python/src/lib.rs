@@ -1064,18 +1064,26 @@ impl PyWorld {
     }
 
     /// Ask a provider to reason about the current world state.
-    #[pyo3(signature = (query, provider=None))]
-    fn reason(&self, query: &str, provider: Option<&str>) -> PyResult<PyReasoningOutput> {
-        let rt = tokio::runtime::Runtime::new().map_err(|e| {
-            pyo3::exceptions::PyRuntimeError::new_err(format!("failed to create runtime: {e}"))
-        })?;
+    #[pyo3(signature = (query, provider=None, fallback_provider=None))]
+    fn reason(
+        &self,
+        query: &str,
+        provider: Option<&str>,
+        fallback_provider: Option<&str>,
+    ) -> PyResult<PyReasoningOutput> {
+        let rt = new_runtime()?;
 
         let provider_name = resolve_provider_name(&self.world.state, provider);
         let output = rt
-            .block_on(self.world.reason_with_provider(query, provider_name))
+            .block_on(self.world.reason_with_provider_and_fallback(
+                query,
+                provider_name,
+                fallback_provider,
+            ))
             .map_err(|e| {
                 pyo3::exceptions::PyRuntimeError::new_err(format!("reasoning failed: {e}"))
-            })?;
+            })?
+            .1;
 
         Ok(PyReasoningOutput { inner: output })
     }
@@ -2433,12 +2441,13 @@ impl PyWorldForge {
     }
 
     /// Request an embedding from a provider for text and/or video input.
-    #[pyo3(signature = (provider, text=None, video=None))]
+    #[pyo3(signature = (provider, text=None, video=None, fallback_provider=None))]
     fn embed(
         &self,
         provider: &str,
         text: Option<&str>,
         video: Option<&PyVideoClip>,
+        fallback_provider: Option<&str>,
     ) -> PyResult<PyEmbeddingOutput> {
         let input = EmbeddingInput::new(
             text.map(ToOwned::to_owned),
@@ -2446,13 +2455,16 @@ impl PyWorldForge {
         )
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("invalid input: {e}")))?;
 
-        let provider_ref = self.inner.registry().get(provider).map_err(|e| {
-            pyo3::exceptions::PyRuntimeError::new_err(format!("embedding failed: {e}"))
-        })?;
         let rt = new_runtime()?;
-        let output = rt.block_on(provider_ref.embed(&input)).map_err(|e| {
-            pyo3::exceptions::PyRuntimeError::new_err(format!("embedding failed: {e}"))
-        })?;
+        let output = rt
+            .block_on(
+                self.inner
+                    .embed_with_fallback(provider, &input, fallback_provider),
+            )
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("embedding failed: {e}"))
+            })?
+            .1;
         Ok(PyEmbeddingOutput { inner: output })
     }
 
@@ -2530,7 +2542,7 @@ impl PyWorldForge {
     }
 
     /// Generate a video clip directly from a prompt with a specific provider.
-    #[pyo3(signature = (prompt, provider="mock", duration_seconds=4.0, width=1280, height=720, fps=24.0, temperature=1.0, seed=None, negative_prompt=None))]
+    #[pyo3(signature = (prompt, provider="mock", duration_seconds=4.0, width=1280, height=720, fps=24.0, temperature=1.0, seed=None, negative_prompt=None, fallback_provider=None))]
     #[allow(clippy::too_many_arguments)]
     fn generate(
         &self,
@@ -2543,10 +2555,8 @@ impl PyWorldForge {
         temperature: f32,
         seed: Option<u64>,
         negative_prompt: Option<&str>,
+        fallback_provider: Option<&str>,
     ) -> PyResult<PyVideoClip> {
-        let provider_ref = self.inner.registry().get(provider).map_err(|e| {
-            pyo3::exceptions::PyRuntimeError::new_err(format!("generation failed: {e}"))
-        })?;
         let prompt = GenerationPrompt {
             text: prompt.to_string(),
             reference_image: None,
@@ -2559,19 +2569,28 @@ impl PyWorldForge {
             temperature,
             seed,
         };
-        let rt = tokio::runtime::Runtime::new().map_err(|e| {
-            pyo3::exceptions::PyRuntimeError::new_err(format!("failed to create runtime: {e}"))
-        })?;
+        let rt = new_runtime()?;
+        let world = CoreWorld::new(
+            WorldState::new("python-generate", provider),
+            provider,
+            self.inner.registry_arc(),
+        );
         let clip = rt
-            .block_on(provider_ref.generate(&prompt, &config))
+            .block_on(world.generate_with_provider_and_fallback(
+                &prompt,
+                &config,
+                provider,
+                fallback_provider,
+            ))
             .map_err(|e| {
                 pyo3::exceptions::PyRuntimeError::new_err(format!("generation failed: {e}"))
-            })?;
+            })?
+            .1;
         Ok(PyVideoClip { inner: clip })
     }
 
     /// Transfer spatial controls over an existing clip with a specific provider.
-    #[pyo3(signature = (clip, provider="mock", controls_json=None, width=1280, height=720, fps=24.0, control_strength=0.8))]
+    #[pyo3(signature = (clip, provider="mock", controls_json=None, width=1280, height=720, fps=24.0, control_strength=0.8, fallback_provider=None))]
     #[allow(clippy::too_many_arguments)]
     fn transfer(
         &self,
@@ -2582,10 +2601,8 @@ impl PyWorldForge {
         height: u32,
         fps: f32,
         control_strength: f32,
+        fallback_provider: Option<&str>,
     ) -> PyResult<PyVideoClip> {
-        let provider_ref = self.inner.registry().get(provider).map_err(|e| {
-            pyo3::exceptions::PyRuntimeError::new_err(format!("transfer failed: {e}"))
-        })?;
         let controls = match controls_json {
             Some(json) => serde_json::from_str::<SpatialControls>(json).map_err(|e| {
                 pyo3::exceptions::PyValueError::new_err(format!("invalid controls JSON: {e}"))
@@ -2598,11 +2615,23 @@ impl PyWorldForge {
             control_strength,
         };
         let rt = new_runtime()?;
+        let world = CoreWorld::new(
+            WorldState::new("python-transfer", provider),
+            provider,
+            self.inner.registry_arc(),
+        );
         let clip = rt
-            .block_on(provider_ref.transfer(&clip.inner, &controls, &config))
+            .block_on(world.transfer_with_provider_and_fallback(
+                &clip.inner,
+                &controls,
+                &config,
+                provider,
+                fallback_provider,
+            ))
             .map_err(|e| {
                 pyo3::exceptions::PyRuntimeError::new_err(format!("transfer failed: {e}"))
-            })?;
+            })?
+            .1;
         Ok(PyVideoClip { inner: clip })
     }
 
@@ -4922,9 +4951,17 @@ mod tests {
     #[test]
     fn test_world_reason() {
         let world = PyWorld::new("reason_world", "mock");
-        let output = world.reason("will it fall?", None).unwrap();
+        let output = world.reason("will it fall?", None, None).unwrap();
         assert!(output.answer().contains("empty"));
         assert!(output.confidence() > 0.0);
+        assert_eq!(output.evidence(), vec!["objects: none".to_string()]);
+    }
+
+    #[test]
+    fn test_world_reason_uses_fallback_provider() {
+        let world = PyWorld::new("reason_world", "missing");
+        let output = world.reason("will it fall?", None, Some("mock")).unwrap();
+        assert!(output.answer().contains("empty"));
         assert_eq!(output.evidence(), vec!["objects: none".to_string()]);
     }
 
@@ -5270,6 +5307,7 @@ mod tests {
                 0.7,
                 Some(7),
                 Some("blurry"),
+                None,
             )
             .unwrap();
 
@@ -5293,7 +5331,7 @@ mod tests {
         };
 
         let output = wf
-            .embed("mock", Some("a red mug on a table"), Some(&clip))
+            .embed("mock", Some("a red mug on a table"), Some(&clip), None)
             .unwrap();
 
         assert_eq!(output.provider(), "mock");
@@ -5315,7 +5353,9 @@ mod tests {
             },
         };
 
-        let output = wf.embed("mock", Some("text-only"), Some(&clip)).unwrap();
+        let output = wf
+            .embed("mock", Some("text-only"), Some(&clip), None)
+            .unwrap();
         let json = output.to_json().unwrap();
         let restored = PyEmbeddingOutput::from_json(&json).unwrap();
 
@@ -5337,6 +5377,7 @@ mod tests {
                 180,
                 10.0,
                 1.0,
+                None,
                 None,
                 None,
             )
@@ -5363,15 +5404,41 @@ mod tests {
                 1.0,
                 None,
                 None,
+                None,
             )
             .unwrap();
         let transferred = wf
-            .transfer(&clip, "mock", None, 640, 360, 24.0, 0.5)
+            .transfer(&clip, "mock", None, 640, 360, 24.0, 0.5, None)
             .unwrap();
 
         assert_eq!(transferred.duration(), clip.duration());
         assert_eq!(transferred.resolution(), (640, 360));
         assert_eq!(transferred.fps(), 24.0);
+    }
+
+    #[test]
+    fn test_worldforge_embed_uses_fallback_provider() {
+        let wf = test_worldforge();
+        let clip = PyVideoClip {
+            inner: VideoClip {
+                frames: Vec::new(),
+                fps: 8.0,
+                resolution: (64, 64),
+                duration: 1.0,
+            },
+        };
+
+        let output = wf
+            .embed(
+                "missing",
+                Some("a red mug on a table"),
+                Some(&clip),
+                Some("mock"),
+            )
+            .unwrap();
+
+        assert_eq!(output.provider(), "mock");
+        assert_eq!(output.model(), "mock-embedding-v1");
     }
 
     #[test]

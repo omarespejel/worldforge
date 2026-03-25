@@ -150,7 +150,79 @@ impl WorldForge {
     /// Returns an error if the provider is unknown or does not support embeddings.
     pub async fn embed(&self, provider: &str, input: &EmbeddingInput) -> Result<EmbeddingOutput> {
         input.validate()?;
-        self.registry.get(provider)?.embed(input).await
+        self.embed_with_fallback(provider, input, None)
+            .await
+            .map(|(_, output)| output)
+    }
+
+    /// Request an embedding from a specific provider with an optional fallback provider.
+    ///
+    /// Returns the provider name that ultimately satisfied the request alongside the output.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the primary request fails and no fallback succeeds.
+    pub async fn embed_with_fallback(
+        &self,
+        provider: &str,
+        input: &EmbeddingInput,
+        fallback_provider: Option<&str>,
+    ) -> Result<(String, EmbeddingOutput)> {
+        input.validate()?;
+
+        match self.registry.get(provider) {
+            Ok(provider_ref) => match provider_ref.embed(input).await {
+                Ok(output) => Ok((provider.to_string(), output)),
+                Err(primary_error) => {
+                    let Some(fallback_provider) =
+                        fallback_provider.filter(|fallback| *fallback != provider)
+                    else {
+                        return Err(primary_error);
+                    };
+
+                    tracing::warn!(
+                        provider,
+                        fallback = fallback_provider,
+                        error = %primary_error,
+                        "embedding failed on primary provider, attempting fallback"
+                    );
+
+                    match self.registry.get(fallback_provider)?.embed(input).await {
+                        Ok(output) => Ok((fallback_provider.to_string(), output)),
+                        Err(fallback_error) => Err(error::WorldForgeError::ProviderUnavailable {
+                            provider: provider.to_string(),
+                            reason: format!(
+                                "primary provider error: {primary_error}; fallback provider '{fallback_provider}' error: {fallback_error}"
+                            ),
+                        }),
+                    }
+                }
+            },
+            Err(primary_error) => {
+                let Some(fallback_provider) =
+                    fallback_provider.filter(|fallback| *fallback != provider)
+                else {
+                    return Err(primary_error);
+                };
+
+                tracing::warn!(
+                    provider,
+                    fallback = fallback_provider,
+                    error = %primary_error,
+                    "embedding failed on primary provider, attempting fallback"
+                );
+
+                match self.registry.get(fallback_provider)?.embed(input).await {
+                    Ok(output) => Ok((fallback_provider.to_string(), output)),
+                    Err(fallback_error) => Err(error::WorldForgeError::ProviderUnavailable {
+                        provider: provider.to_string(),
+                        reason: format!(
+                            "primary provider error: {primary_error}; fallback provider '{fallback_provider}' error: {fallback_error}"
+                        ),
+                    }),
+                }
+            }
+        }
     }
 
     /// Compare previously generated predictions.
@@ -421,5 +493,25 @@ mod tests {
         assert_eq!(result.provider, "embedder");
         assert_eq!(result.model, "embedder-v1");
         assert_eq!(result.embedding.shape, vec![3]);
+    }
+
+    #[tokio::test]
+    async fn test_worldforge_embed_uses_fallback_provider() {
+        let mut registry = crate::provider::ProviderRegistry::new();
+        registry.register(Box::new(EmbedProvider));
+        let wf = WorldForge::from_registry(registry);
+
+        let (provider, result) = wf
+            .embed_with_fallback(
+                "missing",
+                &EmbeddingInput::from_text("fallback please"),
+                Some("embedder"),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(provider, "embedder");
+        assert_eq!(result.provider, "embedder");
+        assert_eq!(result.model, "embedder-v1");
     }
 }

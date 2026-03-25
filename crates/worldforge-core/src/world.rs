@@ -227,8 +227,47 @@ impl World {
         config: &GenerationConfig,
         provider_name: &str,
     ) -> Result<crate::types::VideoClip> {
-        let provider = self.registry.get(provider_name)?;
-        provider.generate(prompt, config).await
+        self.generate_with_provider_and_fallback(prompt, config, provider_name, None)
+            .await
+            .map(|(_, clip)| clip)
+    }
+
+    /// Generate a video clip with a specific provider and optional fallback provider.
+    #[instrument(skip(self, prompt, config))]
+    pub async fn generate_with_provider_and_fallback(
+        &self,
+        prompt: &GenerationPrompt,
+        config: &GenerationConfig,
+        provider_name: &str,
+        fallback_provider: Option<&str>,
+    ) -> Result<(String, crate::types::VideoClip)> {
+        match self.run_generate(prompt, config, provider_name).await {
+            Ok(clip) => Ok((provider_name.to_string(), clip)),
+            Err(primary_error) => {
+                let Some(fallback_provider) =
+                    fallback_provider.filter(|fallback| *fallback != provider_name)
+                else {
+                    return Err(primary_error);
+                };
+
+                tracing::warn!(
+                    provider = provider_name,
+                    fallback = fallback_provider,
+                    error = %primary_error,
+                    "generation failed on primary provider, attempting fallback"
+                );
+
+                match self.run_generate(prompt, config, fallback_provider).await {
+                    Ok(clip) => Ok((fallback_provider.to_string(), clip)),
+                    Err(fallback_error) => Err(combine_fallback_errors(
+                        provider_name,
+                        fallback_provider,
+                        primary_error,
+                        fallback_error,
+                    )),
+                }
+            }
+        }
     }
 
     /// Transfer spatial controls over an existing source clip with the world's default provider.
@@ -252,8 +291,54 @@ impl World {
         config: &TransferConfig,
         provider_name: &str,
     ) -> Result<crate::types::VideoClip> {
-        let provider = self.registry.get(provider_name)?;
-        provider.transfer(source, controls, config).await
+        self.transfer_with_provider_and_fallback(source, controls, config, provider_name, None)
+            .await
+            .map(|(_, clip)| clip)
+    }
+
+    /// Transfer spatial controls over an existing source clip with a specific provider and optional fallback provider.
+    #[instrument(skip(self, source, controls, config))]
+    pub async fn transfer_with_provider_and_fallback(
+        &self,
+        source: &crate::types::VideoClip,
+        controls: &SpatialControls,
+        config: &TransferConfig,
+        provider_name: &str,
+        fallback_provider: Option<&str>,
+    ) -> Result<(String, crate::types::VideoClip)> {
+        match self
+            .run_transfer(source, controls, config, provider_name)
+            .await
+        {
+            Ok(clip) => Ok((provider_name.to_string(), clip)),
+            Err(primary_error) => {
+                let Some(fallback_provider) =
+                    fallback_provider.filter(|fallback| *fallback != provider_name)
+                else {
+                    return Err(primary_error);
+                };
+
+                tracing::warn!(
+                    provider = provider_name,
+                    fallback = fallback_provider,
+                    error = %primary_error,
+                    "transfer failed on primary provider, attempting fallback"
+                );
+
+                match self
+                    .run_transfer(source, controls, config, fallback_provider)
+                    .await
+                {
+                    Ok(clip) => Ok((fallback_provider.to_string(), clip)),
+                    Err(fallback_error) => Err(combine_fallback_errors(
+                        provider_name,
+                        fallback_provider,
+                        primary_error,
+                        fallback_error,
+                    )),
+                }
+            }
+        }
     }
 
     /// Ask the world's default provider to reason about the current state.
@@ -270,12 +355,46 @@ impl World {
         query: &str,
         provider_name: &str,
     ) -> Result<ReasoningOutput> {
-        let provider = self.registry.get(provider_name)?;
-        let input = ReasoningInput {
-            video: None,
-            state: Some(self.state.clone()),
-        };
-        provider.reason(&input, query).await
+        self.reason_with_provider_and_fallback(query, provider_name, None)
+            .await
+            .map(|(_, output)| output)
+    }
+
+    /// Ask a specific provider to reason about the current world state with an optional fallback provider.
+    #[instrument(skip(self, query))]
+    pub async fn reason_with_provider_and_fallback(
+        &self,
+        query: &str,
+        provider_name: &str,
+        fallback_provider: Option<&str>,
+    ) -> Result<(String, ReasoningOutput)> {
+        match self.run_reason(query, provider_name).await {
+            Ok(output) => Ok((provider_name.to_string(), output)),
+            Err(primary_error) => {
+                let Some(fallback_provider) =
+                    fallback_provider.filter(|fallback| *fallback != provider_name)
+                else {
+                    return Err(primary_error);
+                };
+
+                tracing::warn!(
+                    provider = provider_name,
+                    fallback = fallback_provider,
+                    error = %primary_error,
+                    "reasoning failed on primary provider, attempting fallback"
+                );
+
+                match self.run_reason(query, fallback_provider).await {
+                    Ok(output) => Ok((fallback_provider.to_string(), output)),
+                    Err(fallback_error) => Err(combine_fallback_errors(
+                        provider_name,
+                        fallback_provider,
+                        primary_error,
+                        fallback_error,
+                    )),
+                }
+            }
+        }
     }
 
     /// Plan a sequence of actions to achieve a goal.
@@ -423,6 +542,36 @@ impl World {
         }
     }
 
+    async fn run_generate(
+        &self,
+        prompt: &GenerationPrompt,
+        config: &GenerationConfig,
+        provider_name: &str,
+    ) -> Result<crate::types::VideoClip> {
+        let provider = self.registry.get(provider_name)?;
+        provider.generate(prompt, config).await
+    }
+
+    async fn run_transfer(
+        &self,
+        source: &crate::types::VideoClip,
+        controls: &SpatialControls,
+        config: &TransferConfig,
+        provider_name: &str,
+    ) -> Result<crate::types::VideoClip> {
+        let provider = self.registry.get(provider_name)?;
+        provider.transfer(source, controls, config).await
+    }
+
+    async fn run_reason(&self, query: &str, provider_name: &str) -> Result<ReasoningOutput> {
+        let provider = self.registry.get(provider_name)?;
+        let input = ReasoningInput {
+            video: None,
+            state: Some(self.state.clone()),
+        };
+        provider.reason(&input, query).await
+    }
+
     async fn run_prediction_with_fallback(
         &self,
         state: &WorldState,
@@ -456,15 +605,29 @@ impl World {
                     .await
                 {
                     Ok(prediction) => Ok(prediction),
-                    Err(fallback_error) => Err(WorldForgeError::ProviderUnavailable {
-                        provider: provider_name.to_string(),
-                        reason: format!(
-                            "primary provider error: {primary_error}; fallback provider '{fallback_provider}' error: {fallback_error}"
-                        ),
-                    }),
+                    Err(fallback_error) => Err(combine_fallback_errors(
+                        provider_name,
+                        fallback_provider,
+                        primary_error,
+                        fallback_error,
+                    )),
                 }
             }
         }
+    }
+}
+
+fn combine_fallback_errors(
+    provider_name: &str,
+    fallback_provider: &str,
+    primary_error: WorldForgeError,
+    fallback_error: WorldForgeError,
+) -> WorldForgeError {
+    WorldForgeError::ProviderUnavailable {
+        provider: provider_name.to_string(),
+        reason: format!(
+            "primary provider error: {primary_error}; fallback provider '{fallback_provider}' error: {fallback_error}"
+        ),
     }
 }
 
@@ -2796,6 +2959,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_generate_uses_fallback_provider() {
+        let state = WorldState::new("media-fallback", "missing");
+        let registry = std::sync::Arc::new({
+            let mut registry = ProviderRegistry::new();
+            registry.register(Box::new(MediaProvider::new("fallback")));
+            registry
+        });
+        let world = World::new(state, "missing", registry);
+        let prompt = GenerationPrompt {
+            text: "a rolling sphere".to_string(),
+            reference_image: None,
+            negative_prompt: None,
+        };
+        let config = GenerationConfig {
+            duration_seconds: 3.5,
+            ..GenerationConfig::default()
+        };
+
+        let (provider, clip) = world
+            .generate_with_provider_and_fallback(&prompt, &config, "missing", Some("fallback"))
+            .await
+            .unwrap();
+
+        assert_eq!(provider, "fallback");
+        assert_eq!(clip.duration, 3.5);
+    }
+
+    #[tokio::test]
     async fn test_transfer_uses_default_provider() {
         let state = WorldState::new("transfer", "media");
         let registry = std::sync::Arc::new({
@@ -2827,6 +3018,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_transfer_uses_fallback_provider() {
+        let state = WorldState::new("transfer-fallback", "missing");
+        let registry = std::sync::Arc::new({
+            let mut registry = ProviderRegistry::new();
+            registry.register(Box::new(MediaProvider::new("fallback")));
+            registry
+        });
+        let world = World::new(state, "missing", registry);
+        let source = VideoClip {
+            frames: Vec::new(),
+            fps: 10.0,
+            resolution: (320, 180),
+            duration: 2.0,
+        };
+        let config = TransferConfig {
+            resolution: (1024, 768),
+            fps: 30.0,
+            control_strength: 0.75,
+        };
+
+        let (provider, clip) = world
+            .transfer_with_provider_and_fallback(
+                &source,
+                &SpatialControls::default(),
+                &config,
+                "missing",
+                Some("fallback"),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(provider, "fallback");
+        assert_eq!(clip.duration, source.duration);
+        assert_eq!(clip.resolution, source.resolution);
+    }
+
+    #[tokio::test]
     async fn test_reason_uses_current_state() {
         let mut state = WorldState::new("reasoning", "media");
         let object = crate::scene::SceneObject::new(
@@ -2855,6 +3083,46 @@ mod tests {
 
         let output = world.reason("what objects are present?").await.unwrap();
 
+        assert!(output.answer.contains("1 object"));
+        assert!(output.evidence.iter().any(|item| item.contains("cube")));
+    }
+
+    #[tokio::test]
+    async fn test_reason_uses_fallback_provider() {
+        let mut state = WorldState::new("reasoning-fallback", "missing");
+        state.scene.add_object(crate::scene::SceneObject::new(
+            "cube",
+            crate::types::Pose::default(),
+            crate::types::BBox {
+                min: crate::types::Position {
+                    x: -0.5,
+                    y: -0.5,
+                    z: -0.5,
+                },
+                max: crate::types::Position {
+                    x: 0.5,
+                    y: 0.5,
+                    z: 0.5,
+                },
+            },
+        ));
+        let registry = std::sync::Arc::new({
+            let mut registry = ProviderRegistry::new();
+            registry.register(Box::new(MediaProvider::new("fallback")));
+            registry
+        });
+        let world = World::new(state, "missing", registry);
+
+        let (provider, output) = world
+            .reason_with_provider_and_fallback(
+                "what objects are present?",
+                "missing",
+                Some("fallback"),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(provider, "fallback");
         assert!(output.answer.contains("1 object"));
         assert!(output.evidence.iter().any(|item| item.contains("cube")));
     }

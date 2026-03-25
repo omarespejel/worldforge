@@ -135,6 +135,9 @@ pub enum Commands {
         /// Provider to use.
         #[arg(long, default_value = "mock")]
         provider: String,
+        /// Optional fallback provider if the primary provider fails.
+        #[arg(long)]
+        fallback_provider: Option<String>,
         /// Optional negative prompt.
         #[arg(long)]
         negative_prompt: Option<String>,
@@ -166,6 +169,9 @@ pub enum Commands {
         /// Provider to use.
         #[arg(long, default_value = "mock")]
         provider: String,
+        /// Optional fallback provider if the primary provider fails.
+        #[arg(long)]
+        fallback_provider: Option<String>,
         /// Optional text to embed.
         #[arg(long)]
         text: Option<String>,
@@ -182,6 +188,9 @@ pub enum Commands {
         /// Provider to use.
         #[arg(long, default_value = "mock")]
         provider: String,
+        /// Optional fallback provider if the primary provider fails.
+        #[arg(long)]
+        fallback_provider: Option<String>,
         /// JSON file containing the source `VideoClip`.
         #[arg(long)]
         source_json: PathBuf,
@@ -216,6 +225,9 @@ pub enum Commands {
         /// Optional provider override.
         #[arg(long)]
         provider: Option<String>,
+        /// Optional fallback provider if the selected provider fails.
+        #[arg(long)]
+        fallback_provider: Option<String>,
     },
 
     /// List all saved worlds.
@@ -623,6 +635,7 @@ pub async fn run() -> Result<()> {
         }
         Commands::Embed {
             provider,
+            fallback_provider,
             text,
             video_json,
             output_json,
@@ -630,6 +643,7 @@ pub async fn run() -> Result<()> {
             return cmd_embed(
                 provider,
                 EmbedOptions {
+                    fallback_provider: fallback_provider.as_deref(),
                     text: text.as_deref(),
                     video_json: video_json.as_deref(),
                     output_json: output_json.as_deref(),
@@ -673,6 +687,7 @@ pub async fn run() -> Result<()> {
         Commands::Generate {
             prompt,
             provider,
+            fallback_provider,
             negative_prompt,
             duration_seconds,
             width,
@@ -686,6 +701,7 @@ pub async fn run() -> Result<()> {
                 &prompt,
                 &provider,
                 GenerateOptions {
+                    fallback_provider: fallback_provider.as_deref(),
                     negative_prompt: negative_prompt.as_deref(),
                     duration_seconds,
                     resolution: (width, height),
@@ -699,6 +715,7 @@ pub async fn run() -> Result<()> {
         }
         Commands::Transfer {
             provider,
+            fallback_provider,
             source_json,
             controls_json,
             output_json,
@@ -710,6 +727,7 @@ pub async fn run() -> Result<()> {
             cmd_transfer(
                 &provider,
                 TransferOptions {
+                    fallback_provider: fallback_provider.as_deref(),
                     source_json: &source_json,
                     controls_json: controls_json.as_deref(),
                     output_json: output_json.as_deref(),
@@ -727,7 +745,17 @@ pub async fn run() -> Result<()> {
             world,
             query,
             provider,
-        } => cmd_reason(store.as_ref(), &world, &query, provider.as_deref()).await,
+            fallback_provider,
+        } => {
+            cmd_reason(
+                store.as_ref(),
+                &world,
+                &query,
+                provider.as_deref(),
+                fallback_provider.as_deref(),
+            )
+            .await
+        }
         Commands::List => cmd_list(store.as_ref()).await,
         Commands::Show { world } => cmd_show(store.as_ref(), &world).await,
         Commands::History { world, output_json } => {
@@ -1186,6 +1214,7 @@ fn print_scene_object(object: &SceneObject) {
 }
 
 struct GenerateOptions<'a> {
+    fallback_provider: Option<&'a str>,
     negative_prompt: Option<&'a str>,
     duration_seconds: f64,
     resolution: (u32, u32),
@@ -1239,6 +1268,7 @@ struct EstimateOptions {
 }
 
 struct TransferOptions<'a> {
+    fallback_provider: Option<&'a str>,
     source_json: &'a Path,
     controls_json: Option<&'a Path>,
     output_json: Option<&'a Path>,
@@ -1248,6 +1278,7 @@ struct TransferOptions<'a> {
 }
 
 struct EmbedOptions<'a> {
+    fallback_provider: Option<&'a str>,
     text: Option<&'a str>,
     video_json: Option<&'a Path>,
     output_json: Option<&'a Path>,
@@ -1644,8 +1675,12 @@ async fn cmd_generate(
     provider_name: &str,
     options: GenerateOptions<'_>,
 ) -> Result<()> {
-    let registry = auto_detect_registry();
-    let provider = require_provider(&registry, provider_name)?;
+    let registry = Arc::new(auto_detect_registry());
+    let world = worldforge_core::world::World::new(
+        WorldState::new("cli-generate", provider_name),
+        provider_name,
+        Arc::clone(&registry),
+    );
     let prompt = GenerationPrompt {
         text: prompt.to_string(),
         reference_image: None,
@@ -1659,13 +1694,18 @@ async fn cmd_generate(
         seed: options.seed,
     };
 
-    let clip = provider
-        .generate(&prompt, &config)
+    let (resolved_provider, clip) = world
+        .generate_with_provider_and_fallback(
+            &prompt,
+            &config,
+            provider_name,
+            options.fallback_provider,
+        )
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     println!("Generation completed:");
-    println!("  Provider: {provider_name}");
+    println!("  Provider: {resolved_provider}");
     println!("  Duration: {:.2}s", clip.duration);
     println!("  Resolution: {}x{}", clip.resolution.0, clip.resolution.1);
     println!("  FPS: {:.1}", clip.fps);
@@ -1679,8 +1719,12 @@ async fn cmd_generate(
 }
 
 async fn cmd_transfer(provider_name: &str, options: TransferOptions<'_>) -> Result<()> {
-    let registry = auto_detect_registry();
-    let provider = require_provider(&registry, provider_name)?;
+    let registry = Arc::new(auto_detect_registry());
+    let world = worldforge_core::world::World::new(
+        WorldState::new("cli-transfer", provider_name),
+        provider_name,
+        Arc::clone(&registry),
+    );
     let source: VideoClip = read_json_file(options.source_json)?;
     let controls = match options.controls_json {
         Some(path) => read_json_file(path)?,
@@ -1692,13 +1736,19 @@ async fn cmd_transfer(provider_name: &str, options: TransferOptions<'_>) -> Resu
         control_strength: options.control_strength,
     };
 
-    let clip = provider
-        .transfer(&source, &controls, &config)
+    let (resolved_provider, clip) = world
+        .transfer_with_provider_and_fallback(
+            &source,
+            &controls,
+            &config,
+            provider_name,
+            options.fallback_provider,
+        )
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     println!("Transfer completed:");
-    println!("  Provider: {provider_name}");
+    println!("  Provider: {resolved_provider}");
     println!("  Duration: {:.2}s", clip.duration);
     println!("  Resolution: {}x{}", clip.resolution.0, clip.resolution.1);
     println!("  FPS: {:.1}", clip.fps);
@@ -1712,20 +1762,19 @@ async fn cmd_transfer(provider_name: &str, options: TransferOptions<'_>) -> Resu
 }
 
 async fn cmd_embed(provider_name: &str, options: EmbedOptions<'_>) -> Result<()> {
-    let registry = auto_detect_registry();
-    let provider = require_provider(&registry, provider_name)?;
+    let wf = worldforge_core::WorldForge::from_registry(auto_detect_registry());
     let video = match options.video_json {
         Some(path) => Some(read_json_file(path)?),
         None => None,
     };
     let input = EmbeddingInput::new(options.text.map(ToOwned::to_owned), video)?;
-    let output = provider
-        .embed(&input)
+    let (resolved_provider, output) = wf
+        .embed_with_fallback(provider_name, &input, options.fallback_provider)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     println!("Embedding completed:");
-    println!("  Provider: {provider_name}");
+    println!("  Provider: {resolved_provider}");
     println!("  Model: {}", output.model);
     println!("  Embedding shape: {:?}", output.embedding.shape);
     if let Some(path) = options.output_json {
@@ -1741,21 +1790,21 @@ async fn cmd_reason(
     world_id: &str,
     query: &str,
     provider: Option<&str>,
+    fallback_provider: Option<&str>,
 ) -> Result<()> {
     let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
     let state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
     let provider_name = resolve_provider_name(&state, provider).to_string();
     let registry = Arc::new(auto_detect_registry());
-    require_provider(&registry, &provider_name)?;
     let world = worldforge_core::world::World::new(state, &provider_name, registry);
 
-    let output = world
-        .reason(query)
+    let (resolved_provider, output) = world
+        .reason_with_provider_and_fallback(query, &provider_name, fallback_provider)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     println!("Reasoning completed:");
-    println!("  Provider: {provider_name}");
+    println!("  Provider: {resolved_provider}");
     println!("  Answer: {}", output.answer);
     println!("  Confidence: {:.2}", output.confidence);
     if output.evidence.is_empty() {
@@ -2851,6 +2900,8 @@ mod tests {
             "a bouncing sphere",
             "--provider",
             "mock",
+            "--fallback-provider",
+            "alt-mock",
             "--duration-seconds",
             "5.5",
             "--width",
@@ -2871,6 +2922,7 @@ mod tests {
         match cli.command {
             Commands::Generate {
                 provider,
+                fallback_provider,
                 duration_seconds,
                 width,
                 height,
@@ -2881,6 +2933,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(provider, "mock");
+                assert_eq!(fallback_provider.as_deref(), Some("alt-mock"));
                 assert_eq!(duration_seconds, 5.5);
                 assert_eq!(width, 640);
                 assert_eq!(height, 360);
@@ -2900,6 +2953,8 @@ mod tests {
             "transfer",
             "--provider",
             "mock",
+            "--fallback-provider",
+            "alt-mock",
             "--source-json",
             "/tmp/source.json",
             "--controls-json",
@@ -2920,6 +2975,7 @@ mod tests {
         match cli.command {
             Commands::Transfer {
                 provider,
+                fallback_provider,
                 source_json,
                 controls_json,
                 output_json,
@@ -2929,6 +2985,7 @@ mod tests {
                 control_strength,
             } => {
                 assert_eq!(provider, "mock");
+                assert_eq!(fallback_provider.as_deref(), Some("alt-mock"));
                 assert_eq!(source_json, PathBuf::from("/tmp/source.json"));
                 assert_eq!(controls_json, Some(PathBuf::from("/tmp/controls.json")));
                 assert_eq!(output_json, Some(PathBuf::from("/tmp/output.json")));
@@ -2948,6 +3005,8 @@ mod tests {
             "embed",
             "--provider",
             "mock",
+            "--fallback-provider",
+            "alt-mock",
             "--text",
             "a red mug on a table",
             "--video-json",
@@ -2960,11 +3019,13 @@ mod tests {
         match cli.command {
             Commands::Embed {
                 provider,
+                fallback_provider,
                 text,
                 video_json,
                 output_json,
             } => {
                 assert_eq!(provider, "mock");
+                assert_eq!(fallback_provider.as_deref(), Some("alt-mock"));
                 assert_eq!(text.as_deref(), Some("a red mug on a table"));
                 assert_eq!(video_json, Some(PathBuf::from("/tmp/video.json")));
                 assert_eq!(output_json, Some(PathBuf::from("/tmp/embedding.json")));
@@ -2984,6 +3045,8 @@ mod tests {
             "will the mug fall?",
             "--provider",
             "cosmos",
+            "--fallback-provider",
+            "mock",
         ])
         .unwrap();
 
@@ -2992,10 +3055,12 @@ mod tests {
                 world,
                 query,
                 provider,
+                fallback_provider,
             } => {
                 assert_eq!(world, "123e4567-e89b-12d3-a456-426614174000");
                 assert_eq!(query, "will the mug fall?");
                 assert_eq!(provider.as_deref(), Some("cosmos"));
+                assert_eq!(fallback_provider.as_deref(), Some("mock"));
             }
             _ => panic!("expected Reason"),
         }
@@ -3348,6 +3413,7 @@ mod tests {
             "a bouncing sphere",
             "mock",
             GenerateOptions {
+                fallback_provider: None,
                 negative_prompt: None,
                 duration_seconds: 2.5,
                 resolution: (640, 360),
@@ -3364,6 +3430,36 @@ mod tests {
         assert_eq!(clip.duration, 2.5);
         assert_eq!(clip.resolution, (640, 360));
         assert_eq!(clip.fps, 12.0);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn test_cmd_generate_uses_fallback_provider() {
+        let dir =
+            std::env::temp_dir().join(format!("wf-cli-generate-fallback-{}", uuid::Uuid::new_v4()));
+        let output = dir.join("clip.json");
+
+        cmd_generate(
+            "a bouncing sphere",
+            "missing",
+            GenerateOptions {
+                fallback_provider: Some("mock"),
+                negative_prompt: None,
+                duration_seconds: 1.5,
+                resolution: (320, 180),
+                fps: 8.0,
+                temperature: 1.0,
+                seed: None,
+                output_json: Some(&output),
+            },
+        )
+        .await
+        .unwrap();
+
+        let clip: VideoClip = read_json_file(&output).unwrap();
+        assert_eq!(clip.duration, 1.5);
+        assert_eq!(clip.resolution, (320, 180));
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -3414,6 +3510,7 @@ mod tests {
         cmd_transfer(
             "mock",
             TransferOptions {
+                fallback_provider: None,
                 source_json: &source_path,
                 controls_json: None,
                 output_json: Some(&output_path),
@@ -3449,6 +3546,7 @@ mod tests {
         cmd_embed(
             "mock",
             EmbedOptions {
+                fallback_provider: None,
                 text: Some("a red mug on a table"),
                 video_json: Some(&video_path),
                 output_json: Some(&output_path),
