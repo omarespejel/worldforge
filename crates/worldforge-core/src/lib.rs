@@ -34,7 +34,8 @@ use std::sync::Arc;
 use error::Result;
 use prediction::{MultiPrediction, Prediction};
 use provider::{
-    CostEstimate, Operation, ProviderDescriptor, ProviderHealthReport, ProviderRegistry,
+    CostEstimate, EmbeddingInput, EmbeddingOutput, Operation, ProviderDescriptor,
+    ProviderHealthReport, ProviderRegistry,
 };
 use state::{DynStateStore, WorldState};
 use world::World;
@@ -141,6 +142,16 @@ impl WorldForge {
         self.registry.estimate_cost(provider, operation)
     }
 
+    /// Request an embedding from a specific provider.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the provider is unknown or does not support embeddings.
+    pub async fn embed(&self, provider: &str, input: &EmbeddingInput) -> Result<EmbeddingOutput> {
+        input.validate()?;
+        self.registry.get(provider)?.embed(input).await
+    }
+
     /// Compare previously generated predictions.
     pub fn compare(&self, predictions: Vec<Prediction>) -> Result<MultiPrediction> {
         MultiPrediction::try_from_predictions(predictions)
@@ -236,6 +247,12 @@ impl Default for WorldForge {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::{
+        EmbeddingInput, EmbeddingOutput, HealthStatus, LatencyProfile, ProviderCapabilities,
+        ReasoningInput, ReasoningOutput, SpatialControls, TransferConfig, WorldModelProvider,
+    };
+    use crate::types::{DType, Device, Tensor, TensorData};
+    use async_trait::async_trait;
 
     #[test]
     fn test_worldforge_new() {
@@ -248,5 +265,126 @@ mod tests {
         let wf = WorldForge::new();
         let result = wf.create_world("test", "nonexistent");
         assert!(result.is_err());
+    }
+
+    struct EmbedProvider;
+
+    #[async_trait]
+    impl WorldModelProvider for EmbedProvider {
+        fn name(&self) -> &str {
+            "embedder"
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities {
+                predict: false,
+                generate: false,
+                reason: false,
+                transfer: false,
+                embed: true,
+                action_conditioned: false,
+                multi_view: false,
+                max_video_length_seconds: 0.0,
+                max_resolution: (0, 0),
+                fps_range: (0.0, 0.0),
+                supported_action_spaces: Vec::new(),
+                supports_depth: false,
+                supports_segmentation: false,
+                supports_planning: false,
+                latency_profile: LatencyProfile {
+                    p50_ms: 1,
+                    p95_ms: 1,
+                    p99_ms: 1,
+                    throughput_fps: 1.0,
+                },
+            }
+        }
+
+        async fn predict(
+            &self,
+            _state: &crate::state::WorldState,
+            _action: &crate::action::Action,
+            _config: &crate::prediction::PredictionConfig,
+        ) -> Result<crate::prediction::Prediction> {
+            Err(crate::error::WorldForgeError::UnsupportedCapability {
+                provider: self.name().to_string(),
+                capability: "predict".to_string(),
+            })
+        }
+
+        async fn generate(
+            &self,
+            _prompt: &crate::provider::GenerationPrompt,
+            _config: &crate::provider::GenerationConfig,
+        ) -> Result<crate::types::VideoClip> {
+            Err(crate::error::WorldForgeError::UnsupportedCapability {
+                provider: self.name().to_string(),
+                capability: "generate".to_string(),
+            })
+        }
+
+        async fn reason(&self, _input: &ReasoningInput, _query: &str) -> Result<ReasoningOutput> {
+            Err(crate::error::WorldForgeError::UnsupportedCapability {
+                provider: self.name().to_string(),
+                capability: "reason".to_string(),
+            })
+        }
+
+        async fn embed(&self, input: &EmbeddingInput) -> Result<EmbeddingOutput> {
+            input.validate()?;
+            Ok(EmbeddingOutput {
+                provider: self.name().to_string(),
+                model: "embedder-v1".to_string(),
+                embedding: Tensor {
+                    data: TensorData::Float32(vec![0.25, 0.5, 0.75]),
+                    shape: vec![3],
+                    dtype: DType::Float32,
+                    device: Device::Cpu,
+                },
+            })
+        }
+
+        async fn transfer(
+            &self,
+            _source: &crate::types::VideoClip,
+            _controls: &SpatialControls,
+            _config: &TransferConfig,
+        ) -> Result<crate::types::VideoClip> {
+            Err(crate::error::WorldForgeError::UnsupportedCapability {
+                provider: self.name().to_string(),
+                capability: "transfer".to_string(),
+            })
+        }
+
+        async fn health_check(&self) -> Result<HealthStatus> {
+            Ok(HealthStatus {
+                healthy: true,
+                message: "healthy".to_string(),
+                latency_ms: 1,
+            })
+        }
+
+        fn estimate_cost(
+            &self,
+            _operation: &crate::provider::Operation,
+        ) -> crate::provider::CostEstimate {
+            crate::provider::CostEstimate::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_worldforge_embed_delegates_to_provider() {
+        let mut registry = crate::provider::ProviderRegistry::new();
+        registry.register(Box::new(EmbedProvider));
+        let wf = WorldForge::from_registry(registry);
+
+        let result = wf
+            .embed("embedder", &EmbeddingInput::from_text("hello world"))
+            .await
+            .unwrap();
+
+        assert_eq!(result.provider, "embedder");
+        assert_eq!(result.model, "embedder-v1");
+        assert_eq!(result.embedding.shape, vec![3]);
     }
 }

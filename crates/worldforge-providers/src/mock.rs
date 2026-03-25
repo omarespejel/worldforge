@@ -17,9 +17,9 @@ use worldforge_core::prediction::{
     PhysicsScores, Plan, PlanGoal, PlanRequest, Prediction, PredictionConfig,
 };
 use worldforge_core::provider::{
-    CostEstimate, GenerationConfig, GenerationPrompt, HealthStatus, LatencyProfile, Operation,
-    ProviderCapabilities, ReasoningInput, ReasoningOutput, SpatialControls, TransferConfig,
-    WorldModelProvider,
+    CostEstimate, EmbeddingInput, EmbeddingOutput, GenerationConfig, GenerationPrompt,
+    HealthStatus, LatencyProfile, Operation, ProviderCapabilities, ReasoningInput, ReasoningOutput,
+    SpatialControls, TransferConfig, WorldModelProvider,
 };
 use worldforge_core::scene::{SceneObject, SpatialRelationship};
 use worldforge_core::state::WorldState;
@@ -87,6 +87,7 @@ impl WorldModelProvider for MockProvider {
             generate: true,
             reason: true,
             transfer: true,
+            embed: true,
             action_conditioned: true,
             multi_view: false,
             max_video_length_seconds: 10.0,
@@ -175,6 +176,32 @@ impl WorldModelProvider for MockProvider {
             answer,
             confidence,
             evidence,
+        })
+    }
+
+    async fn embed(&self, input: &EmbeddingInput) -> Result<EmbeddingOutput> {
+        input.validate()?;
+
+        let mut seed = hash_value(&self.name);
+        if let Some(text) = input.text.as_ref() {
+            seed = hash_value(&(seed, text));
+        }
+        if let Some(video) = input.video.as_ref() {
+            let serialized = serde_json::to_vec(video)
+                .map_err(|error| WorldForgeError::SerializationError(error.to_string()))?;
+            seed = hash_value(&(seed, serialized));
+        }
+
+        let values = deterministic_embedding_from_seed(seed, 32);
+        Ok(EmbeddingOutput {
+            provider: self.name.clone(),
+            model: "mock-embedding-v1".to_string(),
+            embedding: Tensor {
+                data: TensorData::Float32(values),
+                shape: vec![32],
+                dtype: DType::Float32,
+                device: Device::Cpu,
+            },
         })
     }
 
@@ -2065,6 +2092,19 @@ fn color_from_seed(seed: u64) -> [u8; 3] {
         64 + ((seed >> 8) as u8 % 160),
         64 + ((seed >> 16) as u8 % 160),
     ]
+}
+
+fn deterministic_embedding_from_seed(seed: u64, dims: usize) -> Vec<f32> {
+    let mut state = seed ^ 0x9e37_79b9_7f4a_7c15;
+    let mut embedding = Vec::with_capacity(dims);
+    for _ in 0..dims {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        let value = ((state >> 11) as f64) / ((1u64 << 53) as f64);
+        embedding.push(value as f32);
+    }
+    embedding
 }
 
 #[cfg(test)]

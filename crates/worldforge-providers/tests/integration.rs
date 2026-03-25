@@ -19,13 +19,13 @@ use worldforge_core::error::WorldForgeError;
 use worldforge_core::guardrail::{Guardrail, GuardrailConfig};
 use worldforge_core::prediction::{PlanGoal, PlanRequest, PlannerType, PredictionConfig};
 use worldforge_core::provider::{
-    GenerationConfig, GenerationPrompt, ProviderRegistry, ReasoningInput, SpatialControls,
-    TransferConfig, WorldModelProvider,
+    EmbeddingInput, GenerationConfig, GenerationPrompt, ProviderRegistry, ReasoningInput,
+    SpatialControls, TransferConfig, WorldModelProvider,
 };
 use worldforge_core::scene::SceneObject;
 use worldforge_core::state::WorldState;
 use worldforge_core::types::{
-    BBox, DType, Pose, Position, SimTime, Tensor, Trajectory, Vec3, VideoClip,
+    BBox, DType, Pose, Position, SimTime, Tensor, TensorData, Trajectory, Vec3, VideoClip,
 };
 use worldforge_core::world::World;
 use worldforge_providers::cosmos::{
@@ -465,6 +465,7 @@ fn test_full_stack_cosmos_constructor_exposes_merged_capabilities() {
     assert!(capabilities.generate);
     assert!(capabilities.reason);
     assert!(capabilities.transfer);
+    assert!(capabilities.embed);
 }
 
 #[test]
@@ -481,12 +482,17 @@ fn test_auto_detect_registers_full_stack_cosmos() {
             assert!(descriptor.capabilities.generate);
             assert!(descriptor.capabilities.reason);
             assert!(descriptor.capabilities.transfer);
+            assert!(descriptor.capabilities.embed);
             assert!(registry
                 .find_by_capability("reason")
                 .iter()
                 .any(|provider| provider.name() == "cosmos"));
             assert!(registry
                 .find_by_capability("transfer")
+                .iter()
+                .any(|provider| provider.name() == "cosmos"));
+            assert!(registry
+                .find_by_capability("embed")
                 .iter()
                 .any(|provider| provider.name() == "cosmos"));
         },
@@ -615,6 +621,10 @@ fn test_registry_find_by_capability() {
     let predictors = registry.find_by_capability("predict");
     assert_eq!(predictors.len(), 1);
     assert_eq!(predictors[0].name(), "mock");
+
+    let embedders = registry.find_by_capability("embed");
+    assert_eq!(embedders.len(), 1);
+    assert_eq!(embedders[0].name(), "mock");
 
     let planners = registry.find_by_capability("planning");
     // MockProvider may or may not support planning
@@ -755,6 +765,25 @@ async fn test_mock_provider_health_check() {
 }
 
 #[tokio::test]
+async fn test_mock_provider_embed_is_deterministic() {
+    let mock = MockProvider::new();
+    let input = EmbeddingInput::from_text("a red cube on a table");
+
+    let first = mock.embed(&input).await.unwrap();
+    let second = mock.embed(&input).await.unwrap();
+
+    assert_eq!(first.provider, "mock");
+    assert_eq!(first.model, "mock-embedding-v1");
+    assert_eq!(second.provider, "mock");
+    assert_eq!(second.model, "mock-embedding-v1");
+
+    match (&first.embedding.data, &second.embedding.data) {
+        (TensorData::Float32(left), TensorData::Float32(right)) => assert_eq!(left, right),
+        other => panic!("unexpected embedding tensor data: {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn test_world_predict_with_mock() {
     let registry = Arc::new({
         let mut r = ProviderRegistry::new();
@@ -823,6 +852,45 @@ async fn test_provider_cost_estimation() {
     // Mock provider should have zero or minimal cost
     assert!(cost.usd >= 0.0);
     assert_eq!(cost.estimated_latency_ms, mock.latency_ms);
+}
+
+#[tokio::test]
+async fn test_cosmos_embed_roundtrip_with_fake_http_response() {
+    let (endpoint, rx, handle) = spawn_fake_http_server(
+        serde_json::json!({
+            "request_id": "embed-1",
+            "status": "ok",
+            "model": "nvidia/cosmos-embed-1",
+            "embedding": [0.1, 0.2, 0.3, 0.4]
+        })
+        .to_string(),
+    );
+
+    let provider = CosmosProvider::full_stack("cosmos-key", CosmosEndpoint::NimApi(endpoint));
+    let output = provider
+        .embed(&EmbeddingInput::from_text("a red cube on a table"))
+        .await
+        .unwrap();
+
+    let request = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(request.method, "POST");
+    assert_eq!(request.path, "/v1/embed");
+    assert_eq!(
+        request.headers.get("authorization").unwrap(),
+        "Bearer cosmos-key"
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&request.body).unwrap()["model"],
+        "nvidia/cosmos-embed-1"
+    );
+    assert_eq!(output.provider, "cosmos");
+    assert_eq!(output.model, "nvidia/cosmos-embed-1");
+    match output.embedding.data {
+        TensorData::Float32(values) => assert_eq!(values, vec![0.1, 0.2, 0.3, 0.4]),
+        other => panic!("unexpected embedding tensor: {other:?}"),
+    }
+
+    handle.join().unwrap();
 }
 
 #[tokio::test]

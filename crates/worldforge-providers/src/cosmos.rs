@@ -13,9 +13,9 @@ use worldforge_core::action::{Action, ActionSpaceType};
 use worldforge_core::error::{Result, WorldForgeError};
 use worldforge_core::prediction::{PhysicsScores, Prediction, PredictionConfig};
 use worldforge_core::provider::{
-    CostEstimate, GenerationConfig, GenerationPrompt, HealthStatus, LatencyProfile, Operation,
-    ProviderCapabilities, ReasoningInput, ReasoningOutput, SpatialControls, TransferConfig,
-    WorldModelProvider,
+    CostEstimate, EmbeddingInput, EmbeddingOutput, GenerationConfig, GenerationPrompt,
+    HealthStatus, LatencyProfile, Operation, ProviderCapabilities, ReasoningInput, ReasoningOutput,
+    SpatialControls, TransferConfig, WorldModelProvider,
 };
 use worldforge_core::state::WorldState;
 use worldforge_core::types::{
@@ -42,6 +42,7 @@ enum CosmosRoute {
     Generate,
     Reason,
     Transfer,
+    Embed,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -50,6 +51,7 @@ struct CosmosRoutes {
     generate: Option<CosmosModel>,
     reason: Option<CosmosModel>,
     transfer: Option<CosmosModel>,
+    embed: Option<CosmosModel>,
 }
 
 impl CosmosRoutes {
@@ -59,6 +61,7 @@ impl CosmosRoutes {
             generate: matches!(model, CosmosModel::Predict2_5).then_some(model),
             reason: matches!(model, CosmosModel::Reason2).then_some(model),
             transfer: matches!(model, CosmosModel::Transfer2_5).then_some(model),
+            embed: matches!(model, CosmosModel::Embed1).then_some(model),
         }
     }
 
@@ -68,6 +71,7 @@ impl CosmosRoutes {
             generate: Some(CosmosModel::Predict2_5),
             reason: Some(CosmosModel::Reason2),
             transfer: Some(CosmosModel::Transfer2_5),
+            embed: Some(CosmosModel::Embed1),
         }
     }
 
@@ -77,6 +81,7 @@ impl CosmosRoutes {
             CosmosRoute::Generate => self.generate,
             CosmosRoute::Reason => self.reason,
             CosmosRoute::Transfer => self.transfer,
+            CosmosRoute::Embed => self.embed,
         }
     }
 }
@@ -217,6 +222,19 @@ pub struct CosmosGenerateRequest {
     /// Random seed for reproducibility.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seed: Option<u64>,
+}
+
+/// Request payload for the Cosmos Embed API.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CosmosEmbeddingRequest {
+    /// Model identifier.
+    pub model: String,
+    /// Optional text content to embed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// Optional video content to embed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub video: Option<worldforge_core::types::VideoClip>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -373,6 +391,18 @@ struct CosmosReasoningResponse {
     output: Option<CosmosReasoningEnvelope>,
     #[serde(default)]
     result: Option<CosmosReasoningEnvelope>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct CosmosEmbeddingResponse {
+    #[serde(default, alias = "requestId")]
+    request_id: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    embedding: Vec<f32>,
 }
 
 /// NVIDIA Cosmos provider adapter.
@@ -632,6 +662,15 @@ fn response_marker(parts: &[Option<&str>]) -> String {
     }
 
     marker
+}
+
+fn embedding_tensor(values: Vec<f32>) -> Tensor {
+    Tensor {
+        shape: vec![values.len()],
+        data: TensorData::Float32(values),
+        dtype: DType::Float32,
+        device: Device::Cpu,
+    }
 }
 
 fn tensor_from_marker(marker: &str, width: u32, height: u32) -> Tensor {
@@ -1068,12 +1107,14 @@ impl WorldModelProvider for CosmosProvider {
         let generate = self.routes.generate.is_some();
         let reason = self.routes.reason.is_some();
         let transfer = self.routes.transfer.is_some();
+        let embed = self.routes.embed.is_some();
 
         ProviderCapabilities {
             predict,
             generate,
             reason,
             transfer,
+            embed,
             action_conditioned: predict,
             multi_view: false,
             max_video_length_seconds: 10.0,
@@ -1282,6 +1323,59 @@ impl WorldModelProvider for CosmosProvider {
             .await
             .map_err(|e| WorldForgeError::SerializationError(e.to_string()))?;
         Ok(build_reasoning_output_from_response(api_response))
+    }
+
+    async fn embed(&self, input: &EmbeddingInput) -> Result<EmbeddingOutput> {
+        input.validate()?;
+
+        let model_id = self.route_model_id(CosmosRoute::Embed).ok_or_else(|| {
+            WorldForgeError::UnsupportedCapability {
+                provider: "cosmos".to_string(),
+                capability: "embed (requires Cosmos Embed 1 route)".to_string(),
+            }
+        })?;
+
+        let base_url = self.base_url()?;
+        let request_body = CosmosEmbeddingRequest {
+            model: model_id.to_string(),
+            text: input.text.clone(),
+            video: input.video.clone(),
+        };
+
+        let response = self
+            .client
+            .post(format!("{base_url}/v1/embed"))
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .timeout(std::time::Duration::from_millis(self.config.timeout_ms))
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(|e| WorldForgeError::NetworkError(e.to_string()))?;
+
+        if !response.status().is_success() {
+            return Err(WorldForgeError::ProviderUnavailable {
+                provider: "cosmos".to_string(),
+                reason: format!("HTTP {}", response.status()),
+            });
+        }
+
+        let api_response: CosmosEmbeddingResponse = response
+            .json()
+            .await
+            .map_err(|e| WorldForgeError::SerializationError(e.to_string()))?;
+
+        if api_response.embedding.is_empty() {
+            return Err(WorldForgeError::SerializationError(
+                "cosmos embedding response did not include an embedding vector".to_string(),
+            ));
+        }
+
+        Ok(EmbeddingOutput {
+            provider: "cosmos".to_string(),
+            model: api_response.model.unwrap_or_else(|| model_id.to_string()),
+            embedding: embedding_tensor(api_response.embedding),
+        })
     }
 
     async fn transfer(
@@ -1560,6 +1654,7 @@ mod tests {
         assert!(caps.generate);
         assert!(caps.reason);
         assert!(caps.transfer);
+        assert!(caps.embed);
     }
 
     #[test]
@@ -1865,7 +1960,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_full_stack_routes_predict_generate_reason_and_transfer() {
+    async fn test_full_stack_routes_predict_generate_reason_transfer_and_embed() {
         let action = Action::Move {
             target: Position {
                 x: 1.0,
@@ -2015,6 +2110,33 @@ mod tests {
         );
         assert!(!clip.frames.is_empty());
         transfer_handle.join().unwrap();
+
+        let (embed_endpoint, embed_rx, embed_handle) = spawn_response_server(
+            serde_json::json!({
+                "request_id": "embed-1",
+                "status": "ok",
+                "model": "nvidia/cosmos-embed-1",
+                "embedding": [0.1, 0.2, 0.3, 0.4]
+            })
+            .to_string(),
+        );
+        let provider = CosmosProvider::full_stack("secret", CosmosEndpoint::NimApi(embed_endpoint));
+        let input = EmbeddingInput::from_text("a red cube on a table");
+        let output = provider.embed(&input).await.unwrap();
+        let request = embed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.path, "/v1/embed");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&request.body).unwrap()["model"],
+            "nvidia/cosmos-embed-1"
+        );
+        assert_eq!(output.provider, "cosmos");
+        assert_eq!(output.model, "nvidia/cosmos-embed-1");
+        match output.embedding.data {
+            TensorData::Float32(values) => assert_eq!(values, vec![0.1, 0.2, 0.3, 0.4]),
+            other => panic!("unexpected embedding tensor: {other:?}"),
+        }
+        embed_handle.join().unwrap();
     }
 
     #[test]

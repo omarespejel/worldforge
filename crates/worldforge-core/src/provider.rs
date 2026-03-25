@@ -11,7 +11,7 @@ use crate::action::{Action, ActionSpaceType};
 use crate::error::{Result, WorldForgeError};
 use crate::prediction::{Plan, PlanRequest, PredictionConfig};
 use crate::state::WorldState;
-use crate::types::VideoClip;
+use crate::types::{Tensor, VideoClip};
 
 /// Capabilities declared by a provider.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -24,6 +24,8 @@ pub struct ProviderCapabilities {
     pub reason: bool,
     /// Whether the provider supports spatial-control transfer.
     pub transfer: bool,
+    /// Whether the provider supports text/video embeddings.
+    pub embed: bool,
     /// Whether predictions can be conditioned on actions.
     pub action_conditioned: bool,
     /// Whether the provider supports multi-view rendering.
@@ -173,6 +175,89 @@ pub struct ReasoningOutput {
     pub evidence: Vec<String>,
 }
 
+/// Input for embedding requests.
+#[derive(Debug, Clone, Serialize)]
+pub struct EmbeddingInput {
+    /// Optional text to embed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// Optional video clip to embed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub video: Option<VideoClip>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+struct EmbeddingInputSerde {
+    text: Option<String>,
+    video: Option<VideoClip>,
+}
+
+impl EmbeddingInput {
+    /// Create a new embedding input from optional text and video.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WorldForgeError::InvalidState` when both inputs are absent.
+    pub fn new(text: Option<String>, video: Option<VideoClip>) -> Result<Self> {
+        let input = Self { text, video };
+        input.validate()?;
+        Ok(input)
+    }
+
+    /// Create an embedding input from text only.
+    pub fn from_text(text: impl Into<String>) -> Self {
+        Self {
+            text: Some(text.into()),
+            video: None,
+        }
+    }
+
+    /// Create an embedding input from video only.
+    pub fn from_video(video: VideoClip) -> Self {
+        Self {
+            text: None,
+            video: Some(video),
+        }
+    }
+
+    /// Validate that the input contains at least one modality.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WorldForgeError::InvalidState` when both `text` and `video`
+    /// are absent.
+    pub fn validate(&self) -> Result<()> {
+        if self.text.is_none() && self.video.is_none() {
+            return Err(WorldForgeError::InvalidState(
+                "embedding input must include text and/or video".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl<'de> Deserialize<'de> for EmbeddingInput {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = EmbeddingInputSerde::deserialize(deserializer)?;
+        Self::new(raw.text, raw.video).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Embedding output returned by a provider.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingOutput {
+    /// Provider identifier that produced the embedding.
+    pub provider: String,
+    /// Model identifier used for the embedding request.
+    pub model: String,
+    /// Returned embedding tensor.
+    pub embedding: Tensor,
+}
+
 /// Spatial controls for transfer operations.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SpatialControls {
@@ -222,6 +307,14 @@ pub trait WorldModelProvider: Send + Sync {
 
     /// Perform physical reasoning on input.
     async fn reason(&self, input: &ReasoningInput, query: &str) -> Result<ReasoningOutput>;
+
+    /// Embed text and/or video input into a provider-specific representation.
+    async fn embed(&self, _input: &EmbeddingInput) -> Result<EmbeddingOutput> {
+        Err(WorldForgeError::UnsupportedCapability {
+            provider: self.name().to_string(),
+            capability: "embed".to_string(),
+        })
+    }
 
     /// Transfer spatial controls to produce a video.
     async fn transfer(
@@ -413,6 +506,7 @@ fn supports_capability(capabilities: &ProviderCapabilities, capability: &str) ->
         "generate" => capabilities.generate,
         "reason" => capabilities.reason,
         "transfer" => capabilities.transfer,
+        "embed" => capabilities.embed,
         "planning" => capabilities.supports_planning,
         "action-conditioned" | "action_conditioned" => capabilities.action_conditioned,
         "multi-view" | "multi_view" => capabilities.multi_view,
@@ -627,6 +721,7 @@ mod tests {
             generate: true,
             reason: false,
             transfer: false,
+            embed: false,
             action_conditioned: true,
             multi_view: false,
             max_video_length_seconds: 10.0,
@@ -774,6 +869,9 @@ mod tests {
 
         let action_conditioned = registry.describe_by_capability("action-conditioned");
         assert_eq!(action_conditioned.len(), 2);
+
+        let embeds = registry.describe_by_capability("embed");
+        assert_eq!(embeds.len(), 0);
     }
 
     #[test]

@@ -39,9 +39,10 @@ use worldforge_core::WorldForge;
 /// - `GENIE_API_KEY` → registers `GenieProvider` (Genie 3 surrogate + future remote hint)
 ///
 /// A `MockProvider` is always registered for testing.
-/// The auto-detected Cosmos and Runway entries are capability-complete and
-/// preserve vendor-wide predict/generate/reason/transfer coverage under the
-/// stable `"cosmos"` and `"runway"` names.
+/// The auto-detected Cosmos and Runway entries are capability-complete for
+/// their documented surfaces: predict/generate/reason/transfer under the
+/// stable `"cosmos"` and `"runway"` names, with Cosmos also advertising
+/// embed support.
 /// The Genie surrogate currently supports `predict`, `generate`, `reason`,
 /// `transfer`, and provider-native planning through the local deterministic
 /// backend.
@@ -183,6 +184,15 @@ mod tests {
         assert!(capabilities.generate);
         assert!(capabilities.reason);
         assert!(capabilities.transfer);
+        assert!(capabilities.embed);
+
+        let embed_providers = registry.find_by_capability("embed");
+        assert!(embed_providers
+            .iter()
+            .any(|provider| provider.name() == "mock"));
+        assert!(embed_providers
+            .iter()
+            .any(|provider| provider.name() == "cosmos"));
     }
 
     #[test]
