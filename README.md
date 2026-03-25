@@ -30,6 +30,9 @@ An `Action` is a standardized representation of something an agent can do. Move,
 ### Predictions
 A `Prediction` is the result of asking a world model "what happens next?" It contains the predicted future state, confidence scores, and optional video/image output.
 
+### Embeddings
+An `Embedding` is a provider-generated vector representation of text and/or video input. WorldForge treats embeddings as a first-class capability alongside prediction, generation, reasoning, and transfer.
+
 ### Plans
 A `Plan` is a sequence of actions optimized to reach a goal state. WorldForge can use gradient-based planning (for differentiable world models like JEPA) or sampling-based planning (for generative models like Cosmos/GWM).
 
@@ -106,6 +109,11 @@ comparison_from_predictions = wf.compare([prediction, prediction_2])
 clip = wf.generate("A robot arm reaching across a workbench", provider="mock")
 transferred = wf.transfer(clip, provider="mock")
 
+# Build embeddings from text and/or video
+embedding = wf.embed("mock", text="a mug on a kitchen counter")
+assert embedding.shape == [32]
+assert len(embedding.vector) == 32
+
 # Persist Python-managed worlds with either backend
 wf = WorldForge(state_backend="sqlite", state_db_path=".worldforge/worldforge.db")
 wf.save_world(world)
@@ -124,8 +132,13 @@ suite = EvalSuite.from_builtin("physics")
 report = suite.run_report_data("mock")
 
 verifier = ZkVerifier()  # mock backend today
-proof = verifier.prove_guardrail_plan(plan)
-assert verifier.verify(proof)[0]
+guardrail_bundle = plan.prove_guardrail_bundle()
+guardrail_report = verifier.verify_guardrail_bundle(guardrail_bundle)
+assert guardrail_report.current_verification.valid
+
+world.predict(Action.move_to(0.35, 0.8, 0.0), steps=2)
+inference_bundle = world.prove_latest_inference_bundle()
+assert inference_bundle.verify().current_verification.valid
 ```
 
 ## Rust Quickstart
@@ -141,8 +154,12 @@ To attach persistence up front, open a `StateStore` and pass it to
 `worldforge_providers::auto_detect_worldforge_with_state_store(...)`.
 When `NVIDIA_API_KEY` or `RUNWAY_API_SECRET` are present, auto-detection now
 registers capability-complete `cosmos` and `runway` providers instead of
-single partial model variants, so predict/generate/reason/transfer coverage is
-available under the stable vendor names.
+single partial model variants. Cosmos currently covers
+predict/generate/reason/transfer/embed, while Runway covers
+predict/generate/reason/transfer under the stable vendor names.
+
+The same embedding surface is exposed over the CLI as `worldforge embed` and
+over the REST API as `POST /v1/providers/{name}/embed`.
 
 ## Python Installation
 

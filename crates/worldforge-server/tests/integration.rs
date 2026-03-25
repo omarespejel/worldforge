@@ -286,6 +286,31 @@ async fn test_live_http_world_lifecycle_sqlite() {
 }
 
 #[tokio::test]
+async fn test_live_http_provider_embed() {
+    let server = spawn_test_server().await;
+    let body = serde_json::json!({
+        "text": "a red mug on a table",
+        "video": {
+            "frames": [],
+            "fps": 8.0,
+            "resolution": [64, 64],
+            "duration": 1.0
+        }
+    })
+    .to_string();
+
+    let (status, response) =
+        http_request(server.address, "POST", "/v1/providers/mock/embed", &body).await;
+    assert_eq!(status, 200);
+    assert_eq!(response["data"]["provider"], "mock");
+    assert_eq!(response["data"]["model"], "mock-embedding-v1");
+    assert_eq!(
+        response["data"]["embedding"]["shape"],
+        serde_json::json!([32])
+    );
+}
+
+#[tokio::test]
 async fn test_live_http_patch_object_persists_position_updates() {
     let server = spawn_test_server().await;
     let world_id = create_test_world(server.address, "patch_world").await;

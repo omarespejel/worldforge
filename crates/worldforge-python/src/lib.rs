@@ -16,21 +16,24 @@ use worldforge_core::prediction::{
     MultiPrediction, PlanGoal, PlanGoalInput, PlannerType, PredictionConfig, ProviderScore,
 };
 use worldforge_core::provider::{
-    CostEstimate, GenerationConfig, GenerationPrompt, Operation, ProviderCapabilities,
-    ProviderDescriptor, ProviderHealthReport, ProviderRegistry, SpatialControls, TransferConfig,
-    WorldModelProvider,
+    CostEstimate, EmbeddingInput, EmbeddingOutput, GenerationConfig, GenerationPrompt, Operation,
+    ProviderCapabilities, ProviderDescriptor, ProviderHealthReport, ProviderRegistry,
+    SpatialControls, TransferConfig, WorldModelProvider,
 };
 use worldforge_core::scene::SceneObject;
 use worldforge_core::state::{StateStoreKind, WorldState};
-use worldforge_core::types::{BBox, Position, Rotation, Velocity, VideoClip};
+use worldforge_core::types::{BBox, Position, Rotation, TensorData, Velocity, VideoClip};
 use worldforge_core::world::World as CoreWorld;
 use worldforge_providers::{
     CosmosProvider, GenieProvider, JepaBackend, JepaProvider, MockProvider, RunwayProvider,
 };
 use worldforge_verify::{
     prove_guardrail_plan as prove_guardrail_plan_bundle,
-    prove_inference_transition as prove_inference_transition_bundle, verify_bundle, verify_proof,
-    VerificationBundle, ZkVerifier,
+    prove_inference_transition as prove_inference_transition_bundle,
+    prove_latest_inference as prove_latest_inference_bundle,
+    prove_provenance as prove_provenance_state_bundle, verify_bundle, verify_proof,
+    BundleVerificationReport, GuardrailArtifact, InferenceArtifact, ProvenanceArtifact,
+    VerificationBundle, VerificationResult as CoreVerificationResult, ZkVerifier,
 };
 
 fn auto_detect_registry() -> Arc<worldforge_core::provider::ProviderRegistry> {
@@ -116,6 +119,31 @@ fn parse_provider_names(input: &str) -> Vec<String> {
         provider_names.push("mock".to_string());
     }
     provider_names
+}
+
+fn format_hash_hex(hash: &[u8; 32]) -> String {
+    hash.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn format_hash_list_hex(hashes: &[[u8; 32]]) -> Vec<String> {
+    hashes.iter().map(format_hash_hex).collect()
+}
+
+fn tensor_data_to_f32_vec(data: &TensorData) -> Vec<f32> {
+    match data {
+        TensorData::Float32(values) => values.clone(),
+        TensorData::Float64(values) => values.iter().map(|value| *value as f32).collect(),
+        TensorData::UInt8(values) => values.iter().map(|value| *value as f32).collect(),
+        TensorData::Int32(values) => values.iter().map(|value| *value as f32).collect(),
+        TensorData::Int64(values) => values.iter().map(|value| *value as f32).collect(),
+    }
+}
+
+fn current_timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
 }
 
 fn load_eval_suite(
@@ -848,6 +876,40 @@ impl PyWorld {
         )
     }
 
+    /// Generate a typed verification bundle for the latest recorded inference.
+    ///
+    /// Requires at least two recorded history entries, which typically means
+    /// the world has already gone through two prediction steps.
+    #[pyo3(signature = (provider=None))]
+    fn prove_latest_inference_bundle(&self, provider: Option<&str>) -> PyResult<PyInferenceBundle> {
+        let verifier = worldforge_verify::MockVerifier::new();
+        let bundle = prove_latest_inference_bundle(&verifier, &self.world.state, provider)
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("proof generation failed: {e}"))
+            })?;
+        Ok(PyInferenceBundle { inner: bundle })
+    }
+
+    /// Generate a typed provenance-attestation bundle for the current world state.
+    #[pyo3(signature = (source_label="worldforge-python", timestamp=None))]
+    fn prove_provenance_bundle(
+        &self,
+        source_label: &str,
+        timestamp: Option<u64>,
+    ) -> PyResult<PyProvenanceBundle> {
+        let verifier = worldforge_verify::MockVerifier::new();
+        let bundle = prove_provenance_state_bundle(
+            &verifier,
+            &self.world.state,
+            source_label,
+            timestamp.unwrap_or_else(current_timestamp),
+        )
+        .map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("proof generation failed: {e}"))
+        })?;
+        Ok(PyProvenanceBundle { inner: bundle })
+    }
+
     /// Predict the next world state after applying an action.
     #[pyo3(signature = (action, steps=1, provider=None, fallback_provider=None, return_video=false, max_latency_ms=None, disable_guardrails=false))]
     #[allow(clippy::too_many_arguments)]
@@ -1289,6 +1351,75 @@ impl PyVideoClip {
             self.inner.resolution.0,
             self.inner.resolution.1,
             self.inner.duration
+        )
+    }
+}
+
+/// Output of a provider embedding request.
+#[pyclass(name = "EmbeddingOutput")]
+#[derive(Debug, Clone)]
+pub struct PyEmbeddingOutput {
+    inner: EmbeddingOutput,
+}
+
+#[pymethods]
+impl PyEmbeddingOutput {
+    /// Provider identifier that produced the embedding.
+    #[getter]
+    fn provider(&self) -> &str {
+        &self.inner.provider
+    }
+
+    /// Model identifier used for the embedding request.
+    #[getter]
+    fn model(&self) -> &str {
+        &self.inner.model
+    }
+
+    /// Embedding tensor shape.
+    #[getter]
+    fn shape(&self) -> Vec<usize> {
+        self.inner.embedding.shape.clone()
+    }
+
+    /// Tensor element type.
+    #[getter]
+    fn dtype(&self) -> String {
+        format!("{:?}", self.inner.embedding.dtype)
+    }
+
+    /// Tensor device.
+    #[getter]
+    fn device(&self) -> String {
+        format!("{:?}", self.inner.embedding.device)
+    }
+
+    /// Flattened embedding vector as `f32` values.
+    #[getter]
+    fn vector(&self) -> Vec<f32> {
+        tensor_data_to_f32_vec(&self.inner.embedding.data)
+    }
+
+    /// Serialize the embedding output to JSON.
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    }
+
+    /// Deserialize an embedding output from JSON.
+    #[staticmethod]
+    fn from_json(json: &str) -> PyResult<Self> {
+        let inner: EmbeddingOutput = serde_json::from_str(json).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("deserialization error: {e}"))
+        })?;
+        Ok(Self { inner })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "EmbeddingOutput(provider='{}', model='{}', shape={:?})",
+            self.inner.provider, self.inner.model, self.inner.embedding.shape
         )
     }
 }
@@ -1896,6 +2027,11 @@ impl PyProviderCapabilities {
     }
 
     #[getter]
+    fn embed(&self) -> bool {
+        self.inner.embed
+    }
+
+    #[getter]
     fn supports_planning(&self) -> bool {
         self.inner.supports_planning
     }
@@ -1938,11 +2074,12 @@ impl PyProviderCapabilities {
 
     fn __repr__(&self) -> String {
         format!(
-            "ProviderCapabilities(predict={}, generate={}, reason={}, transfer={}, planning={})",
+            "ProviderCapabilities(predict={}, generate={}, reason={}, transfer={}, embed={}, planning={})",
             self.inner.predict,
             self.inner.generate,
             self.inner.reason,
             self.inner.transfer,
+            self.inner.embed,
             self.inner.supports_planning
         )
     }
@@ -2200,6 +2337,30 @@ impl PyWorldForge {
         Ok(PyCostEstimate { inner: estimate })
     }
 
+    /// Request an embedding from a provider for text and/or video input.
+    #[pyo3(signature = (provider, text=None, video=None))]
+    fn embed(
+        &self,
+        provider: &str,
+        text: Option<&str>,
+        video: Option<&PyVideoClip>,
+    ) -> PyResult<PyEmbeddingOutput> {
+        let input = EmbeddingInput::new(
+            text.map(ToOwned::to_owned),
+            video.map(|clip| clip.inner.clone()),
+        )
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("invalid input: {e}")))?;
+
+        let provider_ref = self.inner.registry().get(provider).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("embedding failed: {e}"))
+        })?;
+        let rt = new_runtime()?;
+        let output = rt.block_on(provider_ref.embed(&input)).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("embedding failed: {e}"))
+        })?;
+        Ok(PyEmbeddingOutput { inner: output })
+    }
+
     /// Create a new world with the given name and provider.
     #[pyo3(signature = (name, provider="mock"))]
     fn create_world(&self, name: &str, provider: &str) -> PyResult<PyWorld> {
@@ -2402,6 +2563,15 @@ impl PyPlan {
         serde_json::to_string(&self.inner).map_err(|e| {
             pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
         })
+    }
+
+    /// Generate a typed guardrail-compliance verification bundle for this plan.
+    fn prove_guardrail_bundle(&self) -> PyResult<PyGuardrailBundle> {
+        let verifier = worldforge_verify::MockVerifier::new();
+        let bundle = prove_guardrail_plan_bundle(&verifier, &self.inner).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("proof generation failed: {e}"))
+        })?;
+        Ok(PyGuardrailBundle { inner: bundle })
     }
 
     /// Deserialize a plan from JSON.
@@ -3085,10 +3255,21 @@ fn build_verify_submodule(py: Python<'_>) -> PyResult<Bound<'_, PyModule>> {
     let module = PyModule::new_bound(py, "worldforge.verify")?;
     module.add_class::<PyPlan>()?;
     module.add_class::<PyZkProof>()?;
+    module.add_class::<PyVerificationResult>()?;
+    module.add_class::<PyInferenceBundle>()?;
+    module.add_class::<PyGuardrailBundle>()?;
+    module.add_class::<PyProvenanceBundle>()?;
+    module.add_class::<PyInferenceVerificationReport>()?;
+    module.add_class::<PyGuardrailVerificationReport>()?;
+    module.add_class::<PyProvenanceVerificationReport>()?;
     module.add_class::<PyZkVerifier>()?;
     module.add_class::<PyMockVerifier>()?;
     module.add_function(wrap_pyfunction!(prove_inference, &module)?)?;
     module.add_function(wrap_pyfunction!(prove_inference_transition, &module)?)?;
+    module.add_function(wrap_pyfunction!(
+        prove_inference_transition_bundle_py,
+        &module
+    )?)?;
     module.add_function(wrap_pyfunction!(prove_guardrail_plan, &module)?)?;
     module.add_function(wrap_pyfunction!(prove_provenance, &module)?)?;
     module.add_function(wrap_pyfunction!(verify_proof_json, &module)?)?;
@@ -3161,6 +3342,552 @@ impl PyZkProof {
     }
 }
 
+/// Result of verifying a proof or verification bundle.
+#[pyclass(name = "VerificationResult")]
+#[derive(Debug, Clone)]
+pub struct PyVerificationResult {
+    inner: CoreVerificationResult,
+}
+
+#[pymethods]
+impl PyVerificationResult {
+    /// Deserialize a verification result from JSON.
+    #[staticmethod]
+    fn from_json(result_json: &str) -> PyResult<Self> {
+        let inner = serde_json::from_str(result_json).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "invalid verification result JSON: {e}"
+            ))
+        })?;
+        Ok(Self { inner })
+    }
+
+    /// Whether verification succeeded.
+    #[getter]
+    fn valid(&self) -> bool {
+        self.inner.valid
+    }
+
+    /// Time spent verifying, in milliseconds.
+    #[getter]
+    fn verification_time_ms(&self) -> u64 {
+        self.inner.verification_time_ms
+    }
+
+    /// Human-readable verification details.
+    #[getter]
+    fn details(&self) -> &str {
+        &self.inner.details
+    }
+
+    /// Serialize the verification result to JSON.
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "VerificationResult(valid={}, verification_time_ms={})",
+            self.inner.valid, self.inner.verification_time_ms
+        )
+    }
+}
+
+/// Typed inference-verification bundle.
+#[pyclass(name = "InferenceBundle")]
+#[derive(Debug, Clone)]
+pub struct PyInferenceBundle {
+    inner: VerificationBundle<InferenceArtifact>,
+}
+
+#[pymethods]
+impl PyInferenceBundle {
+    #[staticmethod]
+    fn from_json(bundle_json: &str) -> PyResult<Self> {
+        let inner = serde_json::from_str(bundle_json).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("invalid inference bundle JSON: {e}"))
+        })?;
+        Ok(Self { inner })
+    }
+
+    #[getter]
+    fn provider(&self) -> &str {
+        &self.inner.artifact.provider
+    }
+
+    #[getter]
+    fn model_hash_hex(&self) -> String {
+        format_hash_hex(&self.inner.artifact.model_hash)
+    }
+
+    #[getter]
+    fn input_hash_hex(&self) -> String {
+        format_hash_hex(&self.inner.artifact.input_hash)
+    }
+
+    #[getter]
+    fn output_hash_hex(&self) -> String {
+        format_hash_hex(&self.inner.artifact.output_hash)
+    }
+
+    #[getter]
+    fn proof(&self) -> PyZkProof {
+        PyZkProof {
+            inner: self.inner.proof.clone(),
+        }
+    }
+
+    #[getter]
+    fn verification(&self) -> PyVerificationResult {
+        PyVerificationResult {
+            inner: self.inner.verification.clone(),
+        }
+    }
+
+    fn verify(&self) -> PyResult<PyInferenceVerificationReport> {
+        verify_inference_bundle_inner(&self.inner)
+    }
+
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "InferenceBundle(provider='{}')",
+            self.inner.artifact.provider
+        )
+    }
+}
+
+/// Typed guardrail-compliance verification bundle.
+#[pyclass(name = "GuardrailBundle")]
+#[derive(Debug, Clone)]
+pub struct PyGuardrailBundle {
+    inner: VerificationBundle<GuardrailArtifact>,
+}
+
+#[pymethods]
+impl PyGuardrailBundle {
+    #[staticmethod]
+    fn from_json(bundle_json: &str) -> PyResult<Self> {
+        let inner = serde_json::from_str(bundle_json).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("invalid guardrail bundle JSON: {e}"))
+        })?;
+        Ok(Self { inner })
+    }
+
+    #[getter]
+    fn plan_hash_hex(&self) -> String {
+        format_hash_hex(&self.inner.artifact.plan_hash)
+    }
+
+    #[getter]
+    fn guardrail_hashes_hex(&self) -> Vec<String> {
+        format_hash_list_hex(&self.inner.artifact.guardrail_hashes)
+    }
+
+    #[getter]
+    fn all_passed(&self) -> bool {
+        self.inner.artifact.all_passed
+    }
+
+    #[getter]
+    fn action_count(&self) -> usize {
+        self.inner.artifact.action_count
+    }
+
+    #[getter]
+    fn predicted_state_count(&self) -> usize {
+        self.inner.artifact.predicted_state_count
+    }
+
+    #[getter]
+    fn guardrail_step_count(&self) -> usize {
+        self.inner.artifact.guardrail_step_count
+    }
+
+    #[getter]
+    fn proof(&self) -> PyZkProof {
+        PyZkProof {
+            inner: self.inner.proof.clone(),
+        }
+    }
+
+    #[getter]
+    fn verification(&self) -> PyVerificationResult {
+        PyVerificationResult {
+            inner: self.inner.verification.clone(),
+        }
+    }
+
+    fn verify(&self) -> PyResult<PyGuardrailVerificationReport> {
+        verify_guardrail_bundle_inner(&self.inner)
+    }
+
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "GuardrailBundle(actions={}, all_passed={})",
+            self.inner.artifact.action_count, self.inner.artifact.all_passed
+        )
+    }
+}
+
+/// Typed provenance-attestation verification bundle.
+#[pyclass(name = "ProvenanceBundle")]
+#[derive(Debug, Clone)]
+pub struct PyProvenanceBundle {
+    inner: VerificationBundle<ProvenanceArtifact>,
+}
+
+#[pymethods]
+impl PyProvenanceBundle {
+    #[staticmethod]
+    fn from_json(bundle_json: &str) -> PyResult<Self> {
+        let inner = serde_json::from_str(bundle_json).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("invalid provenance bundle JSON: {e}"))
+        })?;
+        Ok(Self { inner })
+    }
+
+    #[getter]
+    fn world_id(&self) -> String {
+        self.inner.artifact.world_id.to_string()
+    }
+
+    #[getter]
+    fn provider(&self) -> &str {
+        &self.inner.artifact.provider
+    }
+
+    #[getter]
+    fn data_hash_hex(&self) -> String {
+        format_hash_hex(&self.inner.artifact.data_hash)
+    }
+
+    #[getter]
+    fn history_hash_hex(&self) -> String {
+        format_hash_hex(&self.inner.artifact.history_hash)
+    }
+
+    #[getter]
+    fn timestamp(&self) -> u64 {
+        self.inner.artifact.timestamp
+    }
+
+    #[getter]
+    fn source_commitment_hex(&self) -> String {
+        format_hash_hex(&self.inner.artifact.source_commitment)
+    }
+
+    #[getter]
+    fn proof(&self) -> PyZkProof {
+        PyZkProof {
+            inner: self.inner.proof.clone(),
+        }
+    }
+
+    #[getter]
+    fn verification(&self) -> PyVerificationResult {
+        PyVerificationResult {
+            inner: self.inner.verification.clone(),
+        }
+    }
+
+    fn verify(&self) -> PyResult<PyProvenanceVerificationReport> {
+        verify_provenance_bundle_inner(&self.inner)
+    }
+
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ProvenanceBundle(world_id='{}', provider='{}')",
+            self.inner.artifact.world_id, self.inner.artifact.provider
+        )
+    }
+}
+
+/// Verification report for an inference bundle.
+#[pyclass(name = "InferenceVerificationReport")]
+#[derive(Debug, Clone)]
+pub struct PyInferenceVerificationReport {
+    inner: BundleVerificationReport<InferenceArtifact>,
+}
+
+#[pymethods]
+impl PyInferenceVerificationReport {
+    #[staticmethod]
+    fn from_json(report_json: &str) -> PyResult<Self> {
+        let inner = serde_json::from_str(report_json).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "invalid inference verification report JSON: {e}"
+            ))
+        })?;
+        Ok(Self { inner })
+    }
+
+    #[getter]
+    fn provider(&self) -> &str {
+        &self.inner.artifact.provider
+    }
+
+    #[getter]
+    fn model_hash_hex(&self) -> String {
+        format_hash_hex(&self.inner.artifact.model_hash)
+    }
+
+    #[getter]
+    fn input_hash_hex(&self) -> String {
+        format_hash_hex(&self.inner.artifact.input_hash)
+    }
+
+    #[getter]
+    fn output_hash_hex(&self) -> String {
+        format_hash_hex(&self.inner.artifact.output_hash)
+    }
+
+    #[getter]
+    fn proof(&self) -> PyZkProof {
+        PyZkProof {
+            inner: self.inner.proof.clone(),
+        }
+    }
+
+    #[getter]
+    fn recorded_verification(&self) -> PyVerificationResult {
+        PyVerificationResult {
+            inner: self.inner.recorded_verification.clone(),
+        }
+    }
+
+    #[getter]
+    fn current_verification(&self) -> PyVerificationResult {
+        PyVerificationResult {
+            inner: self.inner.current_verification.clone(),
+        }
+    }
+
+    #[getter]
+    fn verification_matches_recorded(&self) -> bool {
+        self.inner.verification_matches_recorded
+    }
+
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    }
+}
+
+/// Verification report for a guardrail bundle.
+#[pyclass(name = "GuardrailVerificationReport")]
+#[derive(Debug, Clone)]
+pub struct PyGuardrailVerificationReport {
+    inner: BundleVerificationReport<GuardrailArtifact>,
+}
+
+#[pymethods]
+impl PyGuardrailVerificationReport {
+    #[staticmethod]
+    fn from_json(report_json: &str) -> PyResult<Self> {
+        let inner = serde_json::from_str(report_json).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "invalid guardrail verification report JSON: {e}"
+            ))
+        })?;
+        Ok(Self { inner })
+    }
+
+    #[getter]
+    fn plan_hash_hex(&self) -> String {
+        format_hash_hex(&self.inner.artifact.plan_hash)
+    }
+
+    #[getter]
+    fn guardrail_hashes_hex(&self) -> Vec<String> {
+        format_hash_list_hex(&self.inner.artifact.guardrail_hashes)
+    }
+
+    #[getter]
+    fn all_passed(&self) -> bool {
+        self.inner.artifact.all_passed
+    }
+
+    #[getter]
+    fn action_count(&self) -> usize {
+        self.inner.artifact.action_count
+    }
+
+    #[getter]
+    fn predicted_state_count(&self) -> usize {
+        self.inner.artifact.predicted_state_count
+    }
+
+    #[getter]
+    fn guardrail_step_count(&self) -> usize {
+        self.inner.artifact.guardrail_step_count
+    }
+
+    #[getter]
+    fn proof(&self) -> PyZkProof {
+        PyZkProof {
+            inner: self.inner.proof.clone(),
+        }
+    }
+
+    #[getter]
+    fn recorded_verification(&self) -> PyVerificationResult {
+        PyVerificationResult {
+            inner: self.inner.recorded_verification.clone(),
+        }
+    }
+
+    #[getter]
+    fn current_verification(&self) -> PyVerificationResult {
+        PyVerificationResult {
+            inner: self.inner.current_verification.clone(),
+        }
+    }
+
+    #[getter]
+    fn verification_matches_recorded(&self) -> bool {
+        self.inner.verification_matches_recorded
+    }
+
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    }
+}
+
+/// Verification report for a provenance bundle.
+#[pyclass(name = "ProvenanceVerificationReport")]
+#[derive(Debug, Clone)]
+pub struct PyProvenanceVerificationReport {
+    inner: BundleVerificationReport<ProvenanceArtifact>,
+}
+
+#[pymethods]
+impl PyProvenanceVerificationReport {
+    #[staticmethod]
+    fn from_json(report_json: &str) -> PyResult<Self> {
+        let inner = serde_json::from_str(report_json).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "invalid provenance verification report JSON: {e}"
+            ))
+        })?;
+        Ok(Self { inner })
+    }
+
+    #[getter]
+    fn world_id(&self) -> String {
+        self.inner.artifact.world_id.to_string()
+    }
+
+    #[getter]
+    fn provider(&self) -> &str {
+        &self.inner.artifact.provider
+    }
+
+    #[getter]
+    fn data_hash_hex(&self) -> String {
+        format_hash_hex(&self.inner.artifact.data_hash)
+    }
+
+    #[getter]
+    fn history_hash_hex(&self) -> String {
+        format_hash_hex(&self.inner.artifact.history_hash)
+    }
+
+    #[getter]
+    fn timestamp(&self) -> u64 {
+        self.inner.artifact.timestamp
+    }
+
+    #[getter]
+    fn source_commitment_hex(&self) -> String {
+        format_hash_hex(&self.inner.artifact.source_commitment)
+    }
+
+    #[getter]
+    fn proof(&self) -> PyZkProof {
+        PyZkProof {
+            inner: self.inner.proof.clone(),
+        }
+    }
+
+    #[getter]
+    fn recorded_verification(&self) -> PyVerificationResult {
+        PyVerificationResult {
+            inner: self.inner.recorded_verification.clone(),
+        }
+    }
+
+    #[getter]
+    fn current_verification(&self) -> PyVerificationResult {
+        PyVerificationResult {
+            inner: self.inner.current_verification.clone(),
+        }
+    }
+
+    #[getter]
+    fn verification_matches_recorded(&self) -> bool {
+        self.inner.verification_matches_recorded
+    }
+
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    }
+}
+
+fn verify_inference_bundle_inner(
+    bundle: &VerificationBundle<InferenceArtifact>,
+) -> PyResult<PyInferenceVerificationReport> {
+    let verifier = worldforge_verify::MockVerifier::new();
+    let inner = verify_bundle(&verifier, bundle).map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("verification failed: {e}"))
+    })?;
+    Ok(PyInferenceVerificationReport { inner })
+}
+
+fn verify_guardrail_bundle_inner(
+    bundle: &VerificationBundle<GuardrailArtifact>,
+) -> PyResult<PyGuardrailVerificationReport> {
+    let verifier = worldforge_verify::MockVerifier::new();
+    let inner = verify_bundle(&verifier, bundle).map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("verification failed: {e}"))
+    })?;
+    Ok(PyGuardrailVerificationReport { inner })
+}
+
+fn verify_provenance_bundle_inner(
+    bundle: &VerificationBundle<ProvenanceArtifact>,
+) -> PyResult<PyProvenanceVerificationReport> {
+    let verifier = worldforge_verify::MockVerifier::new();
+    let inner = verify_bundle(&verifier, bundle).map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("verification failed: {e}"))
+    })?;
+    Ok(PyProvenanceVerificationReport { inner })
+}
+
 fn ensure_mock_backend(backend: &str) -> PyResult<()> {
     match backend.to_ascii_lowercase().as_str() {
         "mock" => Ok(()),
@@ -3217,9 +3944,44 @@ impl PyZkVerifier {
         prove_inference_transition(input_state_json, output_state_json, provider)
     }
 
+    #[pyo3(signature = (input_state_json, output_state_json, provider=None))]
+    fn prove_inference_transition_bundle(
+        &self,
+        input_state_json: &str,
+        output_state_json: &str,
+        provider: Option<&str>,
+    ) -> PyResult<PyInferenceBundle> {
+        ensure_mock_backend(&self.backend)?;
+        prove_inference_transition_bundle_py(input_state_json, output_state_json, provider)
+    }
+
     fn prove_guardrail_plan(&self, plan: &PyPlan) -> PyResult<PyZkProof> {
         ensure_mock_backend(&self.backend)?;
         prove_guardrail_plan(plan)
+    }
+
+    fn verify_inference_bundle(
+        &self,
+        bundle: &PyInferenceBundle,
+    ) -> PyResult<PyInferenceVerificationReport> {
+        ensure_mock_backend(&self.backend)?;
+        bundle.verify()
+    }
+
+    fn verify_guardrail_bundle(
+        &self,
+        bundle: &PyGuardrailBundle,
+    ) -> PyResult<PyGuardrailVerificationReport> {
+        ensure_mock_backend(&self.backend)?;
+        bundle.verify()
+    }
+
+    fn verify_provenance_bundle(
+        &self,
+        bundle: &PyProvenanceBundle,
+    ) -> PyResult<PyProvenanceVerificationReport> {
+        ensure_mock_backend(&self.backend)?;
+        bundle.verify()
     }
 
     fn prove_provenance(&self, data: &[u8], timestamp: u64, source: &[u8]) -> PyResult<PyZkProof> {
@@ -3273,8 +4035,39 @@ impl PyMockVerifier {
         prove_inference_transition(input_state_json, output_state_json, provider)
     }
 
+    #[pyo3(signature = (input_state_json, output_state_json, provider=None))]
+    fn prove_inference_transition_bundle(
+        &self,
+        input_state_json: &str,
+        output_state_json: &str,
+        provider: Option<&str>,
+    ) -> PyResult<PyInferenceBundle> {
+        prove_inference_transition_bundle_py(input_state_json, output_state_json, provider)
+    }
+
     fn prove_guardrail_plan(&self, plan: &PyPlan) -> PyResult<PyZkProof> {
         prove_guardrail_plan(plan)
+    }
+
+    fn verify_inference_bundle(
+        &self,
+        bundle: &PyInferenceBundle,
+    ) -> PyResult<PyInferenceVerificationReport> {
+        bundle.verify()
+    }
+
+    fn verify_guardrail_bundle(
+        &self,
+        bundle: &PyGuardrailBundle,
+    ) -> PyResult<PyGuardrailVerificationReport> {
+        bundle.verify()
+    }
+
+    fn verify_provenance_bundle(
+        &self,
+        bundle: &PyProvenanceBundle,
+    ) -> PyResult<PyProvenanceVerificationReport> {
+        bundle.verify()
     }
 
     fn prove_provenance(&self, data: &[u8], timestamp: u64, source: &[u8]) -> PyResult<PyZkProof> {
@@ -3319,6 +4112,21 @@ fn prove_inference_transition(
     output_state_json: &str,
     provider: Option<&str>,
 ) -> PyResult<PyZkProof> {
+    Ok(PyZkProof {
+        inner: prove_inference_transition_bundle_py(input_state_json, output_state_json, provider)?
+            .inner
+            .proof,
+    })
+}
+
+/// Generate a typed inference-verification bundle from two serialized `WorldState` payloads.
+#[pyfunction(name = "prove_inference_transition_bundle")]
+#[pyo3(signature = (input_state_json, output_state_json, provider=None))]
+fn prove_inference_transition_bundle_py(
+    input_state_json: &str,
+    output_state_json: &str,
+    provider: Option<&str>,
+) -> PyResult<PyInferenceBundle> {
     let verifier = worldforge_verify::MockVerifier::new();
     let input_state: WorldState = serde_json::from_str(input_state_json).map_err(|e| {
         pyo3::exceptions::PyValueError::new_err(format!("invalid input state JSON: {e}"))
@@ -3334,9 +4142,7 @@ fn prove_inference_transition(
                 pyo3::exceptions::PyRuntimeError::new_err(format!("proof generation failed: {e}"))
             })?;
 
-    Ok(PyZkProof {
-        inner: bundle.proof,
-    })
+    Ok(PyInferenceBundle { inner: bundle })
 }
 
 /// Generate a guardrail-compliance proof from a `Plan`.
@@ -3451,6 +4257,7 @@ fn worldforge(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyProviderScore>()?;
     m.add_class::<PyMultiPrediction>()?;
     m.add_class::<PyVideoClip>()?;
+    m.add_class::<PyEmbeddingOutput>()?;
     m.add_class::<PyReasoningOutput>()?;
     m.add_class::<PyAction>()?;
     m.add_class::<PyGuardrail>()?;
@@ -3476,6 +4283,13 @@ fn worldforge(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyEvalScenarioSummary>()?;
     m.add_class::<PyEvalReport>()?;
     m.add_class::<PyZkProof>()?;
+    m.add_class::<PyVerificationResult>()?;
+    m.add_class::<PyInferenceBundle>()?;
+    m.add_class::<PyGuardrailBundle>()?;
+    m.add_class::<PyProvenanceBundle>()?;
+    m.add_class::<PyInferenceVerificationReport>()?;
+    m.add_class::<PyGuardrailVerificationReport>()?;
+    m.add_class::<PyProvenanceVerificationReport>()?;
     m.add_class::<PyZkVerifier>()?;
     m.add_class::<PyMockVerifier>()?;
     m.add_function(wrap_pyfunction!(plan, m)?)?;
@@ -3485,6 +4299,7 @@ fn worldforge(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_eval_report_data, m)?)?;
     m.add_function(wrap_pyfunction!(prove_inference, m)?)?;
     m.add_function(wrap_pyfunction!(prove_inference_transition, m)?)?;
+    m.add_function(wrap_pyfunction!(prove_inference_transition_bundle_py, m)?)?;
     m.add_function(wrap_pyfunction!(prove_guardrail_plan, m)?)?;
     m.add_function(wrap_pyfunction!(prove_provenance, m)?)?;
     m.add_function(wrap_pyfunction!(verify_proof_json, m)?)?;
@@ -4111,12 +4926,21 @@ mod tests {
         let info = wf.provider_info("mock").unwrap();
         assert_eq!(info.name(), "mock");
         assert!(info.capabilities().predict());
+        assert!(info.capabilities().embed());
     }
 
     #[test]
     fn test_worldforge_provider_infos_with_filter() {
         let wf = test_worldforge();
         let infos = wf.provider_infos(Some("predict"));
+        assert!(!infos.is_empty());
+        assert!(infos.iter().any(|info| info.name() == "mock"));
+    }
+
+    #[test]
+    fn test_worldforge_provider_infos_with_embed_filter() {
+        let wf = test_worldforge();
+        let infos = wf.provider_infos(Some("embed"));
         assert!(!infos.is_empty());
         assert!(infos.iter().any(|info| info.name() == "mock"));
     }
@@ -4248,6 +5072,51 @@ mod tests {
         assert_eq!(clip.fps(), 12.0);
         assert!(clip.frame_count() > 0);
         assert!(clip.__repr__().contains("VideoClip"));
+    }
+
+    #[test]
+    fn test_worldforge_embed() {
+        let wf = test_worldforge();
+        let clip = PyVideoClip {
+            inner: VideoClip {
+                frames: Vec::new(),
+                fps: 8.0,
+                resolution: (64, 64),
+                duration: 1.0,
+            },
+        };
+
+        let output = wf
+            .embed("mock", Some("a red mug on a table"), Some(&clip))
+            .unwrap();
+
+        assert_eq!(output.provider(), "mock");
+        assert_eq!(output.model(), "mock-embedding-v1");
+        assert_eq!(output.shape(), vec![32]);
+        assert_eq!(output.vector().len(), 32);
+        assert!(output.__repr__().contains("EmbeddingOutput"));
+    }
+
+    #[test]
+    fn test_embedding_output_json_roundtrip() {
+        let wf = test_worldforge();
+        let clip = PyVideoClip {
+            inner: VideoClip {
+                frames: Vec::new(),
+                fps: 8.0,
+                resolution: (64, 64),
+                duration: 1.0,
+            },
+        };
+
+        let output = wf.embed("mock", Some("text-only"), Some(&clip)).unwrap();
+        let json = output.to_json().unwrap();
+        let restored = PyEmbeddingOutput::from_json(&json).unwrap();
+
+        assert_eq!(restored.provider(), "mock");
+        assert_eq!(restored.model(), "mock-embedding-v1");
+        assert_eq!(restored.shape(), vec![32]);
+        assert_eq!(restored.vector().len(), 32);
     }
 
     #[test]
@@ -4769,6 +5638,23 @@ mod tests {
     }
 
     #[test]
+    fn test_prove_inference_transition_bundle_and_verify_report() {
+        let input = serde_json::to_string(&WorldState::new("input", "mock")).unwrap();
+        let output = serde_json::to_string(&WorldState::new("output", "mock")).unwrap();
+
+        let bundle = prove_inference_transition_bundle_py(&input, &output, Some("mock")).unwrap();
+        assert_eq!(bundle.provider(), "mock");
+
+        let report = bundle.verify().unwrap();
+        assert!(report.current_verification().valid());
+        assert!(report.verification_matches_recorded());
+
+        let verifier = PyZkVerifier::new("mock").unwrap();
+        let verifier_report = verifier.verify_inference_bundle(&bundle).unwrap();
+        assert!(verifier_report.current_verification().valid());
+    }
+
+    #[test]
     fn test_prove_guardrail_plan_and_verify() {
         let world = PyWorld::new("verify_plan", "mock");
         let plan = world
@@ -4795,6 +5681,42 @@ mod tests {
         let proof = prove_guardrail_plan(&plan).unwrap();
         let (valid, _) = proof.verify().unwrap();
         assert!(valid);
+    }
+
+    #[test]
+    fn test_plan_prove_guardrail_bundle_and_verify_report() {
+        let world = PyWorld::new("verify_bundle_plan", "mock");
+        let plan = world
+            .plan(
+                Some("spawn cube"),
+                None,
+                4,
+                10.0,
+                Some("mock"),
+                "sampling",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(r#"[{"guardrail":"NoCollisions","blocking":true}]"#),
+                false,
+            )
+            .unwrap();
+
+        let bundle = plan.prove_guardrail_bundle().unwrap();
+        assert!(bundle.action_count() > 0);
+
+        let report = bundle.verify().unwrap();
+        assert!(report.current_verification().valid());
+        assert!(report.verification_matches_recorded());
+
+        let verifier = PyMockVerifier::new();
+        let verifier_report = verifier.verify_guardrail_bundle(&bundle).unwrap();
+        assert!(verifier_report.current_verification().valid());
     }
 
     #[test]
@@ -4856,5 +5778,55 @@ mod tests {
         let report = verify_bundle_json(&json, "guardrail").unwrap();
 
         assert!(report.contains("\"verification_matches_recorded\": true"));
+    }
+
+    #[test]
+    fn test_world_bundle_helpers_cover_latest_inference_and_provenance() {
+        let mut world = PyWorld::new("verify_world", "mock");
+        let position = PyPosition::new(0.0, 0.5, 0.0);
+        let bbox_min = PyPosition::new(-0.1, 0.4, -0.1);
+        let bbox_max = PyPosition::new(0.1, 0.6, 0.1);
+        let bbox = PyBBox::new(&bbox_min, &bbox_max);
+        let object = PySceneObject::new("cube", &position, &bbox);
+        world.add_object(&object);
+        world
+            .predict(
+                &PyAction::move_to(0.25, 0.5, 0.0, 1.0),
+                2,
+                Some("mock"),
+                None,
+                false,
+                None,
+                false,
+            )
+            .unwrap();
+        world
+            .predict(
+                &PyAction::move_to(0.35, 0.5, 0.0, 1.0),
+                2,
+                Some("mock"),
+                None,
+                false,
+                None,
+                false,
+            )
+            .unwrap();
+
+        let inference_bundle = world.prove_latest_inference_bundle(None).unwrap();
+        assert_eq!(inference_bundle.provider(), "mock");
+        let inference_report = inference_bundle.verify().unwrap();
+        assert!(inference_report.current_verification().valid());
+
+        let provenance_bundle = world
+            .prove_provenance_bundle("worldforge-python-tests", Some(1710000000))
+            .unwrap();
+        assert_eq!(provenance_bundle.provider(), "mock");
+        assert_eq!(provenance_bundle.timestamp(), 1710000000);
+
+        let verifier = PyZkVerifier::new("mock").unwrap();
+        let provenance_report = verifier
+            .verify_provenance_bundle(&provenance_bundle)
+            .unwrap();
+        assert!(provenance_report.current_verification().valid());
     }
 }

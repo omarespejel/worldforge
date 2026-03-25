@@ -18,8 +18,8 @@ use worldforge_core::prediction::{
     PlanGoal, PlanGoalInput, PlanRequest, PlannerType, PredictionConfig,
 };
 use worldforge_core::provider::{
-    GenerationConfig, GenerationPrompt, Operation, ProviderDescriptor, ProviderHealthReport,
-    ProviderRegistry, SpatialControls, TransferConfig, WorldModelProvider,
+    EmbeddingInput, GenerationConfig, GenerationPrompt, Operation, ProviderDescriptor,
+    ProviderHealthReport, ProviderRegistry, SpatialControls, TransferConfig, WorldModelProvider,
 };
 use worldforge_core::scene::{PhysicsProperties, SceneObject, SceneObjectPatch};
 use worldforge_core::state::{DynStateStore, StateStore, StateStoreKind, WorldState};
@@ -158,6 +158,22 @@ pub enum Commands {
         output_json: Option<PathBuf>,
     },
 
+    /// Embed text and/or video input with a provider.
+    Embed {
+        /// Provider to use.
+        #[arg(long, default_value = "mock")]
+        provider: String,
+        /// Optional text to embed.
+        #[arg(long)]
+        text: Option<String>,
+        /// Optional JSON file containing the source `VideoClip`.
+        #[arg(long)]
+        video_json: Option<PathBuf>,
+        /// Optional path to write the embedding JSON payload.
+        #[arg(long)]
+        output_json: Option<PathBuf>,
+    },
+
     /// Transfer spatial controls onto an existing source clip.
     Transfer {
         /// Provider to use.
@@ -222,7 +238,7 @@ pub enum Commands {
 
     /// List registered providers and their capabilities.
     Providers {
-        /// Optional capability filter (for example: predict, generate, planning, depth).
+        /// Optional capability filter (for example: predict, generate, embed, planning, depth).
         #[arg(long)]
         capability: Option<String>,
         /// Run live health checks for the listed providers.
@@ -592,6 +608,22 @@ pub async fn run() -> Result<()> {
                 },
             )
         }
+        Commands::Embed {
+            provider,
+            text,
+            video_json,
+            output_json,
+        } => {
+            return cmd_embed(
+                provider,
+                EmbedOptions {
+                    text: text.as_deref(),
+                    video_json: video_json.as_deref(),
+                    output_json: output_json.as_deref(),
+                },
+            )
+            .await;
+        }
         Commands::Health { provider } => return cmd_health(provider).await,
         _ => {}
     }
@@ -672,6 +704,9 @@ pub async fn run() -> Result<()> {
                 },
             )
             .await
+        }
+        Commands::Embed { .. } => {
+            unreachable!("embed command handled before store initialization")
         }
         Commands::Reason {
             world,
@@ -983,7 +1018,7 @@ fn available_eval_suite_names() -> String {
 }
 
 fn available_provider_capabilities() -> &'static str {
-    "predict, generate, reason, transfer, planning, action-conditioned, multi-view, depth, segmentation"
+    "predict, generate, reason, transfer, embed, planning, action-conditioned, multi-view, depth, segmentation"
 }
 
 fn resolve_provider_name<'a>(state: &'a WorldState, provider: Option<&'a str>) -> &'a str {
@@ -1194,6 +1229,12 @@ struct TransferOptions<'a> {
     control_strength: f32,
 }
 
+struct EmbedOptions<'a> {
+    text: Option<&'a str>,
+    video_json: Option<&'a Path>,
+    output_json: Option<&'a Path>,
+}
+
 struct PlanOptions<'a> {
     max_steps: u32,
     planner_name: &'a str,
@@ -1380,6 +1421,9 @@ fn summarize_capabilities(descriptor: &ProviderDescriptor) -> String {
     }
     if descriptor.capabilities.transfer {
         labels.push("transfer");
+    }
+    if descriptor.capabilities.embed {
+        labels.push("embed");
     }
     if descriptor.capabilities.supports_planning {
         labels.push("planning");
@@ -1640,6 +1684,31 @@ async fn cmd_transfer(provider_name: &str, options: TransferOptions<'_>) -> Resu
     println!("  Frames: {}", clip.frames.len());
     if let Some(path) = options.output_json {
         write_json_file(path, &clip)?;
+        println!("  Output JSON: {}", path.display());
+    }
+
+    Ok(())
+}
+
+async fn cmd_embed(provider_name: &str, options: EmbedOptions<'_>) -> Result<()> {
+    let registry = auto_detect_registry();
+    let provider = require_provider(&registry, provider_name)?;
+    let video = match options.video_json {
+        Some(path) => Some(read_json_file(path)?),
+        None => None,
+    };
+    let input = EmbeddingInput::new(options.text.map(ToOwned::to_owned), video)?;
+    let output = provider
+        .embed(&input)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    println!("Embedding completed:");
+    println!("  Provider: {provider_name}");
+    println!("  Model: {}", output.model);
+    println!("  Embedding shape: {:?}", output.embedding.shape);
+    if let Some(path) = options.output_json {
+        write_json_file(path, &output)?;
         println!("  Output JSON: {}", path.display());
     }
 
@@ -2755,6 +2824,38 @@ mod tests {
     }
 
     #[test]
+    fn test_cli_parse_embed_command() {
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "embed",
+            "--provider",
+            "mock",
+            "--text",
+            "a red mug on a table",
+            "--video-json",
+            "/tmp/video.json",
+            "--output-json",
+            "/tmp/embedding.json",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Embed {
+                provider,
+                text,
+                video_json,
+                output_json,
+            } => {
+                assert_eq!(provider, "mock");
+                assert_eq!(text.as_deref(), Some("a red mug on a table"));
+                assert_eq!(video_json, Some(PathBuf::from("/tmp/video.json")));
+                assert_eq!(output_json, Some(PathBuf::from("/tmp/embedding.json")));
+            }
+            _ => panic!("expected Embed"),
+        }
+    }
+
+    #[test]
     fn test_cli_parse_reason_command() {
         let cli = Cli::try_parse_from([
             "worldforge",
@@ -3210,6 +3311,38 @@ mod tests {
         assert_eq!(clip.duration, source.duration);
         assert_eq!(clip.resolution, (800, 600));
         assert_eq!(clip.fps, 24.0);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn test_cmd_embed_writes_output_json() {
+        let dir = std::env::temp_dir().join(format!("wf-cli-embed-{}", uuid::Uuid::new_v4()));
+        let video_path = dir.join("video.json");
+        let output_path = dir.join("output.json");
+        let clip = VideoClip {
+            frames: Vec::new(),
+            fps: 8.0,
+            resolution: (64, 64),
+            duration: 1.0,
+        };
+        write_json_file(&video_path, &clip).unwrap();
+
+        cmd_embed(
+            "mock",
+            EmbedOptions {
+                text: Some("a red mug on a table"),
+                video_json: Some(&video_path),
+                output_json: Some(&output_path),
+            },
+        )
+        .await
+        .unwrap();
+
+        let value: serde_json::Value = read_json_file(&output_path).unwrap();
+        assert_eq!(value["provider"], "mock");
+        assert_eq!(value["model"], "mock-embedding-v1");
+        assert_eq!(value["embedding"]["shape"], serde_json::json!([32]));
 
         let _ = fs::remove_dir_all(dir);
     }

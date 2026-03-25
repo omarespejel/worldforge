@@ -17,8 +17,8 @@ use worldforge_core::error::WorldForgeError;
 use worldforge_core::guardrail::{Guardrail, GuardrailConfig};
 use worldforge_core::prediction::{PlanGoal, PlanGoalInput, PlannerType, PredictionConfig};
 use worldforge_core::provider::{
-    GenerationConfig, GenerationPrompt, Operation, ProviderRegistry, SpatialControls,
-    TransferConfig,
+    EmbeddingInput, GenerationConfig, GenerationPrompt, Operation, ProviderRegistry,
+    SpatialControls, TransferConfig,
 };
 use worldforge_core::scene::{PhysicsProperties, SceneObject, SceneObjectPatch};
 use worldforge_core::state::{DynStateStore, StateStoreKind, WorldState};
@@ -221,6 +221,15 @@ struct GenerateRequest {
     negative_prompt: Option<String>,
     #[serde(default)]
     config: GenerationConfig,
+}
+
+/// JSON request body for provider embeddings.
+#[derive(Debug, Deserialize)]
+struct EmbedRequest {
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    video: Option<VideoClip>,
 }
 
 /// JSON request body for provider transfer.
@@ -794,6 +803,32 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                         };
                         match provider.generate(&prompt, &req.config).await {
                             Ok(clip) => (200, ApiResponse::ok(clip)),
+                            Err(error) => {
+                                (api_error_status(&error), error_response(&error.to_string()))
+                            }
+                        }
+                    }
+                    Err(error) => (404, error_response(&error.to_string())),
+                },
+                Err(e) => (400, error_response(&format!("invalid request: {e}"))),
+            }
+        }
+
+        // POST /v1/providers/{name}/embed
+        ("POST", p) if p.starts_with("/v1/providers/") && p.ends_with("/embed") => {
+            let provider_name = p
+                .strip_prefix("/v1/providers/")
+                .and_then(|value| value.strip_suffix("/embed"))
+                .unwrap_or("");
+            match serde_json::from_str::<EmbedRequest>(body) {
+                Ok(req) => match state.registry.get(provider_name) {
+                    Ok(provider) => {
+                        let input = match EmbeddingInput::new(req.text, req.video) {
+                            Ok(input) => input,
+                            Err(error) => return (400, error_response(&error.to_string())),
+                        };
+                        match provider.embed(&input).await {
+                            Ok(output) => (200, ApiResponse::ok(output)),
                             Err(error) => {
                                 (api_error_status(&error), error_response(&error.to_string()))
                             }
