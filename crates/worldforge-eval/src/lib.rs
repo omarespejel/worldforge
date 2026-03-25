@@ -10,7 +10,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use worldforge_core::action::Action;
+use worldforge_core::action::{evaluate_condition, Action, Condition};
 use worldforge_core::error::{Result, WorldForgeError};
 use worldforge_core::prediction::{PhysicsScores, PredictionConfig};
 use worldforge_core::provider::WorldModelProvider;
@@ -107,6 +107,8 @@ pub enum ExpectedOutcome {
     MinConfidence { threshold: f32 },
     /// The predicted clip should be sufficiently similar to the supplied ground truth.
     MinVideoSimilarity { threshold: f32 },
+    /// The final state should satisfy a core `Condition`.
+    FinalStateCondition { condition: Condition },
 }
 
 /// A suite of evaluation scenarios.
@@ -539,8 +541,19 @@ impl EvalSuite {
                         },
                     }],
                     expected_outcomes: vec![
-                        ExpectedOutcome::ObjectExists {
-                            name: "mug".to_string(),
+                        ExpectedOutcome::FinalStateCondition {
+                            condition: Condition::And(vec![
+                                Condition::ObjectExists { object: mug_id },
+                                Condition::ObjectAt {
+                                    object: mug_id,
+                                    position: Position {
+                                        x: 1.0,
+                                        y: 0.8,
+                                        z: 0.0,
+                                    },
+                                    tolerance: 0.001,
+                                },
+                            ]),
                         },
                         ExpectedOutcome::MinPhysicsScore {
                             dimension: EvalDimension::SpatialConsistency,
@@ -641,6 +654,7 @@ impl EvalSuite {
             },
         );
         let box_a_id = box_a.id;
+        let box_b_id = box_b.id;
         state.scene.add_object(box_a);
         state.scene.add_object(box_b);
 
@@ -712,11 +726,15 @@ impl EvalSuite {
                         force: 1.0,
                     }],
                     expected_outcomes: vec![
-                        ExpectedOutcome::ObjectExists {
-                            name: "box_a".to_string(),
-                        },
-                        ExpectedOutcome::ObjectExists {
-                            name: "box_b".to_string(),
+                        ExpectedOutcome::FinalStateCondition {
+                            condition: Condition::And(vec![
+                                Condition::ObjectExists { object: box_a_id },
+                                Condition::ObjectExists { object: box_b_id },
+                                Condition::Not(Box::new(Condition::ObjectsTouching {
+                                    a: box_a_id,
+                                    b: box_b_id,
+                                })),
+                            ]),
                         },
                         ExpectedOutcome::MinPhysicsScore {
                             dimension: EvalDimension::SpatialConsistency,
@@ -1161,6 +1179,50 @@ fn check_outcome(
                 details: Some("provider did not return a comparable video clip".to_string()),
             },
         },
+        ExpectedOutcome::FinalStateCondition { condition } => {
+            let passed = evaluate_condition(condition, state);
+            OutcomeResult {
+                description: format!("final state matches {}", describe_condition(condition)),
+                passed,
+                details: Some(if passed {
+                    "condition matched".to_string()
+                } else {
+                    format!("condition did not match: {:?}", condition)
+                }),
+            }
+        }
+    }
+}
+
+fn describe_condition(condition: &Condition) -> String {
+    match condition {
+        Condition::ObjectAt {
+            object,
+            position,
+            tolerance,
+        } => format!(
+            "object {object} at ({:.3}, {:.3}, {:.3}) within {tolerance}",
+            position.x, position.y, position.z
+        ),
+        Condition::ObjectsTouching { a, b } => format!("objects {a} and {b} touching"),
+        Condition::ObjectExists { object } => format!("object {object} exists"),
+        Condition::And(conditions) => format!(
+            "all of ({})",
+            conditions
+                .iter()
+                .map(describe_condition)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Condition::Or(conditions) => format!(
+            "any of ({})",
+            conditions
+                .iter()
+                .map(describe_condition)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Condition::Not(inner) => format!("not ({})", describe_condition(inner)),
     }
 }
 
@@ -2108,6 +2170,7 @@ mod tests {
             ),
         );
         object.semantic_label = Some("mug".to_string());
+        let object_id = object.id;
         initial_state.scene.add_object(object);
 
         let suite = EvalSuite {
@@ -2118,13 +2181,15 @@ mod tests {
                 initial_state,
                 actions: vec![Action::Move { target, speed: 1.0 }],
                 expected_outcomes: vec![
-                    ExpectedOutcome::ObjectExists {
-                        name: "red_mug".to_string(),
-                    },
-                    ExpectedOutcome::ObjectPosition {
-                        name: "red_mug".to_string(),
-                        position: target,
-                        tolerance: 0.001,
+                    ExpectedOutcome::FinalStateCondition {
+                        condition: Condition::And(vec![
+                            Condition::ObjectExists { object: object_id },
+                            Condition::ObjectAt {
+                                object: object_id,
+                                position: target,
+                                tolerance: 0.001,
+                            },
+                        ]),
                     },
                     ExpectedOutcome::ObjectSemanticLabel {
                         name: "red_mug".to_string(),
@@ -2143,6 +2208,136 @@ mod tests {
         let result = &report.results[0];
 
         assert!(result.outcomes.iter().all(|outcome| outcome.passed));
+    }
+
+    #[tokio::test]
+    async fn test_final_state_condition_outcome_fails_and_passes() {
+        let mut state = WorldState::new("condition_checks", "eval");
+        let object = worldforge_core::scene::SceneObject::new(
+            "crate",
+            worldforge_core::types::Pose {
+                position: Position {
+                    x: 0.0,
+                    y: 1.0,
+                    z: 0.0,
+                },
+                ..Default::default()
+            },
+            worldforge_core::types::BBox::from_center_half_extents(
+                Position {
+                    x: 0.0,
+                    y: 1.0,
+                    z: 0.0,
+                },
+                worldforge_core::types::Vec3 {
+                    x: 0.1,
+                    y: 0.1,
+                    z: 0.1,
+                },
+            ),
+        );
+        let object_id = object.id;
+        state.scene.add_object(object);
+
+        let passing_suite = EvalSuite {
+            name: "Condition Pass".to_string(),
+            scenarios: vec![EvalScenario {
+                name: "object_exists_and_position".to_string(),
+                description: "Final state should satisfy a compound condition".to_string(),
+                initial_state: state.clone(),
+                actions: vec![Action::Move {
+                    target: Position {
+                        x: 0.0,
+                        y: 1.0,
+                        z: 0.0,
+                    },
+                    speed: 1.0,
+                }],
+                expected_outcomes: vec![ExpectedOutcome::FinalStateCondition {
+                    condition: Condition::And(vec![
+                        Condition::ObjectExists { object: object_id },
+                        Condition::ObjectAt {
+                            object: object_id,
+                            position: Position {
+                                x: 0.0,
+                                y: 1.0,
+                                z: 0.0,
+                            },
+                            tolerance: 0.001,
+                        },
+                    ]),
+                }],
+                ground_truth: None,
+            }],
+            dimensions: vec![EvalDimension::ActionPredictionAccuracy],
+        };
+
+        let passing_report = passing_suite
+            .run(&[&MockProvider::new() as &dyn WorldModelProvider])
+            .await
+            .unwrap();
+        assert!(passing_report.results[0].outcomes[0].passed);
+
+        let failing_suite = EvalSuite {
+            name: "Condition Fail".to_string(),
+            scenarios: vec![EvalScenario {
+                name: "wrong_position".to_string(),
+                description: "Final state should fail a condition when the target is wrong"
+                    .to_string(),
+                initial_state: state,
+                actions: vec![Action::Move {
+                    target: Position {
+                        x: 0.0,
+                        y: 1.0,
+                        z: 0.0,
+                    },
+                    speed: 1.0,
+                }],
+                expected_outcomes: vec![ExpectedOutcome::FinalStateCondition {
+                    condition: Condition::ObjectAt {
+                        object: object_id,
+                        position: Position {
+                            x: 1.0,
+                            y: 1.0,
+                            z: 0.0,
+                        },
+                        tolerance: 0.001,
+                    },
+                }],
+                ground_truth: None,
+            }],
+            dimensions: vec![EvalDimension::ActionPredictionAccuracy],
+        };
+
+        let failing_report = failing_suite
+            .run(&[&MockProvider::new() as &dyn WorldModelProvider])
+            .await
+            .unwrap();
+        assert!(!failing_report.results[0].outcomes[0].passed);
+    }
+
+    #[test]
+    fn test_final_state_condition_outcome_json_roundtrip() {
+        let object_id = uuid::Uuid::new_v4();
+        let outcome = ExpectedOutcome::FinalStateCondition {
+            condition: Condition::Or(vec![
+                Condition::ObjectExists { object: object_id },
+                Condition::Not(Box::new(Condition::ObjectsTouching {
+                    a: object_id,
+                    b: uuid::Uuid::new_v4(),
+                })),
+            ]),
+        };
+        let json = serde_json::to_string(&outcome).unwrap();
+        let restored: ExpectedOutcome = serde_json::from_str(&json).unwrap();
+
+        match restored {
+            ExpectedOutcome::FinalStateCondition { condition } => match condition {
+                Condition::Or(conditions) => assert_eq!(conditions.len(), 2),
+                _ => panic!("expected Or condition"),
+            },
+            _ => panic!("expected FinalStateCondition"),
+        }
     }
 
     #[tokio::test]

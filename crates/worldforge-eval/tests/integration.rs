@@ -3,6 +3,7 @@
 //! Tests the evaluation framework with real providers and
 //! verifies the full eval pipeline: suite creation → run → report.
 
+use worldforge_core::action::Condition;
 use worldforge_core::provider::WorldModelProvider;
 use worldforge_core::scene::SceneObject;
 use worldforge_core::state::WorldState;
@@ -36,6 +37,7 @@ fn sample_scene_suite() -> EvalSuite {
             },
         },
     );
+    let cube_id = object.id;
     object.semantic_label = Some("cube".to_string());
     state.scene.add_object(object);
 
@@ -59,6 +61,20 @@ fn sample_scene_suite() -> EvalSuite {
                     threshold: 0.8,
                 },
                 ExpectedOutcome::MinConfidence { threshold: 0.5 },
+                ExpectedOutcome::FinalStateCondition {
+                    condition: Condition::And(vec![
+                        Condition::ObjectExists { object: cube_id },
+                        Condition::ObjectAt {
+                            object: cube_id,
+                            position: Position {
+                                x: 0.2,
+                                y: 0.8,
+                                z: 0.0,
+                            },
+                            tolerance: 0.001,
+                        },
+                    ]),
+                },
                 ExpectedOutcome::ObjectPosition {
                     name: "cube".to_string(),
                     position: Position {
@@ -214,7 +230,7 @@ async fn test_custom_suite_scores_concrete_scene_thresholds() {
     let result = &report.results[0];
     assert_eq!(result.provider, "mock");
     assert_eq!(result.scenario, "move_cube");
-    assert_eq!(result.outcomes.len(), 4);
+    assert_eq!(result.outcomes.len(), 5);
     assert!(result.outcomes.iter().all(|outcome| outcome.passed));
     assert!(result.scores["gravity_compliance"] >= 0.8);
     assert!(result.scores["overall"] >= 0.0);
@@ -244,6 +260,35 @@ fn test_ground_truth_video_roundtrips_through_suite_json() {
     assert_eq!(clip.fps, 2.0);
     assert_eq!(clip.resolution, (2, 2));
     assert_eq!(clip.duration, 1.0);
+}
+
+#[test]
+fn test_final_state_condition_outcome_roundtrips_through_suite_json() {
+    let suite = sample_scene_suite();
+    let json = serde_json::to_string(&suite).unwrap();
+    let roundtripped = EvalSuite::from_json_str(&json).unwrap();
+
+    let condition = roundtripped.scenarios[0]
+        .expected_outcomes
+        .iter()
+        .find_map(|outcome| match outcome {
+            ExpectedOutcome::FinalStateCondition { condition } => Some(condition),
+            _ => None,
+        })
+        .expect("final state condition outcome should survive roundtrip");
+
+    match condition {
+        Condition::And(conditions) => {
+            assert_eq!(conditions.len(), 2);
+            assert!(conditions
+                .iter()
+                .any(|condition| matches!(condition, Condition::ObjectExists { .. })));
+            assert!(conditions
+                .iter()
+                .any(|condition| matches!(condition, Condition::ObjectAt { .. })));
+        }
+        other => panic!("expected And condition, got {other:?}"),
+    }
 }
 
 #[tokio::test]
