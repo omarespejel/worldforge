@@ -9,16 +9,22 @@ use std::path::Path;
 use std::sync::Arc;
 
 use pyo3::prelude::*;
+use pyo3::types::{PyList, PyModule};
 
 use worldforge_core::guardrail::GuardrailConfig;
 use worldforge_core::prediction::{MultiPrediction, PlannerType, PredictionConfig, ProviderScore};
 use worldforge_core::provider::{
     CostEstimate, GenerationConfig, GenerationPrompt, Operation, ProviderCapabilities,
-    ProviderDescriptor, ProviderHealthReport, SpatialControls, TransferConfig,
+    ProviderDescriptor, ProviderHealthReport, ProviderRegistry, SpatialControls, TransferConfig,
+    WorldModelProvider,
 };
 use worldforge_core::scene::SceneObject;
 use worldforge_core::state::{StateStoreKind, WorldState};
 use worldforge_core::types::{BBox, Position, Rotation, Velocity, VideoClip};
+use worldforge_core::world::World as CoreWorld;
+use worldforge_providers::{
+    CosmosProvider, GenieProvider, JepaBackend, JepaProvider, MockProvider, RunwayProvider,
+};
 use worldforge_verify::{
     prove_guardrail_plan as prove_guardrail_plan_bundle,
     prove_inference_transition as prove_inference_transition_bundle, verify_bundle, verify_proof,
@@ -171,6 +177,54 @@ fn operation_from_args(
         }),
         other => Err(pyo3::exceptions::PyValueError::new_err(format!(
             "unknown operation: {other}. Available: predict, generate, reason, transfer"
+        ))),
+    }
+}
+
+fn parse_cosmos_model(model: &str) -> PyResult<worldforge_providers::cosmos::CosmosModel> {
+    match model.to_ascii_lowercase().as_str() {
+        "predict" | "predict-2.5" | "predict2_5" => {
+            Ok(worldforge_providers::cosmos::CosmosModel::Predict2_5)
+        }
+        "transfer" | "transfer-2.5" | "transfer2_5" => {
+            Ok(worldforge_providers::cosmos::CosmosModel::Transfer2_5)
+        }
+        "reason" | "reason-2" | "reason2" => Ok(worldforge_providers::cosmos::CosmosModel::Reason2),
+        "embed" | "embed-1" | "embed1" => Ok(worldforge_providers::cosmos::CosmosModel::Embed1),
+        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "unknown Cosmos model: {other}. Available: predict-2.5, transfer-2.5, reason-2, embed-1"
+        ))),
+    }
+}
+
+fn parse_runway_model(model: &str) -> PyResult<worldforge_providers::runway::RunwayModel> {
+    match model.to_ascii_lowercase().as_str() {
+        "worlds" => Ok(worldforge_providers::runway::RunwayModel::Gwm1Worlds),
+        "robotics" => Ok(worldforge_providers::runway::RunwayModel::Gwm1Robotics),
+        "avatars" => Ok(worldforge_providers::runway::RunwayModel::Gwm1Avatars),
+        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "unknown Runway model: {other}. Available: worlds, robotics, avatars"
+        ))),
+    }
+}
+
+fn parse_jepa_backend(backend: &str) -> PyResult<JepaBackend> {
+    match backend.to_ascii_lowercase().as_str() {
+        "burn" => Ok(JepaBackend::Burn),
+        "pytorch" => Ok(JepaBackend::PyTorch),
+        "onnx" => Ok(JepaBackend::Onnx),
+        "safetensors" => Ok(JepaBackend::Safetensors),
+        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "unknown JEPA backend: {other}. Available: burn, pytorch, onnx, safetensors"
+        ))),
+    }
+}
+
+fn parse_genie_model(model: &str) -> PyResult<worldforge_providers::genie::GenieModel> {
+    match model.to_ascii_lowercase().as_str() {
+        "genie3" | "genie-3" => Ok(worldforge_providers::genie::GenieModel::Genie3),
+        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "unknown Genie model: {other}. Available: genie3"
         ))),
     }
 }
@@ -607,9 +661,9 @@ impl PySceneObject {
 ///
 /// Wraps the Rust WorldState with Python-friendly methods.
 #[pyclass(name = "World")]
-#[derive(Debug, Clone)]
 pub struct PyWorld {
-    state: WorldState,
+    world: CoreWorld,
+    registry: Arc<ProviderRegistry>,
 }
 
 #[pymethods]
@@ -618,44 +672,46 @@ impl PyWorld {
     #[new]
     #[pyo3(signature = (name, provider="mock"))]
     fn new(name: &str, provider: &str) -> Self {
+        let registry = auto_detect_registry();
         Self {
-            state: WorldState::new(name, provider),
+            world: CoreWorld::new(WorldState::new(name, provider), provider, Arc::clone(&registry)),
+            registry,
         }
     }
 
     /// Get the world's unique ID.
     #[getter]
     fn id(&self) -> String {
-        self.state.id.to_string()
+        self.world.state.id.to_string()
     }
 
     /// Get the world's name.
     #[getter]
     fn name(&self) -> &str {
-        &self.state.metadata.name
+        &self.world.state.metadata.name
     }
 
     /// Get the current simulation step.
     #[getter]
     fn step(&self) -> u64 {
-        self.state.time.step
+        self.world.state.time.step
     }
 
     /// Get the current simulation time in seconds.
     #[getter]
     fn time_seconds(&self) -> f64 {
-        self.state.time.seconds
+        self.world.state.time.seconds
     }
 
     /// Get the number of objects in the scene.
     #[getter]
     fn object_count(&self) -> usize {
-        self.state.scene.objects.len()
+        self.world.state.scene.objects.len()
     }
 
     /// Add an object to the world.
     fn add_object(&mut self, obj: &PySceneObject) {
-        self.state.scene.add_object(obj.inner.clone());
+        self.world.state.scene.add_object(obj.inner.clone());
     }
 
     /// Update an existing object in the world using a mutated scene object.
@@ -663,7 +719,7 @@ impl PyWorld {
         let object_id = obj.inner.id;
         let object_name = obj.inner.name.clone();
 
-        if let Some(existing) = self.state.scene.get_object_mut(&object_id) {
+        if let Some(existing) = self.world.state.scene.get_object_mut(&object_id) {
             existing.name = obj.inner.name.clone();
             existing.pose = obj.inner.pose;
             existing.bbox = obj.inner.bbox;
@@ -680,6 +736,7 @@ impl PyWorld {
         }
 
         if let Some(node) = self
+            .world
             .state
             .scene
             .root
@@ -690,13 +747,14 @@ impl PyWorld {
             node.name = object_name;
         }
 
-        self.state.scene.refresh_relationships();
+        self.world.state.scene.refresh_relationships();
         Ok(())
     }
 
     /// Get an object by name.
     fn get_object(&self, name: &str) -> Option<PySceneObject> {
-        self.state
+        self.world
+            .state
             .scene
             .find_object_by_name(name)
             .map(|o| PySceneObject { inner: o.clone() })
@@ -704,8 +762,14 @@ impl PyWorld {
 
     /// Remove an object by name. Returns True if found.
     fn remove_object(&mut self, name: &str) -> bool {
-        if let Some(id) = self.state.scene.find_object_by_name(name).map(|o| o.id) {
-            self.state.scene.remove_object(&id);
+        if let Some(id) = self
+            .world
+            .state
+            .scene
+            .find_object_by_name(name)
+            .map(|o| o.id)
+        {
+            self.world.state.scene.remove_object(&id);
             true
         } else {
             false
@@ -714,7 +778,8 @@ impl PyWorld {
 
     /// List all object names in the scene.
     fn list_objects(&self) -> Vec<String> {
-        self.state
+        self.world
+            .state
             .scene
             .list_objects()
             .into_iter()
@@ -725,12 +790,12 @@ impl PyWorld {
     /// Get the number of history entries.
     #[getter]
     fn history_length(&self) -> usize {
-        self.state.history.len()
+        self.world.state.history.len()
     }
 
     /// Export the world state as JSON.
     fn to_json(&self) -> PyResult<String> {
-        serde_json::to_string_pretty(&self.state).map_err(|e| {
+        serde_json::to_string_pretty(&self.world.state).map_err(|e| {
             pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
         })
     }
@@ -741,15 +806,20 @@ impl PyWorld {
         let state: WorldState = serde_json::from_str(json).map_err(|e| {
             pyo3::exceptions::PyValueError::new_err(format!("deserialization error: {e}"))
         })?;
-        Ok(Self { state })
+        let provider = state.metadata.created_by.clone();
+        let registry = auto_detect_registry();
+        Ok(Self {
+            world: CoreWorld::new(state, provider, Arc::clone(&registry)),
+            registry,
+        })
     }
 
     fn __repr__(&self) -> String {
         format!(
             "World(name='{}', objects={}, step={})",
-            self.state.metadata.name,
-            self.state.scene.objects.len(),
-            self.state.time.step
+            self.world.state.metadata.name,
+            self.world.state.scene.objects.len(),
+            self.world.state.time.step
         )
     }
 
@@ -770,12 +840,8 @@ impl PyWorld {
             pyo3::exceptions::PyRuntimeError::new_err(format!("failed to create runtime: {e}"))
         })?;
 
-        let provider_name = resolve_provider_name(&self.state, provider);
-        let mut world = worldforge_core::world::World::new(
-            self.state.clone(),
-            provider_name,
-            auto_detect_registry(),
-        );
+        let provider_name = resolve_provider_name(&self.world.state, provider);
+        self.world.default_provider = provider_name.to_string();
         let mut config = PredictionConfig {
             steps,
             return_video,
@@ -788,12 +854,10 @@ impl PyWorld {
         }
 
         let prediction = rt
-            .block_on(world.predict(&action.inner, &config))
+            .block_on(self.world.predict(&action.inner, &config))
             .map_err(|e| {
                 pyo3::exceptions::PyRuntimeError::new_err(format!("prediction failed: {e}"))
             })?;
-
-        self.state = world.current_state().clone();
 
         Ok(PyPrediction { inner: prediction })
     }
@@ -819,11 +883,6 @@ impl PyWorld {
         }
 
         let rt = new_runtime()?;
-        let world = worldforge_core::world::World::new(
-            self.state.clone(),
-            resolve_provider_name(&self.state, None),
-            auto_detect_registry(),
-        );
         let mut config = PredictionConfig {
             steps,
             return_video,
@@ -837,7 +896,10 @@ impl PyWorld {
         }
         let provider_refs: Vec<&str> = providers.iter().map(String::as_str).collect();
         let comparison = rt
-            .block_on(world.predict_multi(&action.inner, &provider_refs, &config))
+            .block_on(
+                self.world
+                    .predict_multi(&action.inner, &provider_refs, &config),
+            )
             .map_err(|e| {
                 pyo3::exceptions::PyRuntimeError::new_err(format!("comparison failed: {e}"))
             })?;
@@ -870,9 +932,9 @@ impl PyWorld {
             pyo3::exceptions::PyRuntimeError::new_err(format!("failed to create runtime: {e}"))
         })?;
 
-        let provider_name = resolve_provider_name(&self.state, provider);
+        let provider_name = resolve_provider_name(&self.world.state, provider);
         let world = worldforge_core::world::World::new(
-            self.state.clone(),
+            self.world.state.clone(),
             provider_name,
             auto_detect_registry(),
         );
@@ -889,7 +951,7 @@ impl PyWorld {
             replanning_interval,
         )?;
         let mut request = worldforge_core::prediction::PlanRequest {
-            current_state: self.state.clone(),
+            current_state: self.world.state.clone(),
             goal: worldforge_core::prediction::PlanGoal::Description(goal.to_string()),
             max_steps,
             guardrails: parse_guardrails_json(guardrails_json)?,
@@ -914,16 +976,12 @@ impl PyWorld {
             pyo3::exceptions::PyRuntimeError::new_err(format!("failed to create runtime: {e}"))
         })?;
 
-        let provider_name = resolve_provider_name(&self.state, provider);
-        let world = worldforge_core::world::World::new(
-            self.state.clone(),
-            provider_name,
-            auto_detect_registry(),
-        );
-
-        let output = rt.block_on(world.reason(query)).map_err(|e| {
-            pyo3::exceptions::PyRuntimeError::new_err(format!("reasoning failed: {e}"))
-        })?;
+        let provider_name = resolve_provider_name(&self.world.state, provider);
+        let output = rt
+            .block_on(self.world.reason_with_provider(query, provider_name))
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("reasoning failed: {e}"))
+            })?;
 
         Ok(PyReasoningOutput { inner: output })
     }
@@ -986,8 +1044,10 @@ impl PyPrediction {
 
     /// Get the predicted output state as a `World`.
     fn output_world(&self) -> PyWorld {
+        let state = self.inner.output_state.clone();
+        let provider = state.metadata.created_by.clone();
         PyWorld {
-            state: self.inner.output_state.clone(),
+            world: CoreWorld::new(state, provider, auto_detect_registry()),
         }
     }
 
@@ -1503,6 +1563,279 @@ impl PyGuardrail {
 // WorldForge orchestrator
 // ---------------------------------------------------------------------------
 
+/// Mock provider exposed to Python for tests and offline workflows.
+#[pyclass(name = "MockProvider")]
+#[derive(Debug, Clone)]
+pub struct PyMockProvider {
+    inner: MockProvider,
+}
+
+#[pymethods]
+impl PyMockProvider {
+    #[new]
+    #[pyo3(signature = (name="mock", latency_ms=10, default_confidence=0.85))]
+    fn new(name: &str, latency_ms: u64, default_confidence: f32) -> Self {
+        let mut inner = if name == "mock" {
+            MockProvider::new()
+        } else {
+            MockProvider::with_name(name)
+        };
+        inner.latency_ms = latency_ms;
+        inner.default_confidence = default_confidence;
+        Self { inner }
+    }
+
+    #[getter]
+    fn name(&self) -> String {
+        self.inner.name().to_string()
+    }
+
+    #[getter]
+    fn capabilities(&self) -> PyProviderCapabilities {
+        PyProviderCapabilities {
+            inner: self.inner.capabilities(),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "MockProvider(name='{}', latency_ms={}, default_confidence={:.2})",
+            self.inner.name(),
+            self.inner.latency_ms,
+            self.inner.default_confidence
+        )
+    }
+}
+
+impl PyMockProvider {
+    fn boxed_provider(&self) -> Box<dyn WorldModelProvider> {
+        Box::new(self.inner.clone())
+    }
+}
+
+/// NVIDIA Cosmos provider exposed to Python.
+#[pyclass(name = "CosmosProvider")]
+#[derive(Debug, Clone)]
+pub struct PyCosmosProvider {
+    inner: CosmosProvider,
+}
+
+#[pymethods]
+impl PyCosmosProvider {
+    #[new]
+    #[pyo3(signature = (api_key, model="predict-2.5", endpoint="https://ai.api.nvidia.com"))]
+    fn new(api_key: &str, model: &str, endpoint: &str) -> PyResult<Self> {
+        let model = parse_cosmos_model(model)?;
+        Ok(Self {
+            inner: CosmosProvider::new(
+                model,
+                api_key,
+                worldforge_providers::cosmos::CosmosEndpoint::NimApi(endpoint.to_string()),
+            ),
+        })
+    }
+
+    #[getter]
+    fn name(&self) -> String {
+        self.inner.name().to_string()
+    }
+
+    #[getter]
+    fn capabilities(&self) -> PyProviderCapabilities {
+        PyProviderCapabilities {
+            inner: self.inner.capabilities(),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        let model = match self.inner.model {
+            worldforge_providers::cosmos::CosmosModel::Predict2_5 => "predict-2.5",
+            worldforge_providers::cosmos::CosmosModel::Transfer2_5 => "transfer-2.5",
+            worldforge_providers::cosmos::CosmosModel::Reason2 => "reason-2",
+            worldforge_providers::cosmos::CosmosModel::Embed1 => "embed-1",
+        };
+        let endpoint = match &self.inner.endpoint {
+            worldforge_providers::cosmos::CosmosEndpoint::NimApi(endpoint)
+            | worldforge_providers::cosmos::CosmosEndpoint::NimLocal(endpoint)
+            | worldforge_providers::cosmos::CosmosEndpoint::DgxCloud(endpoint) => endpoint,
+            worldforge_providers::cosmos::CosmosEndpoint::HuggingFace => "huggingface",
+        };
+        format!("CosmosProvider(model='{}', endpoint='{}')", model, endpoint)
+    }
+}
+
+impl PyCosmosProvider {
+    fn boxed_provider(&self) -> Box<dyn WorldModelProvider> {
+        Box::new(self.inner.clone())
+    }
+}
+
+/// Runway GWM provider exposed to Python.
+#[pyclass(name = "RunwayProvider")]
+#[derive(Debug, Clone)]
+pub struct PyRunwayProvider {
+    inner: RunwayProvider,
+}
+
+#[pymethods]
+impl PyRunwayProvider {
+    #[new]
+    #[pyo3(signature = (api_secret, model="worlds", endpoint=None))]
+    fn new(api_secret: &str, model: &str, endpoint: Option<&str>) -> PyResult<Self> {
+        let model = parse_runway_model(model)?;
+        let inner = match endpoint {
+            Some(endpoint) => RunwayProvider::with_endpoint(model, api_secret, endpoint),
+            None => RunwayProvider::new(model, api_secret),
+        };
+        Ok(Self { inner })
+    }
+
+    #[getter]
+    fn name(&self) -> String {
+        self.inner.name().to_string()
+    }
+
+    #[getter]
+    fn capabilities(&self) -> PyProviderCapabilities {
+        PyProviderCapabilities {
+            inner: self.inner.capabilities(),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        let model = match self.inner.model {
+            worldforge_providers::runway::RunwayModel::Gwm1Worlds => "worlds",
+            worldforge_providers::runway::RunwayModel::Gwm1Robotics => "robotics",
+            worldforge_providers::runway::RunwayModel::Gwm1Avatars => "avatars",
+        };
+        format!(
+            "RunwayProvider(model='{}', endpoint='{}')",
+            model, self.inner.endpoint
+        )
+    }
+}
+
+impl PyRunwayProvider {
+    fn boxed_provider(&self) -> Box<dyn WorldModelProvider> {
+        Box::new(self.inner.clone())
+    }
+}
+
+/// Local JEPA provider exposed to Python.
+#[pyclass(name = "JepaProvider")]
+#[derive(Debug, Clone)]
+pub struct PyJepaProvider {
+    inner: JepaProvider,
+}
+
+#[pymethods]
+impl PyJepaProvider {
+    #[new]
+    #[pyo3(signature = (model_path, backend="burn"))]
+    fn new(model_path: &str, backend: &str) -> PyResult<Self> {
+        Ok(Self {
+            inner: JepaProvider::new(model_path, parse_jepa_backend(backend)?),
+        })
+    }
+
+    #[getter]
+    fn name(&self) -> String {
+        self.inner.name().to_string()
+    }
+
+    #[getter]
+    fn capabilities(&self) -> PyProviderCapabilities {
+        PyProviderCapabilities {
+            inner: self.inner.capabilities(),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "JepaProvider(model_path='{}', backend='{:?}')",
+            self.inner.model_path.display(),
+            self.inner.backend
+        )
+    }
+}
+
+impl PyJepaProvider {
+    fn boxed_provider(&self) -> Box<dyn WorldModelProvider> {
+        Box::new(self.inner.clone())
+    }
+}
+
+/// Google Genie provider exposed to Python.
+#[pyclass(name = "GenieProvider")]
+#[derive(Debug, Clone)]
+pub struct PyGenieProvider {
+    inner: GenieProvider,
+}
+
+#[pymethods]
+impl PyGenieProvider {
+    #[new]
+    #[pyo3(signature = (api_key, model="genie3", endpoint=None))]
+    fn new(api_key: &str, model: &str, endpoint: Option<&str>) -> PyResult<Self> {
+        let model = parse_genie_model(model)?;
+        let inner = match endpoint {
+            Some(endpoint) => GenieProvider::with_endpoint(model, api_key, endpoint),
+            None => GenieProvider::new(model, api_key),
+        };
+        Ok(Self { inner })
+    }
+
+    #[getter]
+    fn name(&self) -> String {
+        self.inner.name().to_string()
+    }
+
+    #[getter]
+    fn capabilities(&self) -> PyProviderCapabilities {
+        PyProviderCapabilities {
+            inner: self.inner.capabilities(),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        let model = match self.inner.model {
+            worldforge_providers::genie::GenieModel::Genie3 => "genie3",
+        };
+        format!(
+            "GenieProvider(model='{}', endpoint='{}')",
+            model, self.inner.endpoint
+        )
+    }
+}
+
+impl PyGenieProvider {
+    fn boxed_provider(&self) -> Box<dyn WorldModelProvider> {
+        Box::new(self.inner.clone())
+    }
+}
+
+fn boxed_python_provider(provider: &Bound<'_, PyAny>) -> PyResult<Box<dyn WorldModelProvider>> {
+    if let Ok(provider) = provider.extract::<PyRef<'_, PyMockProvider>>() {
+        return Ok(provider.boxed_provider());
+    }
+    if let Ok(provider) = provider.extract::<PyRef<'_, PyCosmosProvider>>() {
+        return Ok(provider.boxed_provider());
+    }
+    if let Ok(provider) = provider.extract::<PyRef<'_, PyRunwayProvider>>() {
+        return Ok(provider.boxed_provider());
+    }
+    if let Ok(provider) = provider.extract::<PyRef<'_, PyJepaProvider>>() {
+        return Ok(provider.boxed_provider());
+    }
+    if let Ok(provider) = provider.extract::<PyRef<'_, PyGenieProvider>>() {
+        return Ok(provider.boxed_provider());
+    }
+
+    Err(pyo3::exceptions::PyTypeError::new_err(
+        "unsupported provider object. Expected MockProvider, CosmosProvider, RunwayProvider, JepaProvider, or GenieProvider",
+    ))
+}
+
 /// Provider capability metadata.
 #[pyclass(name = "ProviderCapabilities")]
 #[derive(Debug, Clone)]
@@ -1748,6 +2081,20 @@ impl PyWorldForge {
         Ok(Self { inner: wf })
     }
 
+    /// Register a provider before any worlds are created.
+    ///
+    /// This accepts the provider wrappers exported from `worldforge.providers`.
+    /// If a world has already been created, the underlying registry is no longer
+    /// mutable and the registration attempt fails with a runtime error.
+    fn register_provider(&mut self, provider: &Bound<'_, PyAny>) -> PyResult<()> {
+        let provider = boxed_python_provider(provider).map_err(|e| {
+            pyo3::exceptions::PyTypeError::new_err(format!("failed to register provider: {e}"))
+        })?;
+        self.inner.register_provider(provider).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("failed to register provider: {e}"))
+        })
+    }
+
     /// List all registered provider names.
     fn providers(&self) -> Vec<String> {
         self.inner
@@ -1826,19 +2173,18 @@ impl PyWorldForge {
     /// Create a new world with the given name and provider.
     #[pyo3(signature = (name, provider="mock"))]
     fn create_world(&self, name: &str, provider: &str) -> PyResult<PyWorld> {
+        let registry = self.inner.registry_arc();
         let world = self.inner.create_world(name, provider).map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("failed to create world: {e}"))
         })?;
-        Ok(PyWorld {
-            state: world.current_state().clone(),
-        })
+        Ok(PyWorld { world, registry })
     }
 
     /// Persist a world snapshot to the configured state store.
     fn save_world(&self, world: &PyWorld) -> PyResult<String> {
         let rt = new_runtime()?;
         let id = rt
-            .block_on(self.inner.save_state(&world.state))
+            .block_on(self.inner.save_state(&world.world.state))
             .map_err(|e| {
                 pyo3::exceptions::PyRuntimeError::new_err(format!("failed to save world: {e}"))
             })?;
@@ -1849,10 +2195,13 @@ impl PyWorldForge {
     fn load_world(&self, world_id: &str) -> PyResult<PyWorld> {
         let id = parse_world_id(world_id)?;
         let rt = new_runtime()?;
-        let state = rt.block_on(self.inner.load_state(&id)).map_err(|e| {
-            pyo3::exceptions::PyRuntimeError::new_err(format!("failed to load world: {e}"))
-        })?;
-        Ok(PyWorld { state })
+        let registry = self.inner.registry_arc();
+        let world = rt
+            .block_on(self.inner.load_world_from_store(&id))
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("failed to load world: {e}"))
+            })?;
+        Ok(PyWorld { world, registry })
     }
 
     /// List all persisted world IDs in the configured state store.
@@ -2325,6 +2674,193 @@ impl PyEvalReport {
     }
 }
 
+/// A single scenario within an evaluation suite.
+#[pyclass(name = "EvalScenario")]
+#[derive(Debug, Clone)]
+pub struct PyEvalScenario {
+    inner: worldforge_eval::EvalScenario,
+}
+
+#[pymethods]
+impl PyEvalScenario {
+    #[getter]
+    fn name(&self) -> &str {
+        &self.inner.name
+    }
+
+    #[getter]
+    fn description(&self) -> &str {
+        &self.inner.description
+    }
+
+    #[getter]
+    fn action_count(&self) -> usize {
+        self.inner.actions.len()
+    }
+
+    #[getter]
+    fn expected_outcome_count(&self) -> usize {
+        self.inner.expected_outcomes.len()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "EvalScenario(name='{}', actions={}, expected_outcomes={})",
+            self.inner.name,
+            self.inner.actions.len(),
+            self.inner.expected_outcomes.len()
+        )
+    }
+}
+
+/// A reusable evaluation suite wrapper.
+#[pyclass(name = "EvalSuite")]
+#[derive(Debug, Clone)]
+pub struct PyEvalSuite {
+    inner: worldforge_eval::EvalSuite,
+}
+
+#[pymethods]
+impl PyEvalSuite {
+    #[staticmethod]
+    fn from_builtin(name: &str) -> PyResult<Self> {
+        let inner = worldforge_eval::EvalSuite::from_builtin(name).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("unknown eval suite: {e}"))
+        })?;
+        Ok(Self { inner })
+    }
+
+    #[staticmethod]
+    fn from_json(json: &str) -> PyResult<Self> {
+        let inner = worldforge_eval::EvalSuite::from_json_str(json).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("invalid eval suite JSON: {e}"))
+        })?;
+        Ok(Self { inner })
+    }
+
+    #[getter]
+    fn name(&self) -> &str {
+        &self.inner.name
+    }
+
+    #[getter]
+    fn scenario_count(&self) -> usize {
+        self.inner.scenarios.len()
+    }
+
+    #[getter]
+    fn dimensions(&self) -> Vec<String> {
+        self.inner
+            .dimensions
+            .iter()
+            .map(crate::eval_dimension_name)
+            .collect()
+    }
+
+    fn scenarios(&self) -> Vec<PyEvalScenario> {
+        self.inner
+            .scenarios
+            .iter()
+            .cloned()
+            .map(|inner| PyEvalScenario { inner })
+            .collect()
+    }
+
+    #[pyo3(signature = (providers="mock"))]
+    fn run(&self, providers: &str) -> PyResult<Vec<PyEvalResult>> {
+        Ok(crate::run_eval_suite_report(&self.inner, providers)?
+            .provider_summaries
+            .iter()
+            .map(to_py_eval_result)
+            .collect())
+    }
+
+    #[pyo3(signature = (providers="mock"))]
+    fn run_report(&self, providers: &str) -> PyResult<String> {
+        serde_json::to_string_pretty(&crate::run_eval_suite_report(&self.inner, providers)?)
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "failed to serialize evaluation report: {e}"
+                ))
+            })
+    }
+
+    #[pyo3(signature = (providers="mock"))]
+    fn run_report_data(&self, providers: &str) -> PyResult<PyEvalReport> {
+        Ok(to_py_eval_report(crate::run_eval_suite_report(
+            &self.inner,
+            providers,
+        )?))
+    }
+
+    fn to_json(&self) -> PyResult<String> {
+        self.inner.to_json_pretty().map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "EvalSuite(name='{}', scenarios={}, dimensions={})",
+            self.inner.name,
+            self.inner.scenarios.len(),
+            self.inner.dimensions.len()
+        )
+    }
+}
+
+/// Built-in physics evaluation helpers.
+#[pyclass(name = "PhysicsEval")]
+#[derive(Debug, Clone, Copy)]
+pub struct PyPhysicsEval;
+
+#[pymethods]
+impl PyPhysicsEval {
+    #[staticmethod]
+    fn standard_suite() -> PyResult<PyEvalSuite> {
+        PyEvalSuite::from_builtin("physics")
+    }
+}
+
+/// Built-in manipulation evaluation helpers.
+#[pyclass(name = "ManipulationEval")]
+#[derive(Debug, Clone, Copy)]
+pub struct PyManipulationEval;
+
+#[pymethods]
+impl PyManipulationEval {
+    #[staticmethod]
+    fn standard_suite() -> PyResult<PyEvalSuite> {
+        PyEvalSuite::from_builtin("manipulation")
+    }
+}
+
+/// Built-in spatial reasoning evaluation helpers.
+#[pyclass(name = "SpatialEval")]
+#[derive(Debug, Clone, Copy)]
+pub struct PySpatialEval;
+
+#[pymethods]
+impl PySpatialEval {
+    #[staticmethod]
+    fn standard_suite() -> PyResult<PyEvalSuite> {
+        PyEvalSuite::from_builtin("spatial")
+    }
+}
+
+/// Built-in comprehensive evaluation helpers.
+#[pyclass(name = "ComprehensiveEval")]
+#[derive(Debug, Clone, Copy)]
+pub struct PyComprehensiveEval;
+
+#[pymethods]
+impl PyComprehensiveEval {
+    #[staticmethod]
+    fn standard_suite() -> PyResult<PyEvalSuite> {
+        PyEvalSuite::from_builtin("comprehensive")
+    }
+}
+
 fn to_py_eval_result(summary: &worldforge_eval::ProviderSummary) -> PyEvalResult {
     PyEvalResult {
         provider: summary.provider.clone(),
@@ -2379,6 +2915,43 @@ fn to_py_eval_report(report: worldforge_eval::EvalReport) -> PyEvalReport {
     }
 }
 
+fn eval_dimension_name(dimension: &worldforge_eval::EvalDimension) -> String {
+    match dimension {
+        worldforge_eval::EvalDimension::ObjectPermanence => "object_permanence".to_string(),
+        worldforge_eval::EvalDimension::GravityCompliance => "gravity_compliance".to_string(),
+        worldforge_eval::EvalDimension::CollisionAccuracy => "collision_accuracy".to_string(),
+        worldforge_eval::EvalDimension::SpatialConsistency => "spatial_consistency".to_string(),
+        worldforge_eval::EvalDimension::TemporalConsistency => "temporal_consistency".to_string(),
+        worldforge_eval::EvalDimension::ActionPredictionAccuracy => {
+            "action_prediction_accuracy".to_string()
+        }
+        worldforge_eval::EvalDimension::MaterialUnderstanding => {
+            "material_understanding".to_string()
+        }
+        worldforge_eval::EvalDimension::SpatialReasoning => "spatial_reasoning".to_string(),
+        worldforge_eval::EvalDimension::Custom { name } => name.clone(),
+    }
+}
+
+fn run_eval_suite_report(
+    suite: &worldforge_eval::EvalSuite,
+    providers: &str,
+) -> PyResult<worldforge_eval::EvalReport> {
+    let rt = new_runtime()?;
+    let registry = auto_detect_registry();
+    let provider_names = parse_provider_names(providers);
+    let mut provider_list: Vec<&dyn worldforge_core::provider::WorldModelProvider> = Vec::new();
+    for provider_name in &provider_names {
+        let provider = registry.get(provider_name).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("provider lookup failed: {e}"))
+        })?;
+        provider_list.push(provider);
+    }
+
+    rt.block_on(suite.run(&provider_list))
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("evaluation failed: {e}")))
+}
+
 /// List the built-in evaluation suite names.
 #[pyfunction]
 fn list_eval_suites() -> Vec<String> {
@@ -2397,21 +2970,7 @@ fn run_eval(
     suite_json: Option<&str>,
 ) -> PyResult<Vec<PyEvalResult>> {
     let suite = load_eval_suite(suite_name, suite_json)?;
-    let rt = new_runtime()?;
-    let registry = auto_detect_registry();
-    let provider_names = parse_provider_names(providers);
-    let mut provider_list: Vec<&dyn worldforge_core::provider::WorldModelProvider> = Vec::new();
-    for provider_name in &provider_names {
-        let provider = registry.get(provider_name).map_err(|e| {
-            pyo3::exceptions::PyValueError::new_err(format!("provider lookup failed: {e}"))
-        })?;
-        provider_list.push(provider);
-    }
-
-    let report = rt.block_on(suite.run(&provider_list)).map_err(|e| {
-        pyo3::exceptions::PyRuntimeError::new_err(format!("evaluation failed: {e}"))
-    })?;
-
+    let report = run_eval_suite_report(&suite, providers)?;
     Ok(report
         .provider_summaries
         .iter()
@@ -2428,22 +2987,7 @@ fn run_eval_report(
     suite_json: Option<&str>,
 ) -> PyResult<String> {
     let suite = load_eval_suite(suite_name, suite_json)?;
-    let rt = new_runtime()?;
-    let registry = auto_detect_registry();
-    let provider_names = parse_provider_names(providers);
-    let mut provider_list: Vec<&dyn worldforge_core::provider::WorldModelProvider> = Vec::new();
-    for provider_name in &provider_names {
-        let provider = registry.get(provider_name).map_err(|e| {
-            pyo3::exceptions::PyValueError::new_err(format!("provider lookup failed: {e}"))
-        })?;
-        provider_list.push(provider);
-    }
-
-    let report = rt.block_on(suite.run(&provider_list)).map_err(|e| {
-        pyo3::exceptions::PyRuntimeError::new_err(format!("evaluation failed: {e}"))
-    })?;
-
-    serde_json::to_string_pretty(&report).map_err(|e| {
+    serde_json::to_string_pretty(&run_eval_suite_report(&suite, providers)?).map_err(|e| {
         pyo3::exceptions::PyRuntimeError::new_err(format!(
             "failed to serialize evaluation report: {e}"
         ))
@@ -2459,22 +3003,65 @@ fn run_eval_report_data(
     suite_json: Option<&str>,
 ) -> PyResult<PyEvalReport> {
     let suite = load_eval_suite(suite_name, suite_json)?;
-    let rt = new_runtime()?;
-    let registry = auto_detect_registry();
-    let provider_names = parse_provider_names(providers);
-    let mut provider_list: Vec<&dyn worldforge_core::provider::WorldModelProvider> = Vec::new();
-    for provider_name in &provider_names {
-        let provider = registry.get(provider_name).map_err(|e| {
-            pyo3::exceptions::PyValueError::new_err(format!("provider lookup failed: {e}"))
-        })?;
-        provider_list.push(provider);
-    }
+    Ok(to_py_eval_report(run_eval_suite_report(&suite, providers)?))
+}
 
-    let report = rt.block_on(suite.run(&provider_list)).map_err(|e| {
-        pyo3::exceptions::PyRuntimeError::new_err(format!("evaluation failed: {e}"))
-    })?;
+fn register_child_module(
+    py: Python<'_>,
+    root: &Bound<'_, PyModule>,
+    name: &str,
+    module: &Bound<'_, PyModule>,
+) -> PyResult<()> {
+    root.add(name, module)?;
+    let sys = py.import_bound("sys")?;
+    let modules = sys.getattr("modules")?;
+    modules.set_item(format!("worldforge.{name}"), module)?;
+    Ok(())
+}
 
-    Ok(to_py_eval_report(report))
+fn build_providers_submodule(py: Python<'_>) -> PyResult<Bound<'_, PyModule>> {
+    let module = PyModule::new_bound(py, "worldforge.providers")?;
+    module.add_class::<PyProviderCapabilities>()?;
+    module.add_class::<PyMockProvider>()?;
+    module.add_class::<PyCosmosProvider>()?;
+    module.add_class::<PyRunwayProvider>()?;
+    module.add_class::<PyJepaProvider>()?;
+    module.add_class::<PyGenieProvider>()?;
+    Ok(module)
+}
+
+fn build_eval_submodule(py: Python<'_>) -> PyResult<Bound<'_, PyModule>> {
+    let module = PyModule::new_bound(py, "worldforge.eval")?;
+    module.add_class::<PyEvalScenario>()?;
+    module.add_class::<PyEvalSuite>()?;
+    module.add_class::<PyPhysicsEval>()?;
+    module.add_class::<PyManipulationEval>()?;
+    module.add_class::<PySpatialEval>()?;
+    module.add_class::<PyComprehensiveEval>()?;
+    module.add_class::<PyEvalResult>()?;
+    module.add_class::<PyEvalDimensionSummary>()?;
+    module.add_class::<PyEvalScenarioSummary>()?;
+    module.add_class::<PyEvalReport>()?;
+    module.add_function(wrap_pyfunction!(list_eval_suites, &module)?)?;
+    module.add_function(wrap_pyfunction!(run_eval, &module)?)?;
+    module.add_function(wrap_pyfunction!(run_eval_report, &module)?)?;
+    module.add_function(wrap_pyfunction!(run_eval_report_data, &module)?)?;
+    Ok(module)
+}
+
+fn build_verify_submodule(py: Python<'_>) -> PyResult<Bound<'_, PyModule>> {
+    let module = PyModule::new_bound(py, "worldforge.verify")?;
+    module.add_class::<PyPlan>()?;
+    module.add_class::<PyZkProof>()?;
+    module.add_class::<PyZkVerifier>()?;
+    module.add_class::<PyMockVerifier>()?;
+    module.add_function(wrap_pyfunction!(prove_inference, &module)?)?;
+    module.add_function(wrap_pyfunction!(prove_inference_transition, &module)?)?;
+    module.add_function(wrap_pyfunction!(prove_guardrail_plan, &module)?)?;
+    module.add_function(wrap_pyfunction!(prove_provenance, &module)?)?;
+    module.add_function(wrap_pyfunction!(verify_proof_json, &module)?)?;
+    module.add_function(wrap_pyfunction!(verify_bundle_json, &module)?)?;
+    Ok(module)
 }
 
 // ---------------------------------------------------------------------------
@@ -2539,6 +3126,135 @@ impl PyZkProof {
             self.inner.backend,
             self.inner.proof_data.len()
         )
+    }
+}
+
+fn ensure_mock_backend(backend: &str) -> PyResult<()> {
+    match backend.to_ascii_lowercase().as_str() {
+        "mock" => Ok(()),
+        "stark" | "ezkl" => Err(pyo3::exceptions::PyNotImplementedError::new_err(format!(
+            "verification backend '{backend}' is not implemented in the Python bindings yet; use 'mock'"
+        ))),
+        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "unknown verification backend: {other}. Available: mock"
+        ))),
+    }
+}
+
+/// Mock-backed verifier facade exposed to Python.
+#[pyclass(name = "ZkVerifier")]
+#[derive(Debug, Clone)]
+pub struct PyZkVerifier {
+    backend: String,
+}
+
+#[pymethods]
+impl PyZkVerifier {
+    #[new]
+    #[pyo3(signature = (backend="mock"))]
+    fn new(backend: &str) -> PyResult<Self> {
+        ensure_mock_backend(backend)?;
+        Ok(Self {
+            backend: "mock".to_string(),
+        })
+    }
+
+    #[getter]
+    fn backend(&self) -> &str {
+        &self.backend
+    }
+
+    fn prove_inference(
+        &self,
+        model_data: &[u8],
+        input_data: &[u8],
+        output_data: &[u8],
+    ) -> PyResult<PyZkProof> {
+        ensure_mock_backend(&self.backend)?;
+        prove_inference(model_data, input_data, output_data)
+    }
+
+    #[pyo3(signature = (input_state_json, output_state_json, provider=None))]
+    fn prove_inference_transition(
+        &self,
+        input_state_json: &str,
+        output_state_json: &str,
+        provider: Option<&str>,
+    ) -> PyResult<PyZkProof> {
+        ensure_mock_backend(&self.backend)?;
+        prove_inference_transition(input_state_json, output_state_json, provider)
+    }
+
+    fn prove_guardrail_plan(&self, plan: &PyPlan) -> PyResult<PyZkProof> {
+        ensure_mock_backend(&self.backend)?;
+        prove_guardrail_plan(plan)
+    }
+
+    fn prove_provenance(&self, data: &[u8], timestamp: u64, source: &[u8]) -> PyResult<PyZkProof> {
+        ensure_mock_backend(&self.backend)?;
+        prove_provenance(data, timestamp, source)
+    }
+
+    fn verify(&self, proof: &PyZkProof) -> PyResult<(bool, String)> {
+        ensure_mock_backend(&self.backend)?;
+        proof.verify()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("ZkVerifier(backend='{}')", self.backend)
+    }
+}
+
+/// Explicit mock verifier alias for Python users.
+#[pyclass(name = "MockVerifier")]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PyMockVerifier;
+
+#[pymethods]
+impl PyMockVerifier {
+    #[new]
+    fn new() -> Self {
+        Self
+    }
+
+    #[getter]
+    fn backend(&self) -> &'static str {
+        "mock"
+    }
+
+    fn prove_inference(
+        &self,
+        model_data: &[u8],
+        input_data: &[u8],
+        output_data: &[u8],
+    ) -> PyResult<PyZkProof> {
+        prove_inference(model_data, input_data, output_data)
+    }
+
+    #[pyo3(signature = (input_state_json, output_state_json, provider=None))]
+    fn prove_inference_transition(
+        &self,
+        input_state_json: &str,
+        output_state_json: &str,
+        provider: Option<&str>,
+    ) -> PyResult<PyZkProof> {
+        prove_inference_transition(input_state_json, output_state_json, provider)
+    }
+
+    fn prove_guardrail_plan(&self, plan: &PyPlan) -> PyResult<PyZkProof> {
+        prove_guardrail_plan(plan)
+    }
+
+    fn prove_provenance(&self, data: &[u8], timestamp: u64, source: &[u8]) -> PyResult<PyZkProof> {
+        prove_provenance(data, timestamp, source)
+    }
+
+    fn verify(&self, proof: &PyZkProof) -> PyResult<(bool, String)> {
+        proof.verify()
+    }
+
+    fn __repr__(&self) -> &'static str {
+        "MockVerifier()"
     }
 }
 
@@ -2687,6 +3403,12 @@ fn verify_bundle_json(bundle_json: &str, bundle_type: &str) -> PyResult<String> 
 /// orchestration layer.
 #[pymodule]
 fn worldforge(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    let py = m.py();
+    m.add("__path__", PyList::empty_bound(py))?;
+    let sys = py.import_bound("sys")?;
+    let modules = sys.getattr("modules")?;
+    modules.set_item("worldforge", m)?;
+
     m.add_class::<PyPosition>()?;
     m.add_class::<PyRotation>()?;
     m.add_class::<PyBBox>()?;
@@ -2700,17 +3422,30 @@ fn worldforge(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyReasoningOutput>()?;
     m.add_class::<PyAction>()?;
     m.add_class::<PyGuardrail>()?;
+    m.add_class::<PyMockProvider>()?;
+    m.add_class::<PyCosmosProvider>()?;
+    m.add_class::<PyRunwayProvider>()?;
+    m.add_class::<PyJepaProvider>()?;
+    m.add_class::<PyGenieProvider>()?;
     m.add_class::<PyProviderCapabilities>()?;
     m.add_class::<PyProviderInfo>()?;
     m.add_class::<PyProviderHealthInfo>()?;
     m.add_class::<PyCostEstimate>()?;
     m.add_class::<PyWorldForge>()?;
     m.add_class::<PyPlan>()?;
+    m.add_class::<PyEvalScenario>()?;
+    m.add_class::<PyEvalSuite>()?;
+    m.add_class::<PyPhysicsEval>()?;
+    m.add_class::<PyManipulationEval>()?;
+    m.add_class::<PySpatialEval>()?;
+    m.add_class::<PyComprehensiveEval>()?;
     m.add_class::<PyEvalResult>()?;
     m.add_class::<PyEvalDimensionSummary>()?;
     m.add_class::<PyEvalScenarioSummary>()?;
     m.add_class::<PyEvalReport>()?;
     m.add_class::<PyZkProof>()?;
+    m.add_class::<PyZkVerifier>()?;
+    m.add_class::<PyMockVerifier>()?;
     m.add_function(wrap_pyfunction!(plan, m)?)?;
     m.add_function(wrap_pyfunction!(list_eval_suites, m)?)?;
     m.add_function(wrap_pyfunction!(run_eval, m)?)?;
@@ -2722,6 +3457,14 @@ fn worldforge(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(prove_provenance, m)?)?;
     m.add_function(wrap_pyfunction!(verify_proof_json, m)?)?;
     m.add_function(wrap_pyfunction!(verify_bundle_json, m)?)?;
+
+    let providers = build_providers_submodule(py)?;
+    register_child_module(py, m, "providers", &providers)?;
+    let eval = build_eval_submodule(py)?;
+    register_child_module(py, m, "eval", &eval)?;
+    let verify = build_verify_submodule(py)?;
+    register_child_module(py, m, "verify", &verify)?;
+
     Ok(())
 }
 
@@ -3261,6 +4004,73 @@ mod tests {
         let wf = test_worldforge();
         let providers = wf.providers();
         assert!(providers.contains(&"mock".to_string()));
+    }
+
+    #[test]
+    fn test_worldforge_package_submodules_and_manual_provider_registration() {
+        Python::with_gil(|py| -> PyResult<()> {
+            let module = PyModule::new_bound(py, "worldforge")?;
+            worldforge(&module)?;
+
+            let root = py.import_bound("worldforge")?;
+            let providers = py.import_bound("worldforge.providers")?;
+            let eval = py.import_bound("worldforge.eval")?;
+            let verify = py.import_bound("worldforge.verify")?;
+
+            assert!(root.hasattr("providers")?);
+            assert!(root.hasattr("eval")?);
+            assert!(root.hasattr("verify")?);
+            assert!(providers.hasattr("MockProvider")?);
+            assert!(providers.hasattr("CosmosProvider")?);
+            assert!(providers.hasattr("RunwayProvider")?);
+            assert!(providers.hasattr("JepaProvider")?);
+            assert!(providers.hasattr("GenieProvider")?);
+            assert!(eval.hasattr("run_eval")?);
+            assert!(eval.hasattr("run_eval_report_data")?);
+            assert!(verify.hasattr("prove_inference")?);
+            assert!(verify.hasattr("verify_bundle_json")?);
+
+            let wf_cls = root.getattr("WorldForge")?;
+            let wf = wf_cls.call0()?;
+            let provider_cls = providers.getattr("MockProvider")?;
+            let provider = provider_cls.call1(("manual-mock",))?;
+            wf.call_method1("register_provider", (provider,))?;
+
+            let provider_names: Vec<String> = wf.call_method0("providers")?.extract()?;
+            assert!(provider_names.contains(&"manual-mock".to_string()));
+
+            let world = wf.call_method1("create_world", ("python-world", "manual-mock"))?;
+            assert!(!world.is_none());
+
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn test_worldforge_register_provider_rejects_after_world_creation() {
+        Python::with_gil(|py| -> PyResult<()> {
+            let module = PyModule::new_bound(py, "worldforge")?;
+            worldforge(&module)?;
+
+            let root = py.import_bound("worldforge")?;
+            let providers = py.import_bound("worldforge.providers")?;
+            let wf_cls = root.getattr("WorldForge")?;
+            let wf = wf_cls.call0()?;
+            let world = wf.call_method1("create_world", ("python-world", "mock"))?;
+
+            let provider_cls = providers.getattr("MockProvider")?;
+            let provider = provider_cls.call1(("late-provider",))?;
+            let err = wf
+                .call_method1("register_provider", (provider,))
+                .unwrap_err();
+            assert!(err.to_string().contains("failed to register provider"));
+            assert!(err.to_string().contains("cannot register provider"));
+            assert!(!world.is_none());
+
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]

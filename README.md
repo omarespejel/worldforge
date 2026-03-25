@@ -42,9 +42,11 @@ Prediction and planning requests apply conservative collision and energy checks 
 
 ```python
 from worldforge import Action, BBox, Position, SceneObject, WorldForge
+from worldforge.providers import MockProvider
 
 # Initialize with auto-detected providers
 wf = WorldForge()
+wf.register_provider(MockProvider())
 
 # Create a world and seed it with a scene object
 world = wf.create_world("kitchen-counter", provider="mock")
@@ -94,6 +96,9 @@ wf = WorldForge(state_backend="sqlite", state_db_path=".worldforge/worldforge.db
 wf.save_world(world)
 same_world = wf.load_world(world.id)
 ```
+
+The Python package also exposes `worldforge.providers`, `worldforge.eval`, and
+`worldforge.verify` as importable submodules.
 
 ## Rust Quickstart
 
