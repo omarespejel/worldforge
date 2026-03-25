@@ -4589,6 +4589,96 @@ mod tests {
         assert!(z.abs() <= 0.15);
     }
 
+    #[test]
+    fn test_plan_world_with_goal_image_json() {
+        let mut world = PyWorld::new("plan_goal_image", "mock");
+        let position = PyPosition::new(0.0, 0.5, 0.0);
+        let bbox = PyBBox::new(
+            &PyPosition::new(-0.1, 0.4, -0.1),
+            &PyPosition::new(0.1, 0.6, 0.1),
+        );
+        let object = PySceneObject::new("ball", &position, &bbox);
+        world.add_object(&object);
+
+        let mut target_state = WorldState::new("plan_goal_image_target", "mock");
+        let target_object = SceneObject::new(
+            "ball",
+            worldforge_core::types::Pose {
+                position: Position {
+                    x: 0.0,
+                    y: 0.5,
+                    z: 0.0,
+                },
+                ..worldforge_core::types::Pose::default()
+            },
+            BBox {
+                min: Position {
+                    x: -0.1,
+                    y: 0.4,
+                    z: -0.1,
+                },
+                max: Position {
+                    x: 0.1,
+                    y: 0.6,
+                    z: 0.1,
+                },
+            },
+        );
+        let target_object_id = target_object.id;
+        target_state.scene.add_object(target_object);
+        target_state
+            .scene
+            .get_object_mut(&target_object_id)
+            .unwrap()
+            .set_position(Position {
+                x: 1.0,
+                y: 0.5,
+                z: 0.0,
+            });
+
+        let goal_json = serde_json::json!({
+            "type": "goal_image",
+            "image": worldforge_core::goal_image::render_scene_goal_image(&target_state, (32, 24))
+        })
+        .to_string();
+
+        let plan = world
+            .plan(
+                None,
+                Some(&goal_json),
+                4,
+                10.0,
+                Some("mock"),
+                "sampling",
+                Some(48),
+                Some(5),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                false,
+            )
+            .unwrap();
+
+        assert!(plan.action_count() > 0);
+        let plan_json: serde_json::Value = serde_json::from_str(&plan.to_json().unwrap()).unwrap();
+        let final_state = plan_json["predicted_states"]
+            .as_array()
+            .and_then(|states| states.last())
+            .expect("goal-image plan should include predicted states");
+        let ball = final_state["scene"]["objects"]
+            .as_object()
+            .unwrap()
+            .values()
+            .find(|object| object["name"] == "ball")
+            .expect("ball should still exist");
+        let x = ball["pose"]["position"]["x"].as_f64().unwrap();
+        assert!(x > 0.5);
+    }
+
     // --- Evaluation tests ---
 
     #[test]

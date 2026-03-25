@@ -3345,6 +3345,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_cmd_plan_reads_goal_image_json() {
+        let dir =
+            std::env::temp_dir().join(format!("wf-cli-plan-goal-image-{}", uuid::Uuid::new_v4()));
+        let store = StateStoreKind::File(dir.join("state"))
+            .open()
+            .await
+            .unwrap();
+        let mut state = WorldState::new("plan-goal-image", "mock");
+        let object = SceneObject::new(
+            "ball",
+            Pose {
+                position: Position {
+                    x: 0.0,
+                    y: 0.5,
+                    z: 0.0,
+                },
+                ..Pose::default()
+            },
+            BBox {
+                min: Position {
+                    x: -0.1,
+                    y: 0.4,
+                    z: -0.1,
+                },
+                max: Position {
+                    x: 0.1,
+                    y: 0.6,
+                    z: 0.1,
+                },
+            },
+        );
+        let object_id = object.id;
+        state.scene.add_object(object);
+        store.save(&state).await.unwrap();
+
+        let mut target_state = state.clone();
+        target_state
+            .scene
+            .get_object_mut(&object_id)
+            .unwrap()
+            .set_position(Position {
+                x: 1.0,
+                y: 0.5,
+                z: 0.0,
+            });
+
+        let goal_path = dir.join("goal-image.json");
+        let plan_path = dir.join("plan.json");
+        write_json_file(
+            &goal_path,
+            &serde_json::json!({
+                "type": "goal_image",
+                "image": worldforge_core::goal_image::render_scene_goal_image(&target_state, (32, 24))
+            }),
+        )
+        .unwrap();
+
+        cmd_plan(
+            store.as_ref(),
+            &state.id.to_string(),
+            None,
+            PlanOptions {
+                max_steps: 4,
+                planner_name: "sampling",
+                timeout: 10.0,
+                provider: "mock",
+                goal_json: Some(&goal_path),
+                guardrails_json: None,
+                disable_guardrails: false,
+                output_json: Some(&plan_path),
+            },
+        )
+        .await
+        .unwrap();
+
+        let plan: worldforge_core::prediction::Plan = read_json_file(&plan_path).unwrap();
+        assert!(!plan.actions.is_empty());
+        let final_state = plan.predicted_states.last().unwrap();
+        let moved = final_state.scene.get_object(&object_id).unwrap();
+        assert!(moved.pose.position.x > 0.5);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn test_cmd_plan_provider_native_with_mock() {
         let dir = std::env::temp_dir().join(format!("wf-cli-plan-native-{}", uuid::Uuid::new_v4()));
         let store = StateStoreKind::File(dir.join("state"))

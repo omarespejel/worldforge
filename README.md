@@ -71,7 +71,7 @@ plan = world.plan(
     planner="cem",
 )
 
-# Or send a structured goal JSON payload for condition/target-state planning
+# Or send a structured goal JSON payload for condition or goal-image planning
 goal_json = """
 {
   "type": "condition",
@@ -377,7 +377,9 @@ selection, and aggregated leaderboard, provider, scenario, and dimension
 rollups. Custom suites can now assert concrete scene outcomes such as final
 object positions and semantic labels, and can score deterministic clips against
 optional ground-truth video references. They can also assert final-state
-conditions using the core `Condition` semantics for relational checks. Scene object seeding and inspection are
+conditions using the core `Condition` semantics for relational checks. Structured
+`condition` and `goal_image` planning payloads are exercised end to end across
+the CLI, REST server, and Python bindings. Scene object seeding and inspection are
 now exposed across the CLI and REST server as first-class operations instead of
 requiring direct JSON state editing, and Python scene objects can round-trip
 through JSON for interop with those workflows. Provider discovery now exposes

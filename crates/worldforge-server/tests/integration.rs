@@ -726,6 +726,112 @@ async fn test_live_http_plan_structured_condition_goal() {
 }
 
 #[tokio::test]
+async fn test_live_http_plan_goal_image() {
+    let server = spawn_test_server().await;
+
+    let (status, create) = http_request(
+        server.address,
+        "POST",
+        "/v1/worlds",
+        r#"{"name":"goal_image_plan_world","provider":"mock"}"#,
+    )
+    .await;
+    assert_eq!(status, 201);
+    let world_id = create["data"]["id"].as_str().unwrap().to_string();
+
+    let add_object_body = r#"{
+        "name":"ball",
+        "position":{"x":0.0,"y":0.5,"z":0.0},
+        "bbox":{"min":{"x":-0.1,"y":0.4,"z":-0.1},"max":{"x":0.1,"y":0.6,"z":0.1}}
+    }"#;
+    let (status, _) = http_request(
+        server.address,
+        "POST",
+        &format!("/v1/worlds/{world_id}/objects"),
+        add_object_body,
+    )
+    .await;
+    assert_eq!(status, 201);
+
+    let mut target_state = worldforge_core::state::WorldState::new("goal-image-target", "mock");
+    let object = worldforge_core::scene::SceneObject::new(
+        "ball",
+        worldforge_core::types::Pose {
+            position: worldforge_core::types::Position {
+                x: 0.0,
+                y: 0.5,
+                z: 0.0,
+            },
+            ..worldforge_core::types::Pose::default()
+        },
+        worldforge_core::types::BBox {
+            min: worldforge_core::types::Position {
+                x: -0.1,
+                y: 0.4,
+                z: -0.1,
+            },
+            max: worldforge_core::types::Position {
+                x: 0.1,
+                y: 0.6,
+                z: 0.1,
+            },
+        },
+    );
+    let object_id = object.id;
+    target_state.scene.add_object(object);
+    target_state
+        .scene
+        .get_object_mut(&object_id)
+        .unwrap()
+        .set_position(worldforge_core::types::Position {
+            x: 1.0,
+            y: 0.5,
+            z: 0.0,
+        });
+
+    let plan_body = serde_json::json!({
+        "goal": {
+            "type": "goal_image",
+            "image": worldforge_core::goal_image::render_scene_goal_image(&target_state, (32, 24))
+        },
+        "provider": "mock",
+        "planner": "sampling",
+        "max_steps": 4,
+        "num_samples": 48,
+        "top_k": 5
+    })
+    .to_string();
+    let (status, plan_json) = http_request(
+        server.address,
+        "POST",
+        &format!("/v1/worlds/{world_id}/plan"),
+        &plan_body,
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    let plan: worldforge_core::prediction::Plan =
+        serde_json::from_value(plan_json["data"].clone()).unwrap();
+    assert!(
+        !plan.actions.is_empty(),
+        "goal-image planning should produce at least one action"
+    );
+
+    let final_state = plan
+        .predicted_states
+        .last()
+        .expect("plan should include predicted states");
+    let moved_object = final_state
+        .scene
+        .find_object_by_name("ball")
+        .expect("planned state should keep the moved object");
+    assert!(
+        moved_object.pose.position.x > 0.5,
+        "goal-image planning should move the object toward the rendered target"
+    );
+}
+
+#[tokio::test]
 async fn test_live_http_rejects_oversized_body() {
     let server = spawn_test_server().await;
     let request = "POST /v1/worlds HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 4194305\r\nConnection: close\r\n\r\n";
