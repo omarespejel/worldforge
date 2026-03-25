@@ -210,6 +210,11 @@ impl WorldForge {
         &self.registry
     }
 
+    /// Clone the shared provider registry handle.
+    pub fn registry_arc(&self) -> Arc<ProviderRegistry> {
+        Arc::clone(&self.registry)
+    }
+
     fn state_store(&self) -> Result<&DynStateStore> {
         self.state_store.as_ref().ok_or_else(|| {
             error::WorldForgeError::InvalidState(

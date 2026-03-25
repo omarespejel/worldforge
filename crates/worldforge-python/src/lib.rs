@@ -674,7 +674,11 @@ impl PyWorld {
     fn new(name: &str, provider: &str) -> Self {
         let registry = auto_detect_registry();
         Self {
-            world: CoreWorld::new(WorldState::new(name, provider), provider, Arc::clone(&registry)),
+            world: CoreWorld::new(
+                WorldState::new(name, provider),
+                provider,
+                Arc::clone(&registry),
+            ),
             registry,
         }
     }
@@ -858,6 +862,7 @@ impl PyWorld {
             .map_err(|e| {
                 pyo3::exceptions::PyRuntimeError::new_err(format!("prediction failed: {e}"))
             })?;
+        self.world.state = self.world.current_state().clone();
 
         Ok(PyPrediction { inner: prediction })
     }
@@ -933,10 +938,10 @@ impl PyWorld {
         })?;
 
         let provider_name = resolve_provider_name(&self.world.state, provider);
-        let world = worldforge_core::world::World::new(
+        let world = CoreWorld::new(
             self.world.state.clone(),
-            provider_name,
-            auto_detect_registry(),
+            provider_name.to_string(),
+            Arc::clone(&self.registry),
         );
         let planner = planner_from_args(
             planner,
@@ -1046,8 +1051,10 @@ impl PyPrediction {
     fn output_world(&self) -> PyWorld {
         let state = self.inner.output_state.clone();
         let provider = state.metadata.created_by.clone();
+        let registry = auto_detect_registry();
         PyWorld {
-            world: CoreWorld::new(state, provider, auto_detect_registry()),
+            world: CoreWorld::new(state, provider, Arc::clone(&registry)),
+            registry,
         }
     }
 

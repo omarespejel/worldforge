@@ -46,10 +46,10 @@ from worldforge.providers import MockProvider
 
 # Initialize with auto-detected providers
 wf = WorldForge()
-wf.register_provider(MockProvider())
+wf.register_provider(MockProvider(name="manual-mock"))
 
 # Create a world and seed it with a scene object
-world = wf.create_world("kitchen-counter", provider="mock")
+world = wf.create_world("kitchen-counter", provider="manual-mock")
 world.add_object(
     SceneObject(
         "red_mug",
@@ -98,7 +98,20 @@ same_world = wf.load_world(world.id)
 ```
 
 The Python package also exposes `worldforge.providers`, `worldforge.eval`, and
-`worldforge.verify` as importable submodules.
+`worldforge.verify` as importable submodules. Register providers before you
+create worlds so each `World` captures the intended registry snapshot.
+
+```python
+from worldforge.eval import EvalSuite
+from worldforge.verify import ZkVerifier
+
+suite = EvalSuite.from_builtin("physics")
+report = suite.run_report_data("mock")
+
+verifier = ZkVerifier()  # mock backend today
+proof = verifier.prove_guardrail_plan(plan)
+assert verifier.verify(proof)[0]
+```
 
 ## Rust Quickstart
 
