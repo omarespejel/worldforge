@@ -9,6 +9,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -185,6 +186,80 @@ fn spawn_fake_http_server(
     (format!("http://{}", addr), rx, handle)
 }
 
+fn spawn_route_http_server(
+    responses: HashMap<String, String>,
+) -> (
+    String,
+    mpsc::Receiver<RecordedRequest>,
+    thread::JoinHandle<()>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (tx, rx) = mpsc::channel();
+    let request_count = responses.len();
+
+    let handle = thread::spawn(move || {
+        for _ in 0..request_count {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+
+            let mut request_line = String::new();
+            reader.read_line(&mut request_line).unwrap();
+            let request_line = request_line.trim_end_matches(['\r', '\n']);
+            let mut parts = request_line.split_whitespace();
+            let method = parts.next().unwrap_or_default().to_string();
+            let path = parts.next().unwrap_or_default().to_string();
+
+            let mut headers = HashMap::new();
+            let mut content_length = 0usize;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let line = line.trim_end_matches(['\r', '\n']);
+                if line.is_empty() {
+                    break;
+                }
+
+                if let Some((name, value)) = line.split_once(':') {
+                    let key = name.trim().to_ascii_lowercase();
+                    let value = value.trim().to_string();
+                    if key == "content-length" {
+                        content_length = value.parse().unwrap_or(0);
+                    }
+                    headers.insert(key, value);
+                }
+            }
+
+            let mut body_bytes = vec![0u8; content_length];
+            if content_length > 0 {
+                reader.read_exact(&mut body_bytes).unwrap();
+            }
+
+            let body = String::from_utf8(body_bytes).unwrap_or_default();
+            let response_body = responses
+                .get(&path)
+                .unwrap_or_else(|| panic!("unexpected request path: {path}"));
+            tx.send(RecordedRequest {
+                method,
+                path,
+                headers,
+                body,
+            })
+            .unwrap();
+
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.flush().unwrap();
+        }
+    });
+
+    (format!("http://{}", addr), rx, handle)
+}
+
 fn sample_video_clip() -> VideoClip {
     VideoClip {
         frames: vec![worldforge_core::types::Frame {
@@ -330,10 +405,129 @@ fn sample_genie_transfer_controls() -> SpatialControls {
     }
 }
 
+static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn env_lock() -> &'static Mutex<()> {
+    ENV_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+struct EnvVarGuard {
+    previous: Vec<(String, Option<std::ffi::OsString>)>,
+}
+
+impl EnvVarGuard {
+    fn new(vars: &[(&str, &str)]) -> Self {
+        let previous = vars
+            .iter()
+            .map(|(name, _)| ((*name).to_string(), std::env::var_os(name)))
+            .collect();
+
+        for (name, value) in vars {
+            std::env::set_var(name, value);
+        }
+
+        Self { previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        for (name, previous_value) in self.previous.drain(..) {
+            match previous_value {
+                Some(value) => std::env::set_var(&name, value),
+                None => std::env::remove_var(&name),
+            }
+        }
+    }
+}
+
+fn with_env_vars<T>(vars: &[(&str, &str)], f: impl FnOnce() -> T) -> T {
+    let _guard = env_lock().lock().unwrap();
+    let _env = EnvVarGuard::new(vars);
+    f()
+}
+
 #[test]
 fn test_auto_detect_registry_mock_present() {
     let registry = auto_detect();
     assert!(registry.get("mock").is_ok());
+}
+
+#[test]
+fn test_full_stack_cosmos_constructor_exposes_merged_capabilities() {
+    let provider = CosmosProvider::full_stack(
+        "cosmos-test-key",
+        CosmosEndpoint::NimApi("https://example.invalid/cosmos".to_string()),
+    );
+    let capabilities = provider.capabilities();
+
+    assert!(capabilities.predict);
+    assert!(capabilities.generate);
+    assert!(capabilities.reason);
+    assert!(capabilities.transfer);
+}
+
+#[test]
+fn test_auto_detect_registers_full_stack_cosmos() {
+    with_env_vars(
+        &[
+            ("NVIDIA_API_KEY", "cosmos-test-key"),
+            ("NVIDIA_API_ENDPOINT", "https://example.invalid/cosmos"),
+        ],
+        || {
+            let registry = auto_detect();
+            let descriptor = registry.describe("cosmos").unwrap();
+            assert!(descriptor.capabilities.predict);
+            assert!(descriptor.capabilities.generate);
+            assert!(descriptor.capabilities.reason);
+            assert!(descriptor.capabilities.transfer);
+            assert!(registry
+                .find_by_capability("reason")
+                .iter()
+                .any(|provider| provider.name() == "cosmos"));
+            assert!(registry
+                .find_by_capability("transfer")
+                .iter()
+                .any(|provider| provider.name() == "cosmos"));
+        },
+    );
+}
+
+#[test]
+fn test_full_stack_runway_constructor_exposes_merged_capabilities() {
+    let provider = RunwayProvider::full_stack("runway-test-secret");
+    let capabilities = provider.capabilities();
+
+    assert!(capabilities.predict);
+    assert!(capabilities.generate);
+    assert!(capabilities.transfer);
+    assert!(capabilities.action_conditioned);
+    assert!(capabilities.multi_view);
+}
+
+#[test]
+fn test_auto_detect_registers_full_stack_runway() {
+    with_env_vars(&[("RUNWAY_API_SECRET", "runway-test-secret")], || {
+        let registry = auto_detect();
+        let descriptor = registry.describe("runway").unwrap();
+        assert!(descriptor.capabilities.predict);
+        assert!(descriptor.capabilities.generate);
+        assert!(descriptor.capabilities.transfer);
+        assert!(descriptor.capabilities.action_conditioned);
+        assert!(descriptor.capabilities.multi_view);
+        assert!(registry
+            .find_by_capability("predict")
+            .iter()
+            .any(|provider| provider.name() == "runway"));
+        assert!(registry
+            .find_by_capability("generate")
+            .iter()
+            .any(|provider| provider.name() == "runway"));
+        assert!(registry
+            .find_by_capability("transfer")
+            .iter()
+            .any(|provider| provider.name() == "runway"));
+    });
 }
 
 #[test]
@@ -1215,6 +1409,112 @@ async fn test_cosmos_reason_roundtrip_with_fake_http_response() {
         output.evidence,
         vec!["mug supported by table".to_string(), "frame-1".to_string()]
     );
+}
+
+#[tokio::test]
+async fn test_cosmos_full_stack_routes_predict_reason_and_transfer() {
+    let predict_body = serde_json::json!({
+        "request_id": "cosmos-full-stack-predict-1",
+        "status": "succeeded",
+        "confidence": 0.83,
+        "physics_scores": {
+            "overall": 0.91,
+            "object_permanence": 0.88,
+            "gravity_compliance": 0.87,
+            "collision_accuracy": 0.86,
+            "spatial_consistency": 0.9,
+            "temporal_consistency": 0.89
+        },
+        "processing_time_ms": 290,
+        "video_url": "https://example.invalid/cosmos-full-stack-predict.mp4"
+    })
+    .to_string();
+
+    let reason_body = serde_json::json!({
+        "request_id": "cosmos-full-stack-reason-1",
+        "status": "completed",
+        "answer": "The cube remains visible in the workspace.",
+        "confidence": 0.8,
+        "evidence": ["cube stays within the tabletop bounds"]
+    })
+    .to_string();
+
+    let transfer_body = serde_json::json!({
+        "video_url": "https://example.invalid/cosmos-full-stack-transfer.mp4",
+        "duration": 2.0,
+        "fps": 12.0,
+        "resolution": [320, 240]
+    })
+    .to_string();
+
+    let mut responses = HashMap::new();
+    responses.insert("/v1/predict".to_string(), predict_body);
+    responses.insert("/v1/reason".to_string(), reason_body);
+    responses.insert("/v1/transfer".to_string(), transfer_body);
+
+    let (endpoint, requests, server) = spawn_route_http_server(responses);
+    let provider = CosmosProvider::full_stack("cosmos-key", CosmosEndpoint::NimApi(endpoint));
+
+    let state = WorldState::new("cosmos-full-stack-world", "cosmos");
+    let prediction = provider
+        .predict(
+            &state,
+            &Action::Move {
+                target: Position {
+                    x: 0.5,
+                    y: 0.8,
+                    z: 0.0,
+                },
+                speed: 1.0,
+            },
+            &PredictionConfig {
+                steps: 2,
+                resolution: (320, 240),
+                fps: 6.0,
+                return_video: true,
+                ..PredictionConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+    let predict_request = requests.recv_timeout(Duration::from_secs(1)).unwrap();
+
+    let reasoning = provider
+        .reason(
+            &ReasoningInput {
+                video: None,
+                state: Some(state.clone()),
+            },
+            "Will the cube remain in bounds?",
+        )
+        .await
+        .unwrap();
+    let reason_request = requests.recv_timeout(Duration::from_secs(1)).unwrap();
+    let transferred = provider
+        .transfer(
+            &sample_video_clip(),
+            &SpatialControls::default(),
+            &TransferConfig {
+                resolution: (320, 240),
+                fps: 12.0,
+                control_strength: 0.5,
+            },
+        )
+        .await
+        .unwrap();
+    let transfer_request = requests.recv_timeout(Duration::from_secs(1)).unwrap();
+    server.join().unwrap();
+
+    assert_eq!(predict_request.path, "/v1/predict");
+    assert_eq!(reason_request.path, "/v1/reason");
+    assert_eq!(transfer_request.path, "/v1/transfer");
+    assert_eq!(prediction.provider, "cosmos");
+    assert_eq!(prediction.model, "nvidia/cosmos-predict-2.5");
+    assert_eq!(
+        reasoning.answer,
+        "The cube remains visible in the workspace."
+    );
+    assert_eq!(transferred.resolution, (320, 240));
 }
 
 #[tokio::test]

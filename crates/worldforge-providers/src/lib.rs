@@ -32,13 +32,16 @@ use worldforge_core::WorldForge;
 /// Auto-detect available providers from environment variables.
 ///
 /// Checks for:
-/// - `NVIDIA_API_KEY` → registers `CosmosProvider` (Predict 2.5)
-/// - `RUNWAY_API_SECRET` → registers `RunwayProvider` (GWM-1 Worlds)
+/// - `NVIDIA_API_KEY` → registers a full-stack `CosmosProvider`
+/// - `RUNWAY_API_SECRET` → registers a full-stack `RunwayProvider`
 /// - `JEPA_MODEL_PATH` → registers `JepaProvider`
 /// - `JEPA_BACKEND` → optional backend override (`burn`, `pytorch`, `onnx`, `safetensors`)
 /// - `GENIE_API_KEY` → registers `GenieProvider` (Genie 3 surrogate + future remote hint)
 ///
 /// A `MockProvider` is always registered for testing.
+/// The auto-detected Cosmos and Runway entries are capability-complete and
+/// preserve vendor-wide predict/generate/reason/transfer coverage under the
+/// stable `"cosmos"` and `"runway"` names.
 /// The Genie surrogate currently supports `predict`, `generate`, `reason`,
 /// `transfer`, and provider-native planning through the local deterministic
 /// backend.
@@ -64,19 +67,12 @@ pub fn auto_detect() -> ProviderRegistry {
             .unwrap_or_else(|_| {
                 cosmos::CosmosEndpoint::NimApi("https://ai.api.nvidia.com".to_string())
             });
-        registry.register(Box::new(CosmosProvider::new(
-            cosmos::CosmosModel::Predict2_5,
-            api_key,
-            endpoint,
-        )));
+        registry.register(Box::new(CosmosProvider::full_stack(api_key, endpoint)));
     }
 
     // Runway: requires RUNWAY_API_SECRET
     if let Ok(api_secret) = std::env::var("RUNWAY_API_SECRET") {
-        registry.register(Box::new(RunwayProvider::new(
-            runway::RunwayModel::Gwm1Worlds,
-            api_secret,
-        )));
+        registry.register(Box::new(RunwayProvider::full_stack(api_secret)));
     }
 
     // JEPA: requires JEPA_MODEL_PATH pointing to model weights
@@ -118,6 +114,43 @@ pub fn auto_detect_worldforge_with_state_store(store: DynStateStore) -> WorldFor
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn env_lock() -> &'static Mutex<()> {
+        ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct EnvVarGuard {
+        previous: Vec<(String, Option<std::ffi::OsString>)>,
+    }
+
+    impl EnvVarGuard {
+        fn new(vars: &[(&str, &str)]) -> Self {
+            let previous = vars
+                .iter()
+                .map(|(name, _)| ((*name).to_string(), std::env::var_os(name)))
+                .collect();
+
+            for (name, value) in vars {
+                std::env::set_var(name, value);
+            }
+
+            Self { previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            for (name, previous_value) in self.previous.drain(..) {
+                match previous_value {
+                    Some(value) => std::env::set_var(&name, value),
+                    None => std::env::remove_var(&name),
+                }
+            }
+        }
+    }
 
     #[test]
     fn test_auto_detect_always_has_mock() {
@@ -133,5 +166,37 @@ mod tests {
         // verify mock is present)
         let registry = auto_detect();
         assert!(registry.get("mock").is_ok());
+    }
+
+    #[test]
+    fn test_auto_detect_registers_full_stack_cosmos() {
+        let _guard = env_lock().lock().unwrap();
+        let _env = EnvVarGuard::new(&[
+            ("NVIDIA_API_KEY", "cosmos-test-key"),
+            ("NVIDIA_API_ENDPOINT", "https://example.invalid/cosmos"),
+        ]);
+
+        let registry = auto_detect();
+        let capabilities = registry.get("cosmos").unwrap().capabilities();
+
+        assert!(capabilities.predict);
+        assert!(capabilities.generate);
+        assert!(capabilities.reason);
+        assert!(capabilities.transfer);
+    }
+
+    #[test]
+    fn test_auto_detect_registers_full_stack_runway() {
+        let _guard = env_lock().lock().unwrap();
+        let _env = EnvVarGuard::new(&[("RUNWAY_API_SECRET", "runway-test-secret")]);
+
+        let registry = auto_detect();
+        let capabilities = registry.get("runway").unwrap().capabilities();
+
+        assert!(capabilities.predict);
+        assert!(capabilities.generate);
+        assert!(capabilities.transfer);
+        assert!(capabilities.action_conditioned);
+        assert!(capabilities.multi_view);
     }
 }

@@ -21,7 +21,7 @@ use worldforge_core::state::WorldState;
 use worldforge_core::types::{DType, Device, Frame, SimTime, Tensor, TensorData, VideoClip};
 
 /// Runway model variant.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RunwayModel {
     /// Explorable environment generation.
     Gwm1Worlds,
@@ -170,6 +170,12 @@ impl Default for RunwayConfig {
 pub struct RunwayProvider {
     /// Model variant to use.
     pub model: RunwayModel,
+    /// Model route used for prediction, if available.
+    predict_model: Option<RunwayModel>,
+    /// Model route used for generation, if available.
+    generate_model: Option<RunwayModel>,
+    /// Model route used for transfer, if available.
+    transfer_model: Option<RunwayModel>,
     /// API secret for authentication.
     api_secret: String,
     /// API endpoint URL.
@@ -183,13 +189,15 @@ pub struct RunwayProvider {
 impl RunwayProvider {
     /// Create a new Runway provider.
     pub fn new(model: RunwayModel, api_secret: impl Into<String>) -> Self {
-        Self {
+        let (predict_model, generate_model, transfer_model) = Self::routes_for_model(model);
+        Self::from_routes(
             model,
-            api_secret: api_secret.into(),
-            endpoint: "https://api.runwayml.com".to_string(),
-            config: RunwayConfig::default(),
-            client: reqwest::Client::new(),
-        }
+            api_secret,
+            "https://api.runwayml.com",
+            predict_model,
+            generate_model,
+            transfer_model,
+        )
     }
 
     /// Create a Runway provider with a custom endpoint.
@@ -198,9 +206,186 @@ impl RunwayProvider {
         api_secret: impl Into<String>,
         endpoint: impl Into<String>,
     ) -> Self {
+        let (predict_model, generate_model, transfer_model) = Self::routes_for_model(model);
+        Self::from_routes(
+            model,
+            api_secret,
+            endpoint,
+            predict_model,
+            generate_model,
+            transfer_model,
+        )
+    }
+
+    /// Create a Runway provider that routes prediction to Robotics and generation
+    /// and transfer to Worlds through one logical provider name.
+    pub fn full_stack(api_secret: impl Into<String>) -> Self {
+        Self::full_stack_with_endpoint(api_secret, "https://api.runwayml.com")
+    }
+
+    /// Create a full-stack Runway provider with a custom endpoint.
+    pub fn full_stack_with_endpoint(
+        api_secret: impl Into<String>,
+        endpoint: impl Into<String>,
+    ) -> Self {
+        Self::from_routes(
+            RunwayModel::Gwm1Worlds,
+            api_secret,
+            endpoint,
+            Some(RunwayModel::Gwm1Robotics),
+            Some(RunwayModel::Gwm1Worlds),
+            Some(RunwayModel::Gwm1Worlds),
+        )
+    }
+
+    fn from_routes(
+        model: RunwayModel,
+        api_secret: impl Into<String>,
+        endpoint: impl Into<String>,
+        predict_model: Option<RunwayModel>,
+        generate_model: Option<RunwayModel>,
+        transfer_model: Option<RunwayModel>,
+    ) -> Self {
         Self {
+            model,
+            predict_model,
+            generate_model,
+            transfer_model,
+            api_secret: api_secret.into(),
             endpoint: endpoint.into(),
-            ..Self::new(model, api_secret)
+            config: RunwayConfig::default(),
+            client: reqwest::Client::new(),
+        }
+    }
+
+    fn routes_for_model(
+        model: RunwayModel,
+    ) -> (
+        Option<RunwayModel>,
+        Option<RunwayModel>,
+        Option<RunwayModel>,
+    ) {
+        match model {
+            RunwayModel::Gwm1Worlds => (
+                None,
+                Some(RunwayModel::Gwm1Worlds),
+                Some(RunwayModel::Gwm1Worlds),
+            ),
+            RunwayModel::Gwm1Robotics => (Some(RunwayModel::Gwm1Robotics), None, None),
+            RunwayModel::Gwm1Avatars => (None, Some(RunwayModel::Gwm1Avatars), None),
+        }
+    }
+
+    fn enabled_models(&self) -> Vec<RunwayModel> {
+        let mut models = Vec::new();
+        for model in [self.predict_model, self.generate_model, self.transfer_model]
+            .into_iter()
+            .flatten()
+        {
+            if !models.contains(&model) {
+                models.push(model);
+            }
+        }
+        models
+    }
+
+    fn supports_predict(&self) -> bool {
+        matches!(self.predict_model, Some(RunwayModel::Gwm1Robotics))
+    }
+
+    fn supports_generate(&self) -> bool {
+        matches!(
+            self.generate_model,
+            Some(RunwayModel::Gwm1Worlds | RunwayModel::Gwm1Avatars)
+        )
+    }
+
+    fn supports_transfer(&self) -> bool {
+        matches!(self.transfer_model, Some(RunwayModel::Gwm1Worlds))
+    }
+
+    fn route_model_for_predict(&self) -> Option<RunwayModel> {
+        self.predict_model
+            .filter(|model| matches!(model, RunwayModel::Gwm1Robotics))
+    }
+
+    fn route_model_for_generate(&self) -> Option<RunwayModel> {
+        self.generate_model
+            .filter(|model| matches!(model, RunwayModel::Gwm1Worlds | RunwayModel::Gwm1Avatars))
+    }
+
+    fn route_model_for_transfer(&self) -> Option<RunwayModel> {
+        self.transfer_model
+            .filter(|model| matches!(model, RunwayModel::Gwm1Worlds))
+    }
+
+    fn supports_model_action_spaces(model: RunwayModel) -> &'static [ActionSpaceType] {
+        match model {
+            RunwayModel::Gwm1Robotics => &[ActionSpaceType::Continuous, ActionSpaceType::Discrete],
+            RunwayModel::Gwm1Worlds => &[ActionSpaceType::Language, ActionSpaceType::Visual],
+            RunwayModel::Gwm1Avatars => &[ActionSpaceType::Language],
+        }
+    }
+
+    fn capabilities_action_spaces(&self) -> Vec<ActionSpaceType> {
+        let mut action_spaces = Vec::new();
+        for model in self.enabled_models() {
+            for action_space in Self::supports_model_action_spaces(model) {
+                if !action_spaces.contains(action_space) {
+                    action_spaces.push(*action_space);
+                }
+            }
+        }
+        action_spaces
+    }
+
+    fn latency_profile_for_models(&self) -> LatencyProfile {
+        LatencyProfile {
+            p50_ms: 3000,
+            p95_ms: 8000,
+            p99_ms: 15000,
+            throughput_fps: 4.0,
+        }
+    }
+
+    fn operation_supported(&self, operation: &Operation) -> bool {
+        match operation {
+            Operation::Predict { .. } => self.supports_predict(),
+            Operation::Generate { .. } => self.supports_generate(),
+            Operation::Reason => false,
+            Operation::Transfer { .. } => self.supports_transfer(),
+        }
+    }
+
+    fn cost_for_operation(operation: &Operation) -> CostEstimate {
+        match operation {
+            Operation::Predict { steps, resolution } => {
+                let pixels = resolution.0 as f64 * resolution.1 as f64;
+                let scale = pixels / (1280.0 * 720.0);
+                CostEstimate {
+                    usd: 0.02 * *steps as f64 * scale,
+                    credits: 2.0 * *steps as f64 * scale,
+                    estimated_latency_ms: 3000 + (*steps as u64 * 1000),
+                }
+            }
+            Operation::Generate {
+                duration_seconds,
+                resolution,
+            } => {
+                let pixels = resolution.0 as f64 * resolution.1 as f64;
+                let scale = pixels / (1280.0 * 720.0);
+                CostEstimate {
+                    usd: 0.10 * duration_seconds * scale,
+                    credits: 10.0 * duration_seconds * scale,
+                    estimated_latency_ms: (*duration_seconds * 5000.0) as u64,
+                }
+            }
+            Operation::Reason => CostEstimate::default(),
+            Operation::Transfer { duration_seconds } => CostEstimate {
+                usd: 0.08 * duration_seconds,
+                credits: 8.0 * duration_seconds,
+                estimated_latency_ms: (*duration_seconds * 4000.0) as u64,
+            },
         }
     }
 
@@ -268,8 +453,8 @@ impl RunwayProvider {
         }
     }
 
-    fn model_name(&self) -> &'static str {
-        match self.model {
+    fn model_name(model: RunwayModel) -> &'static str {
+        match model {
             RunwayModel::Gwm1Worlds => "gwm-1-worlds",
             RunwayModel::Gwm1Robotics => "gwm-1-robotics",
             RunwayModel::Gwm1Avatars => "gwm-1-avatars",
@@ -517,38 +702,27 @@ impl WorldModelProvider for RunwayProvider {
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
-        let (predict, generate, transfer) = match self.model {
-            RunwayModel::Gwm1Worlds => (false, true, true),
-            RunwayModel::Gwm1Robotics => (true, false, false),
-            RunwayModel::Gwm1Avatars => (false, true, false),
-        };
-
         ProviderCapabilities {
-            predict,
-            generate,
+            predict: self.supports_predict(),
+            generate: self.supports_generate(),
             reason: false, // Runway does not support reasoning; use Cosmos as fallback
-            transfer,
-            action_conditioned: matches!(self.model, RunwayModel::Gwm1Robotics),
-            multi_view: matches!(self.model, RunwayModel::Gwm1Worlds),
+            transfer: self.supports_transfer(),
+            action_conditioned: self.supports_predict(),
+            multi_view: self
+                .enabled_models()
+                .iter()
+                .any(|model| matches!(model, RunwayModel::Gwm1Worlds)),
             max_video_length_seconds: 16.0,
             max_resolution: (1920, 1080),
             fps_range: (12.0, 30.0),
-            supported_action_spaces: match self.model {
-                RunwayModel::Gwm1Robotics => {
-                    vec![ActionSpaceType::Continuous, ActionSpaceType::Discrete]
-                }
-                RunwayModel::Gwm1Worlds => vec![ActionSpaceType::Language, ActionSpaceType::Visual],
-                RunwayModel::Gwm1Avatars => vec![ActionSpaceType::Language],
-            },
-            supports_depth: matches!(self.model, RunwayModel::Gwm1Worlds),
+            supported_action_spaces: self.capabilities_action_spaces(),
+            supports_depth: self
+                .enabled_models()
+                .iter()
+                .any(|model| matches!(model, RunwayModel::Gwm1Worlds)),
             supports_segmentation: false,
             supports_planning: false,
-            latency_profile: LatencyProfile {
-                p50_ms: 3000,
-                p95_ms: 8000,
-                p99_ms: 15000,
-                throughput_fps: 4.0,
-            },
+            latency_profile: self.latency_profile_for_models(),
         }
     }
 
@@ -558,18 +732,18 @@ impl WorldModelProvider for RunwayProvider {
         action: &Action,
         config: &PredictionConfig,
     ) -> Result<Prediction> {
-        if !matches!(self.model, RunwayModel::Gwm1Robotics) {
+        let Some(route_model) = self.route_model_for_predict() else {
             return Err(WorldForgeError::UnsupportedCapability {
                 provider: "runway".to_string(),
                 capability: "predict (requires GWM-1 Robotics model)".to_string(),
             });
-        }
+        };
 
         let command = Self::action_to_robot_command(action);
         let start = std::time::Instant::now();
 
         let request_body = serde_json::json!({
-            "model": "gwm-1-robotics",
+            "model": Self::model_name(route_model),
             "action": command,
             "num_frames": config.steps * (config.fps as u32),
             "resolution": [config.resolution.0, config.resolution.1],
@@ -671,7 +845,9 @@ impl WorldModelProvider for RunwayProvider {
                     .or_else(|| response_payload.media_url.clone())
                     .or_else(|| response_payload.url.clone())
                     .or_else(|| response_payload.status.clone())
-                    .unwrap_or_else(|| format!("runway://{}/predict", self.model_name())),
+                    .unwrap_or_else(|| {
+                        format!("runway://{}/predict", Self::model_name(route_model))
+                    }),
                 config.resolution,
                 config.fps,
                 config.steps as f64 / config.fps as f64,
@@ -683,7 +859,7 @@ impl WorldModelProvider for RunwayProvider {
         Ok(Prediction {
             id: uuid::Uuid::new_v4(),
             provider: "runway".to_string(),
-            model: "gwm-1-robotics".to_string(),
+            model: Self::model_name(route_model).to_string(),
             input_state: state.clone(),
             action: action.clone(),
             output_state,
@@ -694,7 +870,7 @@ impl WorldModelProvider for RunwayProvider {
                 .processing_time_ms
                 .or(response_payload.latency_ms)
                 .unwrap_or(latency_ms),
-            cost: self.estimate_cost(&Operation::Predict {
+            cost: Self::cost_for_operation(&Operation::Predict {
                 steps: config.steps,
                 resolution: config.resolution,
             }),
@@ -708,22 +884,15 @@ impl WorldModelProvider for RunwayProvider {
         prompt: &GenerationPrompt,
         config: &GenerationConfig,
     ) -> Result<VideoClip> {
-        if !matches!(
-            self.model,
-            RunwayModel::Gwm1Worlds | RunwayModel::Gwm1Avatars
-        ) {
+        let Some(route_model) = self.route_model_for_generate() else {
             return Err(WorldForgeError::UnsupportedCapability {
                 provider: "runway".to_string(),
                 capability: "generate (requires GWM-1 Worlds or Avatars model)".to_string(),
             });
-        }
+        };
 
         let request_body = serde_json::json!({
-            "model": match self.model {
-                RunwayModel::Gwm1Worlds => "gwm-1-worlds",
-                RunwayModel::Gwm1Avatars => "gwm-1-avatars",
-                _ => "gwm-1-worlds",
-            },
+            "model": Self::model_name(route_model),
             "prompt": prompt.text,
             "negative_prompt": prompt.negative_prompt,
             "duration_seconds": config.duration_seconds,
@@ -765,7 +934,7 @@ impl WorldModelProvider for RunwayProvider {
                 .or_else(|| response_payload.media_url.clone())
                 .or_else(|| response_payload.url.clone())
                 .or_else(|| response_payload.status.clone())
-                .unwrap_or_else(|| format!("runway://{}/generate", self.model_name())),
+                .unwrap_or_else(|| format!("runway://{}/generate", Self::model_name(route_model))),
             config.resolution,
             config.fps,
             config.duration_seconds,
@@ -785,15 +954,15 @@ impl WorldModelProvider for RunwayProvider {
         _controls: &SpatialControls,
         config: &TransferConfig,
     ) -> Result<VideoClip> {
-        if !matches!(self.model, RunwayModel::Gwm1Worlds) {
+        let Some(route_model) = self.route_model_for_transfer() else {
             return Err(WorldForgeError::UnsupportedCapability {
                 provider: "runway".to_string(),
                 capability: "transfer (requires GWM-1 Worlds model)".to_string(),
             });
-        }
+        };
 
         let request_body = serde_json::json!({
-            "model": "gwm-1-worlds",
+            "model": Self::model_name(route_model),
             "resolution": [config.resolution.0, config.resolution.1],
             "fps": config.fps,
             "control_strength": config.control_strength,
@@ -840,7 +1009,7 @@ impl WorldModelProvider for RunwayProvider {
                 .or_else(|| response_payload.media_url.clone())
                 .or_else(|| response_payload.url.clone())
                 .or_else(|| response_payload.status.clone())
-                .unwrap_or_else(|| format!("runway://{}/transfer", self.model_name())),
+                .unwrap_or_else(|| format!("runway://{}/transfer", Self::model_name(route_model))),
             config.resolution,
             config.fps,
             duration,
@@ -869,34 +1038,10 @@ impl WorldModelProvider for RunwayProvider {
     }
 
     fn estimate_cost(&self, operation: &Operation) -> CostEstimate {
-        match operation {
-            Operation::Predict { steps, resolution } => {
-                let pixels = resolution.0 as f64 * resolution.1 as f64;
-                let scale = pixels / (1280.0 * 720.0);
-                CostEstimate {
-                    usd: 0.02 * *steps as f64 * scale,
-                    credits: 2.0 * *steps as f64 * scale,
-                    estimated_latency_ms: 3000 + (*steps as u64 * 1000),
-                }
-            }
-            Operation::Generate {
-                duration_seconds,
-                resolution,
-            } => {
-                let pixels = resolution.0 as f64 * resolution.1 as f64;
-                let scale = pixels / (1280.0 * 720.0);
-                CostEstimate {
-                    usd: 0.10 * duration_seconds * scale,
-                    credits: 10.0 * duration_seconds * scale,
-                    estimated_latency_ms: (*duration_seconds * 5000.0) as u64,
-                }
-            }
-            Operation::Reason => CostEstimate::default(),
-            Operation::Transfer { duration_seconds } => CostEstimate {
-                usd: 0.08 * duration_seconds,
-                credits: 8.0 * duration_seconds,
-                estimated_latency_ms: (*duration_seconds * 4000.0) as u64,
-            },
+        if self.operation_supported(operation) {
+            Self::cost_for_operation(operation)
+        } else {
+            CostEstimate::default()
         }
     }
 }
@@ -926,12 +1071,24 @@ mod tests {
     use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
+    use worldforge_core::action::ActionSpaceType;
     use worldforge_core::action::ActionTranslator;
-    use worldforge_core::types::{Position, SimTime};
+    use worldforge_core::types::{Frame, Position, SimTime, Tensor};
+
+    #[derive(Debug)]
+    struct RecordedRequest {
+        method: String,
+        path: String,
+        body: String,
+    }
 
     fn spawn_response_server(
         response_body: String,
-    ) -> (String, mpsc::Receiver<String>, thread::JoinHandle<()>) {
+    ) -> (
+        String,
+        mpsc::Receiver<RecordedRequest>,
+        thread::JoinHandle<()>,
+    ) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let (tx, rx) = mpsc::channel();
@@ -942,6 +1099,9 @@ mod tests {
 
             let mut request_line = String::new();
             reader.read_line(&mut request_line).unwrap();
+            let mut parts = request_line.split_whitespace();
+            let method = parts.next().unwrap_or_default().to_string();
+            let path = parts.next().unwrap_or_default().to_string();
             let mut content_length = 0usize;
             loop {
                 let mut line = String::new();
@@ -959,7 +1119,12 @@ mod tests {
             if content_length > 0 {
                 reader.read_exact(&mut request_body).unwrap();
             }
-            tx.send(String::from_utf8(request_body).unwrap()).unwrap();
+            tx.send(RecordedRequest {
+                method,
+                path,
+                body: String::from_utf8(request_body).unwrap(),
+            })
+            .unwrap();
 
             let response = format!(
                 "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
@@ -1007,6 +1172,33 @@ mod tests {
         assert!(!caps.predict);
         assert!(caps.generate);
         assert!(!caps.transfer);
+        assert!(!caps.multi_view);
+        assert!(!caps.supports_depth);
+    }
+
+    #[test]
+    fn test_runway_full_stack_capabilities_union() {
+        let provider = RunwayProvider::full_stack("test-secret");
+        let caps = provider.capabilities();
+        assert!(caps.predict);
+        assert!(caps.generate);
+        assert!(caps.transfer);
+        assert!(!caps.reason);
+        assert!(caps.action_conditioned);
+        assert!(caps.multi_view);
+        assert!(caps.supports_depth);
+        assert!(caps
+            .supported_action_spaces
+            .contains(&ActionSpaceType::Continuous));
+        assert!(caps
+            .supported_action_spaces
+            .contains(&ActionSpaceType::Discrete));
+        assert!(caps
+            .supported_action_spaces
+            .contains(&ActionSpaceType::Language));
+        assert!(caps
+            .supported_action_spaces
+            .contains(&ActionSpaceType::Visual));
     }
 
     #[test]
@@ -1028,6 +1220,133 @@ mod tests {
         });
         assert_eq!(cmd["type"], "move");
         assert_eq!(cmd["speed"], 0.5);
+    }
+
+    #[test]
+    fn test_full_stack_predict_uses_robotics_route() {
+        let (endpoint, request_rx, handle) = spawn_response_server(
+            serde_json::json!({
+                "result": {
+                    "request_id": "predict-route",
+                    "confidence": 0.9,
+                    "physics_scores": {"overall": 0.91},
+                    "processing_time_ms": 12
+                }
+            })
+            .to_string(),
+        );
+        let provider = RunwayProvider::full_stack_with_endpoint("secret", endpoint);
+        let state = WorldState::new("route-test", "runway");
+        let action = Action::Move {
+            target: Position {
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+            },
+            speed: 0.5,
+        };
+        let config = PredictionConfig {
+            return_video: false,
+            ..PredictionConfig::default()
+        };
+
+        let prediction = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(provider.predict(&state, &action, &config))
+            .unwrap();
+        let request = request_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        handle.join().unwrap();
+
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.path, "/v1/robotics/predict");
+        assert!(request.body.contains(r#""model":"gwm-1-robotics""#));
+        assert_eq!(prediction.model, "gwm-1-robotics");
+    }
+
+    #[test]
+    fn test_full_stack_generate_and_transfer_use_worlds_route() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        let (generate_endpoint, generate_rx, generate_handle) = spawn_response_server(
+            serde_json::json!({
+                "data": {
+                    "request_id": "generate-route",
+                    "frames": [{"url": "https://cdn.runwayml.com/frame.png"}],
+                    "fps": 12.0,
+                    "resolution": [640, 360],
+                    "duration_seconds": 3.0
+                }
+            })
+            .to_string(),
+        );
+        let generate_provider =
+            RunwayProvider::full_stack_with_endpoint("secret", generate_endpoint);
+        let prompt = GenerationPrompt {
+            text: "A cube rolling across a table".to_string(),
+            reference_image: None,
+            negative_prompt: Some("blurry".to_string()),
+        };
+        let generate_config = GenerationConfig {
+            resolution: (640, 360),
+            fps: 24.0,
+            duration_seconds: 2.0,
+            temperature: 0.7,
+            seed: Some(7),
+        };
+        let clip = rt
+            .block_on(generate_provider.generate(&prompt, &generate_config))
+            .unwrap();
+        let generate_request = generate_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        generate_handle.join().unwrap();
+
+        assert_eq!(generate_request.method, "POST");
+        assert_eq!(generate_request.path, "/v1/worlds/generate");
+        assert!(generate_request.body.contains(r#""model":"gwm-1-worlds""#));
+        assert_eq!(clip.resolution, (640, 360));
+
+        let (transfer_endpoint, transfer_rx, transfer_handle) = spawn_response_server(
+            serde_json::json!({
+                "data": {
+                    "request_id": "transfer-route",
+                    "media_url": "https://cdn.runwayml.com/transfer.mp4",
+                    "resolution": [320, 240],
+                    "fps": 18.0
+                }
+            })
+            .to_string(),
+        );
+        let transfer_provider =
+            RunwayProvider::full_stack_with_endpoint("secret", transfer_endpoint);
+        let source = VideoClip {
+            frames: vec![Frame {
+                data: Tensor::zeros(vec![1, 1, 3], worldforge_core::types::DType::UInt8),
+                timestamp: SimTime::default(),
+                camera: None,
+                depth: None,
+                segmentation: None,
+            }],
+            fps: 12.0,
+            resolution: (320, 240),
+            duration: 1.0,
+        };
+        let transfer_clip = rt
+            .block_on(transfer_provider.transfer(
+                &source,
+                &SpatialControls::default(),
+                &TransferConfig {
+                    resolution: (320, 240),
+                    fps: 24.0,
+                    control_strength: 0.8,
+                },
+            ))
+            .unwrap();
+        let transfer_request = transfer_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        transfer_handle.join().unwrap();
+
+        assert_eq!(transfer_request.method, "POST");
+        assert_eq!(transfer_request.path, "/v1/worlds/transfer");
+        assert!(transfer_request.body.contains(r#""model":"gwm-1-worlds""#));
+        assert_eq!(transfer_clip.resolution, (320, 240));
     }
 
     #[test]
@@ -1129,9 +1448,9 @@ mod tests {
         let prediction = provider.predict(&state, &action, &config).await.unwrap();
 
         let request_body = request_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        assert!(request_body.contains(r#""return_video":true"#));
-        assert!(request_body.contains(r#""return_depth":false"#));
-        assert!(request_body.contains(r#""return_segmentation":false"#));
+        assert!(request_body.body.contains(r#""return_video":true"#));
+        assert!(request_body.body.contains(r#""return_depth":false"#));
+        assert!(request_body.body.contains(r#""return_segmentation":false"#));
         handle.join().unwrap();
 
         assert_eq!(prediction.provider, "runway");
@@ -1186,7 +1505,8 @@ mod tests {
         let clip = provider.generate(&prompt, &config).await.unwrap();
 
         let request_body = request_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        assert!(request_body.contains("A rolling cube"));
+        assert_eq!(request_body.path, "/v1/worlds/generate");
+        assert!(request_body.body.contains("A rolling cube"));
         handle.join().unwrap();
 
         assert_eq!(clip.fps, 12.0);
@@ -1235,7 +1555,8 @@ mod tests {
             .await
             .unwrap();
 
-        let _ = request_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let request_body = request_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(request_body.path, "/v1/worlds/transfer");
         handle.join().unwrap();
 
         assert_eq!(clip.fps, 18.0);

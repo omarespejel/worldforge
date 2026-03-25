@@ -24,7 +24,7 @@ use worldforge_core::types::{
 };
 
 /// NVIDIA Cosmos model variant.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CosmosModel {
     /// Video generation / future prediction.
     Predict2_5,
@@ -34,6 +34,51 @@ pub enum CosmosModel {
     Reason2,
     /// Video-text embeddings.
     Embed1,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CosmosRoute {
+    Predict,
+    Generate,
+    Reason,
+    Transfer,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CosmosRoutes {
+    predict: Option<CosmosModel>,
+    generate: Option<CosmosModel>,
+    reason: Option<CosmosModel>,
+    transfer: Option<CosmosModel>,
+}
+
+impl CosmosRoutes {
+    fn single(model: CosmosModel) -> Self {
+        Self {
+            predict: matches!(model, CosmosModel::Predict2_5).then_some(model),
+            generate: matches!(model, CosmosModel::Predict2_5).then_some(model),
+            reason: matches!(model, CosmosModel::Reason2).then_some(model),
+            transfer: matches!(model, CosmosModel::Transfer2_5).then_some(model),
+        }
+    }
+
+    fn full_stack() -> Self {
+        Self {
+            predict: Some(CosmosModel::Predict2_5),
+            generate: Some(CosmosModel::Predict2_5),
+            reason: Some(CosmosModel::Reason2),
+            transfer: Some(CosmosModel::Transfer2_5),
+        }
+    }
+
+    fn model(&self, route: CosmosRoute) -> Option<CosmosModel> {
+        match route {
+            CosmosRoute::Predict => self.predict,
+            CosmosRoute::Generate => self.generate,
+            CosmosRoute::Reason => self.reason,
+            CosmosRoute::Transfer => self.transfer,
+        }
+    }
 }
 
 /// Cosmos API endpoint type.
@@ -344,6 +389,7 @@ pub struct CosmosProvider {
     pub endpoint: CosmosEndpoint,
     /// Provider configuration.
     pub config: CosmosConfig,
+    routes: CosmosRoutes,
     /// HTTP client (shared).
     client: reqwest::Client,
 }
@@ -351,13 +397,13 @@ pub struct CosmosProvider {
 impl CosmosProvider {
     /// Create a new Cosmos provider.
     pub fn new(model: CosmosModel, api_key: impl Into<String>, endpoint: CosmosEndpoint) -> Self {
-        Self {
+        Self::build(
             model,
-            api_key: api_key.into(),
+            api_key,
             endpoint,
-            config: CosmosConfig::default(),
-            client: reqwest::Client::new(),
-        }
+            CosmosConfig::default(),
+            CosmosRoutes::single(model),
+        )
     }
 
     /// Create a new Cosmos provider with custom configuration.
@@ -372,22 +418,83 @@ impl CosmosProvider {
         config: CosmosConfig,
     ) -> Result<Self> {
         config.validate()?;
-        Ok(Self {
+        Ok(Self::build(
             model,
-            api_key: api_key.into(),
+            api_key,
             endpoint,
             config,
-            client: reqwest::Client::new(),
-        })
+            CosmosRoutes::single(model),
+        ))
+    }
+
+    /// Create a composite Cosmos provider with Predict 2.5, Reason 2, and Transfer 2.5 routes.
+    pub fn full_stack(api_key: impl Into<String>, endpoint: CosmosEndpoint) -> Self {
+        Self::build(
+            CosmosModel::Predict2_5,
+            api_key,
+            endpoint,
+            CosmosConfig::default(),
+            CosmosRoutes::full_stack(),
+        )
+    }
+
+    /// Create a composite Cosmos provider with custom configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the configuration is invalid.
+    pub fn full_stack_with_config(
+        api_key: impl Into<String>,
+        endpoint: CosmosEndpoint,
+        config: CosmosConfig,
+    ) -> Result<Self> {
+        config.validate()?;
+        Ok(Self::build(
+            CosmosModel::Predict2_5,
+            api_key,
+            endpoint,
+            config,
+            CosmosRoutes::full_stack(),
+        ))
     }
 
     /// Get the model identifier string for API requests.
+    #[allow(dead_code)]
     fn model_id(&self) -> &'static str {
-        match self.model {
+        Self::model_id_for(self.model)
+    }
+
+    fn model_id_for(model: CosmosModel) -> &'static str {
+        match model {
             CosmosModel::Predict2_5 => "nvidia/cosmos-predict-2.5",
             CosmosModel::Transfer2_5 => "nvidia/cosmos-transfer-2.5",
             CosmosModel::Reason2 => "nvidia/cosmos-reason-2",
             CosmosModel::Embed1 => "nvidia/cosmos-embed-1",
+        }
+    }
+
+    fn route_model(&self, route: CosmosRoute) -> Option<CosmosModel> {
+        self.routes.model(route)
+    }
+
+    fn route_model_id(&self, route: CosmosRoute) -> Option<&'static str> {
+        self.route_model(route).map(Self::model_id_for)
+    }
+
+    fn build(
+        model: CosmosModel,
+        api_key: impl Into<String>,
+        endpoint: CosmosEndpoint,
+        config: CosmosConfig,
+        routes: CosmosRoutes,
+    ) -> Self {
+        Self {
+            model,
+            api_key: api_key.into(),
+            endpoint,
+            config,
+            routes,
+            client: reqwest::Client::new(),
         }
     }
 
@@ -802,6 +909,7 @@ fn merge_reasoning_envelope(
 
 fn build_prediction_from_response(
     provider: &CosmosProvider,
+    model_id: &'static str,
     state: &WorldState,
     action: &Action,
     config: &PredictionConfig,
@@ -860,9 +968,7 @@ fn build_prediction_from_response(
     Prediction {
         id: prediction_id_from_request_id(response.request_id.as_deref()),
         provider: provider.name().to_string(),
-        model: response
-            .model
-            .unwrap_or_else(|| provider.model_id().to_string()),
+        model: response.model.unwrap_or_else(|| model_id.to_string()),
         input_state: state.clone(),
         action: action.clone(),
         output_state,
@@ -958,18 +1064,27 @@ impl WorldModelProvider for CosmosProvider {
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
+        let predict = self.routes.predict.is_some();
+        let generate = self.routes.generate.is_some();
+        let reason = self.routes.reason.is_some();
+        let transfer = self.routes.transfer.is_some();
+
         ProviderCapabilities {
-            predict: true,
-            generate: true,
-            reason: matches!(self.model, CosmosModel::Reason2),
-            transfer: matches!(self.model, CosmosModel::Transfer2_5),
-            action_conditioned: true,
+            predict,
+            generate,
+            reason,
+            transfer,
+            action_conditioned: predict,
             multi_view: false,
             max_video_length_seconds: 10.0,
             max_resolution: (1920, 1080),
             fps_range: (8.0, 30.0),
-            supported_action_spaces: vec![ActionSpaceType::Continuous, ActionSpaceType::Language],
-            supports_depth: true,
+            supported_action_spaces: if predict {
+                vec![ActionSpaceType::Continuous, ActionSpaceType::Language]
+            } else {
+                Vec::new()
+            },
+            supports_depth: predict || transfer,
             supports_segmentation: false,
             supports_planning: false,
             latency_profile: LatencyProfile {
@@ -987,12 +1102,18 @@ impl WorldModelProvider for CosmosProvider {
         action: &Action,
         config: &PredictionConfig,
     ) -> Result<Prediction> {
+        let model_id = self.route_model_id(CosmosRoute::Predict).ok_or_else(|| {
+            WorldForgeError::UnsupportedCapability {
+                provider: "cosmos".to_string(),
+                capability: "predict (requires Cosmos Predict 2.5 route)".to_string(),
+            }
+        })?;
         let base_url = self.base_url()?;
         let start = std::time::Instant::now();
         let prompt = Self::action_to_prompt(action);
 
         let request_body = CosmosPredictRequest {
-            model: self.model_id().to_string(),
+            model: model_id.to_string(),
             prompt,
             num_frames: config.steps * (config.fps as u32),
             resolution: [config.resolution.0, config.resolution.1],
@@ -1054,6 +1175,7 @@ impl WorldModelProvider for CosmosProvider {
 
         Ok(build_prediction_from_response(
             self,
+            model_id,
             state,
             action,
             config,
@@ -1067,10 +1189,16 @@ impl WorldModelProvider for CosmosProvider {
         prompt: &GenerationPrompt,
         config: &GenerationConfig,
     ) -> Result<VideoClip> {
+        let model_id = self.route_model_id(CosmosRoute::Generate).ok_or_else(|| {
+            WorldForgeError::UnsupportedCapability {
+                provider: "cosmos".to_string(),
+                capability: "generate (requires Cosmos Predict 2.5 route)".to_string(),
+            }
+        })?;
         let base_url = self.base_url()?;
 
         let request_body = CosmosGenerateRequest {
-            model: self.model_id().to_string(),
+            model: model_id.to_string(),
             prompt: prompt.text.clone(),
             negative_prompt: prompt.negative_prompt.clone(),
             duration_seconds: config.duration_seconds,
@@ -1106,7 +1234,7 @@ impl WorldModelProvider for CosmosProvider {
             response_marker(&[
                 Some(prompt.text.as_str()),
                 prompt.negative_prompt.as_deref(),
-                Some(self.model_id()),
+                Some(model_id),
             ]),
             config.resolution,
             config.fps,
@@ -1115,17 +1243,17 @@ impl WorldModelProvider for CosmosProvider {
     }
 
     async fn reason(&self, input: &ReasoningInput, query: &str) -> Result<ReasoningOutput> {
-        if !matches!(self.model, CosmosModel::Reason2) {
-            return Err(WorldForgeError::UnsupportedCapability {
+        let model_id = self.route_model_id(CosmosRoute::Reason).ok_or_else(|| {
+            WorldForgeError::UnsupportedCapability {
                 provider: "cosmos".to_string(),
-                capability: "reason (requires Cosmos Reason 2 model)".to_string(),
-            });
-        }
+                capability: "reason (requires Cosmos Reason 2 route)".to_string(),
+            }
+        })?;
 
         let base_url = self.base_url()?;
 
         let request_body = serde_json::json!({
-            "model": "nvidia/cosmos-reason-2",
+            "model": model_id,
             "query": query,
             "has_video": input.video.is_some(),
             "has_state": input.state.is_some(),
@@ -1162,17 +1290,17 @@ impl WorldModelProvider for CosmosProvider {
         _controls: &SpatialControls,
         config: &TransferConfig,
     ) -> Result<VideoClip> {
-        if !matches!(self.model, CosmosModel::Transfer2_5) {
-            return Err(WorldForgeError::UnsupportedCapability {
+        let model_id = self.route_model_id(CosmosRoute::Transfer).ok_or_else(|| {
+            WorldForgeError::UnsupportedCapability {
                 provider: "cosmos".to_string(),
-                capability: "transfer (requires Cosmos Transfer 2.5 model)".to_string(),
-            });
-        }
+                capability: "transfer (requires Cosmos Transfer 2.5 route)".to_string(),
+            }
+        })?;
 
         let base_url = self.base_url()?;
 
         let request_body = serde_json::json!({
-            "model": "nvidia/cosmos-transfer-2.5",
+            "model": model_id,
             "resolution": [config.resolution.0, config.resolution.1],
             "fps": config.fps,
             "control_strength": config.control_strength,
@@ -1202,7 +1330,7 @@ impl WorldModelProvider for CosmosProvider {
             .map_err(|e| WorldForgeError::SerializationError(e.to_string()))?;
         Ok(build_video_clip_from_response(
             api_response,
-            response_marker(&[Some("cosmos transfer"), Some(self.model_id())]),
+            response_marker(&[Some("cosmos transfer"), Some(model_id)]),
             config.resolution,
             config.fps,
             0.0,
@@ -1292,8 +1420,82 @@ impl worldforge_core::action::ActionTranslator for CosmosActionTranslator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
     use worldforge_core::action::ActionTranslator;
+    use worldforge_core::state::WorldState;
     use worldforge_core::types::Position;
+
+    #[derive(Debug)]
+    struct RecordedRequest {
+        method: String,
+        path: String,
+        body: String,
+    }
+
+    fn spawn_response_server(
+        response_body: String,
+    ) -> (
+        String,
+        mpsc::Receiver<RecordedRequest>,
+        thread::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = mpsc::channel();
+
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+
+            let mut request_line = String::new();
+            reader.read_line(&mut request_line).unwrap();
+            let request_line = request_line.trim_end_matches(['\r', '\n']);
+            let mut parts = request_line.split_whitespace();
+            let method = parts.next().unwrap_or_default().to_string();
+            let path = parts.next().unwrap_or_default().to_string();
+
+            let mut content_length = 0usize;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let line = line.trim_end_matches(['\r', '\n']);
+                if line.is_empty() {
+                    break;
+                }
+
+                if let Some((name, value)) = line.split_once(':') {
+                    let key = name.trim().to_ascii_lowercase();
+                    let value = value.trim().to_string();
+                    if key == "content-length" {
+                        content_length = value.parse().unwrap_or(0);
+                    }
+                }
+            }
+
+            let mut body_bytes = vec![0u8; content_length];
+            if content_length > 0 {
+                reader.read_exact(&mut body_bytes).unwrap();
+            }
+
+            let body = String::from_utf8(body_bytes).unwrap_or_default();
+            tx.send(RecordedRequest { method, path, body }).unwrap();
+
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.flush().unwrap();
+        });
+
+        (format!("http://{}", addr), rx, handle)
+    }
 
     #[test]
     fn test_cosmos_provider_creation() {
@@ -1316,6 +1518,7 @@ mod tests {
         assert!(caps.predict);
         assert!(caps.generate);
         assert!(!caps.reason); // Predict model doesn't support reasoning
+        assert!(!caps.transfer);
     }
 
     #[test]
@@ -1327,6 +1530,9 @@ mod tests {
         );
         let caps = provider.capabilities();
         assert!(caps.reason);
+        assert!(!caps.predict);
+        assert!(!caps.generate);
+        assert!(!caps.transfer);
     }
 
     #[test]
@@ -1337,6 +1543,22 @@ mod tests {
             CosmosEndpoint::NimApi("https://api.nvidia.com".to_string()),
         );
         let caps = provider.capabilities();
+        assert!(caps.transfer);
+        assert!(!caps.predict);
+        assert!(!caps.generate);
+        assert!(!caps.reason);
+    }
+
+    #[test]
+    fn test_cosmos_full_stack_capabilities_union() {
+        let provider = CosmosProvider::full_stack(
+            "test-key",
+            CosmosEndpoint::NimApi("https://api.nvidia.com".to_string()),
+        );
+        let caps = provider.capabilities();
+        assert!(caps.predict);
+        assert!(caps.generate);
+        assert!(caps.reason);
         assert!(caps.transfer);
     }
 
@@ -1446,6 +1668,20 @@ mod tests {
         };
         let result = CosmosProvider::with_config(
             CosmosModel::Predict2_5,
+            "key",
+            CosmosEndpoint::NimApi("https://api.nvidia.com".to_string()),
+            bad_config,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_full_stack_with_config_validates() {
+        let bad_config = CosmosConfig {
+            timeout_ms: 0,
+            ..Default::default()
+        };
+        let result = CosmosProvider::full_stack_with_config(
             "key",
             CosmosEndpoint::NimApi("https://api.nvidia.com".to_string()),
             bad_config,
@@ -1598,8 +1834,15 @@ mod tests {
             ..Default::default()
         };
 
-        let prediction =
-            build_prediction_from_response(&provider, &input_state, &action, &config, response, 17);
+        let prediction = build_prediction_from_response(
+            &provider,
+            "nvidia/cosmos-predict-2.5",
+            &input_state,
+            &action,
+            &config,
+            response,
+            17,
+        );
 
         assert_eq!(
             prediction.id.to_string(),
@@ -1619,6 +1862,159 @@ mod tests {
             TensorData::UInt8(bytes) => assert!(bytes.iter().any(|byte| *byte != 0)),
             other => panic!("unexpected tensor data: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_full_stack_routes_predict_generate_reason_and_transfer() {
+        let action = Action::Move {
+            target: Position {
+                x: 1.0,
+                y: 0.5,
+                z: -0.25,
+            },
+            speed: 0.75,
+        };
+        let state = WorldState::new("cosmos-routes", "cosmos");
+
+        let (predict_endpoint, predict_rx, predict_handle) = spawn_response_server(
+            serde_json::json!({
+                "request_id": "pred-1",
+                "status": "ok",
+                "confidence": 0.91,
+                "processing_time_ms": 7
+            })
+            .to_string(),
+        );
+        let provider =
+            CosmosProvider::full_stack("secret", CosmosEndpoint::NimApi(predict_endpoint));
+        let prediction = provider
+            .predict(&state, &action, &PredictionConfig::default())
+            .await
+            .unwrap();
+        let request = predict_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.path, "/v1/predict");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&request.body).unwrap()["model"],
+            "nvidia/cosmos-predict-2.5"
+        );
+        assert_eq!(prediction.model, "nvidia/cosmos-predict-2.5");
+        predict_handle.join().unwrap();
+
+        let (generate_endpoint, generate_rx, generate_handle) = spawn_response_server(
+            serde_json::json!({
+                "request_id": "gen-1",
+                "status": "ok"
+            })
+            .to_string(),
+        );
+        let provider =
+            CosmosProvider::full_stack("secret", CosmosEndpoint::NimApi(generate_endpoint));
+        let clip = provider
+            .generate(
+                &GenerationPrompt {
+                    text: "A red cube rolling".to_string(),
+                    reference_image: None,
+                    negative_prompt: None,
+                },
+                &GenerationConfig {
+                    resolution: (640, 360),
+                    fps: 24.0,
+                    duration_seconds: 2.0,
+                    temperature: 1.0,
+                    seed: None,
+                },
+            )
+            .await
+            .unwrap();
+        let request = generate_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.path, "/v1/generate");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&request.body).unwrap()["model"],
+            "nvidia/cosmos-predict-2.5"
+        );
+        assert!(!clip.frames.is_empty());
+        generate_handle.join().unwrap();
+
+        let (reason_endpoint, reason_rx, reason_handle) = spawn_response_server(
+            serde_json::json!({
+                "request_id": "reason-1",
+                "status": "ok",
+                "answer": "supported"
+            })
+            .to_string(),
+        );
+        let provider =
+            CosmosProvider::full_stack("secret", CosmosEndpoint::NimApi(reason_endpoint));
+        let output = provider
+            .reason(
+                &ReasoningInput {
+                    video: None,
+                    state: Some(state.clone()),
+                },
+                "What is present?",
+            )
+            .await
+            .unwrap();
+        let request = reason_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.path, "/v1/reason");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&request.body).unwrap()["model"],
+            "nvidia/cosmos-reason-2"
+        );
+        assert_eq!(output.answer, "supported");
+        reason_handle.join().unwrap();
+
+        let (transfer_endpoint, transfer_rx, transfer_handle) = spawn_response_server(
+            serde_json::json!({
+                "request_id": "transfer-1",
+                "status": "ok",
+                "media_url": "https://example.com/cosmos-transfer.mp4"
+            })
+            .to_string(),
+        );
+        let provider =
+            CosmosProvider::full_stack("secret", CosmosEndpoint::NimApi(transfer_endpoint));
+        let source = VideoClip {
+            frames: vec![worldforge_core::types::Frame {
+                data: Tensor::zeros(vec![2, 2, 3], worldforge_core::types::DType::UInt8),
+                timestamp: SimTime::default(),
+                camera: Some(CameraPose {
+                    extrinsics: Pose::default(),
+                    fov: 60.0,
+                    near_clip: 0.1,
+                    far_clip: 100.0,
+                }),
+                depth: None,
+                segmentation: None,
+            }],
+            fps: 12.0,
+            resolution: (2, 2),
+            duration: 0.083333333,
+        };
+        let clip = provider
+            .transfer(
+                &source,
+                &SpatialControls::default(),
+                &TransferConfig {
+                    resolution: (640, 360),
+                    fps: 24.0,
+                    control_strength: 0.8,
+                },
+            )
+            .await
+            .unwrap();
+        let request = transfer_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.path, "/v1/transfer");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&request.body).unwrap()["model"],
+            "nvidia/cosmos-transfer-2.5"
+        );
+        assert!(!clip.frames.is_empty());
+        transfer_handle.join().unwrap();
     }
 
     #[test]

@@ -139,6 +139,10 @@ let world = wf.create_world("kitchen-counter", "mock")?;
 
 To attach persistence up front, open a `StateStore` and pass it to
 `worldforge_providers::auto_detect_worldforge_with_state_store(...)`.
+When `NVIDIA_API_KEY` or `RUNWAY_API_SECRET` are present, auto-detection now
+registers capability-complete `cosmos` and `runway` providers instead of
+single partial model variants, so predict/generate/reason/transfer coverage is
+available under the stable vendor names.
 
 ## Python Installation
 
