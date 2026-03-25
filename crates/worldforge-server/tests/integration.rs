@@ -14,7 +14,8 @@ use tokio::task::JoinHandle;
 
 use worldforge_core::provider::ProviderRegistry;
 use worldforge_core::state::{FileStateStore, StateStore};
-use worldforge_providers::MockProvider;
+use worldforge_providers::genie::GenieModel;
+use worldforge_providers::{GenieProvider, MockProvider};
 use worldforge_server::{Server, ServerConfig};
 
 /// Helper to create a server config with a unique temp directory.
@@ -90,10 +91,47 @@ async fn spawn_test_server_sqlite() -> TestServer {
     }
 }
 
+async fn spawn_test_server_with_genie() -> TestServer {
+    let state_dir = std::env::temp_dir().join(format!("wf-http-genie-{}", uuid::Uuid::new_v4()));
+    let mut registry = ProviderRegistry::new();
+    registry.register(Box::new(MockProvider::new()));
+    registry.register(Box::new(GenieProvider::new(
+        GenieModel::Genie3,
+        "genie-test-key",
+    )));
+
+    let server = Server::bind(
+        ServerConfig {
+            bind_address: "127.0.0.1:0".to_string(),
+            state_dir: state_dir.display().to_string(),
+            ..ServerConfig::default()
+        },
+        Arc::new(registry),
+    )
+    .await
+    .unwrap();
+    let address = server.local_addr().unwrap();
+    let task = tokio::spawn(server.run());
+
+    TestServer {
+        address,
+        state_dir,
+        task,
+    }
+}
+
 async fn create_test_world(address: SocketAddr, name: &str) -> String {
+    create_test_world_with_provider(address, name, "mock").await
+}
+
+async fn create_test_world_with_provider(
+    address: SocketAddr,
+    name: &str,
+    provider: &str,
+) -> String {
     let body = serde_json::json!({
         "name": name,
-        "provider": "mock",
+        "provider": provider,
     })
     .to_string();
     let (status, create) = http_request(address, "POST", "/v1/worlds", &body).await;
@@ -431,6 +469,91 @@ async fn test_live_http_provider_transfer() {
     assert_eq!(clip["data"]["resolution"], serde_json::json!([640, 360]));
     assert_eq!(clip["data"]["fps"], 24.0);
     assert_eq!(clip["data"]["duration"], 2.0);
+}
+
+#[tokio::test]
+async fn test_live_http_genie_reasoning_is_grounded_in_scene_state() {
+    let server = spawn_test_server_with_genie().await;
+    let world_id =
+        create_test_world_with_provider(server.address, "genie_reason_world", "genie").await;
+
+    let _ = create_test_object(
+        server.address,
+        &world_id,
+        serde_json::json!({
+            "name": "table",
+            "position": { "x": 0.0, "y": 0.0, "z": 0.0 },
+            "bbox": {
+                "min": { "x": -0.75, "y": -0.05, "z": -0.75 },
+                "max": { "x": 0.75, "y": 0.05, "z": 0.75 }
+            }
+        }),
+    )
+    .await;
+    let _ = create_test_object(
+        server.address,
+        &world_id,
+        serde_json::json!({
+            "name": "mug",
+            "position": { "x": 0.1, "y": 0.82, "z": 0.0 },
+            "bbox": {
+                "min": { "x": 0.05, "y": 0.77, "z": -0.05 },
+                "max": { "x": 0.15, "y": 0.87, "z": 0.05 }
+            }
+        }),
+    )
+    .await;
+
+    let (status, response) = http_request(
+        server.address,
+        "POST",
+        &format!("/v1/worlds/{world_id}/reason"),
+        r#"{"query":"What objects are in the scene?"}"#,
+    )
+    .await;
+
+    assert_eq!(status, 200);
+    let answer = response["data"]["answer"]
+        .as_str()
+        .unwrap_or_default()
+        .to_lowercase();
+    assert!(answer.contains("mug"));
+    assert!(answer.contains("table"));
+    let evidence = response["data"]["evidence"].as_array().unwrap();
+    assert!(!evidence.is_empty());
+}
+
+#[tokio::test]
+async fn test_live_http_genie_native_plan_spawn_goal() {
+    let server = spawn_test_server_with_genie().await;
+    let world_id =
+        create_test_world_with_provider(server.address, "genie_plan_world", "genie").await;
+
+    let plan_body = r#"{
+        "goal":"spawn cube",
+        "provider":"genie",
+        "planner":"provider-native",
+        "max_steps":4
+    }"#;
+    let (status, plan_json) = http_request(
+        server.address,
+        "POST",
+        &format!("/v1/worlds/{world_id}/plan"),
+        plan_body,
+    )
+    .await;
+
+    assert_eq!(status, 200);
+    let plan: worldforge_core::prediction::Plan =
+        serde_json::from_value(plan_json["data"].clone()).unwrap();
+    assert!(!plan.actions.is_empty());
+    assert_eq!(plan.predicted_states.len(), plan.actions.len());
+    assert_eq!(plan.guardrail_compliance.len(), plan.actions.len());
+    assert!(plan.actions.iter().any(|action| matches!(
+        action,
+        worldforge_core::action::Action::SpawnObject { template, .. }
+            if template.to_lowercase().contains("cube")
+    )));
 }
 
 #[tokio::test]

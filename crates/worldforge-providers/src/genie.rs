@@ -5,18 +5,24 @@
 //! not call an external API, but it produces usable predictions and video
 //! clips that are stable across runs and distinct from the mock provider.
 
+use std::time::Instant;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use worldforge_core::action::{evaluate_condition, Action, ActionSpaceType, Weather};
+use worldforge_core::action::{evaluate_condition, Action, ActionSpaceType, Condition, Weather};
 use worldforge_core::error::{Result, WorldForgeError};
-use worldforge_core::prediction::{PhysicsScores, Prediction, PredictionConfig};
+use worldforge_core::goal_image;
+use worldforge_core::guardrail::{evaluate_guardrails, has_blocking_violation};
+use worldforge_core::prediction::{
+    PhysicsScores, Plan, PlanGoal, PlanRequest, Prediction, PredictionConfig,
+};
 use worldforge_core::provider::{
     CostEstimate, GenerationConfig, GenerationPrompt, HealthStatus, LatencyProfile, Operation,
     ProviderCapabilities, ReasoningInput, ReasoningOutput, SpatialControls, TransferConfig,
     WorldModelProvider,
 };
-use worldforge_core::scene::SceneObject;
+use worldforge_core::scene::{SceneObject, SpatialRelationship};
 use worldforge_core::state::WorldState;
 use worldforge_core::types::{
     BBox, CameraPose, DType, Device, Frame, Pose, Position, Rotation, SimTime, Tensor, TensorData,
@@ -564,6 +570,1105 @@ impl GenieProvider {
     }
 }
 
+fn planning_prediction_config() -> PredictionConfig {
+    PredictionConfig {
+        steps: 1,
+        fps: MAX_GENERATION_FPS,
+        ..PredictionConfig::default()
+    }
+}
+
+fn simulate_single_action(
+    provider: &GenieProvider,
+    state: &WorldState,
+    action: &Action,
+) -> WorldState {
+    let mut next_state = state.clone();
+    let _ = provider.apply_action(&mut next_state, action);
+    GenieProvider::update_time(
+        &mut next_state,
+        planning_prediction_config().steps,
+        planning_prediction_config().fps,
+    );
+    next_state
+}
+
+fn derive_native_actions(goal: &PlanGoal, state: &WorldState) -> Result<Vec<Action>> {
+    match goal {
+        PlanGoal::Condition(condition) => actions_for_condition(condition, state),
+        PlanGoal::TargetState(target) => Ok(actions_for_target_state(state, target)),
+        PlanGoal::Description(description) => actions_for_description(description, state),
+        PlanGoal::GoalImage(image) => actions_for_goal_image(image, state),
+    }
+}
+
+fn actions_for_goal_image(goal_image_tensor: &Tensor, state: &WorldState) -> Result<Vec<Action>> {
+    let target = goal_image::goal_image_target(goal_image_tensor, state).ok_or_else(|| {
+        WorldForgeError::NoFeasiblePlan {
+            goal: "goal-image".to_string(),
+            reason: "genie native planner could not interpret the goal image".to_string(),
+        }
+    })?;
+    let tolerance = goal_image_tolerance(target.confidence);
+
+    if let Some(object_id) = primary_movable_object_id(state) {
+        if state
+            .scene
+            .get_object(&object_id)
+            .is_some_and(|object| object.pose.position.distance(target.position) <= tolerance)
+        {
+            return Ok(Vec::new());
+        }
+        Ok(vec![Action::Place {
+            object: object_id,
+            target: target.position,
+        }])
+    } else {
+        Ok(vec![Action::SpawnObject {
+            template: "genie-goal-object".to_string(),
+            pose: Pose {
+                position: target.position,
+                ..Pose::default()
+            },
+        }])
+    }
+}
+
+fn goal_image_tolerance(confidence: f32) -> f32 {
+    (0.12 + (1.0 - confidence).clamp(0.0, 1.0) * 0.2).clamp(0.05, 0.45)
+}
+
+fn actions_for_condition(condition: &Condition, state: &WorldState) -> Result<Vec<Action>> {
+    match condition {
+        Condition::ObjectAt {
+            object,
+            position,
+            tolerance,
+        } => {
+            let Some(item) = state.scene.get_object(object) else {
+                return Err(WorldForgeError::NoFeasiblePlan {
+                    goal: format!("{condition:?}"),
+                    reason: "condition references an unknown object".to_string(),
+                });
+            };
+            if item.pose.position.distance(*position) <= *tolerance {
+                Ok(Vec::new())
+            } else {
+                Ok(vec![Action::Place {
+                    object: *object,
+                    target: *position,
+                }])
+            }
+        }
+        Condition::ObjectsTouching { a, b } => {
+            if evaluate_condition(condition, state) {
+                return Ok(Vec::new());
+            }
+            let Some(anchor) = state.scene.get_object(b) else {
+                return Err(WorldForgeError::NoFeasiblePlan {
+                    goal: format!("{condition:?}"),
+                    reason: "touching condition references an unknown anchor object".to_string(),
+                });
+            };
+            Ok(vec![Action::Place {
+                object: *a,
+                target: anchor.pose.position,
+            }])
+        }
+        Condition::ObjectExists { object } => {
+            if state.scene.get_object(object).is_some() {
+                Ok(Vec::new())
+            } else {
+                Err(WorldForgeError::NoFeasiblePlan {
+                    goal: format!("{condition:?}"),
+                    reason: "ObjectExists cannot be satisfied because IDs are immutable"
+                        .to_string(),
+                })
+            }
+        }
+        Condition::And(conditions) => {
+            let mut simulated = state.clone();
+            let mut actions = Vec::new();
+            let planner = GenieProvider::new(GenieModel::Genie3, "");
+            for condition in conditions {
+                let step_actions = actions_for_condition(condition, &simulated)?;
+                for action in step_actions {
+                    simulated = simulate_single_action(&planner, &simulated, &action);
+                    actions.push(action);
+                }
+            }
+            Ok(actions)
+        }
+        Condition::Or(conditions) => {
+            if conditions
+                .iter()
+                .any(|candidate| evaluate_condition(candidate, state))
+            {
+                return Ok(Vec::new());
+            }
+
+            for candidate in conditions {
+                if let Ok(actions) = actions_for_condition(candidate, state) {
+                    return Ok(actions);
+                }
+            }
+
+            Err(WorldForgeError::NoFeasiblePlan {
+                goal: format!("{condition:?}"),
+                reason: "none of the OR branches can be satisfied".to_string(),
+            })
+        }
+        Condition::Not(inner) => actions_to_negate_condition(inner, state),
+    }
+}
+
+fn actions_to_negate_condition(condition: &Condition, state: &WorldState) -> Result<Vec<Action>> {
+    match condition {
+        Condition::ObjectAt {
+            object, position, ..
+        } => {
+            if !evaluate_condition(condition, state) {
+                return Ok(Vec::new());
+            }
+            Ok(vec![Action::Place {
+                object: *object,
+                target: Position {
+                    x: position.x + 0.45,
+                    y: position.y,
+                    z: position.z,
+                },
+            }])
+        }
+        Condition::ObjectsTouching { a, .. } => {
+            if !evaluate_condition(condition, state) {
+                return Ok(Vec::new());
+            }
+            let Some(object) = state.scene.get_object(a) else {
+                return Err(WorldForgeError::NoFeasiblePlan {
+                    goal: format!("{condition:?}"),
+                    reason: "touching condition references an unknown object".to_string(),
+                });
+            };
+            Ok(vec![Action::Place {
+                object: *a,
+                target: Position {
+                    x: object.pose.position.x + 0.5,
+                    y: object.pose.position.y,
+                    z: object.pose.position.z,
+                },
+            }])
+        }
+        Condition::ObjectExists { .. } => Err(WorldForgeError::NoFeasiblePlan {
+            goal: format!("{condition:?}"),
+            reason: "genie native planner cannot negate immutable object existence".to_string(),
+        }),
+        Condition::And(conditions) => {
+            if conditions
+                .iter()
+                .any(|candidate| !evaluate_condition(candidate, state))
+            {
+                return Ok(Vec::new());
+            }
+            conditions
+                .first()
+                .ok_or_else(|| WorldForgeError::NoFeasiblePlan {
+                    goal: format!("{condition:?}"),
+                    reason: "cannot negate an empty AND condition".to_string(),
+                })
+                .and_then(|candidate| actions_to_negate_condition(candidate, state))
+        }
+        Condition::Or(conditions) => {
+            let planner = GenieProvider::new(GenieModel::Genie3, "");
+            let mut simulated = state.clone();
+            let mut actions = Vec::new();
+            for candidate in conditions {
+                let step_actions = actions_to_negate_condition(candidate, &simulated)?;
+                for action in step_actions {
+                    simulated = simulate_single_action(&planner, &simulated, &action);
+                    actions.push(action);
+                }
+            }
+            Ok(actions)
+        }
+        Condition::Not(inner) => actions_for_condition(inner, state),
+    }
+}
+
+fn actions_for_target_state(state: &WorldState, target: &WorldState) -> Vec<Action> {
+    let mut actions = Vec::new();
+
+    for target_object in target.scene.objects.values() {
+        if let Some(current_object) = state
+            .scene
+            .get_object(&target_object.id)
+            .or_else(|| find_object_by_name_or_label(state, &target_object.name.to_lowercase()))
+        {
+            if current_object
+                .pose
+                .position
+                .distance(target_object.pose.position)
+                > 0.1
+            {
+                actions.push(Action::Place {
+                    object: current_object.id,
+                    target: target_object.pose.position,
+                });
+            }
+        } else {
+            actions.push(Action::SpawnObject {
+                template: target_object.name.clone(),
+                pose: target_object.pose,
+            });
+        }
+    }
+
+    actions
+}
+
+fn actions_for_description(description: &str, state: &WorldState) -> Result<Vec<Action>> {
+    let normalized = description.to_lowercase();
+    let mut actions = Vec::new();
+
+    if let Some(weather) = parse_weather_hint(&normalized) {
+        actions.push(Action::SetWeather { weather });
+    }
+
+    if let Some(time_of_day) = parse_lighting_hint(&normalized) {
+        actions.push(Action::SetLighting { time_of_day });
+    }
+
+    if let Some(name) =
+        infer_object_name_from_verb(description, &["remove", "delete", "discard", "drop"])
+    {
+        if let Some(object) = find_object_by_name_or_label(state, &name.to_lowercase()) {
+            actions.push(Action::RemoveObject { object: object.id });
+        }
+    }
+
+    if let Some(template) = infer_object_name_from_verb(description, &["spawn", "create", "add"]) {
+        let pose = Pose {
+            position: parse_relative_target_hint(state, &normalized)
+                .map(|hint| hint.target)
+                .or_else(|| parse_position_hint(description))
+                .unwrap_or_else(|| default_spawn_position(state)),
+            ..Pose::default()
+        };
+        actions.push(Action::SpawnObject { template, pose });
+    }
+
+    if let Some(target) = parse_position_hint(description)
+        .or_else(|| parse_relative_target_hint(state, &normalized).map(|hint| hint.target))
+    {
+        if let Some(name) = infer_object_name_from_verb(description, &["move", "place", "put"]) {
+            if let Some(object) = find_object_by_name_or_label(state, &name.to_lowercase()) {
+                actions.push(Action::Place {
+                    object: object.id,
+                    target,
+                });
+            }
+        } else if let Some(object_id) = primary_movable_object_id(state) {
+            actions.push(Action::Place {
+                object: object_id,
+                target,
+            });
+        }
+    }
+
+    if actions.is_empty() {
+        return Err(WorldForgeError::NoFeasiblePlan {
+            goal: description.to_string(),
+            reason: "genie native planner could not interpret the requested goal".to_string(),
+        });
+    }
+
+    Ok(actions)
+}
+
+fn goal_satisfied(goal: &PlanGoal, state: &WorldState) -> bool {
+    goal_score(goal, state) >= 0.95
+}
+
+fn goal_score(goal: &PlanGoal, state: &WorldState) -> f32 {
+    match goal {
+        PlanGoal::Condition(condition) => {
+            if evaluate_condition(condition, state) {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        PlanGoal::TargetState(target) => target_state_score(state, target),
+        PlanGoal::Description(description) => description_goal_score(description, state),
+        PlanGoal::GoalImage(image) => {
+            goal_image::goal_image_similarity(image, state).unwrap_or(0.0)
+        }
+    }
+}
+
+fn target_state_score(current: &WorldState, target: &WorldState) -> f32 {
+    if target.scene.objects.is_empty() {
+        return if current.scene.objects.is_empty() {
+            1.0
+        } else {
+            0.0
+        };
+    }
+
+    let mut score = 0.0;
+    let mut components = 0.0;
+    for target_object in target.scene.objects.values() {
+        components += 1.0;
+        let object_score = current
+            .scene
+            .get_object(&target_object.id)
+            .or_else(|| find_object_by_name_or_label(current, &target_object.name.to_lowercase()))
+            .map(|current_object| {
+                distance_score(
+                    current_object.pose.position,
+                    target_object.pose.position,
+                    0.1,
+                )
+            })
+            .unwrap_or(0.0);
+        score += object_score;
+    }
+
+    if components == 0.0 {
+        0.0
+    } else {
+        (score / components).clamp(0.0, 1.0)
+    }
+}
+
+fn description_goal_score(description: &str, state: &WorldState) -> f32 {
+    let normalized = description.to_lowercase();
+    let mut score = 0.0;
+    let mut components = 0.0;
+
+    if let Some(weather) = parse_weather_hint(&normalized) {
+        components += 1.0;
+        score += if weather_tag_present(state, weather) {
+            1.0
+        } else {
+            0.0
+        };
+    }
+
+    if let Some(time_of_day) = parse_lighting_hint(&normalized) {
+        components += 1.0;
+        score += if lighting_matches(state, time_of_day) {
+            1.0
+        } else {
+            0.0
+        };
+    }
+
+    if let Some(name) =
+        infer_object_name_from_verb(description, &["remove", "delete", "discard", "drop"])
+    {
+        components += 1.0;
+        score += if find_object_by_name_or_label(state, &name.to_lowercase()).is_none() {
+            1.0
+        } else {
+            0.0
+        };
+    }
+
+    if let Some(template) = infer_object_name_from_verb(description, &["spawn", "create", "add"]) {
+        components += 1.0;
+        if let Some(object) = find_object_by_name_or_label(state, &template.to_lowercase()) {
+            let placement_score = parse_relative_target_hint(state, &normalized)
+                .map(|hint| distance_score(object.pose.position, hint.target, hint.tolerance))
+                .or_else(|| {
+                    parse_position_hint(description)
+                        .map(|target| distance_score(object.pose.position, target, 0.15))
+                })
+                .unwrap_or(1.0);
+            score += placement_score;
+        }
+    }
+
+    if let Some(target) = parse_position_hint(description)
+        .or_else(|| parse_relative_target_hint(state, &normalized).map(|hint| hint.target))
+    {
+        components += 1.0;
+        let object = infer_object_name_from_verb(description, &["move", "place", "put"])
+            .and_then(|name| find_object_by_name_or_label(state, &name.to_lowercase()))
+            .or_else(|| primary_movable_object(state));
+        score += object
+            .map(|object| distance_score(object.pose.position, target, 0.15))
+            .unwrap_or(0.0);
+    }
+
+    if components == 0.0 {
+        actions_for_description(description, state)
+            .ok()
+            .map(|actions| (!actions.is_empty()) as u8 as f32 * 0.5)
+            .unwrap_or(0.0)
+    } else {
+        (score / components).clamp(0.0, 1.0)
+    }
+}
+
+fn distance_score(current: Position, target: Position, tolerance: f32) -> f32 {
+    let distance = current.distance(target);
+    if distance <= tolerance {
+        1.0
+    } else {
+        (1.0 - ((distance - tolerance) / 2.0)).clamp(0.0, 1.0)
+    }
+}
+
+fn default_spawn_position(state: &WorldState) -> Position {
+    if state.scene.objects.is_empty() {
+        return Position::default();
+    }
+
+    let mut objects: Vec<_> = state.scene.objects.values().collect();
+    objects.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.id.as_bytes().cmp(right.id.as_bytes()))
+    });
+
+    if let Some(anchor) = objects.last() {
+        Position {
+            x: anchor.pose.position.x + 0.6,
+            y: anchor.pose.position.y.max(anchor.bbox.max.y + 0.2),
+            z: anchor.pose.position.z,
+        }
+    } else {
+        Position::default()
+    }
+}
+
+fn parse_weather_hint(input: &str) -> Option<Weather> {
+    [
+        (Weather::Rain, "rain"),
+        (Weather::Snow, "snow"),
+        (Weather::Fog, "fog"),
+        (Weather::Cloudy, "cloudy"),
+        (Weather::Night, "night"),
+        (Weather::Clear, "clear"),
+    ]
+    .into_iter()
+    .find_map(|(weather, needle)| input.contains(needle).then_some(weather))
+}
+
+fn parse_lighting_hint(input: &str) -> Option<f32> {
+    for marker in ["lighting", "time of day", "time"] {
+        if let Some(index) = input.find(marker) {
+            let suffix = &input[index + marker.len()..];
+            if let Some(value) = first_number(suffix) {
+                return Some(value.clamp(0.0, 24.0));
+            }
+        }
+    }
+    None
+}
+
+fn parse_position_hint(input: &str) -> Option<Position> {
+    if let (Some(start), Some(end)) = (input.find('('), input.rfind(')')) {
+        if start < end {
+            let values: Vec<f32> = input[start + 1..end]
+                .split([',', ' '])
+                .filter(|token| !token.trim().is_empty())
+                .filter_map(|token| token.trim().parse::<f32>().ok())
+                .collect();
+            if values.len() >= 3 {
+                return Some(Position {
+                    x: values[0],
+                    y: values[1],
+                    z: values[2],
+                });
+            }
+        }
+    }
+
+    let words: Vec<&str> = input.split_whitespace().collect();
+    for window in words.windows(4) {
+        if matches!(window[0], "to" | "at" | "position") {
+            let parsed = (
+                window[1].parse::<f32>(),
+                window[2].parse::<f32>(),
+                window[3].parse::<f32>(),
+            );
+            if let (Ok(x), Ok(y), Ok(z)) = parsed {
+                return Some(Position { x, y, z });
+            }
+        }
+    }
+    None
+}
+
+fn first_number(input: &str) -> Option<f32> {
+    input.split_whitespace().find_map(|token| {
+        token
+            .trim_matches(|ch: char| !ch.is_ascii_digit() && ch != '.' && ch != '-')
+            .parse::<f32>()
+            .ok()
+    })
+}
+
+fn infer_object_name_from_verb(input: &str, verbs: &[&str]) -> Option<String> {
+    let normalized = input.to_lowercase();
+    let delimiters = [
+        " next to ",
+        " beside ",
+        " near ",
+        " on top of ",
+        " above ",
+        " below ",
+        " under ",
+        " left of ",
+        " right of ",
+        " in front of ",
+        " behind ",
+        " at ",
+        " to position ",
+        " to (",
+    ];
+
+    for verb in verbs {
+        if let Some(index) = normalized.find(verb) {
+            let mut remainder = input[index + verb.len()..].trim();
+            let mut remainder_lower = remainder.to_lowercase();
+
+            for article in ["a ", "an ", "the "] {
+                if remainder_lower.starts_with(article) {
+                    remainder = remainder[article.len()..].trim_start();
+                    remainder_lower = remainder.to_lowercase();
+                    break;
+                }
+            }
+
+            if remainder.is_empty() {
+                continue;
+            }
+
+            let end_index = delimiters
+                .iter()
+                .filter_map(|delimiter| remainder_lower.find(delimiter))
+                .min()
+                .unwrap_or(remainder.len());
+
+            let token = remainder[..end_index].trim().trim_matches(|ch: char| {
+                !ch.is_alphanumeric() && ch != ' ' && ch != '_' && ch != '-'
+            });
+            if !token.is_empty() {
+                return Some(token.to_string());
+            }
+        }
+    }
+
+    None
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RelativePlacement {
+    NextTo,
+    OnTopOf,
+    Below,
+    LeftOf,
+    RightOf,
+    InFrontOf,
+    Behind,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RelativeTargetHint {
+    target: Position,
+    tolerance: f32,
+}
+
+fn parse_relative_target_hint(state: &WorldState, description: &str) -> Option<RelativeTargetHint> {
+    let mut best: Option<(usize, usize, RelativeTargetHint)> = None;
+
+    for object in state.scene.objects.values() {
+        let mut aliases = vec![object.name.to_lowercase()];
+        if let Some(label) = &object.semantic_label {
+            let lowered = label.to_lowercase();
+            if !aliases.contains(&lowered) {
+                aliases.push(lowered);
+            }
+        }
+
+        for alias in aliases {
+            for (phrase, placement) in [
+                ("next to", RelativePlacement::NextTo),
+                ("beside", RelativePlacement::NextTo),
+                ("near", RelativePlacement::NextTo),
+                ("on top of", RelativePlacement::OnTopOf),
+                ("above", RelativePlacement::OnTopOf),
+                ("below", RelativePlacement::Below),
+                ("under", RelativePlacement::Below),
+                ("left of", RelativePlacement::LeftOf),
+                ("right of", RelativePlacement::RightOf),
+                ("in front of", RelativePlacement::InFrontOf),
+                ("behind", RelativePlacement::Behind),
+            ] {
+                let position = [
+                    format!("{phrase} {alias}"),
+                    format!("{phrase} the {alias}"),
+                    format!("{phrase} a {alias}"),
+                    format!("{phrase} an {alias}"),
+                ]
+                .into_iter()
+                .filter_map(|pattern| description.find(&pattern))
+                .min();
+                let Some(position) = position else { continue };
+
+                let target = relative_target_position(object, placement);
+                let tolerance = (approximate_radius(object) + 0.15).clamp(0.15, 0.5);
+                let candidate = (
+                    position,
+                    alias.len(),
+                    RelativeTargetHint { target, tolerance },
+                );
+
+                match best {
+                    Some((best_position, best_alias_len, _)) => {
+                        if position < best_position
+                            || (position == best_position && alias.len() > best_alias_len)
+                        {
+                            best = Some(candidate);
+                        }
+                    }
+                    None => best = Some(candidate),
+                }
+            }
+        }
+    }
+
+    best.map(|(_, _, hint)| hint)
+}
+
+fn relative_target_position(anchor: &SceneObject, placement: RelativePlacement) -> Position {
+    let clearance = (approximate_radius(anchor) + 0.2).clamp(0.2, 0.8);
+    match placement {
+        RelativePlacement::NextTo => Position {
+            x: anchor.pose.position.x + clearance,
+            y: anchor.pose.position.y,
+            z: anchor.pose.position.z,
+        },
+        RelativePlacement::OnTopOf => Position {
+            x: anchor.pose.position.x,
+            y: anchor.pose.position.y + clearance,
+            z: anchor.pose.position.z,
+        },
+        RelativePlacement::Below => Position {
+            x: anchor.pose.position.x,
+            y: anchor.pose.position.y - clearance,
+            z: anchor.pose.position.z,
+        },
+        RelativePlacement::LeftOf => Position {
+            x: anchor.pose.position.x - clearance,
+            y: anchor.pose.position.y,
+            z: anchor.pose.position.z,
+        },
+        RelativePlacement::RightOf => Position {
+            x: anchor.pose.position.x + clearance,
+            y: anchor.pose.position.y,
+            z: anchor.pose.position.z,
+        },
+        RelativePlacement::InFrontOf => Position {
+            x: anchor.pose.position.x,
+            y: anchor.pose.position.y,
+            z: anchor.pose.position.z + clearance,
+        },
+        RelativePlacement::Behind => Position {
+            x: anchor.pose.position.x,
+            y: anchor.pose.position.y,
+            z: anchor.pose.position.z - clearance,
+        },
+    }
+}
+
+fn approximate_radius(object: &SceneObject) -> f32 {
+    let half_width = (object.bbox.max.x - object.bbox.min.x).abs() * 0.5;
+    let half_depth = (object.bbox.max.z - object.bbox.min.z).abs() * 0.5;
+    half_width.max(half_depth).max(0.05)
+}
+
+fn find_object_by_name_or_label<'a>(state: &'a WorldState, query: &str) -> Option<&'a SceneObject> {
+    let mut objects: Vec<_> = state.scene.objects.values().collect();
+    objects.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.id.as_bytes().cmp(right.id.as_bytes()))
+    });
+    objects
+        .into_iter()
+        .find(|object| object_name_matches(object, query))
+}
+
+fn object_name_matches(object: &SceneObject, query: &str) -> bool {
+    let name = object.name.to_lowercase();
+    if name == query || name.contains(query) {
+        return true;
+    }
+
+    object
+        .semantic_label
+        .as_ref()
+        .map(|label| {
+            let label = label.to_lowercase();
+            label == query || label.contains(query)
+        })
+        .unwrap_or(false)
+}
+
+fn primary_movable_object(state: &WorldState) -> Option<&SceneObject> {
+    let mut objects: Vec<_> = state
+        .scene
+        .objects
+        .values()
+        .filter(|object| !object.physics.is_static)
+        .collect();
+    objects.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.id.as_bytes().cmp(right.id.as_bytes()))
+    });
+    objects.into_iter().next()
+}
+
+fn primary_movable_object_id(state: &WorldState) -> Option<uuid::Uuid> {
+    primary_movable_object(state).map(|object| object.id)
+}
+
+fn weather_tag_present(state: &WorldState, weather: Weather) -> bool {
+    let expected = format!("weather:{weather:?}").to_lowercase();
+    state.metadata.tags.iter().any(|tag| tag == &expected)
+}
+
+fn lighting_matches(state: &WorldState, expected: f32) -> bool {
+    state
+        .metadata
+        .tags
+        .iter()
+        .find_map(|tag| tag.strip_prefix("lighting:"))
+        .and_then(|value| value.parse::<f32>().ok())
+        .map(|value| (value - expected).abs() <= 0.25)
+        .unwrap_or(false)
+}
+
+fn reason_about_state(state: &WorldState, query: &str) -> (String, Vec<String>, f32) {
+    if state.scene.objects.is_empty() {
+        return (
+            "The scene is currently empty.".to_string(),
+            vec!["objects: none".to_string()],
+            0.9,
+        );
+    }
+
+    let object_names = sorted_object_names(state);
+    if query.contains("how many") || query.contains("count") {
+        return (
+            format!(
+                "I can account for {} object(s): {}.",
+                object_names.len(),
+                object_names.join(", ")
+            ),
+            vec![format!("objects: {}", object_names.join(", "))],
+            0.92,
+        );
+    }
+
+    if query.contains("where") || query.contains("position") {
+        if let Some(object) = find_mentioned_object(state, query) {
+            return (
+                format!(
+                    "{} is at ({:.2}, {:.2}, {:.2}).",
+                    object.name,
+                    object.pose.position.x,
+                    object.pose.position.y,
+                    object.pose.position.z
+                ),
+                vec![format!(
+                    "position:{}={:.2},{:.2},{:.2}",
+                    object.name,
+                    object.pose.position.x,
+                    object.pose.position.y,
+                    object.pose.position.z
+                )],
+                0.9,
+            );
+        }
+    }
+
+    if query.contains("touch") || query.contains("collision") {
+        let touching = touching_relationships(state);
+        if touching.is_empty() {
+            return (
+                "I do not see any touching objects or collisions.".to_string(),
+                vec!["touching: none".to_string()],
+                0.82,
+            );
+        }
+        return (
+            format!("Touching relationships detected: {}.", touching.join("; ")),
+            touching,
+            0.8,
+        );
+    }
+
+    if query.contains("fall") || query.contains("stable") {
+        let unsupported = unsupported_objects(state);
+        if unsupported.is_empty() {
+            return (
+                "The scene looks stable: I do not see an unsupported elevated object.".to_string(),
+                vec![format!("objects: {}", object_names.join(", "))],
+                0.76,
+            );
+        }
+        return (
+            format!(
+                "{} may fall because it is elevated without support.",
+                unsupported.join(", ")
+            ),
+            unsupported
+                .iter()
+                .map(|name| format!("unsupported:{name}"))
+                .collect(),
+            0.7,
+        );
+    }
+
+    (
+        format!(
+            "The scene contains {} object(s): {}.",
+            object_names.len(),
+            object_names.join(", ")
+        ),
+        vec![format!("objects: {}", object_names.join(", "))],
+        0.72,
+    )
+}
+
+fn sorted_object_names(state: &WorldState) -> Vec<String> {
+    let mut names: Vec<_> = state
+        .scene
+        .objects
+        .values()
+        .map(|object| object.name.clone())
+        .collect();
+    names.sort();
+    names
+}
+
+fn find_mentioned_object<'a>(state: &'a WorldState, query: &str) -> Option<&'a SceneObject> {
+    let mut objects: Vec<_> = state.scene.objects.values().collect();
+    objects.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.id.as_bytes().cmp(right.id.as_bytes()))
+    });
+    objects.into_iter().find(|object| {
+        query.contains(&object.name.to_lowercase())
+            || object
+                .semantic_label
+                .as_ref()
+                .is_some_and(|label| query.contains(&label.to_lowercase()))
+    })
+}
+
+fn touching_relationships(state: &WorldState) -> Vec<String> {
+    let mut descriptions = state
+        .scene
+        .relationships
+        .iter()
+        .filter_map(|relationship| match relationship {
+            SpatialRelationship::Touching { a, b } => Some(format!(
+                "touching:{}:{}",
+                object_name(state, *a)?,
+                object_name(state, *b)?
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    descriptions.sort();
+    descriptions
+}
+
+fn object_name(state: &WorldState, object_id: uuid::Uuid) -> Option<&str> {
+    state
+        .scene
+        .get_object(&object_id)
+        .map(|object| object.name.as_str())
+}
+
+fn unsupported_objects(state: &WorldState) -> Vec<String> {
+    let mut unsupported = Vec::new();
+    for object in state.scene.objects.values() {
+        if object.physics.is_static || object.bbox.min.y <= 0.05 {
+            continue;
+        }
+
+        let supported = state.scene.relationships.iter().any(|relationship| {
+            matches!(
+                relationship,
+                SpatialRelationship::On { subject, .. } | SpatialRelationship::In { subject, .. }
+                    if *subject == object.id
+            )
+        });
+        if !supported {
+            unsupported.push(object.name.clone());
+        }
+    }
+    unsupported.sort();
+    unsupported
+}
+
+fn render_transfer_clip(
+    source: &VideoClip,
+    controls: &SpatialControls,
+    config: &TransferConfig,
+) -> VideoClip {
+    let resolution = clamp_resolution(config.resolution);
+    let fps = config.fps.clamp(MIN_GENERATION_FPS, MAX_GENERATION_FPS);
+    let frame_count = source.frames.len().clamp(1, 96);
+    let duration = source
+        .duration
+        .max(frame_count as f64 / fps.max(1.0) as f64)
+        .max(1.0 / fps.max(1.0) as f64);
+    let seed = clip_fingerprint(source);
+    let accent = color_from_seed(seed ^ 0xa5a5_5a5a_cc33_33cc);
+    let guide = color_from_seed(seed.rotate_left(13));
+
+    let mut frames = Vec::with_capacity(frame_count);
+    for index in 0..frame_count {
+        let alpha = if frame_count == 1 {
+            1.0
+        } else {
+            index as f32 / (frame_count - 1) as f32
+        };
+        let mut pixels = vec![0u8; (resolution.0 as usize) * (resolution.1 as usize) * 3];
+        paint_background(&mut pixels, resolution, seed, &[], alpha);
+
+        let track_height = ((resolution.1 as f32 * 0.22).round() as i32).max(4);
+        let control_strength = config.control_strength.clamp(0.0, 1.0);
+        let bar_width = ((resolution.0 as f32 * (0.18 + control_strength * 0.52)).round() as i32)
+            .clamp(6, resolution.0 as i32);
+        let travel = (resolution.0 as i32 - bar_width).max(0);
+        let x = (travel as f32 * alpha).round() as i32;
+        let y = ((resolution.1 as f32) * (0.32 + control_strength * 0.2)).round() as i32;
+
+        draw_rect_rgb(
+            &mut pixels,
+            resolution,
+            (x, y, x + bar_width, y + track_height),
+            accent,
+            0.92,
+        );
+
+        if controls.depth_map.is_some() {
+            let center_x = resolution.0 as i32 / 2;
+            draw_rect_rgb(
+                &mut pixels,
+                resolution,
+                (center_x - 3, 0, center_x + 3, resolution.1 as i32 - 1),
+                guide,
+                0.3,
+            );
+        }
+
+        if controls.segmentation_map.is_some() {
+            let center_y = resolution.1 as i32 / 2;
+            draw_rect_rgb(
+                &mut pixels,
+                resolution,
+                (0, center_y - 3, resolution.0 as i32 - 1, center_y + 3),
+                guide,
+                0.25,
+            );
+        }
+
+        frames.push(Frame {
+            data: Tensor {
+                data: TensorData::UInt8(pixels),
+                shape: vec![resolution.1 as usize, resolution.0 as usize, 3],
+                dtype: DType::UInt8,
+                device: Device::Cpu,
+            },
+            timestamp: SimTime {
+                step: index as u64,
+                seconds: alpha as f64 * duration,
+                dt: 1.0 / fps.max(1.0) as f64,
+            },
+            camera: camera_for_transfer(controls, index, frame_count),
+            depth: None,
+            segmentation: None,
+        });
+    }
+
+    VideoClip {
+        frames,
+        fps,
+        resolution,
+        duration,
+    }
+}
+
+fn camera_for_transfer(
+    controls: &SpatialControls,
+    index: usize,
+    frame_count: usize,
+) -> Option<CameraPose> {
+    controls
+        .camera_trajectory
+        .as_ref()
+        .and_then(|trajectory| {
+            if trajectory.poses.is_empty() {
+                None
+            } else {
+                let sample = trajectory.poses[index * trajectory.poses.len() / frame_count];
+                Some(CameraPose {
+                    extrinsics: sample.1,
+                    fov: 58.0,
+                    near_clip: 0.1,
+                    far_clip: 100.0,
+                })
+            }
+        })
+        .or_else(|| Some(default_transfer_camera()))
+}
+
+fn default_transfer_camera() -> CameraPose {
+    CameraPose {
+        extrinsics: Pose {
+            position: Position {
+                x: 0.0,
+                y: 2.8,
+                z: 4.2,
+            },
+            rotation: Rotation::default(),
+        },
+        fov: 58.0,
+        near_clip: 0.1,
+        far_clip: 100.0,
+    }
+}
+
+fn clip_fingerprint(clip: &VideoClip) -> u64 {
+    let first_frame = clip
+        .frames
+        .first()
+        .map(|frame| tensor_fingerprint(&frame.data))
+        .unwrap_or(0);
+    stable_hash(
+        format!(
+            "{}:{}:{}:{}:{}",
+            clip.frames.len(),
+            clip.fps,
+            clip.duration,
+            clip.resolution.0,
+            first_frame
+        )
+        .as_bytes(),
+    )
+}
+
 #[async_trait]
 impl WorldModelProvider for GenieProvider {
     fn name(&self) -> &str {
@@ -574,8 +1679,8 @@ impl WorldModelProvider for GenieProvider {
         ProviderCapabilities {
             predict: true,
             generate: true,
-            reason: false,
-            transfer: false,
+            reason: true,
+            transfer: true,
             action_conditioned: true,
             multi_view: false,
             max_video_length_seconds: MAX_DURATION_SECONDS as f32,
@@ -584,7 +1689,7 @@ impl WorldModelProvider for GenieProvider {
             supported_action_spaces: vec![ActionSpaceType::Discrete, ActionSpaceType::Language],
             supports_depth: false,
             supports_segmentation: false,
-            supports_planning: false,
+            supports_planning: true,
             latency_profile: LatencyProfile {
                 p50_ms: 220,
                 p95_ms: 500,
@@ -648,23 +1753,50 @@ impl WorldModelProvider for GenieProvider {
         Ok(self.render_generation_clip(prompt, config))
     }
 
-    async fn reason(&self, _input: &ReasoningInput, _query: &str) -> Result<ReasoningOutput> {
-        Err(WorldForgeError::UnsupportedCapability {
-            provider: self.name().to_string(),
-            capability: "reason (Genie surrogate does not expose a reasoning backend)".to_string(),
+    async fn reason(&self, input: &ReasoningInput, query: &str) -> Result<ReasoningOutput> {
+        let normalized = query.to_lowercase();
+        let (answer, evidence, confidence) = match input.state.as_ref() {
+            Some(state) => reason_about_state(state, &normalized),
+            None => {
+                if let Some(clip) = input.video.as_ref() {
+                    (
+                        format!(
+                            "The clip contains {} frame(s) at {:.1} fps over {:.2} seconds.",
+                            clip.frames.len(),
+                            clip.fps,
+                            clip.duration
+                        ),
+                        vec![
+                            format!("frames: {}", clip.frames.len()),
+                            format!("fps: {:.1}", clip.fps),
+                            format!("duration_seconds: {:.2}", clip.duration),
+                        ],
+                        0.55,
+                    )
+                } else {
+                    (
+                        format!("No world state or video was provided, so I can only echo the query: {query}"),
+                        vec!["input: unavailable".to_string()],
+                        0.35,
+                    )
+                }
+            }
+        };
+
+        Ok(ReasoningOutput {
+            answer,
+            confidence,
+            evidence,
         })
     }
 
     async fn transfer(
         &self,
-        _source: &VideoClip,
-        _controls: &SpatialControls,
-        _config: &TransferConfig,
+        source: &VideoClip,
+        controls: &SpatialControls,
+        config: &TransferConfig,
     ) -> Result<VideoClip> {
-        Err(WorldForgeError::UnsupportedCapability {
-            provider: self.name().to_string(),
-            capability: "transfer (Genie surrogate does not expose spatial transfer)".to_string(),
-        })
+        Ok(render_transfer_clip(source, controls, config))
     }
 
     async fn health_check(&self) -> Result<HealthStatus> {
@@ -736,6 +1868,68 @@ impl WorldModelProvider for GenieProvider {
                 }
             }
         }
+    }
+
+    async fn plan(&self, request: &PlanRequest) -> Result<Plan> {
+        let started = Instant::now();
+        let mut state = request.current_state.clone();
+        let mut actions = derive_native_actions(&request.goal, &state)?;
+        actions.truncate(request.max_steps as usize);
+
+        let mut planned_actions = Vec::with_capacity(actions.len());
+        let mut predicted_states = Vec::with_capacity(actions.len());
+        let mut guardrail_compliance = Vec::with_capacity(actions.len());
+
+        for action in actions {
+            let next_state = simulate_single_action(self, &state, &action);
+            let guardrail_results = if request.guardrails.is_empty() {
+                Vec::new()
+            } else {
+                let results = evaluate_guardrails(&request.guardrails, &next_state);
+                if has_blocking_violation(&results) {
+                    return Err(WorldForgeError::NoFeasiblePlan {
+                        goal: format!("{:?}", request.goal),
+                        reason: "genie native planner generated a guardrail-blocked step"
+                            .to_string(),
+                    });
+                }
+                results
+            };
+
+            planned_actions.push(action);
+            state = next_state;
+            predicted_states.push(state.clone());
+            guardrail_compliance.push(guardrail_results);
+
+            if goal_satisfied(&request.goal, &state) {
+                break;
+            }
+        }
+
+        if !goal_satisfied(&request.goal, &state) {
+            return Err(WorldForgeError::NoFeasiblePlan {
+                goal: format!("{:?}", request.goal),
+                reason: "genie native planner exhausted the step budget before satisfying the goal"
+                    .to_string(),
+            });
+        }
+
+        let iterations_used = u32::try_from(planned_actions.len()).unwrap_or(u32::MAX);
+        let step_cost = self.estimate_cost(&Operation::Predict {
+            steps: 1,
+            resolution: planning_prediction_config().resolution,
+        });
+
+        Ok(Plan {
+            actions: planned_actions,
+            predicted_states,
+            predicted_videos: None,
+            total_cost: (step_cost.usd * iterations_used as f64) as f32,
+            success_probability: goal_score(&request.goal, &state),
+            guardrail_compliance,
+            planning_time_ms: started.elapsed().as_millis() as u64,
+            iterations_used,
+        })
     }
 }
 
@@ -1302,8 +2496,9 @@ mod tests {
         let caps = provider.capabilities();
         assert!(caps.predict);
         assert!(caps.generate);
-        assert!(!caps.reason);
-        assert!(!caps.transfer);
+        assert!(caps.reason);
+        assert!(caps.transfer);
+        assert!(caps.supports_planning);
         assert_eq!(caps.max_resolution, (256, 256));
         assert_eq!(caps.fps_range, (6.0, 12.0));
     }
@@ -1437,6 +2632,126 @@ mod tests {
         assert_eq!(clip.frames.len(), 96);
         assert!(clip.duration <= MAX_DURATION_SECONDS + 0.01);
         assert_eq!(clip.frames[0].camera.as_ref().unwrap().fov, 55.0);
+    }
+
+    #[tokio::test]
+    async fn test_genie_reason_reports_scene_facts() {
+        let provider = GenieProvider::new(GenieModel::Genie3, "key");
+        let (state, _) = sample_state();
+        let input = ReasoningInput {
+            video: None,
+            state: Some(state),
+        };
+
+        let reasoning = provider
+            .reason(&input, "How many objects are in the scene?")
+            .await
+            .unwrap();
+
+        assert!(reasoning.answer.contains("1 object"));
+        assert!(!reasoning.evidence.is_empty());
+        assert!(reasoning.confidence > 0.5);
+    }
+
+    #[tokio::test]
+    async fn test_genie_transfer_renders_controlled_clip() {
+        let provider = GenieProvider::new(GenieModel::Genie3, "key");
+        let prompt = GenerationPrompt {
+            text: "A drone pans above a workshop".to_string(),
+            reference_image: None,
+            negative_prompt: None,
+        };
+        let source = provider
+            .generate(
+                &prompt,
+                &GenerationConfig {
+                    resolution: (320, 240),
+                    fps: 10.0,
+                    duration_seconds: 2.0,
+                    temperature: 0.9,
+                    seed: Some(9),
+                },
+            )
+            .await
+            .unwrap();
+
+        let clip = provider
+            .transfer(
+                &source,
+                &SpatialControls {
+                    camera_trajectory: None,
+                    depth_map: Some(Tensor {
+                        data: TensorData::Float32(vec![0.5; 64]),
+                        shape: vec![8, 8],
+                        dtype: DType::Float32,
+                        device: Device::Cpu,
+                    }),
+                    segmentation_map: None,
+                },
+                &TransferConfig {
+                    resolution: (512, 512),
+                    fps: 18.0,
+                    control_strength: 0.7,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(clip.resolution, (256, 256));
+        assert!((clip.fps - 12.0).abs() < f32::EPSILON);
+        assert_eq!(clip.frames.len(), source.frames.len());
+        assert!(clip.frames.iter().all(|frame| frame.camera.is_some()));
+    }
+
+    #[tokio::test]
+    async fn test_genie_native_plan_handles_relational_goal() {
+        let provider = GenieProvider::new(GenieModel::Genie3, "key");
+        let (mut state, _) = sample_state();
+        let mut anchor = SceneObject::new(
+            "red mug",
+            Pose {
+                position: Position {
+                    x: 1.0,
+                    y: 0.5,
+                    z: 0.0,
+                },
+                ..Pose::default()
+            },
+            BBox::from_center_half_extents(
+                Position {
+                    x: 1.0,
+                    y: 0.5,
+                    z: 0.0,
+                },
+                Vec3 {
+                    x: 0.1,
+                    y: 0.1,
+                    z: 0.1,
+                },
+            ),
+        );
+        anchor.semantic_label = Some("mug".to_string());
+        state.scene.add_object(anchor);
+
+        let plan = provider
+            .plan(&PlanRequest {
+                current_state: state,
+                goal: PlanGoal::Description("spawn cube next to the red mug".to_string()),
+                max_steps: 4,
+                planner: worldforge_core::prediction::PlannerType::ProviderNative,
+                guardrails: Vec::new(),
+                timeout_seconds: 10.0,
+            })
+            .await
+            .unwrap();
+
+        assert!(!plan.actions.is_empty());
+        assert!(plan
+            .actions
+            .iter()
+            .any(|action| matches!(action, Action::SpawnObject { .. })));
+        assert_eq!(plan.predicted_states.len(), plan.actions.len());
+        assert!(plan.success_probability > 0.9);
     }
 
     #[tokio::test]

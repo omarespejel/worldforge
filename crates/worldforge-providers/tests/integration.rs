@@ -18,11 +18,14 @@ use worldforge_core::error::WorldForgeError;
 use worldforge_core::guardrail::{Guardrail, GuardrailConfig};
 use worldforge_core::prediction::{PlanGoal, PlanRequest, PlannerType, PredictionConfig};
 use worldforge_core::provider::{
-    GenerationConfig, GenerationPrompt, ProviderRegistry, WorldModelProvider,
+    GenerationConfig, GenerationPrompt, ProviderRegistry, ReasoningInput, SpatialControls,
+    TransferConfig, WorldModelProvider,
 };
 use worldforge_core::scene::SceneObject;
 use worldforge_core::state::WorldState;
-use worldforge_core::types::{BBox, DType, Pose, Position, SimTime, Tensor, Vec3, VideoClip};
+use worldforge_core::types::{
+    BBox, DType, Pose, Position, SimTime, Tensor, Trajectory, Vec3, VideoClip,
+};
 use worldforge_core::world::World;
 use worldforge_providers::cosmos::{
     CosmosConfig, CosmosEndpoint, CosmosModel, CosmosPhysicsScores, CosmosPredictResponse,
@@ -239,6 +242,94 @@ fn sample_genie_prompt() -> GenerationPrompt {
     }
 }
 
+fn sample_genie_reasoning_state() -> WorldState {
+    let mut state = WorldState::new("genie-reason-world", "genie");
+
+    state.scene.add_object(SceneObject::new(
+        "table",
+        Pose {
+            position: Position {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            ..Pose::default()
+        },
+        BBox {
+            min: Position {
+                x: -0.75,
+                y: -0.05,
+                z: -0.75,
+            },
+            max: Position {
+                x: 0.75,
+                y: 0.05,
+                z: 0.75,
+            },
+        },
+    ));
+    state.scene.add_object(SceneObject::new(
+        "mug",
+        Pose {
+            position: Position {
+                x: 0.1,
+                y: 0.82,
+                z: 0.0,
+            },
+            ..Pose::default()
+        },
+        BBox {
+            min: Position {
+                x: 0.05,
+                y: 0.77,
+                z: -0.05,
+            },
+            max: Position {
+                x: 0.15,
+                y: 0.87,
+                z: 0.05,
+            },
+        },
+    ));
+
+    state
+}
+
+fn sample_genie_transfer_controls() -> SpatialControls {
+    SpatialControls {
+        camera_trajectory: Some(Trajectory {
+            poses: vec![
+                (
+                    SimTime {
+                        step: 0,
+                        seconds: 0.0,
+                        dt: 0.0,
+                    },
+                    Pose::default(),
+                ),
+                (
+                    SimTime {
+                        step: 1,
+                        seconds: 1.0,
+                        dt: 1.0,
+                    },
+                    Pose {
+                        position: Position {
+                            x: 1.0,
+                            y: 1.5,
+                            z: 2.0,
+                        },
+                        ..Pose::default()
+                    },
+                ),
+            ],
+            velocities: None,
+        }),
+        depth_map: None,
+        segmentation_map: None,
+    }
+}
+
 #[test]
 fn test_auto_detect_registry_mock_present() {
     let registry = auto_detect();
@@ -344,15 +435,98 @@ fn test_genie_provider_capabilities_are_distinctive() {
     assert_eq!(provider.name(), "genie");
     assert!(caps.predict);
     assert!(caps.generate);
-    assert!(!caps.reason);
-    assert!(!caps.transfer);
+    assert!(caps.reason);
+    assert!(caps.transfer);
     assert!(caps.action_conditioned);
+    assert!(caps.supports_planning);
     assert_eq!(
         caps.supported_action_spaces,
         vec![ActionSpaceType::Discrete, ActionSpaceType::Language]
     );
     assert_eq!(caps.max_resolution, (256, 256));
     assert_eq!(caps.fps_range, (6.0, 12.0));
+}
+
+#[tokio::test]
+async fn test_genie_reason_roundtrip_is_grounded_in_scene_state() {
+    let provider = GenieProvider::new(GenieModel::Genie3, "genie-test-key");
+    let input = ReasoningInput {
+        video: None,
+        state: Some(sample_genie_reasoning_state()),
+    };
+
+    let output = provider
+        .reason(&input, "What objects are in the scene?")
+        .await
+        .unwrap();
+
+    let answer = output.answer.to_lowercase();
+    assert!(answer.contains("mug"));
+    assert!(answer.contains("table"));
+    assert!((0.0..=1.0).contains(&output.confidence));
+    assert!(!output.evidence.is_empty());
+    assert!(output
+        .evidence
+        .iter()
+        .any(|entry| entry.to_lowercase().contains("mug")));
+    assert!(output
+        .evidence
+        .iter()
+        .any(|entry| entry.to_lowercase().contains("table")));
+}
+
+#[tokio::test]
+async fn test_genie_transfer_roundtrip_respects_controls() {
+    let provider = GenieProvider::new(GenieModel::Genie3, "genie-test-key");
+    let source = sample_video_clip();
+    let controls = sample_genie_transfer_controls();
+    let config = TransferConfig {
+        resolution: (256, 144),
+        fps: 12.0,
+        control_strength: 0.75,
+    };
+
+    let clip = provider
+        .transfer(&source, &controls, &config)
+        .await
+        .unwrap();
+
+    assert_eq!(clip.resolution, config.resolution);
+    assert_eq!(clip.fps, config.fps);
+    assert!((clip.duration - source.duration).abs() < 1.0e-6);
+    assert!(!clip.frames.is_empty());
+    assert!(clip.frames.iter().all(|frame| frame.camera.is_some()));
+    assert!(clip
+        .frames
+        .iter()
+        .any(|frame| frame.data.shape == vec![144, 256, 3]));
+}
+
+#[tokio::test]
+async fn test_genie_provider_native_plan_spawn_goal() {
+    let provider = GenieProvider::new(GenieModel::Genie3, "genie-test-key");
+    let request = PlanRequest {
+        current_state: WorldState::new("genie-native-plan", "genie"),
+        goal: PlanGoal::Description("spawn cube".to_string()),
+        max_steps: 4,
+        guardrails: Vec::new(),
+        planner: PlannerType::ProviderNative,
+        timeout_seconds: 5.0,
+    };
+
+    let caps = provider.capabilities();
+    assert!(caps.supports_planning);
+
+    let plan = provider.plan(&request).await.unwrap();
+    assert!(!plan.actions.is_empty());
+    assert_eq!(plan.predicted_states.len(), plan.actions.len());
+    assert_eq!(plan.guardrail_compliance.len(), plan.actions.len());
+    assert!(plan.iterations_used > 0);
+    assert!((0.0..=1.0).contains(&plan.success_probability));
+    assert!(plan.actions.iter().any(|action| matches!(
+        action,
+        Action::SpawnObject { template, .. } if template.to_lowercase().contains("cube")
+    )));
 }
 
 fn mock_supports_native_planning() -> bool {
@@ -669,6 +843,162 @@ async fn test_genie_generate_flow_respects_genie_limits() {
     assert!(clip.fps >= 6.0 && clip.fps <= 12.0);
     assert!(clip.duration > 0.0);
     assert!(clip.duration <= config.duration_seconds);
+}
+
+#[tokio::test]
+async fn test_genie_reason_flow_is_grounded_in_state() {
+    let provider = GenieProvider::new(GenieModel::Genie3, "genie-test-key");
+    let state = sample_genie_reasoning_state();
+
+    let reasoning = provider
+        .reason(
+            &ReasoningInput {
+                video: None,
+                state: Some(state),
+            },
+            "Where is the mug?",
+        )
+        .await
+        .unwrap();
+
+    let answer = reasoning.answer.to_lowercase();
+    assert!(
+        answer.contains("mug")
+            || reasoning
+                .evidence
+                .iter()
+                .any(|entry| entry.to_lowercase().contains("mug"))
+    );
+    assert!(
+        answer.contains('(')
+            || reasoning
+                .evidence
+                .iter()
+                .any(|entry| entry.contains("position:"))
+    );
+    assert!(reasoning.confidence > 0.5);
+}
+
+#[tokio::test]
+async fn test_genie_transfer_flow_emits_controlled_video() {
+    let provider = GenieProvider::new(GenieModel::Genie3, "genie-test-key");
+    let source = provider
+        .generate(
+            &sample_genie_prompt(),
+            &GenerationConfig {
+                resolution: (320, 180),
+                fps: 8.0,
+                duration_seconds: 2.0,
+                temperature: 0.7,
+                seed: Some(11),
+            },
+        )
+        .await
+        .unwrap();
+
+    let transferred = provider
+        .transfer(
+            &source,
+            &SpatialControls {
+                camera_trajectory: Some(Trajectory {
+                    poses: vec![
+                        (
+                            SimTime {
+                                step: 0,
+                                seconds: 0.0,
+                                dt: 0.1,
+                            },
+                            Pose {
+                                position: Position {
+                                    x: 0.0,
+                                    y: 2.5,
+                                    z: 4.0,
+                                },
+                                ..Pose::default()
+                            },
+                        ),
+                        (
+                            SimTime {
+                                step: 1,
+                                seconds: 1.0,
+                                dt: 0.1,
+                            },
+                            Pose {
+                                position: Position {
+                                    x: 1.0,
+                                    y: 2.0,
+                                    z: 3.5,
+                                },
+                                ..Pose::default()
+                            },
+                        ),
+                    ],
+                    velocities: None,
+                }),
+                depth_map: Some(Tensor {
+                    data: worldforge_core::types::TensorData::Float32(vec![0.25; 16]),
+                    shape: vec![4, 4],
+                    dtype: DType::Float32,
+                    device: worldforge_core::types::Device::Cpu,
+                }),
+                segmentation_map: None,
+            },
+            &TransferConfig {
+                resolution: (640, 480),
+                fps: 24.0,
+                control_strength: 0.85,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(transferred.resolution, (256, 256));
+    assert!((transferred.fps - 12.0).abs() < f32::EPSILON);
+    assert_eq!(transferred.frames.len(), source.frames.len());
+    assert_eq!(
+        transferred.frames[0]
+            .camera
+            .as_ref()
+            .unwrap()
+            .extrinsics
+            .position
+            .x,
+        0.0
+    );
+}
+
+#[tokio::test]
+async fn test_genie_native_plan_supports_goal_image() {
+    let provider = GenieProvider::new(GenieModel::Genie3, "genie-test-key");
+    let state = sample_genie_state();
+    let mut target = state.clone();
+    let object_id = *target.scene.objects.keys().next().unwrap();
+    target
+        .scene
+        .get_object_mut(&object_id)
+        .unwrap()
+        .set_position(Position {
+            x: 1.25,
+            y: 0.8,
+            z: 0.1,
+        });
+    let goal_image = worldforge_core::goal_image::render_scene_goal_image(&target, (32, 24));
+
+    let plan = provider
+        .plan(&PlanRequest {
+            current_state: state,
+            goal: PlanGoal::GoalImage(goal_image),
+            max_steps: 2,
+            guardrails: Vec::new(),
+            planner: PlannerType::ProviderNative,
+            timeout_seconds: 5.0,
+        })
+        .await
+        .unwrap();
+
+    assert!(!plan.actions.is_empty());
+    assert_eq!(plan.actions.len(), plan.predicted_states.len());
+    assert!(plan.success_probability > 0.7);
 }
 
 #[test]

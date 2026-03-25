@@ -9,7 +9,7 @@
 //! - [`cosmos`] — NVIDIA Cosmos (Predict, Transfer, Reason, Embed)
 //! - [`runway`] — Runway GWM (Worlds, Robotics, Avatars)
 //! - [`jepa`] — Meta JEPA (local deterministic inference, ZK-compatible)
-//! - [`genie`] — Google Genie (deterministic local surrogate for predict/generate)
+//! - [`genie`] — Google Genie (deterministic local surrogate for prediction, reasoning, transfer, and native planning)
 
 pub mod cosmos;
 pub mod genie;
@@ -39,8 +39,9 @@ use worldforge_core::WorldForge;
 /// - `GENIE_API_KEY` → registers `GenieProvider` (Genie 3 surrogate + future remote hint)
 ///
 /// A `MockProvider` is always registered for testing.
-/// The Genie surrogate currently supports `predict` and `generate`; `reason`,
-/// `transfer`, and native planning remain unsupported.
+/// The Genie surrogate currently supports `predict`, `generate`, `reason`,
+/// `transfer`, and provider-native planning through the local deterministic
+/// backend.
 ///
 /// # Examples
 ///

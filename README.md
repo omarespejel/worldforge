@@ -359,9 +359,8 @@ for reusable workflows. File-backed and SQLite-backed world persistence are
 both supported through the shared `StateStore` abstraction across the core,
 CLI, REST server, and Python bindings. Cosmos and Runway adapters have API wiring in place,
 and Genie now ships as a deterministic low-resolution surrogate backend for
-interactive world generation while the public API remains limited. The
-surrogate currently supports `predict` and `generate`, while `reason`,
-`transfer`, and native planning remain unsupported. Planning now
+interactive world generation, scene-grounded reasoning, controlled transfer,
+and provider-native planning while the public API remains limited. Planning now
 accepts serialized guardrail configurations across the CLI, REST server, and
 Python bindings, and verification now operates on explicit state transitions or
 real generated plans instead of placeholder proof inputs. The CLI can export
