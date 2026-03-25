@@ -1681,6 +1681,7 @@ impl WorldModelProvider for GenieProvider {
             generate: true,
             reason: true,
             transfer: true,
+            embed: false,
             action_conditioned: true,
             multi_view: false,
             max_video_length_seconds: MAX_DURATION_SECONDS as f32,

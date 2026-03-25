@@ -509,6 +509,7 @@ fn test_full_stack_runway_constructor_exposes_merged_capabilities() {
     assert!(capabilities.transfer);
     assert!(capabilities.action_conditioned);
     assert!(capabilities.multi_view);
+    assert!(!capabilities.embed);
 }
 
 #[test]
@@ -521,6 +522,7 @@ fn test_auto_detect_registers_full_stack_runway() {
         assert!(descriptor.capabilities.transfer);
         assert!(descriptor.capabilities.action_conditioned);
         assert!(descriptor.capabilities.multi_view);
+        assert!(!descriptor.capabilities.embed);
         assert!(registry
             .find_by_capability("predict")
             .iter()

@@ -3117,6 +3117,7 @@ mod tests {
             generate: false,
             reason: false,
             transfer: false,
+            embed: false,
             action_conditioned: true,
             multi_view: false,
             max_video_length_seconds: 4.0,

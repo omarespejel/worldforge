@@ -156,7 +156,7 @@ When `NVIDIA_API_KEY` or `RUNWAY_API_SECRET` are present, auto-detection now
 registers capability-complete `cosmos` and `runway` providers instead of
 single partial model variants. Cosmos currently covers
 predict/generate/reason/transfer/embed, while Runway covers
-predict/generate/reason/transfer under the stable vendor names.
+predict/generate/reason/transfer only under the stable vendor names.
 
 The same embedding surface is exposed over the CLI as `worldforge embed` and
 over the REST API as `POST /v1/providers/{name}/embed`.

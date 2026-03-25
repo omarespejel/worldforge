@@ -65,6 +65,52 @@ class WorldForgePythonPackageSmokeTests(unittest.TestCase):
         self.assertTrue(valid)
         self.assertTrue(details)
 
+    @unittest.skipUnless(worldforge is not None, "worldforge package is not installed")
+    def test_typed_verification_bundle_flow(self) -> None:
+        from worldforge.verify import ZkVerifier, prove_inference_transition_bundle
+
+        world = worldforge.World("verify-python", "mock")
+        world.add_object(
+            worldforge.SceneObject(
+                "cube",
+                worldforge.Position(0.0, 0.5, 0.0),
+                worldforge.BBox(
+                    worldforge.Position(-0.05, 0.45, -0.05),
+                    worldforge.Position(0.05, 0.55, 0.05),
+                ),
+            )
+        )
+
+        before = world.to_json()
+        prediction = world.predict(worldforge.Action.move_to(0.2, 0.5, 0.0, 1.0), steps=2)
+        self.assertEqual(prediction.provider, "mock")
+        world.predict(worldforge.Action.move_to(0.3, 0.5, 0.0, 1.0), steps=2)
+
+        latest_bundle = world.prove_latest_inference_bundle()
+        self.assertEqual(latest_bundle.provider, "mock")
+        latest_report = latest_bundle.verify()
+        self.assertTrue(latest_report.current_verification.valid)
+        self.assertTrue(latest_report.verification_matches_recorded)
+
+        detached_bundle = prove_inference_transition_bundle(before, world.to_json(), provider="mock")
+        self.assertEqual(detached_bundle.provider, "mock")
+
+        plan = world.plan(goal="spawn cube", max_steps=4, provider="mock")
+        guardrail_bundle = plan.prove_guardrail_bundle()
+        self.assertGreaterEqual(guardrail_bundle.action_count, 1)
+
+        verifier = ZkVerifier()
+        guardrail_report = verifier.verify_guardrail_bundle(guardrail_bundle)
+        self.assertTrue(guardrail_report.current_verification.valid)
+
+        provenance_bundle = world.prove_provenance_bundle(
+            source_label="python-smoke",
+            timestamp=1710000000,
+        )
+        self.assertEqual(provenance_bundle.timestamp, 1710000000)
+        provenance_report = verifier.verify_provenance_bundle(provenance_bundle)
+        self.assertTrue(provenance_report.current_verification.valid)
+
 
 if __name__ == "__main__":
     unittest.main()

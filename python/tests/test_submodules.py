@@ -27,12 +27,30 @@ class WorldForgeSubmoduleImportTests(unittest.TestCase):
     @unittest.skipUnless(worldforge is not None, "worldforge package is not installed")
     def test_eval_and_verify_submodules_are_importable(self) -> None:
         from worldforge.eval import EvalScenario, EvalSuite, PhysicsEval
-        from worldforge.verify import MockVerifier, ZkProof, ZkVerifier
+        from worldforge.verify import (
+            GuardrailBundle,
+            GuardrailVerificationReport,
+            InferenceBundle,
+            InferenceVerificationReport,
+            MockVerifier,
+            ProvenanceBundle,
+            ProvenanceVerificationReport,
+            VerificationResult,
+            ZkProof,
+            ZkVerifier,
+        )
 
         self.assertIsNotNone(EvalScenario)
         self.assertIsNotNone(EvalSuite)
         self.assertIsNotNone(PhysicsEval)
+        self.assertIsNotNone(GuardrailBundle)
+        self.assertIsNotNone(GuardrailVerificationReport)
+        self.assertIsNotNone(InferenceBundle)
+        self.assertIsNotNone(InferenceVerificationReport)
         self.assertIsNotNone(MockVerifier)
+        self.assertIsNotNone(ProvenanceBundle)
+        self.assertIsNotNone(ProvenanceVerificationReport)
+        self.assertIsNotNone(VerificationResult)
         self.assertIsNotNone(ZkProof)
         self.assertIsNotNone(ZkVerifier)
 

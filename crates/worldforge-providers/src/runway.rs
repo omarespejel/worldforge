@@ -707,6 +707,7 @@ impl WorldModelProvider for RunwayProvider {
             generate: self.supports_generate(),
             reason: false, // Runway does not support reasoning; use Cosmos as fallback
             transfer: self.supports_transfer(),
+            embed: false,
             action_conditioned: self.supports_predict(),
             multi_view: self
                 .enabled_models()

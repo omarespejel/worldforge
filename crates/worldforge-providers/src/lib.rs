@@ -39,10 +39,10 @@ use worldforge_core::WorldForge;
 /// - `GENIE_API_KEY` → registers `GenieProvider` (Genie 3 surrogate + future remote hint)
 ///
 /// A `MockProvider` is always registered for testing.
-/// The auto-detected Cosmos and Runway entries are capability-complete for
-/// their documented surfaces: predict/generate/reason/transfer under the
-/// stable `"cosmos"` and `"runway"` names, with Cosmos also advertising
-/// embed support.
+/// The auto-detected Cosmos entry is capability-complete for its documented
+/// surface: predict/generate/reason/transfer/embed under the stable
+/// `"cosmos"` name. The Runway entry is capability-complete for
+/// predict/generate/reason/transfer under the stable `"runway"` name.
 /// The Genie surrogate currently supports `predict`, `generate`, `reason`,
 /// `transfer`, and provider-native planning through the local deterministic
 /// backend.
@@ -208,5 +208,6 @@ mod tests {
         assert!(capabilities.transfer);
         assert!(capabilities.action_conditioned);
         assert!(capabilities.multi_view);
+        assert!(!capabilities.embed);
     }
 }
