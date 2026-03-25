@@ -30,7 +30,8 @@ use worldforge_providers::cosmos::{
 use worldforge_providers::genie::{GenieModel, GenieProvider};
 use worldforge_providers::runway::RunwayModel;
 use worldforge_providers::{
-    auto_detect, CosmosProvider, JepaBackend, JepaProvider, MockProvider, RunwayProvider,
+    auto_detect, auto_detect_worldforge, auto_detect_worldforge_with_state_store, CosmosProvider,
+    JepaBackend, JepaProvider, MockProvider, RunwayProvider,
 };
 
 struct TestModelDir {
@@ -242,6 +243,73 @@ fn sample_genie_prompt() -> GenerationPrompt {
 fn test_auto_detect_registry_mock_present() {
     let registry = auto_detect();
     assert!(registry.get("mock").is_ok());
+}
+
+#[test]
+fn test_auto_detect_worldforge_creates_usable_world() {
+    let worldforge = auto_detect_worldforge();
+
+    assert!(worldforge.providers().contains(&"mock"));
+
+    let world = worldforge.create_world("auto-world", "mock").unwrap();
+    assert_eq!(world.default_provider, "mock");
+    assert_eq!(world.current_state().metadata.created_by, "mock");
+}
+
+#[tokio::test]
+async fn test_auto_detect_worldforge_with_state_store_roundtrip() {
+    let dir = std::env::temp_dir().join(format!("wf-provider-auto-{}", uuid::Uuid::new_v4()));
+    let store: worldforge_core::state::DynStateStore =
+        Arc::new(worldforge_core::state::FileStateStore::new(&dir));
+    let worldforge = auto_detect_worldforge_with_state_store(store);
+
+    let mut world = worldforge.create_world("auto-store-world", "mock").unwrap();
+    let object = SceneObject::new(
+        "mug",
+        Pose {
+            position: Position {
+                x: 0.2,
+                y: 0.8,
+                z: 0.0,
+            },
+            ..Default::default()
+        },
+        BBox {
+            min: Position {
+                x: 0.1,
+                y: 0.7,
+                z: -0.1,
+            },
+            max: Position {
+                x: 0.3,
+                y: 0.9,
+                z: 0.1,
+            },
+        },
+    );
+    let object_id = object.id;
+    world.add_object(object).unwrap();
+
+    let saved_id = worldforge.save_world(&world).await.unwrap();
+    assert_eq!(saved_id, world.id());
+
+    let loaded_state = worldforge.load_state(&saved_id).await.unwrap();
+    assert_eq!(loaded_state.metadata.created_by, "mock");
+    assert!(loaded_state.scene.get_object(&object_id).is_some());
+
+    let loaded_world = worldforge.load_world_from_store(&saved_id).await.unwrap();
+    assert_eq!(loaded_world.default_provider, "mock");
+    assert_eq!(
+        loaded_world
+            .current_state()
+            .scene
+            .get_object(&object_id)
+            .unwrap()
+            .name,
+        "mug"
+    );
+
+    let _ = tokio::fs::remove_dir_all(&dir).await;
 }
 
 #[test]

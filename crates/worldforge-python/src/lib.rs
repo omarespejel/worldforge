@@ -1744,10 +1744,7 @@ impl PyWorldForge {
         let store = rt.block_on(store_kind.open()).map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("failed to open state store: {e}"))
         })?;
-        let mut wf = worldforge_core::WorldForge::with_state_store(store);
-        for provider in worldforge_providers::auto_detect().into_providers() {
-            let _ = wf.register_provider(provider);
-        }
+        let wf = worldforge_providers::auto_detect_worldforge_with_state_store(store);
         Ok(Self { inner: wf })
     }
 

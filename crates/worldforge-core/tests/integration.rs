@@ -11,6 +11,7 @@ use worldforge_core::guardrail::{
 };
 use worldforge_core::prediction::PredictionConfig;
 use worldforge_core::provider::Operation;
+use worldforge_core::provider::ProviderRegistry;
 use worldforge_core::provider::WorldModelProvider;
 use worldforge_core::scene::{PhysicsProperties, SceneObject};
 use worldforge_core::state::{DynStateStore, FileStateStore, StateStore, WorldState};
@@ -36,6 +37,12 @@ fn worldforge_with_mock_provider_and_store(store: DynStateStore) -> WorldForge {
         .register_provider(Box::new(MockProvider::new()))
         .unwrap();
     worldforge
+}
+
+fn provider_registry_with_mock() -> ProviderRegistry {
+    let mut registry = ProviderRegistry::new();
+    registry.register(Box::new(MockProvider::new()));
+    registry
 }
 
 #[tokio::test]
@@ -166,6 +173,89 @@ async fn test_first_prediction_on_persisted_world_keeps_single_history_entry() {
             weather: worldforge_core::action::Weather::Rain
         })
     ));
+
+    let _ = tokio::fs::remove_dir_all(&dir).await;
+}
+
+#[tokio::test]
+async fn test_worldforge_from_registry_creates_usable_world() {
+    let worldforge = WorldForge::from_registry(provider_registry_with_mock());
+
+    let mut world = worldforge.create_world("registry-world", "mock").unwrap();
+    let action = Action::Move {
+        target: Position {
+            x: 0.5,
+            y: 0.0,
+            z: 0.0,
+        },
+        speed: 1.0,
+    };
+    let config = PredictionConfig::default();
+
+    assert_eq!(worldforge.providers(), vec!["mock"]);
+    assert_eq!(world.default_provider, "mock");
+    assert_eq!(world.current_state().metadata.created_by, "mock");
+
+    let prediction = world.predict(&action, &config).await.unwrap();
+    assert_eq!(prediction.provider, "mock");
+    assert!(!world.current_state().history.is_empty());
+}
+
+#[tokio::test]
+async fn test_worldforge_from_registry_with_state_store_roundtrip() {
+    let dir = std::env::temp_dir().join(format!("wf-core-registry-{}", uuid::Uuid::new_v4()));
+    let store: DynStateStore = Arc::new(FileStateStore::new(&dir));
+    let worldforge =
+        WorldForge::from_registry_with_state_store(provider_registry_with_mock(), store);
+
+    let mut world = worldforge
+        .create_world("registry-store-world", "mock")
+        .unwrap();
+    let object = SceneObject::new(
+        "crate",
+        Pose {
+            position: Position {
+                x: 1.0,
+                y: 1.0,
+                z: 0.0,
+            },
+            ..Pose::default()
+        },
+        BBox {
+            min: Position {
+                x: 0.8,
+                y: 0.8,
+                z: -0.2,
+            },
+            max: Position {
+                x: 1.2,
+                y: 1.2,
+                z: 0.2,
+            },
+        },
+    );
+    let object_id = object.id;
+    world.add_object(object).unwrap();
+
+    let saved_id = worldforge.save_world(&world).await.unwrap();
+    assert_eq!(saved_id, world.id());
+
+    let loaded_state = worldforge.load_state(&saved_id).await.unwrap();
+    assert_eq!(loaded_state.metadata.name, "registry-store-world");
+    assert_eq!(loaded_state.metadata.created_by, "mock");
+    assert!(loaded_state.scene.get_object(&object_id).is_some());
+
+    let loaded_world = worldforge.load_world_from_store(&saved_id).await.unwrap();
+    assert_eq!(loaded_world.default_provider, "mock");
+    assert_eq!(
+        loaded_world
+            .current_state()
+            .scene
+            .get_object(&object_id)
+            .unwrap()
+            .name,
+        "crate"
+    );
 
     let _ = tokio::fs::remove_dir_all(&dir).await;
 }

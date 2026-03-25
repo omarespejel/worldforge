@@ -1177,7 +1177,9 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                         );
                         match world.plan(&plan_req).await {
                             Ok(plan) => (200, ApiResponse::ok(plan)),
-                            Err(e) => (500, error_response(&e.to_string())),
+                            Err(error) => {
+                                (api_error_status(&error), error_response(&error.to_string()))
+                            }
                         }
                     }
                     Err(e) => (400, error_response(&format!("invalid request: {e}"))),
@@ -1276,7 +1278,12 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                                     );
                                     match world.plan(&plan_req).await {
                                         Ok(plan) => plan,
-                                        Err(e) => return (500, error_response(&e.to_string())),
+                                        Err(error) => {
+                                            return (
+                                                api_error_status(&error),
+                                                error_response(&error.to_string()),
+                                            )
+                                        }
                                     }
                                 };
 
@@ -1314,49 +1321,66 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
 
         // POST /v1/worlds/{id}/evaluate
         ("POST", p) if p.starts_with("/v1/worlds/") && p.ends_with("/evaluate") => {
-            let _id_str = p
+            let id_str = p
                 .strip_prefix("/v1/worlds/")
                 .and_then(|s| s.strip_suffix("/evaluate"))
                 .unwrap_or("");
-            match serde_json::from_str::<EvaluateRequest>(body) {
-                Ok(req) => {
-                    let suite = match resolve_eval_suite(&req) {
-                        Ok(suite) => suite,
-                        Err(error) => return (400, error_response(&error)),
-                    };
-
-                    let provider_names = if req.providers.is_empty() {
-                        state
-                            .registry
-                            .list()
-                            .into_iter()
-                            .map(str::to_string)
-                            .collect::<Vec<_>>()
-                    } else {
-                        req.providers
-                    };
-
-                    let mut provider_refs: Vec<&dyn worldforge_core::provider::WorldModelProvider> =
-                        Vec::new();
-                    for provider_name in &provider_names {
-                        match state.registry.get(provider_name) {
-                            Ok(provider) => provider_refs.push(provider),
-                            Err(error) => return (404, error_response(&error.to_string())),
-                        }
+            match id_str.parse::<WorldId>() {
+                Ok(id) => {
+                    if let Err(error) = state.store.load(&id).await {
+                        return (404, error_response(&error.to_string()));
                     }
 
-                    match suite.run(&provider_refs).await {
-                        Ok(report) => (200, ApiResponse::ok(report)),
-                        Err(e) => (500, error_response(&e.to_string())),
+                    match serde_json::from_str::<EvaluateRequest>(body) {
+                        Ok(req) => {
+                            let suite = match resolve_eval_suite(&req) {
+                                Ok(suite) => suite,
+                                Err(error) => return (400, error_response(&error)),
+                            };
+
+                            let provider_names = if req.providers.is_empty() {
+                                state
+                                    .registry
+                                    .list()
+                                    .into_iter()
+                                    .map(str::to_string)
+                                    .collect::<Vec<_>>()
+                            } else {
+                                req.providers
+                            };
+
+                            let mut provider_refs: Vec<
+                                &dyn worldforge_core::provider::WorldModelProvider,
+                            > = Vec::new();
+                            for provider_name in &provider_names {
+                                match state.registry.get(provider_name) {
+                                    Ok(provider) => provider_refs.push(provider),
+                                    Err(error) => return (404, error_response(&error.to_string())),
+                                }
+                            }
+
+                            match suite.run(&provider_refs).await {
+                                Ok(report) => (200, ApiResponse::ok(report)),
+                                Err(e) => (500, error_response(&e.to_string())),
+                            }
+                        }
+                        Err(e) => (400, error_response(&format!("invalid request: {e}"))),
                     }
                 }
-                Err(e) => (400, error_response(&format!("invalid request: {e}"))),
+                Err(_) => (400, error_response("invalid world ID")),
             }
         }
 
         // POST /v1/compare
         ("POST", "/v1/compare") => match serde_json::from_str::<CompareRequest>(body) {
             Ok(req) => {
+                if req.providers.is_empty() {
+                    return (
+                        400,
+                        error_response("compare requires at least one provider"),
+                    );
+                }
+
                 let id = match req.world_id.parse::<WorldId>() {
                     Ok(id) => id,
                     Err(_) => return (400, error_response("invalid world ID")),
@@ -1379,7 +1403,7 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                     .await
                 {
                     Ok(multi) => (200, ApiResponse::ok(multi)),
-                    Err(e) => (500, error_response(&e.to_string())),
+                    Err(error) => (api_error_status(&error), error_response(&error.to_string())),
                 }
             }
             Err(e) => (400, error_response(&format!("invalid request: {e}"))),
@@ -1479,6 +1503,13 @@ mod tests {
                 },
             },
         ));
+        let id = world.id;
+        state.store.save(&world).await.unwrap();
+        id
+    }
+
+    async fn seed_world(state: &Arc<AppState>, name: &str, provider: &str) -> WorldId {
+        let world = WorldState::new(name, provider);
         let id = world.id;
         state.store.save(&world).await.unwrap();
         id
@@ -1967,7 +1998,7 @@ mod tests {
     async fn test_route_evaluate() {
         let state = test_state();
         let body = r#"{"suite":"physics"}"#;
-        let id = uuid::Uuid::new_v4();
+        let id = seed_world(&state, "eval-world", "mock").await;
         let (status, resp) =
             route("POST", &format!("/v1/worlds/{id}/evaluate"), body, &state).await;
         assert_eq!(status, 200);
@@ -1984,7 +2015,7 @@ mod tests {
     async fn test_route_evaluate_invalid_suite() {
         let state = test_state();
         let body = r#"{"suite":"nonexistent"}"#;
-        let id = uuid::Uuid::new_v4();
+        let id = seed_world(&state, "eval-world", "mock").await;
         let (status, _) = route("POST", &format!("/v1/worlds/{id}/evaluate"), body, &state).await;
         assert_eq!(status, 400);
     }
@@ -1998,7 +2029,7 @@ mod tests {
             "providers": ["alt-mock"],
         })
         .to_string();
-        let id = uuid::Uuid::new_v4();
+        let id = seed_world(&state, "eval-world", "mock").await;
         let (status, resp) =
             route("POST", &format!("/v1/worlds/{id}/evaluate"), &body, &state).await;
         assert_eq!(status, 200);
@@ -2011,6 +2042,17 @@ mod tests {
             value["data"]["provider_summaries"][0]["provider"],
             "alt-mock"
         );
+    }
+
+    #[tokio::test]
+    async fn test_route_evaluate_missing_world_returns_not_found() {
+        let state = test_state();
+        let body = r#"{"suite":"physics"}"#;
+        let id = uuid::Uuid::new_v4();
+
+        let (status, _) = route("POST", &format!("/v1/worlds/{id}/evaluate"), body, &state).await;
+
+        assert_eq!(status, 404);
     }
 
     #[tokio::test]
@@ -2226,5 +2268,27 @@ mod tests {
         let (status, resp) = route("POST", "/v1/compare", &cmp_body, &state).await;
         assert_eq!(status, 200);
         assert!(resp.contains("success"));
+    }
+
+    #[tokio::test]
+    async fn test_route_compare_requires_providers() {
+        let state = test_state();
+        let id = seed_world(&state, "cmp-world", "mock").await;
+        let body = serde_json::json!({
+            "world_id": id,
+            "action": {
+                "Move": {
+                    "target": { "x": 1.0, "y": 0.0, "z": 0.0 },
+                    "speed": 1.0
+                }
+            },
+            "providers": [],
+        })
+        .to_string();
+
+        let (status, resp) = route("POST", "/v1/compare", &body, &state).await;
+
+        assert_eq!(status, 400);
+        assert!(resp.contains("at least one provider"));
     }
 }

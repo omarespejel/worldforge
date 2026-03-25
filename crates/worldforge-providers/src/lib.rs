@@ -26,6 +26,8 @@ pub use runway::RunwayProvider;
 use std::path::PathBuf;
 
 use worldforge_core::provider::ProviderRegistry;
+use worldforge_core::state::DynStateStore;
+use worldforge_core::WorldForge;
 
 /// Auto-detect available providers from environment variables.
 ///
@@ -96,6 +98,20 @@ pub fn auto_detect() -> ProviderRegistry {
     }
 
     registry
+}
+
+/// Build a `WorldForge` instance backed by the auto-detected provider registry.
+///
+/// This keeps provider discovery in the providers crate while exposing an
+/// ergonomic Rust entry point that is immediately usable with the detected
+/// adapters.
+pub fn auto_detect_worldforge() -> WorldForge {
+    WorldForge::from_registry(auto_detect())
+}
+
+/// Build a `WorldForge` instance with auto-detected providers and a state store.
+pub fn auto_detect_worldforge_with_state_store(store: DynStateStore) -> WorldForge {
+    WorldForge::from_registry_with_state_store(auto_detect(), store)
 }
 
 #[cfg(test)]

@@ -95,6 +95,18 @@ wf.save_world(world)
 same_world = wf.load_world(world.id)
 ```
 
+## Rust Quickstart
+
+```rust
+use worldforge_providers::auto_detect_worldforge;
+
+let wf = auto_detect_worldforge();
+let world = wf.create_world("kitchen-counter", "mock")?;
+```
+
+To attach persistence up front, open a `StateStore` and pass it to
+`worldforge_providers::auto_detect_worldforge_with_state_store(...)`.
+
 ## Python Installation
 
 The Python bindings now ship as an installable package from this repository via

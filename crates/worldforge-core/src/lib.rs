@@ -49,16 +49,29 @@ pub struct WorldForge {
 impl WorldForge {
     /// Create a new WorldForge instance.
     pub fn new() -> Self {
-        Self {
-            registry: Arc::new(ProviderRegistry::new()),
-            state_store: None,
-        }
+        Self::from_registry(ProviderRegistry::new())
     }
 
     /// Create a new WorldForge instance with an attached state store.
     pub fn with_state_store(store: DynStateStore) -> Self {
+        Self::from_registry_with_state_store(ProviderRegistry::new(), store)
+    }
+
+    /// Create a new WorldForge instance from an existing provider registry.
+    pub fn from_registry(registry: ProviderRegistry) -> Self {
         Self {
-            registry: Arc::new(ProviderRegistry::new()),
+            registry: Arc::new(registry),
+            state_store: None,
+        }
+    }
+
+    /// Create a new WorldForge instance from an existing registry and state store.
+    pub fn from_registry_with_state_store(
+        registry: ProviderRegistry,
+        store: DynStateStore,
+    ) -> Self {
+        Self {
+            registry: Arc::new(registry),
             state_store: Some(store),
         }
     }
