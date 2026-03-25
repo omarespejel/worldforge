@@ -641,6 +641,91 @@ async fn test_live_http_plan_relational_goal_spawns_object_near_anchor() {
 }
 
 #[tokio::test]
+async fn test_live_http_plan_structured_condition_goal() {
+    let server = spawn_test_server().await;
+
+    let (status, create) = http_request(
+        server.address,
+        "POST",
+        "/v1/worlds",
+        r#"{"name":"structured_plan_world","provider":"mock"}"#,
+    )
+    .await;
+    assert_eq!(status, 201);
+    let world_id = create["data"]["id"].as_str().unwrap().to_string();
+
+    let add_object_body = r#"{
+        "name":"ball",
+        "position":{"x":0.0,"y":0.5,"z":0.0},
+        "bbox":{"min":{"x":-0.1,"y":0.4,"z":-0.1},"max":{"x":0.1,"y":0.6,"z":0.1}}
+    }"#;
+    let (status, object) = http_request(
+        server.address,
+        "POST",
+        &format!("/v1/worlds/{world_id}/objects"),
+        add_object_body,
+    )
+    .await;
+    assert_eq!(status, 201);
+    let object_id = object["data"]["id"].as_str().unwrap();
+
+    let plan_body = serde_json::json!({
+        "goal": {
+            "type": "condition",
+            "condition": {
+                "ObjectAt": {
+                    "object": object_id,
+                    "position": {"x": 1.0, "y": 0.5, "z": 0.0},
+                    "tolerance": 0.05
+                }
+            }
+        },
+        "provider": "mock",
+        "planner": "sampling",
+        "max_steps": 4,
+        "num_samples": 48,
+        "top_k": 5
+    })
+    .to_string();
+    let (status, plan_json) = http_request(
+        server.address,
+        "POST",
+        &format!("/v1/worlds/{world_id}/plan"),
+        &plan_body,
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    let plan: worldforge_core::prediction::Plan =
+        serde_json::from_value(plan_json["data"].clone()).unwrap();
+    assert!(
+        !plan.actions.is_empty(),
+        "structured condition planning should produce at least one action"
+    );
+
+    let final_state = plan
+        .predicted_states
+        .last()
+        .expect("plan should include predicted states");
+    let moved_object = final_state
+        .scene
+        .find_object_by_name("ball")
+        .expect("planned state should keep the moved object");
+    assert!(
+        moved_object
+            .pose
+            .position
+            .distance(worldforge_core::types::Position {
+                x: 1.0,
+                y: 0.5,
+                z: 0.0,
+            })
+            <= 0.15,
+        "structured condition goal should move the object close to the target position"
+    );
+}
+
+#[tokio::test]
 async fn test_live_http_rejects_oversized_body() {
     let server = spawn_test_server().await;
     let request = "POST /v1/worlds HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 4194305\r\nConnection: close\r\n\r\n";

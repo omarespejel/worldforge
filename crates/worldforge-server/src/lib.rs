@@ -15,7 +15,7 @@ use tokio::sync::RwLock;
 use worldforge_core::action::Action;
 use worldforge_core::error::WorldForgeError;
 use worldforge_core::guardrail::{Guardrail, GuardrailConfig};
-use worldforge_core::prediction::{PlannerType, PredictionConfig};
+use worldforge_core::prediction::{PlanGoal, PlanGoalInput, PlannerType, PredictionConfig};
 use worldforge_core::provider::{
     GenerationConfig, GenerationPrompt, Operation, ProviderRegistry, SpatialControls,
     TransferConfig,
@@ -170,7 +170,7 @@ struct CreateObjectRequest {
 /// JSON request body for planning.
 #[derive(Debug, Deserialize)]
 struct PlanRequest {
-    goal: String,
+    goal: PlanGoalInput,
     #[serde(default = "default_max_steps")]
     max_steps: u32,
     #[serde(default)]
@@ -313,7 +313,7 @@ fn planner_from_verify_request(
 
 fn build_plan_request(
     current_state: WorldState,
-    goal: String,
+    goal: PlanGoal,
     max_steps: u32,
     guardrails: Vec<GuardrailConfig>,
     planner: PlannerType,
@@ -321,7 +321,7 @@ fn build_plan_request(
 ) -> worldforge_core::prediction::PlanRequest {
     worldforge_core::prediction::PlanRequest {
         current_state,
-        goal: worldforge_core::prediction::PlanGoal::Description(goal),
+        goal,
         max_steps,
         guardrails,
         planner,
@@ -397,7 +397,7 @@ struct VerifyRequest {
     plan: Option<worldforge_core::prediction::Plan>,
     /// Goal used to generate a plan before guardrail verification.
     #[serde(default)]
-    goal: Option<String>,
+    goal: Option<PlanGoalInput>,
     #[serde(default = "default_max_steps")]
     max_steps: u32,
     #[serde(default = "default_timeout_seconds")]
@@ -1169,7 +1169,7 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                         );
                         let plan_req = build_plan_request(
                             ws,
-                            req.goal.clone(),
+                            req.goal.clone().into(),
                             req.max_steps,
                             resolve_guardrails(req.guardrails, req.disable_guardrails),
                             planner,
@@ -1267,7 +1267,7 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                                     );
                                     let plan_req = build_plan_request(
                                         ws.clone(),
-                                        goal,
+                                        goal.into(),
                                         req.max_steps,
                                         resolve_guardrails(
                                             req.guardrails.clone(),
@@ -2154,6 +2154,65 @@ mod tests {
         let verify_body = serde_json::json!({
             "proof_type": "guardrail",
             "goal": "spawn cube",
+            "guardrails": [
+                {
+                    "guardrail": "NoCollisions",
+                    "blocking": true
+                }
+            ]
+        })
+        .to_string();
+        let (status, resp) = route(
+            "POST",
+            &format!("/v1/worlds/{id}/verify"),
+            &verify_body,
+            &state,
+        )
+        .await;
+        assert_eq!(status, 200);
+
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert!(value["data"]["verification"]["valid"].as_bool().unwrap());
+        assert!(value["data"]["artifact"]["plan_hash"].is_array());
+    }
+
+    #[tokio::test]
+    async fn test_route_verify_guardrail_from_structured_goal() {
+        let state = test_state();
+        let body = r#"{"name":"verify_structured_guardrail","provider":"mock"}"#;
+        let (status, resp) = route("POST", "/v1/worlds", body, &state).await;
+        assert_eq!(status, 201);
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let id = value["data"]["id"].as_str().unwrap();
+
+        let object_body = r#"{
+            "name":"ball",
+            "position":{"x":0.0,"y":0.5,"z":0.0},
+            "bbox":{"min":{"x":-0.1,"y":0.4,"z":-0.1},"max":{"x":0.1,"y":0.6,"z":0.1}}
+        }"#;
+        let (status, object_resp) = route(
+            "POST",
+            &format!("/v1/worlds/{id}/objects"),
+            object_body,
+            &state,
+        )
+        .await;
+        assert_eq!(status, 201);
+        let object_json: serde_json::Value = serde_json::from_str(&object_resp).unwrap();
+        let object_id = object_json["data"]["id"].as_str().unwrap();
+
+        let verify_body = serde_json::json!({
+            "proof_type": "guardrail",
+            "goal": {
+                "type": "condition",
+                "condition": {
+                    "ObjectAt": {
+                        "object": object_id,
+                        "position": {"x": 1.0, "y": 0.5, "z": 0.0},
+                        "tolerance": 0.05
+                    }
+                }
+            },
             "guardrails": [
                 {
                     "guardrail": "NoCollisions",

@@ -230,6 +230,43 @@ pub enum PlanGoal {
     Description(String),
 }
 
+/// Serde-friendly input shape for plan goals across APIs.
+///
+/// This preserves backward compatibility for callers that still send a bare
+/// string while allowing richer structured goals to flow through the CLI,
+/// server, and Python bindings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PlanGoalInput {
+    /// Backward-compatible natural-language goal.
+    Description(String),
+    /// Structured goal payload.
+    Structured(PlanGoalSpec),
+}
+
+/// Structured plan-goal payload for external APIs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum PlanGoalSpec {
+    /// Natural-language goal payload.
+    Description { description: String },
+    /// Boolean condition goal.
+    Condition {
+        /// Condition that must evaluate to true.
+        condition: crate::action::Condition,
+    },
+    /// Explicit target world-state goal.
+    TargetState {
+        /// State that planning should approximate.
+        state: Box<WorldState>,
+    },
+    /// Goal image tensor for image-conditioned planning.
+    GoalImage {
+        /// Serialized tensor describing the desired image.
+        image: crate::types::Tensor,
+    },
+}
+
 /// Planning algorithm.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PlannerType {
@@ -281,6 +318,26 @@ impl PlanRequest {
             blocking: false,
         }];
         self
+    }
+}
+
+impl From<PlanGoalInput> for PlanGoal {
+    fn from(value: PlanGoalInput) -> Self {
+        match value {
+            PlanGoalInput::Description(description) => Self::Description(description),
+            PlanGoalInput::Structured(spec) => spec.into(),
+        }
+    }
+}
+
+impl From<PlanGoalSpec> for PlanGoal {
+    fn from(value: PlanGoalSpec) -> Self {
+        match value {
+            PlanGoalSpec::Description { description } => Self::Description(description),
+            PlanGoalSpec::Condition { condition } => Self::Condition(condition),
+            PlanGoalSpec::TargetState { state } => Self::TargetState(state),
+            PlanGoalSpec::GoalImage { image } => Self::GoalImage(image),
+        }
     }
 }
 
@@ -422,6 +479,60 @@ mod tests {
         let goal2: PlanGoal = serde_json::from_str(&json).unwrap();
         match goal2 {
             PlanGoal::Description(s) => assert_eq!(s, "stack the blocks"),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_plan_goal_input_accepts_string_description() {
+        let input: PlanGoalInput = serde_json::from_str(r#""stack the blocks""#).unwrap();
+        let goal: PlanGoal = input.into();
+
+        match goal {
+            PlanGoal::Description(description) => assert_eq!(description, "stack the blocks"),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_plan_goal_input_accepts_structured_condition() {
+        let input: PlanGoalInput = serde_json::from_str(
+            r#"{
+                "type":"condition",
+                "condition":{
+                    "ObjectExists":{"object":"00000000-0000-0000-0000-000000000123"}
+                }
+            }"#,
+        )
+        .unwrap();
+        let goal: PlanGoal = input.into();
+
+        match goal {
+            PlanGoal::Condition(crate::action::Condition::ObjectExists { object }) => {
+                assert_eq!(
+                    object,
+                    uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000123").unwrap()
+                );
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_plan_goal_input_accepts_structured_target_state() {
+        let state = WorldState::new("goal-state", "mock");
+        let json = serde_json::json!({
+            "type": "target_state",
+            "state": state,
+        });
+        let input: PlanGoalInput = serde_json::from_value(json).unwrap();
+        let goal: PlanGoal = input.into();
+
+        match goal {
+            PlanGoal::TargetState(target) => {
+                assert_eq!(target.metadata.name, "goal-state");
+                assert_eq!(target.metadata.created_by, "mock");
+            }
             _ => panic!("wrong variant"),
         }
     }

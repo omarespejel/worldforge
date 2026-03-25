@@ -14,7 +14,9 @@ use serde::Serialize;
 
 use worldforge_core::action::{Action, Weather};
 use worldforge_core::guardrail::{Guardrail, GuardrailConfig};
-use worldforge_core::prediction::{PlanGoal, PlanRequest, PlannerType, PredictionConfig};
+use worldforge_core::prediction::{
+    PlanGoal, PlanGoalInput, PlanRequest, PlannerType, PredictionConfig,
+};
 use worldforge_core::provider::{
     GenerationConfig, GenerationPrompt, Operation, ProviderDescriptor, ProviderHealthReport,
     ProviderRegistry, SpatialControls, TransferConfig, WorldModelProvider,
@@ -303,8 +305,15 @@ pub enum Commands {
         #[arg(long)]
         world: String,
         /// Goal description (natural language).
-        #[arg(long)]
-        goal: String,
+        #[arg(
+            long,
+            required_unless_present = "goal_json",
+            conflicts_with = "goal_json"
+        )]
+        goal: Option<String>,
+        /// JSON file containing either a bare goal string or a structured `PlanGoalInput`.
+        #[arg(long, conflicts_with = "goal")]
+        goal_json: Option<PathBuf>,
         /// Maximum number of planning steps.
         #[arg(long, default_value = "10")]
         max_steps: u32,
@@ -346,8 +355,11 @@ pub enum Commands {
         #[arg(long)]
         plan_json: Option<PathBuf>,
         /// Natural-language goal used to generate a plan before guardrail verification.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "goal_json")]
         goal: Option<String>,
+        /// JSON file containing either a bare goal string or a structured `PlanGoalInput`.
+        #[arg(long, conflicts_with = "goal")]
+        goal_json: Option<PathBuf>,
         /// Maximum number of planning steps when generating a plan for verification.
         #[arg(long, default_value = "10")]
         max_steps: u32,
@@ -827,6 +839,7 @@ pub async fn run() -> Result<()> {
         Commands::Plan {
             world,
             goal,
+            goal_json,
             max_steps,
             planner,
             timeout,
@@ -838,12 +851,13 @@ pub async fn run() -> Result<()> {
             cmd_plan(
                 store.as_ref(),
                 &world,
-                &goal,
+                goal.as_deref(),
                 PlanOptions {
                     max_steps,
                     planner_name: &planner,
                     timeout,
                     provider: &provider,
+                    goal_json: goal_json.as_deref(),
                     guardrails_json: guardrails_json.as_deref(),
                     disable_guardrails,
                     output_json: output_json.as_deref(),
@@ -858,6 +872,7 @@ pub async fn run() -> Result<()> {
             output_state_json,
             plan_json,
             goal,
+            goal_json,
             max_steps,
             planner,
             timeout,
@@ -876,6 +891,7 @@ pub async fn run() -> Result<()> {
                     output_state_json: output_state_json.as_deref(),
                     plan_json: plan_json.as_deref(),
                     goal: goal.as_deref(),
+                    goal_json: goal_json.as_deref(),
                     max_steps,
                     planner_name: &planner,
                     timeout,
@@ -1183,6 +1199,7 @@ struct PlanOptions<'a> {
     planner_name: &'a str,
     timeout: f64,
     provider: &'a str,
+    goal_json: Option<&'a Path>,
     guardrails_json: Option<&'a Path>,
     disable_guardrails: bool,
     output_json: Option<&'a Path>,
@@ -1210,6 +1227,7 @@ struct VerifyOptions<'a> {
     output_state_json: Option<&'a Path>,
     plan_json: Option<&'a Path>,
     goal: Option<&'a str>,
+    goal_json: Option<&'a Path>,
     max_steps: u32,
     planner_name: &'a str,
     timeout: f64,
@@ -1266,6 +1284,20 @@ fn read_guardrails(path: Option<&Path>) -> Result<Vec<GuardrailConfig>> {
     match path {
         Some(path) => read_json_file(path),
         None => Ok(Vec::new()),
+    }
+}
+
+fn load_plan_goal(goal: Option<&str>, goal_json: Option<&Path>) -> Result<PlanGoal> {
+    match (goal, goal_json) {
+        (Some(description), None) => Ok(PlanGoal::Description(description.to_string())),
+        (None, Some(path)) => {
+            let input: PlanGoalInput = read_json_file(path)?;
+            Ok(input.into())
+        }
+        (Some(_), Some(_)) => Err(anyhow::anyhow!(
+            "--goal and --goal-json are mutually exclusive"
+        )),
+        (None, None) => Err(anyhow::anyhow!("either --goal or --goal-json is required")),
     }
 }
 
@@ -2000,7 +2032,7 @@ async fn cmd_compare(
 async fn cmd_plan(
     store: &(impl StateStore + ?Sized),
     world_id: &str,
-    goal: &str,
+    goal: Option<&str>,
     options: PlanOptions<'_>,
 ) -> Result<()> {
     let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
@@ -2014,10 +2046,11 @@ async fn cmd_plan(
         read_guardrails(options.guardrails_json)?,
         options.disable_guardrails,
     );
+    let goal = load_plan_goal(goal, options.goal_json)?;
 
     let request = PlanRequest {
         current_state: state,
-        goal: PlanGoal::Description(goal.to_string()),
+        goal,
         max_steps: options.max_steps,
         guardrails,
         planner,
@@ -2110,10 +2143,10 @@ async fn cmd_verify(
                 read_json_file(plan_path)?
             } else {
                 let state = loaded_state.as_ref().context(
-                    "guardrail verification requires --plan-json or --world together with --goal",
+                    "guardrail verification requires --plan-json or --world together with --goal/--goal-json",
                 )?;
-                let goal = options.goal.context(
-                    "guardrail verification requires --goal when --plan-json is not provided",
+                let goal = load_plan_goal(options.goal, options.goal_json).context(
+                    "guardrail verification requires --goal or --goal-json when --plan-json is not provided",
                 )?;
                 let provider_name = resolve_provider_name(state, options.provider).to_string();
                 let registry = Arc::new(auto_detect_registry());
@@ -2122,7 +2155,7 @@ async fn cmd_verify(
                     worldforge_core::world::World::new(state.clone(), &provider_name, registry);
                 let request = PlanRequest {
                     current_state: state.clone(),
-                    goal: PlanGoal::Description(goal.to_string()),
+                    goal,
                     max_steps: options.max_steps,
                     guardrails: resolve_guardrails(
                         read_guardrails(options.guardrails_json)?,
@@ -2991,6 +3024,29 @@ mod tests {
     }
 
     #[test]
+    fn test_cli_parse_plan_command_with_goal_json() {
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "plan",
+            "--world",
+            "123e4567-e89b-12d3-a456-426614174000",
+            "--goal-json",
+            "/tmp/goal.json",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Plan {
+                goal, goal_json, ..
+            } => {
+                assert!(goal.is_none());
+                assert_eq!(goal_json, Some(PathBuf::from("/tmp/goal.json")));
+            }
+            _ => panic!("expected Plan"),
+        }
+    }
+
+    #[test]
     fn test_cli_parse_verify_command_with_artifacts() {
         let cli = Cli::try_parse_from([
             "worldforge",
@@ -3182,12 +3238,13 @@ mod tests {
         cmd_plan(
             store.as_ref(),
             &state.id.to_string(),
-            "spawn cube",
+            Some("spawn cube"),
             PlanOptions {
                 max_steps: 4,
                 planner_name: "sampling",
                 timeout: 10.0,
                 provider: "mock",
+                goal_json: None,
                 guardrails_json: Some(&guardrails_path),
                 disable_guardrails: false,
                 output_json: Some(&plan_path),
@@ -3198,6 +3255,91 @@ mod tests {
 
         let plan: worldforge_core::prediction::Plan = read_json_file(&plan_path).unwrap();
         assert!(!plan.actions.is_empty());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn test_cmd_plan_reads_structured_goal_json() {
+        let dir = std::env::temp_dir().join(format!("wf-cli-plan-json-{}", uuid::Uuid::new_v4()));
+        let store = StateStoreKind::File(dir.join("state"))
+            .open()
+            .await
+            .unwrap();
+        let mut state = WorldState::new("plan-structured", "mock");
+        let object = SceneObject::new(
+            "ball",
+            Pose {
+                position: Position {
+                    x: 0.0,
+                    y: 0.5,
+                    z: 0.0,
+                },
+                ..Pose::default()
+            },
+            BBox {
+                min: Position {
+                    x: -0.1,
+                    y: 0.4,
+                    z: -0.1,
+                },
+                max: Position {
+                    x: 0.1,
+                    y: 0.6,
+                    z: 0.1,
+                },
+            },
+        );
+        let object_id = object.id;
+        state.scene.add_object(object);
+        store.save(&state).await.unwrap();
+
+        let goal_path = dir.join("goal.json");
+        let plan_path = dir.join("plan.json");
+        write_json_file(
+            &goal_path,
+            &serde_json::json!({
+                "type": "condition",
+                "condition": {
+                    "ObjectAt": {
+                        "object": object_id,
+                        "position": {"x": 1.0, "y": 0.5, "z": 0.0},
+                        "tolerance": 0.05
+                    }
+                }
+            }),
+        )
+        .unwrap();
+
+        cmd_plan(
+            store.as_ref(),
+            &state.id.to_string(),
+            None,
+            PlanOptions {
+                max_steps: 4,
+                planner_name: "sampling",
+                timeout: 10.0,
+                provider: "mock",
+                goal_json: Some(&goal_path),
+                guardrails_json: None,
+                disable_guardrails: false,
+                output_json: Some(&plan_path),
+            },
+        )
+        .await
+        .unwrap();
+
+        let plan: worldforge_core::prediction::Plan = read_json_file(&plan_path).unwrap();
+        assert!(!plan.actions.is_empty());
+        let final_state = plan.predicted_states.last().unwrap();
+        let moved = final_state.scene.get_object(&object_id).unwrap();
+        assert!(
+            moved.pose.position.distance(Position {
+                x: 1.0,
+                y: 0.5,
+                z: 0.0,
+            }) <= 0.15
+        );
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -3222,12 +3364,13 @@ mod tests {
         let result = cmd_plan(
             store.as_ref(),
             &state.id.to_string(),
-            "spawn cube",
+            Some("spawn cube"),
             PlanOptions {
                 max_steps: 4,
                 planner_name: "provider-native",
                 timeout: 10.0,
                 provider: "mock",
+                goal_json: None,
                 guardrails_json: None,
                 disable_guardrails: false,
                 output_json: Some(&plan_path),
@@ -3477,6 +3620,7 @@ mod tests {
                 output_state_json: Some(&output_path),
                 plan_json: None,
                 goal: None,
+                goal_json: None,
                 max_steps: 4,
                 planner_name: "sampling",
                 timeout: 10.0,
@@ -3510,12 +3654,13 @@ mod tests {
         cmd_plan(
             store.as_ref(),
             &state.id.to_string(),
-            "spawn cube",
+            Some("spawn cube"),
             PlanOptions {
                 max_steps: 4,
                 planner_name: "sampling",
                 timeout: 10.0,
                 provider: "mock",
+                goal_json: None,
                 guardrails_json: None,
                 disable_guardrails: false,
                 output_json: Some(&plan_path),
@@ -3534,6 +3679,7 @@ mod tests {
                 output_state_json: None,
                 plan_json: Some(&plan_path),
                 goal: None,
+                goal_json: None,
                 max_steps: 4,
                 planner_name: "sampling",
                 timeout: 10.0,

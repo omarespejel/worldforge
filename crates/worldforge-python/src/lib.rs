@@ -12,7 +12,9 @@ use pyo3::prelude::*;
 use pyo3::types::{PyList, PyModule};
 
 use worldforge_core::guardrail::GuardrailConfig;
-use worldforge_core::prediction::{MultiPrediction, PlannerType, PredictionConfig, ProviderScore};
+use worldforge_core::prediction::{
+    MultiPrediction, PlanGoal, PlanGoalInput, PlannerType, PredictionConfig, ProviderScore,
+};
 use worldforge_core::provider::{
     CostEstimate, GenerationConfig, GenerationPrompt, Operation, ProviderCapabilities,
     ProviderDescriptor, ProviderHealthReport, ProviderRegistry, SpatialControls, TransferConfig,
@@ -82,6 +84,25 @@ fn parse_guardrails_json(guardrails_json: Option<&str>) -> PyResult<Vec<Guardrai
         })
         .transpose()
         .map(|value| value.unwrap_or_default())
+}
+
+fn parse_plan_goal(goal: Option<&str>, goal_json: Option<&str>) -> PyResult<PlanGoal> {
+    match (goal, goal_json) {
+        (Some(description), None) => Ok(PlanGoal::Description(description.to_string())),
+        (None, Some(json)) => serde_json::from_str::<PlanGoalInput>(json)
+            .map(Into::into)
+            .map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "failed to parse plan goal JSON: {e}"
+                ))
+            }),
+        (Some(_), Some(_)) => Err(pyo3::exceptions::PyValueError::new_err(
+            "goal and goal_json are mutually exclusive",
+        )),
+        (None, None) => Err(pyo3::exceptions::PyValueError::new_err(
+            "either goal or goal_json is required",
+        )),
+    }
 }
 
 fn parse_provider_names(input: &str) -> Vec<String> {
@@ -912,12 +933,13 @@ impl PyWorld {
         Ok(PyMultiPrediction { inner: comparison })
     }
 
-    /// Plan a sequence of actions to achieve a natural-language goal.
-    #[pyo3(signature = (goal, max_steps=10, timeout_seconds=30.0, provider=None, planner="sampling", num_samples=None, top_k=None, population_size=None, elite_fraction=None, num_iterations=None, learning_rate=None, horizon=None, replanning_interval=None, guardrails_json=None, disable_guardrails=false))]
+    /// Plan a sequence of actions to achieve either a natural-language or structured goal.
+    #[pyo3(signature = (goal=None, goal_json=None, max_steps=10, timeout_seconds=30.0, provider=None, planner="sampling", num_samples=None, top_k=None, population_size=None, elite_fraction=None, num_iterations=None, learning_rate=None, horizon=None, replanning_interval=None, guardrails_json=None, disable_guardrails=false))]
     #[allow(clippy::too_many_arguments)]
     fn plan(
         &self,
-        goal: &str,
+        goal: Option<&str>,
+        goal_json: Option<&str>,
         max_steps: u32,
         timeout_seconds: f64,
         provider: Option<&str>,
@@ -955,9 +977,10 @@ impl PyWorld {
             horizon,
             replanning_interval,
         )?;
+        let goal = parse_plan_goal(goal, goal_json)?;
         let mut request = worldforge_core::prediction::PlanRequest {
             current_state: self.world.state.clone(),
-            goal: worldforge_core::prediction::PlanGoal::Description(goal.to_string()),
+            goal,
             max_steps,
             guardrails: parse_guardrails_json(guardrails_json)?,
             planner,
@@ -2404,11 +2427,12 @@ impl PyPlan {
 ///
 /// Supports sampling, CEM, MPC, gradient, and provider-native planning.
 #[pyfunction]
-#[pyo3(signature = (world, goal, max_steps=10, timeout_seconds=30.0, provider="mock", planner="sampling", num_samples=None, top_k=None, population_size=None, elite_fraction=None, num_iterations=None, learning_rate=None, horizon=None, replanning_interval=None, guardrails_json=None, disable_guardrails=false))]
+#[pyo3(signature = (world, goal=None, goal_json=None, max_steps=10, timeout_seconds=30.0, provider="mock", planner="sampling", num_samples=None, top_k=None, population_size=None, elite_fraction=None, num_iterations=None, learning_rate=None, horizon=None, replanning_interval=None, guardrails_json=None, disable_guardrails=false))]
 #[allow(clippy::too_many_arguments)]
 fn plan(
     world: &PyWorld,
-    goal: &str,
+    goal: Option<&str>,
+    goal_json: Option<&str>,
     max_steps: u32,
     timeout_seconds: f64,
     provider: &str,
@@ -2426,6 +2450,7 @@ fn plan(
 ) -> PyResult<PyPlan> {
     world.plan(
         goal,
+        goal_json,
         max_steps,
         timeout_seconds,
         Some(provider),
@@ -4325,7 +4350,8 @@ mod tests {
         let world = PyWorld::new("plan_test", "mock");
         let plan = world
             .plan(
-                "move forward",
+                Some("move forward"),
+                None,
                 5,
                 10.0,
                 Some("mock"),
@@ -4352,7 +4378,8 @@ mod tests {
         let world = PyWorld::new("plan_json", "mock");
         let p = plan(
             &world,
-            "reach goal",
+            Some("reach goal"),
+            None,
             5,
             10.0,
             "mock",
@@ -4378,8 +4405,23 @@ mod tests {
     fn test_plan_repr() {
         let world = PyWorld::new("repr_test", "mock");
         let p = plan(
-            &world, "go", 5, 10.0, "mock", "sampling", None, None, None, None, None, None, None,
-            None, None, false,
+            &world,
+            Some("go"),
+            None,
+            5,
+            10.0,
+            "mock",
+            "sampling",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
         )
         .unwrap();
         let repr = p.__repr__();
@@ -4391,7 +4433,8 @@ mod tests {
         let world = PyWorld::new("plan_cem", "mock");
         let plan = world
             .plan(
-                "spawn cube",
+                Some("spawn cube"),
+                None,
                 4,
                 10.0,
                 Some("mock"),
@@ -4423,7 +4466,8 @@ mod tests {
             .supports_planning();
         let world = PyWorld::new("plan_native", "mock");
         let result = world.plan(
-            "spawn cube",
+            Some("spawn cube"),
+            None,
             4,
             10.0,
             Some("mock"),
@@ -4458,7 +4502,8 @@ mod tests {
         let guardrails_json = r#"[{"guardrail":"NoCollisions","blocking":true}]"#;
         let plan = world
             .plan(
-                "stay collision free",
+                Some("stay collision free"),
+                None,
                 4,
                 10.0,
                 Some("mock"),
@@ -4477,6 +4522,71 @@ mod tests {
             .unwrap();
 
         assert!(plan.action_count() > 0);
+    }
+
+    #[test]
+    fn test_plan_world_with_structured_goal_json() {
+        let mut world = PyWorld::new("plan_structured", "mock");
+        let position = PyPosition::new(0.0, 0.5, 0.0);
+        let bbox = PyBBox::new(
+            &PyPosition::new(-0.1, 0.4, -0.1),
+            &PyPosition::new(0.1, 0.6, 0.1),
+        );
+        let object = PySceneObject::new("ball", &position, &bbox);
+        let object_id = object.id();
+        world.add_object(&object);
+
+        let goal_json = serde_json::json!({
+            "type": "condition",
+            "condition": {
+                "ObjectAt": {
+                    "object": object_id,
+                    "position": {"x": 1.0, "y": 0.5, "z": 0.0},
+                    "tolerance": 0.05
+                }
+            }
+        })
+        .to_string();
+
+        let plan = world
+            .plan(
+                None,
+                Some(&goal_json),
+                4,
+                10.0,
+                Some("mock"),
+                "sampling",
+                Some(48),
+                Some(5),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                false,
+            )
+            .unwrap();
+
+        assert!(plan.action_count() > 0);
+        let plan_json: serde_json::Value = serde_json::from_str(&plan.to_json().unwrap()).unwrap();
+        let final_state = plan_json["predicted_states"]
+            .as_array()
+            .and_then(|states| states.last())
+            .expect("structured goal plan should include predicted states");
+        let ball = final_state["scene"]["objects"]
+            .as_object()
+            .unwrap()
+            .values()
+            .find(|object| object["name"] == "ball")
+            .expect("ball should still exist");
+        let x = ball["pose"]["position"]["x"].as_f64().unwrap();
+        let y = ball["pose"]["position"]["y"].as_f64().unwrap();
+        let z = ball["pose"]["position"]["z"].as_f64().unwrap();
+        assert!((x - 1.0).abs() <= 0.15);
+        assert!((y - 0.5).abs() <= 0.15);
+        assert!(z.abs() <= 0.15);
     }
 
     // --- Evaluation tests ---
@@ -4573,7 +4683,8 @@ mod tests {
         let world = PyWorld::new("verify_plan", "mock");
         let plan = world
             .plan(
-                "spawn cube",
+                Some("spawn cube"),
+                None,
                 4,
                 10.0,
                 Some("mock"),
@@ -4630,7 +4741,8 @@ mod tests {
         let world = PyWorld::new("verify_bundle", "mock");
         let plan = world
             .plan(
-                "spawn cube",
+                Some("spawn cube"),
+                None,
                 4,
                 10.0,
                 Some("mock"),

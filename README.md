@@ -71,6 +71,21 @@ plan = world.plan(
     planner="cem",
 )
 
+# Or send a structured goal JSON payload for condition/target-state planning
+goal_json = """
+{
+  "type": "condition",
+  "condition": {
+    "ObjectAt": {
+      "object": "00000000-0000-0000-0000-000000000123",
+      "position": {"x": 1.0, "y": 0.8, "z": 0.0},
+      "tolerance": 0.05
+    }
+  }
+}
+"""
+plan = world.plan(goal_json=goal_json, max_steps=4, planner="sampling")
+
 # Compare provider outputs for the same action
 comparison = world.compare(
     Action.move_to(0.5, 0.8, 0.0),
@@ -208,10 +223,12 @@ cargo run -p worldforge-cli -- --state-backend sqlite --state-db-path .worldforg
 cargo run -p worldforge-cli -- predict --world <id> --action "move 1 0 0" --provider runway --fallback-provider mock --timeout-ms 500
 cargo run -p worldforge-cli -- plan --world <id> --goal "spawn cube" --planner cem
 cargo run -p worldforge-cli -- plan --world <id> --goal "spawn cube" --planner cem --guardrails-json guardrails.json --output-json plans/generated.json
+cargo run -p worldforge-cli -- plan --world <id> --goal-json goals/object-at.json --planner sampling --output-json plans/object-at.json
 cargo run -p worldforge-cli -- generate --provider mock --prompt "A cube rolling across a table" --duration-seconds 5 --output-json clips/generated.json
 cargo run -p worldforge-cli -- transfer --provider mock --source-json clips/generated.json --output-json clips/transferred.json
 cargo run -p worldforge-cli -- reason --world <id> --query "Will the mug fall if pushed?"
 cargo run -p worldforge-cli -- verify --proof-type guardrail --plan-json plans/generated.json --output-json proofs/guardrail.json
+cargo run -p worldforge-cli -- verify --proof-type guardrail --world <id> --goal-json goals/object-at.json --output-json proofs/object-at-guardrail.json
 cargo run -p worldforge-cli -- verify --proof-type inference --input-state-json states/before.json --output-state-json states/after.json --provider mock
 cargo run -p worldforge-cli -- verify-proof --guardrail-bundle-json proofs/guardrail.json --output-json proofs/guardrail-report.json
 cargo run -p worldforge-cli -- verify-proof --proof-json proofs/raw-proof.json
@@ -270,9 +287,17 @@ curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/plan \
   -H 'content-type: application/json' \
   -d '{"goal":"spawn cube","planner":"cem","population_size":12,"elite_fraction":0.25,"num_iterations":3,"guardrails":[{"guardrail":"NoCollisions","blocking":true}]}'
 
+curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/plan \
+  -H 'content-type: application/json' \
+  -d '{"goal":{"type":"condition","condition":{"ObjectAt":{"object":"<object-id>","position":{"x":1.0,"y":0.8,"z":0.0},"tolerance":0.05}}},"planner":"sampling","num_samples":48,"top_k":5}'
+
 curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/verify \
   -H 'content-type: application/json' \
   -d '{"proof_type":"guardrail","goal":"spawn cube","guardrails":[{"guardrail":"NoCollisions","blocking":true}]}'
+
+curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/verify \
+  -H 'content-type: application/json' \
+  -d '{"proof_type":"guardrail","goal":{"type":"condition","condition":{"ObjectAt":{"object":"<object-id>","position":{"x":1.0,"y":0.8,"z":0.0},"tolerance":0.05}}},"guardrails":[{"guardrail":"NoCollisions","blocking":true}]}'
 
 curl -X POST http://127.0.0.1:8080/v1/verify/proof \
   -H 'content-type: application/json' \
