@@ -11,6 +11,7 @@ use std::time::Instant;
 use async_trait::async_trait;
 use worldforge_core::action::{evaluate_condition, Action, ActionSpaceType};
 use worldforge_core::error::{Result, WorldForgeError};
+use worldforge_core::goal_image;
 use worldforge_core::guardrail::{evaluate_guardrails, has_blocking_violation};
 use worldforge_core::prediction::{
     PhysicsScores, Plan, PlanGoal, PlanRequest, Prediction, PredictionConfig,
@@ -286,11 +287,44 @@ fn derive_native_actions(goal: &PlanGoal, state: &WorldState) -> Result<Vec<Acti
         PlanGoal::Condition(condition) => actions_for_condition(condition, state),
         PlanGoal::TargetState(target) => Ok(actions_for_target_state(state, target)),
         PlanGoal::Description(description) => actions_for_description(description, state),
-        PlanGoal::GoalImage(_) => Err(WorldForgeError::NoFeasiblePlan {
-            goal: format!("{goal:?}"),
-            reason: "mock native planner does not support image-goal planning".to_string(),
-        }),
+        PlanGoal::GoalImage(image) => actions_for_goal_image(image, state),
     }
+}
+
+fn actions_for_goal_image(goal_image_tensor: &Tensor, state: &WorldState) -> Result<Vec<Action>> {
+    let target = goal_image::goal_image_target(goal_image_tensor, state).ok_or_else(|| {
+        WorldForgeError::NoFeasiblePlan {
+            goal: "goal-image".to_string(),
+            reason: "mock native planner could not interpret the goal image".to_string(),
+        }
+    })?;
+    let tolerance = goal_image_tolerance(target.confidence);
+
+    if let Some(object_id) = primary_movable_object_id(state) {
+        if state
+            .scene
+            .get_object(&object_id)
+            .is_some_and(|object| object.pose.position.distance(target.position) <= tolerance)
+        {
+            return Ok(Vec::new());
+        }
+        Ok(vec![Action::Place {
+            object: object_id,
+            target: target.position,
+        }])
+    } else {
+        Ok(vec![Action::SpawnObject {
+            template: "goal-image-object".to_string(),
+            pose: Pose {
+                position: target.position,
+                ..Pose::default()
+            },
+        }])
+    }
+}
+
+fn goal_image_tolerance(confidence: f32) -> f32 {
+    (0.12 + (1.0 - confidence).clamp(0.0, 1.0) * 0.2).clamp(0.05, 0.5)
 }
 
 fn actions_for_condition(
@@ -568,7 +602,9 @@ fn goal_score(goal: &PlanGoal, state: &WorldState) -> f32 {
         }
         PlanGoal::TargetState(target) => target_state_score(state, target),
         PlanGoal::Description(description) => description_goal_score(description, state),
-        PlanGoal::GoalImage(_) => 0.0,
+        PlanGoal::GoalImage(goal_image_tensor) => {
+            goal_image::goal_image_similarity(goal_image_tensor, state).unwrap_or(0.0)
+        }
     }
 }
 
@@ -2362,6 +2398,41 @@ mod tests {
         let final_mug = final_state.scene.get_object(&mug_id).unwrap();
         let target_mug = target.scene.get_object(&mug_id).unwrap();
         assert!(final_mug.pose.position.distance(target_mug.pose.position) <= 0.1);
+    }
+
+    #[tokio::test]
+    async fn test_mock_native_plan_goal_image_goal() {
+        let provider = MockProvider::new();
+        let (state, _, mug_id) = sample_state();
+        let current_position = state.scene.get_object(&mug_id).unwrap().pose.position;
+        let mut target = state.clone();
+        target
+            .scene
+            .get_object_mut(&mug_id)
+            .unwrap()
+            .set_position(Position {
+                x: 0.6,
+                y: 0.7,
+                z: 0.0,
+            });
+        let goal_image = goal_image::render_scene_goal_image(&target, (32, 24));
+        let baseline_similarity = goal_image::goal_image_similarity(&goal_image, &state).unwrap();
+        let goal = PlanGoal::GoalImage(goal_image);
+
+        let plan = provider.plan(&native_request(&state, goal)).await.unwrap();
+        assert!(!plan.actions.is_empty());
+        assert!(plan.success_probability >= 0.95);
+
+        let final_state = plan.predicted_states.last().unwrap();
+        let final_mug = final_state.scene.get_object(&mug_id).unwrap();
+        let final_similarity = goal_image::goal_image_similarity(
+            &goal_image::render_scene_goal_image(&target, (32, 24)),
+            final_state,
+        )
+        .unwrap();
+        assert!(final_mug.pose.position.x > current_position.x);
+        assert!(final_similarity > baseline_similarity);
+        assert!(final_similarity >= 0.95);
     }
 
     #[tokio::test]

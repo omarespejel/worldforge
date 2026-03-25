@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use worldforge_core::action::{evaluate_condition, Action, ActionSpaceType, Condition, Weather};
 use worldforge_core::error::{Result, WorldForgeError};
+use worldforge_core::goal_image;
 use worldforge_core::guardrail::{evaluate_guardrails, has_blocking_violation};
 use worldforge_core::prediction::{
     PhysicsScores, Plan, PlanGoal, PlanRequest, Prediction, PredictionConfig,
@@ -594,8 +595,35 @@ fn derive_native_goal(goal: &PlanGoal, state: &WorldState) -> Option<NativePlanG
         PlanGoal::Condition(condition) => native_goal_from_condition(condition, state),
         PlanGoal::TargetState(target) => native_goal_from_target_state(target, state),
         PlanGoal::Description(description) => native_goal_from_description(description, state),
-        PlanGoal::GoalImage(_) => None,
+        PlanGoal::GoalImage(image) => {
+            let target = goal_image::goal_image_target(image, state)?;
+            let tolerance = goal_image_tolerance(target.confidence);
+            if let Some(object_id) = primary_dynamic_object_id(&state.scene) {
+                if state.scene.get_object(&object_id).is_some_and(|object| {
+                    object.pose.position.distance(target.position) <= tolerance
+                }) {
+                    return Some(NativePlanGoal::AlreadySatisfied);
+                }
+                Some(NativePlanGoal::ObjectAt {
+                    object_id,
+                    target: target.position,
+                    tolerance,
+                })
+            } else {
+                Some(NativePlanGoal::ObjectExists {
+                    object_name: "goal-image-object".to_string(),
+                    pose: Pose {
+                        position: target.position,
+                        ..Pose::default()
+                    },
+                })
+            }
+        }
     }
+}
+
+fn goal_image_tolerance(confidence: f32) -> f32 {
+    (0.12 + (1.0 - confidence).clamp(0.0, 1.0) * 0.2).clamp(0.05, 0.5)
 }
 
 fn native_goal_from_condition(condition: &Condition, state: &WorldState) -> Option<NativePlanGoal> {
@@ -1965,6 +1993,52 @@ mod tests {
 
         assert!(!plan.actions.is_empty());
         assert!(final_position.x > 1.0);
+        assert!(plan.success_probability > 0.9);
+    }
+
+    #[tokio::test]
+    async fn test_jepa_native_plan_supports_goal_image() {
+        let model_dir = TestModelDir::new("goal-image");
+        model_dir.write_weights("model.safetensors", b"latent-weights-go-here");
+        model_dir.write_manifest(&manifest_json("vjepa2-local"));
+
+        let provider = JepaProvider::new(&model_dir.path, JepaBackend::Burn);
+        let (state, object_id) = sample_state();
+        let initial_position = state.scene.get_object(&object_id).unwrap().pose.position;
+        let mut target_state = state.clone();
+        target_state
+            .scene
+            .get_object_mut(&object_id)
+            .unwrap()
+            .set_position(Position {
+                x: 1.2,
+                y: 1.0,
+                z: 0.0,
+            });
+        let goal = PlanGoal::GoalImage(worldforge_core::goal_image::render_scene_goal_image(
+            &target_state,
+            (32, 24),
+        ));
+        let request = PlanRequest {
+            current_state: state,
+            goal,
+            max_steps: 4,
+            guardrails: Vec::new(),
+            planner: worldforge_core::prediction::PlannerType::ProviderNative,
+            timeout_seconds: 5.0,
+        };
+
+        let plan = provider.plan(&request).await.unwrap();
+        let final_state = plan.predicted_states.last().unwrap();
+        let final_position = final_state
+            .scene
+            .get_object(&object_id)
+            .unwrap()
+            .pose
+            .position;
+
+        assert!(!plan.actions.is_empty());
+        assert!(final_position.x > initial_position.x);
         assert!(plan.success_probability > 0.9);
     }
 }

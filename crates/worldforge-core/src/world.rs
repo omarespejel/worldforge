@@ -9,6 +9,7 @@ use tracing::instrument;
 
 use crate::action::{Action, Condition, Weather};
 use crate::error::{Result, WorldForgeError};
+use crate::goal_image;
 use crate::guardrail::{evaluate_guardrails, has_blocking_violation};
 use crate::prediction::{
     MultiPrediction, Plan, PlanRequest, PlannerType, Prediction, PredictionConfig,
@@ -932,12 +933,7 @@ async fn evaluate_candidate_sequence(
         guardrail_compliance.push(gr_results);
     }
 
-    let goal_score = score_goal_hints(context.goal_hints, &simulated_state).unwrap_or_else(|| {
-        evaluate_goal_score(
-            &crate::prediction::PlanGoal::Description(String::new()),
-            &simulated_state,
-        )
-    });
+    let goal_score = evaluate_goal_score(&context.request.goal, &simulated_state);
     let mean_physics = if actions.is_empty() {
         0.0
     } else {
@@ -1364,7 +1360,30 @@ fn derive_goal_hints(goal: &crate::prediction::PlanGoal, state: &WorldState) -> 
         PlanGoal::Condition(condition) => condition_hints(condition, state),
         PlanGoal::TargetState(target) => target_state_hints(target, state),
         PlanGoal::Description(description) => parse_description_goal(description, state),
-        PlanGoal::GoalImage(_) => Vec::new(),
+        PlanGoal::GoalImage(image) => {
+            let Some(target) = goal_image::goal_image_target(image, state) else {
+                return Vec::new();
+            };
+
+            if let Some(object_id) = primary_dynamic_object(state).map(|object| object.id) {
+                vec![GoalHint::ObjectAt {
+                    object_id,
+                    _object_name: state
+                        .scene
+                        .get_object(&object_id)
+                        .map(|object| object.name.clone())
+                        .unwrap_or_else(|| object_id.to_string()),
+                    target: target.position,
+                    tolerance: 0.15f32.max(0.05 + (1.0 - target.confidence) * 0.2),
+                }]
+            } else {
+                vec![GoalHint::ObjectExistsAt {
+                    object_name: "goal-image-object".to_string(),
+                    target: target.position,
+                    tolerance: 0.15f32.max(0.05 + (1.0 - target.confidence) * 0.2),
+                }]
+            }
+        }
     }
 }
 
@@ -2050,6 +2069,12 @@ fn evaluate_goal_score(goal: &crate::prediction::PlanGoal, state: &WorldState) -
                 score_goal_hints(&derive_goal_hints(goal, state), state).unwrap_or(0.0)
             }
         }
+        crate::prediction::PlanGoal::GoalImage(image) => {
+            let image_score = goal_image::goal_image_similarity(image, state).unwrap_or(0.0);
+            let hint_score =
+                score_goal_hints(&derive_goal_hints(goal, state), state).unwrap_or(image_score);
+            ((image_score * 0.7) + (hint_score * 0.3)).clamp(0.0, 1.0)
+        }
         _ => score_goal_hints(&derive_goal_hints(goal, state), state).unwrap_or(0.5),
     }
 }
@@ -2248,6 +2273,54 @@ mod tests {
         let score = evaluate_goal_score(&goal, &state);
         // Distance is 0, so similarity = 1/(1+0) = 1.0
         assert!((score - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn test_sampling_plan_supports_goal_image() {
+        let (state, object_id) = sample_planning_state();
+        let initial_position = state.scene.get_object(&object_id).unwrap().pose.position;
+        let mut target_state = state.clone();
+        target_state
+            .scene
+            .get_object_mut(&object_id)
+            .unwrap()
+            .set_position(crate::types::Position {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            });
+        let goal_image = crate::goal_image::render_scene_goal_image(&target_state, (32, 24));
+
+        let registry = std::sync::Arc::new({
+            let mut registry = ProviderRegistry::new();
+            registry.register(Box::new(PlanningProvider::new("planner", 1.0, false)));
+            registry
+        });
+        let world = World::new(state.clone(), "planner", registry);
+        let request = PlanRequest {
+            current_state: state,
+            goal: PlanGoal::GoalImage(goal_image),
+            max_steps: 3,
+            guardrails: Vec::new(),
+            planner: PlannerType::Sampling {
+                num_samples: 16,
+                top_k: 4,
+            },
+            timeout_seconds: 5.0,
+        };
+
+        let plan = world.plan(&request).await.unwrap();
+        let final_state = plan.predicted_states.last().unwrap();
+        let final_position = final_state
+            .scene
+            .get_object(&object_id)
+            .unwrap()
+            .pose
+            .position;
+
+        assert!(!plan.actions.is_empty());
+        assert!(final_position.x > initial_position.x);
+        assert!(plan.success_probability > 0.9);
     }
 
     #[tokio::test]

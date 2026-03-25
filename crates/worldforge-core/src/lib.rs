@@ -9,6 +9,7 @@
 //! - [`types`] — Tensor, spatial, temporal, and media types
 //! - [`error`] — Error types and result alias
 //! - [`scene`] — Scene graph for spatial representation
+//! - [`goal_image`] — Goal-image rendering and similarity helpers
 //! - [`state`] — World state and persistence
 //! - [`action`] — Action type system
 //! - [`provider`] — Provider abstraction and registry
@@ -18,6 +19,8 @@
 
 pub mod action;
 pub mod error;
+/// Goal-image rendering and similarity utilities.
+pub mod goal_image;
 pub mod guardrail;
 pub mod prediction;
 pub mod provider;

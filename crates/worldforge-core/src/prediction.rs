@@ -538,6 +538,23 @@ mod tests {
     }
 
     #[test]
+    fn test_plan_goal_input_accepts_structured_goal_image() {
+        let state = WorldState::new("goal-image", "mock");
+        let image = crate::goal_image::render_scene_goal_image(&state, (12, 8));
+        let json = serde_json::json!({
+            "type": "goal_image",
+            "image": image,
+        });
+        let input: PlanGoalInput = serde_json::from_value(json).unwrap();
+        let goal: PlanGoal = input.into();
+
+        match goal {
+            PlanGoal::GoalImage(image) => assert_eq!(image.shape, vec![8, 12]),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
     fn test_multi_prediction_try_from_predictions_picks_best_provider() {
         let multi = MultiPrediction::try_from_predictions(vec![
             sample_prediction("provider-a", 0.52, 90),
