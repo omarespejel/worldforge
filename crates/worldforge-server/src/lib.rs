@@ -125,7 +125,10 @@ struct AppState {
 /// JSON request body for creating a world.
 #[derive(Debug, Deserialize)]
 struct CreateWorldRequest {
-    name: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    prompt: Option<String>,
     provider: String,
 }
 
@@ -769,7 +772,47 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                 if let Err(error) = state.registry.get(&req.provider) {
                     return (404, error_response(&error.to_string()));
                 }
-                let ws = WorldState::new(&req.name, &req.provider);
+                let world_name = req
+                    .name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                let prompt = req
+                    .prompt
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                let ws = match (world_name, prompt) {
+                    (Some(name), Some(prompt)) => {
+                        match WorldState::from_prompt(prompt, &req.provider, Some(name)) {
+                            Ok(state) => state,
+                            Err(error) => {
+                                return (
+                                    api_error_status(&error),
+                                    error_response(&error.to_string()),
+                                );
+                            }
+                        }
+                    }
+                    (None, Some(prompt)) => {
+                        match WorldState::from_prompt(prompt, &req.provider, None) {
+                            Ok(state) => state,
+                            Err(error) => {
+                                return (
+                                    api_error_status(&error),
+                                    error_response(&error.to_string()),
+                                );
+                            }
+                        }
+                    }
+                    (Some(name), None) => WorldState::new(name, &req.provider),
+                    (None, None) => {
+                        return (
+                            400,
+                            error_response("create world requires at least one of name or prompt"),
+                        )
+                    }
+                };
                 let id = ws.id;
                 if let Err(e) = state.store.save(&ws).await {
                     return (500, error_response(&e.to_string()));
@@ -779,8 +822,10 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                     201,
                     ApiResponse::ok(serde_json::json!({
                         "id": id.to_string(),
-                        "name": req.name,
+                        "name": ws.metadata.name,
+                        "description": ws.metadata.description,
                         "provider": req.provider,
+                        "object_count": ws.scene.objects.len(),
                     })),
                 )
             }
@@ -880,6 +925,24 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                 }
             }
             (200, ApiResponse::ok(worlds))
+        }
+
+        // GET /v1/worlds/{id}/history
+        ("GET", p) if p.starts_with("/v1/worlds/") && p.ends_with("/history") => {
+            let id_str = p
+                .strip_prefix("/v1/worlds/")
+                .and_then(|value| value.strip_suffix("/history"))
+                .unwrap_or("");
+            match id_str.parse::<WorldId>() {
+                Ok(id) => match state.store.load(&id).await {
+                    Ok(ws) => {
+                        let entries: Vec<_> = ws.history.states.iter().cloned().collect();
+                        (200, ApiResponse::ok(entries))
+                    }
+                    Err(error) => (404, error_response(&error.to_string())),
+                },
+                Err(_) => (400, error_response("invalid world ID")),
+            }
         }
 
         // GET /v1/worlds/{id}/objects
@@ -1647,12 +1710,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_route_create_world_from_prompt_bootstraps_scene() {
+        let state = test_state();
+        let body = r#"{"prompt":"A kitchen with a mug","name":"seeded-kitchen","provider":"mock"}"#;
+        let (status, resp) = route("POST", "/v1/worlds", body, &state).await;
+        assert_eq!(status, 201);
+
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(value["data"]["name"], "seeded-kitchen");
+        assert_eq!(value["data"]["description"], "A kitchen with a mug");
+        assert!(value["data"]["object_count"].as_u64().unwrap() >= 2);
+
+        let world_id = value["data"]["id"].as_str().unwrap();
+        let (status, world) = route("GET", &format!("/v1/worlds/{world_id}"), "", &state).await;
+        assert_eq!(status, 200);
+
+        let loaded: serde_json::Value = serde_json::from_str(&world).unwrap();
+        assert_eq!(
+            loaded["data"]["metadata"]["description"],
+            "A kitchen with a mug"
+        );
+        assert!(
+            loaded["data"]["scene"]["objects"]
+                .as_object()
+                .unwrap()
+                .len()
+                >= 2
+        );
+    }
+
+    #[tokio::test]
     async fn test_route_create_world_requires_registered_provider() {
         let state = test_state();
         let body = r#"{"name":"bad world","provider":"missing"}"#;
         let (status, resp) = route("POST", "/v1/worlds", body, &state).await;
         assert_eq!(status, 404);
         assert!(resp.contains("provider not found"));
+    }
+
+    #[tokio::test]
+    async fn test_route_create_world_requires_name_or_prompt() {
+        let state = test_state();
+        let body = r#"{"provider":"mock"}"#;
+        let (status, resp) = route("POST", "/v1/worlds", body, &state).await;
+        assert_eq!(status, 400);
+        assert!(resp.contains("name or prompt"));
     }
 
     #[tokio::test]
@@ -1711,6 +1813,32 @@ mod tests {
         let (status, resp) = route("GET", "/v1/worlds", "", &state).await;
         assert_eq!(status, 200);
         assert!(resp.contains("w1"));
+    }
+
+    #[tokio::test]
+    async fn test_route_get_world_history() {
+        let state = test_state();
+        let id = seed_world(&state, "history-world", "mock").await;
+        let predict_body =
+            r#"{"action":{"SetWeather":{"weather":"Rain"}},"disable_guardrails":true}"#;
+
+        let (status, _) = route(
+            "POST",
+            &format!("/v1/worlds/{id}/predict"),
+            predict_body,
+            &state,
+        )
+        .await;
+        assert_eq!(status, 200);
+
+        let (status, resp) = route("GET", &format!("/v1/worlds/{id}/history"), "", &state).await;
+        assert_eq!(status, 200);
+
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let entries = value["data"].as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(entries[0]["action"].is_null());
+        assert_eq!(entries[1]["provider"], "mock");
     }
 
     #[tokio::test]
@@ -1929,7 +2057,7 @@ mod tests {
         assert_eq!(world["data"]["time"]["step"], 1);
         assert_eq!(
             world["data"]["history"]["states"].as_array().unwrap().len(),
-            1
+            2
         );
     }
 
@@ -2017,7 +2145,7 @@ mod tests {
 
         let persisted = state.store.load(&id).await.unwrap();
         assert_eq!(persisted.time.step, 1);
-        assert_eq!(persisted.history.len(), 1);
+        assert_eq!(persisted.history.len(), 2);
         let transition = persisted.history.latest().unwrap();
         assert_eq!(transition.provider, "mock");
         assert!(transition.prediction.is_some());

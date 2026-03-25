@@ -18,6 +18,7 @@
 //! - [`world`] — World orchestration
 
 pub mod action;
+mod bootstrap;
 pub mod error;
 /// Goal-image rendering and similarity utilities.
 pub mod goal_image;
@@ -170,6 +171,22 @@ impl WorldForge {
         Ok(World::new(state, provider_name, Arc::clone(&self.registry)))
     }
 
+    /// Create a new world seeded from a natural-language prompt.
+    ///
+    /// The prompt is stored in metadata and used to synthesize a deterministic
+    /// starter scene.
+    pub async fn create_world_from_prompt(
+        &self,
+        prompt: &str,
+        provider_name: impl Into<String>,
+        name_override: Option<&str>,
+    ) -> Result<World> {
+        let provider_name = provider_name.into();
+        self.registry.get(&provider_name)?;
+        let state = WorldState::from_prompt(prompt, &provider_name, name_override)?;
+        Ok(World::new(state, provider_name, Arc::clone(&self.registry)))
+    }
+
     /// Load a world from a state store.
     pub fn load_world(
         &self,
@@ -258,6 +275,24 @@ mod tests {
     fn test_worldforge_new() {
         let wf = WorldForge::new();
         assert!(wf.providers().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_create_world_from_prompt_seeds_scene() {
+        let mut wf = WorldForge::new();
+        wf.register_provider(Box::new(EmbedProvider)).unwrap();
+
+        let world = wf
+            .create_world_from_prompt("A kitchen with a mug", "embedder", None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            world.current_state().metadata.description,
+            "A kitchen with a mug"
+        );
+        assert_eq!(world.current_state().history.len(), 1);
+        assert!(!world.current_state().scene.objects.is_empty());
     }
 
     #[test]

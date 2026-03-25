@@ -94,6 +94,9 @@ pub enum Commands {
         /// Text description of the world.
         #[arg(long)]
         prompt: String,
+        /// Optional explicit world name. Defaults to a name derived from the prompt.
+        #[arg(long)]
+        name: Option<String>,
         /// Provider to use.
         #[arg(long, default_value = "mock")]
         provider: String,
@@ -222,6 +225,16 @@ pub enum Commands {
     Show {
         /// World ID.
         world: String,
+    },
+
+    /// Show recorded history entries for a world.
+    History {
+        /// World ID.
+        #[arg(long)]
+        world: String,
+        /// Optional path to write the history entries as JSON.
+        #[arg(long)]
+        output_json: Option<PathBuf>,
     },
 
     /// Delete a world.
@@ -631,9 +644,11 @@ pub async fn run() -> Result<()> {
     let store = open_state_store(&cli).await?;
 
     match cli.command {
-        Commands::Create { prompt, provider } => {
-            cmd_create(store.as_ref(), &prompt, &provider).await
-        }
+        Commands::Create {
+            prompt,
+            name,
+            provider,
+        } => cmd_create(store.as_ref(), &prompt, name.as_deref(), &provider).await,
         Commands::Predict {
             world,
             action,
@@ -715,6 +730,9 @@ pub async fn run() -> Result<()> {
         } => cmd_reason(store.as_ref(), &world, &query, provider.as_deref()).await,
         Commands::List => cmd_list(store.as_ref()).await,
         Commands::Show { world } => cmd_show(store.as_ref(), &world).await,
+        Commands::History { world, output_json } => {
+            cmd_history(store.as_ref(), &world, output_json.as_deref()).await
+        }
         Commands::Delete { world } => cmd_delete(store.as_ref(), &world).await,
         Commands::Objects { command } => match command {
             ObjectCommands::Add {
@@ -1544,18 +1562,21 @@ fn print_bundle_verification<T: Serialize>(
 async fn cmd_create(
     store: &(impl StateStore + ?Sized),
     prompt: &str,
+    name: Option<&str>,
     provider: &str,
 ) -> Result<()> {
     let registry = auto_detect_registry();
     require_provider(&registry, provider).context("failed to create world")?;
-    let state = WorldState::new(prompt, provider);
+    let state = WorldState::from_prompt(prompt, provider, name)?;
     store
         .save(&state)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     println!("Created world: {}", state.id);
-    println!("  Name: {prompt}");
+    println!("  Name: {}", state.metadata.name);
+    println!("  Description: {}", state.metadata.description);
     println!("  Provider: {provider}");
+    println!("  Seeded objects: {}", state.scene.objects.len());
     Ok(())
 }
 
@@ -1789,6 +1810,54 @@ async fn cmd_show(store: &(impl StateStore + ?Sized), world_id: &str) -> Result<
         );
     }
     println!("  History entries: {}", state.history.len());
+    Ok(())
+}
+
+async fn cmd_history(
+    store: &(impl StateStore + ?Sized),
+    world_id: &str,
+    output_json: Option<&Path>,
+) -> Result<()> {
+    let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
+    let state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let entries: Vec<_> = state.history.states.iter().cloned().collect();
+
+    if let Some(path) = output_json {
+        write_json_file(path, &entries)?;
+        println!("Wrote world history JSON to {}", path.display());
+        return Ok(());
+    }
+
+    println!("History for world: {}", state.id);
+    if entries.is_empty() {
+        println!("  No recorded history entries.");
+        return Ok(());
+    }
+
+    for (index, entry) in entries.iter().enumerate() {
+        let action = entry
+            .action
+            .as_ref()
+            .map(|action| format!("{action:?}"))
+            .unwrap_or_else(|| "initial checkpoint".to_string());
+        let prediction = entry
+            .prediction
+            .as_ref()
+            .map(|prediction| {
+                format!(
+                    "confidence {:.2}, physics {:.2}, latency {}ms",
+                    prediction.confidence, prediction.physics_score, prediction.latency_ms
+                )
+            })
+            .unwrap_or_else(|| "no prediction summary".to_string());
+
+        println!(
+            "  [{}] step {} provider={} action={}",
+            index, entry.time.step, entry.provider, action
+        );
+        println!("      prediction={prediction}");
+    }
+
     Ok(())
 }
 
@@ -2621,6 +2690,34 @@ mod tests {
     }
 
     #[test]
+    fn test_cli_parse_create_command_with_name_override() {
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "create",
+            "--prompt",
+            "A kitchen with a mug",
+            "--name",
+            "kitchen-counter",
+            "--provider",
+            "mock",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Create {
+                prompt,
+                name,
+                provider,
+            } => {
+                assert_eq!(prompt, "A kitchen with a mug");
+                assert_eq!(name.as_deref(), Some("kitchen-counter"));
+                assert_eq!(provider, "mock");
+            }
+            _ => panic!("expected Create"),
+        }
+    }
+
+    #[test]
     fn test_cli_parse_sqlite_backend() {
         let cli = Cli::try_parse_from([
             "worldforge",
@@ -2638,6 +2735,27 @@ mod tests {
             Some(PathBuf::from("/tmp/worldforge/state.db"))
         );
         assert!(matches!(cli.command, Commands::List));
+    }
+
+    #[test]
+    fn test_cli_parse_history_command() {
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "history",
+            "--world",
+            "123e4567-e89b-12d3-a456-426614174000",
+            "--output-json",
+            "/tmp/history.json",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::History { world, output_json } => {
+                assert_eq!(world, "123e4567-e89b-12d3-a456-426614174000");
+                assert_eq!(output_json, Some(PathBuf::from("/tmp/history.json")));
+            }
+            _ => panic!("expected History"),
+        }
     }
 
     #[test]
@@ -3685,7 +3803,7 @@ mod tests {
 
         let updated = store.load(&state.id).await.unwrap();
         assert_eq!(updated.time.step, 1);
-        assert_eq!(updated.history.len(), 1);
+        assert_eq!(updated.history.len(), 2);
         let transition = updated.history.latest().unwrap();
         assert_eq!(transition.provider, "mock");
         assert!(transition.prediction.is_some());
@@ -3695,6 +3813,44 @@ mod tests {
                 weather: worldforge_core::action::Weather::Rain
             })
         ));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn test_cmd_history_writes_output_json() {
+        let dir = std::env::temp_dir().join(format!("wf-cli-history-{}", uuid::Uuid::new_v4()));
+        let store = StateStoreKind::File(dir.join("state"))
+            .open()
+            .await
+            .unwrap();
+        let state = WorldState::new("history", "mock");
+        let world_id = state.id.to_string();
+        store.save(&state).await.unwrap();
+
+        cmd_predict(
+            store.as_ref(),
+            &world_id,
+            "set-weather rain",
+            1,
+            "mock",
+            None,
+            None,
+            true,
+        )
+        .await
+        .unwrap();
+
+        let history_path = dir.join("history.json");
+        cmd_history(store.as_ref(), &world_id, Some(&history_path))
+            .await
+            .unwrap();
+
+        let value: serde_json::Value = read_json_file(&history_path).unwrap();
+        let entries = value.as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(entries[0]["action"].is_null());
+        assert_eq!(entries[1]["provider"], "mock");
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -3809,6 +3965,35 @@ mod tests {
 
         let updated = store.load(&state.id).await.unwrap();
         assert!(updated.scene.objects.is_empty());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn test_cmd_create_seeds_world_from_prompt() {
+        let dir = std::env::temp_dir().join(format!("wf-cli-create-{}", uuid::Uuid::new_v4()));
+        let store = StateStoreKind::File(dir.join("state"))
+            .open()
+            .await
+            .unwrap();
+
+        cmd_create(
+            store.as_ref(),
+            "A kitchen with a mug",
+            Some("seeded-kitchen"),
+            "mock",
+        )
+        .await
+        .unwrap();
+
+        let world_ids = store.list().await.unwrap();
+        assert_eq!(world_ids.len(), 1);
+
+        let state = store.load(&world_ids[0]).await.unwrap();
+        assert_eq!(state.metadata.name, "seeded-kitchen");
+        assert_eq!(state.metadata.description, "A kitchen with a mug");
+        assert!(state.scene.objects.len() >= 2);
+        assert_eq!(state.history.len(), 1);
 
         let _ = fs::remove_dir_all(dir);
     }

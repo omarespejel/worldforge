@@ -61,6 +61,14 @@ world.add_object(
     )
 )
 
+# Or bootstrap a starter scene directly from a prompt
+seeded = wf.create_world_from_prompt(
+    "A kitchen counter with a red mug",
+    provider="manual-mock",
+    name="kitchen-counter-seeded",
+)
+assert seeded.object_count > 0
+
 # Predict the next state
 prediction = world.predict(Action.move_to(0.25, 0.8, 0.0), steps=10)
 
@@ -118,6 +126,12 @@ assert len(embedding.vector) == 32
 wf = WorldForge(state_backend="sqlite", state_db_path=".worldforge/worldforge.db")
 wf.save_world(world)
 same_world = wf.load_world(world.id)
+
+# Inspect retained state history
+history = world.history()
+assert len(history) >= 2
+assert history[0].action_json is None
+assert history[-1].provider == "mock"
 ```
 
 The Python package also exposes `worldforge.providers`, `worldforge.eval`, and
@@ -136,6 +150,7 @@ guardrail_bundle = plan.prove_guardrail_bundle()
 guardrail_report = verifier.verify_guardrail_bundle(guardrail_bundle)
 assert guardrail_report.current_verification.valid
 
+# One prediction is enough to retain both the initial checkpoint and the latest transition
 world.predict(Action.move_to(0.35, 0.8, 0.0), steps=2)
 inference_bundle = world.prove_latest_inference_bundle()
 assert inference_bundle.verify().current_verification.valid
@@ -230,7 +245,7 @@ cargo clippy -- -D warnings
 cargo fmt
 
 # Run CLI
-cargo run -p worldforge-cli -- create --prompt "A kitchen with a mug"
+cargo run -p worldforge-cli -- create --prompt "A kitchen with a mug" --name kitchen-counter
 cargo run -p worldforge-cli -- objects add --world <id> --name red_mug --position 0 0.8 0 --bbox-min -0.05 0.75 -0.05 --bbox-max 0.05 0.85 0.05 --semantic-label mug
 cargo run -p worldforge-cli -- objects list --world <id>
 cargo run -p worldforge-cli -- objects show --world <id> --object-id <object-id>
@@ -242,6 +257,7 @@ cargo run -p worldforge-cli -- providers --health
 cargo run -p worldforge-cli -- estimate --provider cosmos --operation generate --duration-seconds 5 --width 1280 --height 720
 cargo run -p worldforge-cli -- list
 cargo run -p worldforge-cli -- --state-backend sqlite --state-db-path .worldforge/worldforge.db list
+cargo run -p worldforge-cli -- history --world <id> --output-json histories/<id>.json
 cargo run -p worldforge-cli -- predict --world <id> --action "move 1 0 0" --provider runway --fallback-provider mock --timeout-ms 500
 cargo run -p worldforge-cli -- plan --world <id> --goal "spawn cube" --planner cem
 cargo run -p worldforge-cli -- plan --world <id> --goal "spawn cube" --planner cem --guardrails-json guardrails.json --output-json plans/generated.json
@@ -289,7 +305,7 @@ Then call the HTTP API directly:
 ```bash
 curl -X POST http://127.0.0.1:8080/v1/worlds \
   -H 'content-type: application/json' \
-  -d '{"name":"Kitchen counter","provider":"mock"}'
+  -d '{"prompt":"A kitchen with a mug","name":"Kitchen counter","provider":"mock"}'
 
 curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/objects \
   -H 'content-type: application/json' \

@@ -21,7 +21,7 @@ use worldforge_core::provider::{
     SpatialControls, TransferConfig, WorldModelProvider,
 };
 use worldforge_core::scene::SceneObject;
-use worldforge_core::state::{StateStoreKind, WorldState};
+use worldforge_core::state::{HistoryEntry, StateStoreKind, WorldState};
 use worldforge_core::types::{BBox, Position, Rotation, TensorData, Velocity, VideoClip};
 use worldforge_core::world::World as CoreWorld;
 use worldforge_providers::{
@@ -744,6 +744,12 @@ impl PyWorld {
         &self.world.state.metadata.name
     }
 
+    /// Get the world's prompt-derived description.
+    #[getter]
+    fn description(&self) -> &str {
+        &self.world.state.metadata.description
+    }
+
     /// Get the current simulation step.
     #[getter]
     fn step(&self) -> u64 {
@@ -833,6 +839,18 @@ impl PyWorld {
         self.world.state.history.len()
     }
 
+    /// Return the recorded history entries for this world.
+    fn history(&self) -> Vec<PyHistoryEntry> {
+        self.world
+            .state
+            .history
+            .states
+            .iter()
+            .cloned()
+            .map(|inner| PyHistoryEntry { inner })
+            .collect()
+    }
+
     /// Export the world state as JSON.
     fn to_json(&self) -> PyResult<String> {
         serde_json::to_string_pretty(&self.world.state).map_err(|e| {
@@ -866,7 +884,7 @@ impl PyWorld {
     /// Generate a typed verification bundle for the latest recorded inference.
     ///
     /// Requires at least two recorded history entries, which typically means
-    /// the world has already gone through two prediction steps.
+    /// the world has already gone through one prediction step.
     #[pyo3(signature = (provider=None))]
     fn prove_latest_inference_bundle(&self, provider: Option<&str>) -> PyResult<PyInferenceBundle> {
         let verifier = worldforge_verify::MockVerifier::new();
@@ -1060,6 +1078,97 @@ impl PyWorld {
             })?;
 
         Ok(PyReasoningOutput { inner: output })
+    }
+}
+
+/// One recorded checkpoint from a world's state history.
+#[pyclass(name = "HistoryEntry")]
+#[derive(Debug, Clone)]
+pub struct PyHistoryEntry {
+    inner: HistoryEntry,
+}
+
+#[pymethods]
+impl PyHistoryEntry {
+    /// Simulation step captured by this entry.
+    #[getter]
+    fn step(&self) -> u64 {
+        self.inner.time.step
+    }
+
+    /// Continuous simulation time in seconds.
+    #[getter]
+    fn time_seconds(&self) -> f64 {
+        self.inner.time.seconds
+    }
+
+    /// Provider recorded for this checkpoint.
+    #[getter]
+    fn provider(&self) -> String {
+        self.inner.provider.clone()
+    }
+
+    /// SHA-256 state hash for this checkpoint, encoded as lowercase hex.
+    #[getter]
+    fn state_hash_hex(&self) -> String {
+        format_hash_hex(&self.inner.state_hash)
+    }
+
+    /// Serialized action JSON, if this checkpoint was produced by an action.
+    #[getter]
+    fn action_json(&self) -> PyResult<Option<String>> {
+        self.inner
+            .action
+            .as_ref()
+            .map(|action| {
+                serde_json::to_string(action).map_err(|e| {
+                    pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+                })
+            })
+            .transpose()
+    }
+
+    /// Prediction confidence, if present.
+    #[getter]
+    fn confidence(&self) -> Option<f32> {
+        self.inner
+            .prediction
+            .as_ref()
+            .map(|prediction| prediction.confidence)
+    }
+
+    /// Overall physics score, if present.
+    #[getter]
+    fn physics_score(&self) -> Option<f32> {
+        self.inner
+            .prediction
+            .as_ref()
+            .map(|prediction| prediction.physics_score)
+    }
+
+    /// Prediction latency in milliseconds, if present.
+    #[getter]
+    fn latency_ms(&self) -> Option<u64> {
+        self.inner
+            .prediction
+            .as_ref()
+            .map(|prediction| prediction.latency_ms)
+    }
+
+    /// Serialize this history entry to JSON.
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "HistoryEntry(step={}, provider='{}', action_present={})",
+            self.inner.time.step,
+            self.inner.provider,
+            self.inner.action.is_some()
+        )
     }
 }
 
@@ -2354,6 +2463,26 @@ impl PyWorldForge {
         let world = self.inner.create_world(name, provider).map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("failed to create world: {e}"))
         })?;
+        Ok(PyWorld { world, registry })
+    }
+
+    /// Create a new world seeded from a natural-language prompt.
+    #[pyo3(signature = (prompt, provider="mock", name=None))]
+    fn create_world_from_prompt(
+        &self,
+        prompt: &str,
+        provider: &str,
+        name: Option<&str>,
+    ) -> PyResult<PyWorld> {
+        let registry = self.inner.registry_arc();
+        let rt = new_runtime()?;
+        let world = rt
+            .block_on(self.inner.create_world_from_prompt(prompt, provider, name))
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "failed to create world from prompt: {e}"
+                ))
+            })?;
         Ok(PyWorld { world, registry })
     }
 
@@ -4239,6 +4368,7 @@ fn worldforge(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyVelocity>()?;
     m.add_class::<PySceneObject>()?;
     m.add_class::<PyWorld>()?;
+    m.add_class::<PyHistoryEntry>()?;
     m.add_class::<PyPrediction>()?;
     m.add_class::<PyProviderScore>()?;
     m.add_class::<PyMultiPrediction>()?;
@@ -4603,7 +4733,7 @@ mod tests {
 
         assert_eq!(prediction.provider(), "mock");
         assert_eq!(world.step(), 1);
-        assert_eq!(world.history_length(), 1);
+        assert_eq!(world.history_length(), 2);
     }
 
     #[test]
@@ -4623,6 +4753,30 @@ mod tests {
 
         assert_eq!(prediction.provider(), "mock");
         assert_eq!(world.step(), 1);
+    }
+
+    #[test]
+    fn test_world_history_exposes_initial_and_transition_entries() {
+        let mut world = PyWorld::new("history_world", "mock");
+        world
+            .predict(
+                &PyAction::move_to(1.0, 0.0, 0.0, 1.0),
+                1,
+                None,
+                None,
+                false,
+                None,
+                false,
+            )
+            .unwrap();
+
+        let history = world.history();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].step(), 0);
+        assert!(history[0].action_json().unwrap().is_none());
+        assert_eq!(history[1].provider(), "mock");
+        assert!(history[1].action_json().unwrap().is_some());
+        assert!(history[1].confidence().is_some());
     }
 
     #[test]
@@ -4959,6 +5113,19 @@ mod tests {
     }
 
     #[test]
+    fn test_worldforge_create_world_from_prompt_keeps_seeded_history() {
+        let wf = test_worldforge();
+        let world = wf
+            .create_world_from_prompt("A kitchen with a mug", "mock", Some("seeded-kitchen"))
+            .unwrap();
+
+        assert_eq!(world.name(), "seeded-kitchen");
+        assert_eq!(world.description(), "A kitchen with a mug");
+        assert!(world.object_count() >= 2);
+        assert_eq!(world.history_length(), 1);
+    }
+
+    #[test]
     fn test_worldforge_provider_info() {
         let wf = test_worldforge();
         let info = wf.provider_info("mock").unwrap();
@@ -5020,6 +5187,7 @@ mod tests {
         let wf = test_worldforge();
         let world = wf.create_world("test_world", "mock").unwrap();
         assert_eq!(world.name(), "test_world");
+        assert_eq!(world.description(), "");
         assert_eq!(world.object_count(), 0);
     }
 
@@ -5830,17 +5998,6 @@ mod tests {
         world
             .predict(
                 &PyAction::move_to(0.25, 0.5, 0.0, 1.0),
-                2,
-                Some("mock"),
-                None,
-                false,
-                None,
-                false,
-            )
-            .unwrap();
-        world
-            .predict(
-                &PyAction::move_to(0.35, 0.5, 0.0, 1.0),
                 2,
                 Some("mock"),
                 None,

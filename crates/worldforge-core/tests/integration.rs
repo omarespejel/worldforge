@@ -130,7 +130,7 @@ async fn test_state_store_save_load_roundtrip() {
 }
 
 #[tokio::test]
-async fn test_first_prediction_on_persisted_world_keeps_single_history_entry() {
+async fn test_first_prediction_on_persisted_world_retains_initial_history_entry() {
     let dir = std::env::temp_dir().join(format!("wf-integ-predict-{}", uuid::Uuid::new_v4()));
     let store: DynStateStore = Arc::new(FileStateStore::new(&dir));
     let worldforge = worldforge_with_mock_provider_and_store(store);
@@ -153,7 +153,12 @@ async fn test_first_prediction_on_persisted_world_keeps_single_history_entry() {
 
     let prediction = loaded_world.predict(&action, &config).await.unwrap();
     assert_eq!(prediction.provider, "mock");
-    assert_eq!(loaded_world.current_state().history.len(), 1);
+    assert_eq!(loaded_world.current_state().history.len(), 2);
+
+    let mut history_entries = loaded_world.current_state().history.states.iter();
+    let initial = history_entries.next().unwrap();
+    assert!(initial.action.is_none());
+    assert!(initial.prediction.is_none());
 
     let latest = loaded_world.current_state().history.latest().unwrap();
     assert!(matches!(
@@ -166,7 +171,7 @@ async fn test_first_prediction_on_persisted_world_keeps_single_history_entry() {
 
     worldforge.save_world(&loaded_world).await.unwrap();
     let reloaded = worldforge.load_state(&saved_id).await.unwrap();
-    assert_eq!(reloaded.history.len(), 1);
+    assert_eq!(reloaded.history.len(), 2);
     assert!(matches!(
         reloaded.history.latest().unwrap().action.as_ref(),
         Some(worldforge_core::action::Action::SetWeather {
@@ -199,6 +204,24 @@ async fn test_worldforge_from_registry_creates_usable_world() {
     let prediction = world.predict(&action, &config).await.unwrap();
     assert_eq!(prediction.provider, "mock");
     assert!(!world.current_state().history.is_empty());
+}
+
+#[tokio::test]
+async fn test_worldforge_create_world_from_prompt_bootstraps_scene() {
+    let worldforge = WorldForge::from_registry(provider_registry_with_mock());
+
+    let world = worldforge
+        .create_world_from_prompt("A kitchen with a mug", "mock", Some("seeded-kitchen"))
+        .await
+        .unwrap();
+
+    assert_eq!(world.current_state().metadata.name, "seeded-kitchen");
+    assert_eq!(
+        world.current_state().metadata.description,
+        "A kitchen with a mug"
+    );
+    assert!(world.current_state().scene.objects.len() >= 2);
+    assert_eq!(world.current_state().history.len(), 1);
 }
 
 #[tokio::test]
@@ -256,6 +279,33 @@ async fn test_worldforge_from_registry_with_state_store_roundtrip() {
             .name,
         "crate"
     );
+
+    let _ = tokio::fs::remove_dir_all(&dir).await;
+}
+
+#[tokio::test]
+async fn test_worldforge_prompt_seeded_world_roundtrip() {
+    let dir =
+        std::env::temp_dir().join(format!("wf-core-seeded-roundtrip-{}", uuid::Uuid::new_v4()));
+    let store: DynStateStore = Arc::new(FileStateStore::new(&dir));
+    let worldforge =
+        WorldForge::from_registry_with_state_store(provider_registry_with_mock(), store);
+
+    let world = worldforge
+        .create_world_from_prompt("A kitchen with a mug", "mock", Some("seeded-kitchen"))
+        .await
+        .unwrap();
+    let saved_id = worldforge.save_world(&world).await.unwrap();
+
+    let loaded = worldforge.load_world_from_store(&saved_id).await.unwrap();
+    assert_eq!(loaded.current_state().metadata.name, "seeded-kitchen");
+    assert_eq!(
+        loaded.current_state().metadata.description,
+        "A kitchen with a mug"
+    );
+    assert!(loaded.get_object_by_name("counter").is_some());
+    assert!(loaded.get_object_by_name("mug").is_some());
+    assert_eq!(loaded.current_state().history.len(), 1);
 
     let _ = tokio::fs::remove_dir_all(&dir).await;
 }
@@ -1045,8 +1095,8 @@ async fn test_world_predict_basic() {
     assert!(prediction.physics_scores.overall > 0.0);
     // World state should have advanced
     assert!(world.current_state().time.step > initial_step);
-    // History should have one entry
-    assert_eq!(world.current_state().history.len(), 1);
+    // History retains the initial checkpoint plus the latest transition.
+    assert_eq!(world.current_state().history.len(), 2);
 }
 
 #[tokio::test]

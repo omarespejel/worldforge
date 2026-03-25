@@ -12,6 +12,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::action::Action;
+use crate::bootstrap::seed_world_state_from_prompt;
 use crate::error::{Result, WorldForgeError};
 use crate::scene::SceneGraph;
 use crate::types::{SimTime, WorldId};
@@ -161,6 +162,24 @@ impl WorldState {
                 tags: Vec::new(),
             },
         }
+    }
+
+    /// Create a new world state seeded from a natural-language prompt.
+    ///
+    /// The resulting state stores the prompt in metadata, materializes a
+    /// deterministic starter scene, and records the initial snapshot in
+    /// history.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WorldForgeError::InvalidState` when the prompt is empty.
+    pub fn from_prompt(
+        prompt: &str,
+        provider: impl Into<String>,
+        name_override: Option<&str>,
+    ) -> Result<Self> {
+        let provider = provider.into();
+        seed_world_state_from_prompt(prompt, &provider, name_override)
     }
 
     /// Return the provider most likely responsible for the current state snapshot.
@@ -583,6 +602,19 @@ mod tests {
         assert_eq!(ws.metadata.created_by, "mock");
         assert_eq!(ws.time.step, 0);
         assert!(ws.history.is_empty());
+    }
+
+    #[test]
+    fn test_world_state_from_prompt_seeds_metadata_and_scene() {
+        let state =
+            WorldState::from_prompt("A kitchen with a mug", "mock", Some("seeded")).unwrap();
+
+        assert_eq!(state.metadata.name, "seeded");
+        assert_eq!(state.metadata.description, "A kitchen with a mug");
+        assert_eq!(state.metadata.created_by, "mock");
+        assert_eq!(state.history.len(), 1);
+        assert!(state.scene.find_object_by_name("counter").is_some());
+        assert!(state.scene.find_object_by_name("mug").is_some());
     }
 
     #[test]

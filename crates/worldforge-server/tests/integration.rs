@@ -226,8 +226,19 @@ async fn test_live_http_world_lifecycle() {
     assert_eq!(world["data"]["time"]["step"], 1);
     assert_eq!(
         world["data"]["history"]["states"].as_array().unwrap().len(),
-        1
+        2
     );
+
+    let (status, history) = http_request(
+        server.address,
+        "GET",
+        &format!("/v1/worlds/{world_id}/history"),
+        "",
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(history["data"].as_array().unwrap().len(), 2);
+    assert!(history["data"][0]["action"].is_null());
 
     let (status, deleted) = http_request(
         server.address,
@@ -243,6 +254,33 @@ async fn test_live_http_world_lifecycle() {
         http_request(server.address, "GET", &format!("/v1/worlds/{world_id}"), "").await;
     assert_eq!(status, 404);
     assert_eq!(missing["success"], false);
+}
+
+#[tokio::test]
+async fn test_live_http_create_world_from_prompt_bootstraps_scene() {
+    let server = spawn_test_server().await;
+
+    let (status, create) = http_request(
+        server.address,
+        "POST",
+        "/v1/worlds",
+        r#"{"prompt":"A kitchen with a mug","name":"seeded-kitchen","provider":"mock"}"#,
+    )
+    .await;
+    assert_eq!(status, 201);
+    assert_eq!(create["data"]["name"], "seeded-kitchen");
+    assert_eq!(create["data"]["description"], "A kitchen with a mug");
+    assert!(create["data"]["object_count"].as_u64().unwrap() >= 2);
+
+    let world_id = create["data"]["id"].as_str().unwrap();
+    let (status, world) =
+        http_request(server.address, "GET", &format!("/v1/worlds/{world_id}"), "").await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        world["data"]["metadata"]["description"],
+        "A kitchen with a mug"
+    );
+    assert!(world["data"]["scene"]["objects"].as_object().unwrap().len() >= 2);
 }
 
 #[tokio::test]

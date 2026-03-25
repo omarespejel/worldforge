@@ -159,15 +159,6 @@ impl World {
             .await?;
 
         let mut next_state = prediction.output_state.clone();
-        let collapse_initial_checkpoint = next_state.history.len() == 1
-            && next_state
-                .history
-                .latest()
-                .is_some_and(|entry| entry.action.is_none() && entry.prediction.is_none());
-        if collapse_initial_checkpoint {
-            next_state.history.states.clear();
-        }
-
         if next_state.time == prediction.input_state.time {
             next_state.time = SimTime {
                 step: prediction.input_state.time.step + config.steps as u64,
@@ -379,8 +370,11 @@ impl World {
         config: &PredictionConfig,
         provider_name: &str,
     ) -> Result<Prediction> {
+        let mut state = state.clone();
+        let provider = state.current_state_provider();
+        state.ensure_history_initialized(provider)?;
         let mut prediction = self
-            .run_prediction_with_fallback(state, action, config, provider_name)
+            .run_prediction_with_fallback(&state, action, config, provider_name)
             .await?;
 
         let results = evaluate_guardrails(&config.guardrails, &prediction.output_state);
@@ -2577,7 +2571,11 @@ mod tests {
         let prediction = world.predict(&action, &config).await.unwrap();
 
         assert_eq!(prediction.provider, "fallback");
-        assert_eq!(world.current_state().history.len(), 1);
+        assert_eq!(world.current_state().history.len(), 2);
+        let mut entries = world.current_state().history.states.iter();
+        let initial = entries.next().unwrap();
+        assert!(initial.action.is_none());
+        assert!(initial.prediction.is_none());
         assert_eq!(
             world.current_state().history.latest().unwrap().provider,
             "fallback"
