@@ -10,11 +10,13 @@
 //! - [`runway`] — Runway GWM (Worlds, Robotics, Avatars)
 //! - [`jepa`] — Meta JEPA (local deterministic inference, ZK-compatible)
 //! - [`genie`] — Google Genie (deterministic local surrogate for prediction, reasoning, transfer, and native planning)
+//! - [`native_planning`] — shared deterministic adapter-native planning helper
 
 pub mod cosmos;
 pub mod genie;
 pub mod jepa;
 pub mod mock;
+mod native_planning;
 pub mod runway;
 
 pub use cosmos::CosmosProvider;
@@ -40,9 +42,10 @@ use worldforge_core::WorldForge;
 ///
 /// A `MockProvider` is always registered for testing.
 /// The auto-detected Cosmos entry is capability-complete for its documented
-/// surface: predict/generate/reason/transfer/embed under the stable
-/// `"cosmos"` name. The Runway entry is capability-complete for
-/// predict/generate/reason/transfer under the stable `"runway"` name.
+/// surface: predict/generate/reason/transfer/embed plus adapter-native
+/// planning under the stable `"cosmos"` name. The Runway entry is
+/// capability-complete for predict/generate/reason/transfer plus
+/// adapter-native planning under the stable `"runway"` name.
 /// The Genie surrogate currently supports `predict`, `generate`, `reason`,
 /// `transfer`, and provider-native planning through the local deterministic
 /// backend.

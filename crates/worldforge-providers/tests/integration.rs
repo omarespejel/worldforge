@@ -468,6 +468,36 @@ fn test_full_stack_cosmos_constructor_exposes_merged_capabilities() {
     assert!(capabilities.embed);
 }
 
+#[tokio::test]
+async fn test_cosmos_full_stack_native_planning_surface() {
+    let provider = CosmosProvider::full_stack(
+        "cosmos-test-key",
+        CosmosEndpoint::NimApi("https://example.invalid/cosmos".to_string()),
+    );
+    let capabilities = provider.capabilities();
+
+    let request = PlanRequest {
+        current_state: WorldState::new("cosmos-native-plan", "cosmos"),
+        goal: PlanGoal::Description("spawn a cube near the mug".to_string()),
+        max_steps: 4,
+        guardrails: Vec::new(),
+        planner: PlannerType::ProviderNative,
+        timeout_seconds: 5.0,
+    };
+
+    let plan = provider.plan(&request).await.unwrap();
+    assert!(capabilities.supports_planning);
+    assert!(!plan.actions.is_empty());
+    assert_eq!(plan.predicted_states.len(), plan.actions.len());
+    assert_eq!(plan.guardrail_compliance.len(), plan.actions.len());
+    assert!(plan.iterations_used > 0);
+    assert!((0.0..=1.0).contains(&plan.success_probability));
+    assert!(plan.actions.iter().any(|action| matches!(
+        action,
+        Action::SpawnObject { template, .. } if template.to_lowercase().contains("cube")
+    )));
+}
+
 #[test]
 fn test_auto_detect_registers_full_stack_cosmos() {
     with_env_vars(
@@ -483,6 +513,7 @@ fn test_auto_detect_registers_full_stack_cosmos() {
             assert!(descriptor.capabilities.reason);
             assert!(descriptor.capabilities.transfer);
             assert!(descriptor.capabilities.embed);
+            assert!(descriptor.capabilities.supports_planning);
             assert!(registry
                 .find_by_capability("reason")
                 .iter()
@@ -493,6 +524,10 @@ fn test_auto_detect_registers_full_stack_cosmos() {
                 .any(|provider| provider.name() == "cosmos"));
             assert!(registry
                 .find_by_capability("embed")
+                .iter()
+                .any(|provider| provider.name() == "cosmos"));
+            assert!(registry
+                .find_by_capability("planning")
                 .iter()
                 .any(|provider| provider.name() == "cosmos"));
         },
@@ -512,6 +547,33 @@ fn test_full_stack_runway_constructor_exposes_merged_capabilities() {
     assert!(!capabilities.embed);
 }
 
+#[tokio::test]
+async fn test_runway_full_stack_native_planning_surface() {
+    let provider = RunwayProvider::full_stack("runway-test-secret");
+    let capabilities = provider.capabilities();
+
+    let request = PlanRequest {
+        current_state: WorldState::new("runway-native-plan", "runway"),
+        goal: PlanGoal::Description("place the cube next to the mug".to_string()),
+        max_steps: 4,
+        guardrails: Vec::new(),
+        planner: PlannerType::ProviderNative,
+        timeout_seconds: 5.0,
+    };
+
+    let plan = provider.plan(&request).await.unwrap();
+    assert!(capabilities.supports_planning);
+    assert!(!plan.actions.is_empty());
+    assert_eq!(plan.predicted_states.len(), plan.actions.len());
+    assert_eq!(plan.guardrail_compliance.len(), plan.actions.len());
+    assert!(plan.iterations_used > 0);
+    assert!((0.0..=1.0).contains(&plan.success_probability));
+    assert!(plan
+        .actions
+        .iter()
+        .any(|action| matches!(action, Action::Place { .. } | Action::SpawnObject { .. })));
+}
+
 #[test]
 fn test_auto_detect_registers_full_stack_runway() {
     with_env_vars(&[("RUNWAY_API_SECRET", "runway-test-secret")], || {
@@ -523,6 +585,7 @@ fn test_auto_detect_registers_full_stack_runway() {
         assert!(descriptor.capabilities.action_conditioned);
         assert!(descriptor.capabilities.multi_view);
         assert!(!descriptor.capabilities.embed);
+        assert!(descriptor.capabilities.supports_planning);
         assert!(registry
             .find_by_capability("predict")
             .iter()
@@ -533,6 +596,10 @@ fn test_auto_detect_registers_full_stack_runway() {
             .any(|provider| provider.name() == "runway"));
         assert!(registry
             .find_by_capability("transfer")
+            .iter()
+            .any(|provider| provider.name() == "runway"));
+        assert!(registry
+            .find_by_capability("planning")
             .iter()
             .any(|provider| provider.name() == "runway"));
     });

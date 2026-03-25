@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use worldforge_core::action::{Action, ActionSpaceType};
 use worldforge_core::error::{Result, WorldForgeError};
-use worldforge_core::prediction::{PhysicsScores, Prediction, PredictionConfig};
+use worldforge_core::prediction::{PhysicsScores, Plan, PlanRequest, Prediction, PredictionConfig};
 use worldforge_core::provider::{
     CostEstimate, EmbeddingInput, EmbeddingOutput, GenerationConfig, GenerationPrompt,
     HealthStatus, LatencyProfile, Operation, ProviderCapabilities, ReasoningInput, ReasoningOutput,
@@ -22,6 +22,8 @@ use worldforge_core::types::{
     CameraPose, DType, Device, Frame, Pose, Position, Rotation, SimTime, Tensor, TensorData,
     VideoClip,
 };
+
+use crate::native_planning;
 
 /// NVIDIA Cosmos model variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1127,7 +1129,7 @@ impl WorldModelProvider for CosmosProvider {
             },
             supports_depth: predict || transfer,
             supports_segmentation: false,
-            supports_planning: false,
+            supports_planning: true,
             latency_profile: LatencyProfile {
                 p50_ms: 2000,
                 p95_ms: 5000,
@@ -1376,6 +1378,18 @@ impl WorldModelProvider for CosmosProvider {
             model: api_response.model.unwrap_or_else(|| model_id.to_string()),
             embedding: embedding_tensor(api_response.embedding),
         })
+    }
+
+    /// Adapter-native deterministic planning for Cosmos.
+    ///
+    /// Cosmos does not call a vendor planning endpoint here; the provider uses
+    /// the shared local planner to keep tests deterministic and offline.
+    async fn plan(&self, request: &PlanRequest) -> Result<Plan> {
+        let step_cost = self.estimate_cost(&Operation::Predict {
+            steps: 1,
+            resolution: PredictionConfig::default().resolution,
+        });
+        native_planning::plan_native("cosmos", request, step_cost)
     }
 
     async fn transfer(

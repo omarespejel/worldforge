@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use worldforge_core::action::{Action, ActionSpaceType};
 use worldforge_core::error::{Result, WorldForgeError};
-use worldforge_core::prediction::{PhysicsScores, Prediction, PredictionConfig};
+use worldforge_core::prediction::{PhysicsScores, Plan, PlanRequest, Prediction, PredictionConfig};
 use worldforge_core::provider::{
     CostEstimate, GenerationConfig, GenerationPrompt, HealthStatus, LatencyProfile, Operation,
     ProviderCapabilities, ReasoningInput, ReasoningOutput, SpatialControls, TransferConfig,
@@ -19,6 +19,8 @@ use worldforge_core::provider::{
 };
 use worldforge_core::state::WorldState;
 use worldforge_core::types::{DType, Device, Frame, SimTime, Tensor, TensorData, VideoClip};
+
+use crate::native_planning;
 
 /// Runway model variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -722,7 +724,7 @@ impl WorldModelProvider for RunwayProvider {
                 .iter()
                 .any(|model| matches!(model, RunwayModel::Gwm1Worlds)),
             supports_segmentation: false,
-            supports_planning: false,
+            supports_planning: true,
             latency_profile: self.latency_profile_for_models(),
         }
     }
@@ -947,6 +949,17 @@ impl WorldModelProvider for RunwayProvider {
             provider: "runway".to_string(),
             capability: "reason (use Cosmos Reason as fallback)".to_string(),
         })
+    }
+
+    /// Adapter-native deterministic planning for Runway.
+    ///
+    /// This is a local surrogate planner, not a vendor endpoint call.
+    async fn plan(&self, request: &PlanRequest) -> Result<Plan> {
+        let step_cost = self.estimate_cost(&Operation::Predict {
+            steps: 1,
+            resolution: PredictionConfig::default().resolution,
+        });
+        native_planning::plan_native("runway", request, step_cost)
     }
 
     async fn transfer(

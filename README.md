@@ -155,8 +155,9 @@ To attach persistence up front, open a `StateStore` and pass it to
 When `NVIDIA_API_KEY` or `RUNWAY_API_SECRET` are present, auto-detection now
 registers capability-complete `cosmos` and `runway` providers instead of
 single partial model variants. Cosmos currently covers
-predict/generate/reason/transfer/embed, while Runway covers
-predict/generate/reason/transfer only under the stable vendor names.
+predict/generate/reason/transfer/embed plus adapter-native deterministic
+planning, while Runway covers predict/generate/reason/transfer plus
+adapter-native deterministic planning under the stable vendor names.
 
 The same embedding surface is exposed over the CLI as `worldforge embed` and
 over the REST API as `POST /v1/providers/{name}/embed`.
@@ -367,11 +368,13 @@ Planning now supports distinct sampling, CEM, MPC, gradient, and provider-native
 execution paths in the core, with planner selection exposed across the CLI,
 REST server, and Python bindings. Provider-native planning now dispatches
 through an explicit provider hook instead of aliasing core heuristics, with the
-local JEPA adapter supplying deterministic native plans on top of its
-action-conditioned surrogate dynamics. Heuristic planners now parse relational
-natural-language goals like spawning an object next to a named anchor instead
-of collapsing those requests into plain anchor existence checks. Direct provider
-generation and world-state reasoning are now exposed across the CLI, REST
+local JEPA adapter and the full-stack Cosmos and Runway adapters supplying
+deterministic adapter-native plans on top of WorldForge-managed surrogate
+dynamics rather than vendor planning endpoints. Heuristic planners now parse
+relational natural-language goals like spawning an object next to a named
+anchor instead of collapsing those requests into plain anchor existence checks.
+Direct provider generation and world-state reasoning are now exposed across the
+CLI, REST
 server, and Python bindings as well, with REST requests defaulting to each
 stored world's configured provider instead of hard-coding `mock`. Provider
 transfer is now exposed end-to-end in
