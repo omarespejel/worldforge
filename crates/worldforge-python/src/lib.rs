@@ -763,44 +763,38 @@ impl PyWorld {
     }
 
     /// Add an object to the world.
-    fn add_object(&mut self, obj: &PySceneObject) {
-        self.world.state.scene.add_object(obj.inner.clone());
+    fn add_object(&mut self, obj: &PySceneObject) -> PyResult<()> {
+        self.world
+            .add_object(obj.inner.clone())
+            .map_err(|e| match e {
+                worldforge_core::error::WorldForgeError::InvalidState(message) => {
+                    pyo3::exceptions::PyKeyError::new_err(message)
+                }
+                _ => {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!("failed to add object: {e}"))
+                }
+            })
     }
 
-    /// Update an existing object in the world using a mutated scene object.
+    /// Update an existing object in the world using a full object replacement.
     fn update_object(&mut self, obj: &PySceneObject) -> PyResult<()> {
         let object_id = obj.inner.id;
-        let object_name = obj.inner.name.clone();
-
-        if let Some(existing) = self.world.state.scene.get_object_mut(&object_id) {
-            existing.name = obj.inner.name.clone();
-            existing.pose = obj.inner.pose;
-            existing.bbox = obj.inner.bbox;
-            existing.mesh = obj.inner.mesh.clone();
-            existing.physics = obj.inner.physics.clone();
-            existing.velocity = obj.inner.velocity;
-            existing.semantic_label = obj.inner.semantic_label.clone();
-            existing.visual_embedding = obj.inner.visual_embedding.clone();
-        } else {
+        if self.world.get_object(&object_id).is_none() {
             return Err(pyo3::exceptions::PyKeyError::new_err(format!(
-                "object not found: {} ({})",
-                object_name, object_id
+                "object not found: {object_id}"
             )));
         }
 
-        if let Some(node) = self
-            .world
-            .state
-            .scene
-            .root
-            .children
-            .iter_mut()
-            .find(|node| node.object_id == Some(object_id))
-        {
-            node.name = object_name;
-        }
-
-        self.world.state.scene.refresh_relationships();
+        self.world
+            .replace_object(obj.inner.clone())
+            .map_err(|e| match e {
+                worldforge_core::error::WorldForgeError::InvalidState(message) => {
+                    pyo3::exceptions::PyKeyError::new_err(message)
+                }
+                _ => pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "failed to replace object: {e}"
+                )),
+            })?;
         Ok(())
     }
 
@@ -815,15 +809,8 @@ impl PyWorld {
 
     /// Remove an object by name. Returns True if found.
     fn remove_object(&mut self, name: &str) -> bool {
-        if let Some(id) = self
-            .world
-            .state
-            .scene
-            .find_object_by_name(name)
-            .map(|o| o.id)
-        {
-            self.world.state.scene.remove_object(&id);
-            true
+        if let Some(object_id) = self.world.get_object_by_name(name).map(|object| object.id) {
+            self.world.remove_object(&object_id).is_ok()
         } else {
             false
         }
@@ -1055,7 +1042,6 @@ impl PyWorld {
         let plan = rt.block_on(world.plan(&request)).map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("planning failed: {e}"))
         })?;
-
         Ok(PyPlan { inner: plan })
     }
 
@@ -4451,10 +4437,27 @@ mod tests {
         let bbox = PyBBox::new(&min, &max);
         let obj = PySceneObject::new("cube", &pos, &bbox);
 
-        world.add_object(&obj);
+        world.add_object(&obj).unwrap();
         assert_eq!(world.object_count(), 1);
         assert!(world.get_object("cube").is_some());
         assert!(world.get_object("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_world_add_object_rejects_duplicate_id() {
+        let mut world = PyWorld::new("test", "mock");
+        let pos = PyPosition::new(0.0, 0.0, 0.0);
+        let min = PyPosition::new(-1.0, -1.0, -1.0);
+        let max = PyPosition::new(1.0, 1.0, 1.0);
+        let bbox = PyBBox::new(&min, &max);
+        let original = PySceneObject::new("cube", &pos, &bbox);
+        let duplicate = PySceneObject::from_json(&original.to_json().unwrap()).unwrap();
+
+        world.add_object(&original).unwrap();
+        let err = world.add_object(&duplicate).unwrap_err();
+        assert!(err.to_string().contains("object already exists"));
+        assert_eq!(world.object_count(), 1);
+        assert_eq!(world.world.state.scene.root.children.len(), 1);
     }
 
     #[test]
@@ -4464,7 +4467,9 @@ mod tests {
         let min = PyPosition::new(-1.0, -1.0, -1.0);
         let max = PyPosition::new(1.0, 1.0, 1.0);
         let bbox = PyBBox::new(&min, &max);
-        world.add_object(&PySceneObject::new("cube", &pos, &bbox));
+        world
+            .add_object(&PySceneObject::new("cube", &pos, &bbox))
+            .unwrap();
 
         let mut obj = world.get_object("cube").unwrap();
         let new_pos = PyPosition::new(2.0, 3.0, 4.0);
@@ -4496,6 +4501,25 @@ mod tests {
     }
 
     #[test]
+    fn test_world_update_object_clears_optional_fields() {
+        let mut world = PyWorld::new("test", "mock");
+        let pos = PyPosition::new(0.0, 0.0, 0.0);
+        let min = PyPosition::new(-1.0, -1.0, -1.0);
+        let max = PyPosition::new(1.0, 1.0, 1.0);
+        let bbox = PyBBox::new(&min, &max);
+        let mut object = PySceneObject::new("ball", &pos, &bbox);
+        object.set_semantic_label(Some("crate".to_string()));
+        world.add_object(&object).unwrap();
+
+        object = world.get_object("ball").unwrap();
+        object.set_semantic_label(None);
+        world.update_object(&object).unwrap();
+
+        let updated = world.get_object("ball").unwrap();
+        assert_eq!(updated.semantic_label(), None);
+    }
+
+    #[test]
     fn test_world_update_object_missing_returns_error() {
         let mut world = PyWorld::new("test", "mock");
         let pos = PyPosition::new(0.0, 0.0, 0.0);
@@ -4516,8 +4540,12 @@ mod tests {
         let max = PyPosition::new(1.0, 1.0, 1.0);
         let bbox = PyBBox::new(&min, &max);
 
-        world.add_object(&PySceneObject::new("a", &pos, &bbox));
-        world.add_object(&PySceneObject::new("b", &pos, &bbox));
+        world
+            .add_object(&PySceneObject::new("a", &pos, &bbox))
+            .unwrap();
+        world
+            .add_object(&PySceneObject::new("b", &pos, &bbox))
+            .unwrap();
 
         let names = world.list_objects();
         assert_eq!(names.len(), 2);
@@ -4532,7 +4560,9 @@ mod tests {
         let min = PyPosition::new(-1.0, -1.0, -1.0);
         let max = PyPosition::new(1.0, 1.0, 1.0);
         let bbox = PyBBox::new(&min, &max);
-        world.add_object(&PySceneObject::new("cube", &pos, &bbox));
+        world
+            .add_object(&PySceneObject::new("cube", &pos, &bbox))
+            .unwrap();
 
         assert!(world.remove_object("cube"));
         assert_eq!(world.object_count(), 0);
@@ -4546,7 +4576,9 @@ mod tests {
         let min = PyPosition::new(-0.5, -0.5, -0.5);
         let max = PyPosition::new(0.5, 0.5, 0.5);
         let bbox = PyBBox::new(&min, &max);
-        world.add_object(&PySceneObject::new("ball", &pos, &bbox));
+        world
+            .add_object(&PySceneObject::new("ball", &pos, &bbox))
+            .unwrap();
 
         let json = world.to_json().unwrap();
         let world2 = PyWorld::from_json(&json).unwrap();
@@ -4655,14 +4687,16 @@ mod tests {
     #[test]
     fn test_world_compare_applies_guardrails() {
         let mut world = PyWorld::new("compare_world", "mock");
-        world.add_object(&PySceneObject::new(
-            "cube",
-            &PyPosition::new(0.0, 0.0, 0.0),
-            &PyBBox::new(
-                &PyPosition::new(-0.1, -0.1, -0.1),
-                &PyPosition::new(0.1, 0.1, 0.1),
-            ),
-        ));
+        world
+            .add_object(&PySceneObject::new(
+                "cube",
+                &PyPosition::new(0.0, 0.0, 0.0),
+                &PyBBox::new(
+                    &PyPosition::new(-0.1, -0.1, -0.1),
+                    &PyPosition::new(0.1, 0.1, 0.1),
+                ),
+            ))
+            .unwrap();
 
         let result = world.compare(
             &PyAction::move_to(1.0, 0.0, 0.0, 1.0),
@@ -4684,22 +4718,26 @@ mod tests {
     #[test]
     fn test_world_predict_disable_guardrails_skips_defaults() {
         let mut world = PyWorld::new("predict_guardrails", "mock");
-        world.add_object(&PySceneObject::new(
-            "left",
-            &PyPosition::new(0.0, 0.0, 0.0),
-            &PyBBox::new(
+        world
+            .add_object(&PySceneObject::new(
+                "left",
                 &PyPosition::new(0.0, 0.0, 0.0),
-                &PyPosition::new(1.0, 1.0, 1.0),
-            ),
-        ));
-        world.add_object(&PySceneObject::new(
-            "right",
-            &PyPosition::new(0.0, 0.0, 0.0),
-            &PyBBox::new(
-                &PyPosition::new(0.5, 0.5, 0.5),
-                &PyPosition::new(1.5, 1.5, 1.5),
-            ),
-        ));
+                &PyBBox::new(
+                    &PyPosition::new(0.0, 0.0, 0.0),
+                    &PyPosition::new(1.0, 1.0, 1.0),
+                ),
+            ))
+            .unwrap();
+        world
+            .add_object(&PySceneObject::new(
+                "right",
+                &PyPosition::new(0.0, 0.0, 0.0),
+                &PyBBox::new(
+                    &PyPosition::new(0.5, 0.5, 0.5),
+                    &PyPosition::new(1.5, 1.5, 1.5),
+                ),
+            ))
+            .unwrap();
 
         let default_result = world.predict(
             &PyAction::set_weather("rain").unwrap(),
@@ -5403,7 +5441,7 @@ mod tests {
         );
         let object = PySceneObject::new("ball", &position, &bbox);
         let object_id = object.id();
-        world.add_object(&object);
+        world.add_object(&object).unwrap();
 
         let goal_json = serde_json::json!({
             "type": "condition",
@@ -5467,7 +5505,7 @@ mod tests {
             &PyPosition::new(0.1, 0.6, 0.1),
         );
         let object = PySceneObject::new("ball", &position, &bbox);
-        world.add_object(&object);
+        world.add_object(&object).unwrap();
 
         let mut target_state = WorldState::new("plan_goal_image_target", "mock");
         let target_object = SceneObject::new(
@@ -5788,7 +5826,7 @@ mod tests {
         let bbox_max = PyPosition::new(0.1, 0.6, 0.1);
         let bbox = PyBBox::new(&bbox_min, &bbox_max);
         let object = PySceneObject::new("cube", &position, &bbox);
-        world.add_object(&object);
+        world.add_object(&object).unwrap();
         world
             .predict(
                 &PyAction::move_to(0.25, 0.5, 0.0, 1.0),

@@ -69,6 +69,22 @@ impl World {
         Ok(())
     }
 
+    /// Replace an existing object in the world by ID.
+    ///
+    /// The replacement preserves the object's ID, keeps the scene hierarchy
+    /// consistent, and refreshes inferred spatial relationships.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WorldForgeError::InvalidState` if the object does not exist.
+    pub fn replace_object(&mut self, object: SceneObject) -> Result<SceneObject> {
+        let object_id = object.id;
+        self.state
+            .scene
+            .replace_object(object)
+            .ok_or_else(|| WorldForgeError::InvalidState(format!("object not found: {object_id}")))
+    }
+
     /// Get an object in the world by ID.
     pub fn get_object(&self, object_id: &ObjectId) -> Option<&SceneObject> {
         self.state.scene.get_object(object_id)
@@ -2919,6 +2935,83 @@ mod tests {
         world.add_object(object).unwrap();
         let error = world.add_object(duplicate).unwrap_err();
         assert!(matches!(error, WorldForgeError::InvalidState(_)));
+    }
+
+    #[test]
+    fn test_replace_object_updates_scene_in_place() {
+        let registry = std::sync::Arc::new(ProviderRegistry::new());
+        let mut world = World::new(WorldState::new("replace", "mock"), "mock", registry);
+
+        let table = SceneObject::new(
+            "table",
+            Pose::default(),
+            crate::types::BBox {
+                min: Position {
+                    x: -0.5,
+                    y: -0.5,
+                    z: -0.5,
+                },
+                max: Position {
+                    x: 0.5,
+                    y: 0.5,
+                    z: 0.5,
+                },
+            },
+        );
+        let mut mug = SceneObject::new(
+            "mug",
+            Pose::default(),
+            crate::types::BBox {
+                min: Position {
+                    x: -0.25,
+                    y: -0.25,
+                    z: -0.25,
+                },
+                max: Position {
+                    x: 0.25,
+                    y: 0.25,
+                    z: 0.25,
+                },
+            },
+        );
+        mug.pose.position = Position {
+            x: 0.0,
+            y: 0.55,
+            z: 0.0,
+        };
+        let object_id = table.id;
+        world.add_object(table).unwrap();
+        world.add_object(mug).unwrap();
+        assert!(!world.state.scene.relationships.is_empty());
+
+        let mut replacement = SceneObject::new(
+            "table_updated",
+            Pose::default(),
+            crate::types::BBox {
+                min: Position {
+                    x: 9.5,
+                    y: -0.5,
+                    z: -0.5,
+                },
+                max: Position {
+                    x: 10.5,
+                    y: 0.5,
+                    z: 0.5,
+                },
+            },
+        );
+        replacement.id = object_id;
+        replacement.pose.position = Position {
+            x: 10.0,
+            y: 0.0,
+            z: 0.0,
+        };
+
+        let previous = world.replace_object(replacement).unwrap();
+        assert_eq!(previous.name, "table");
+        assert_eq!(world.get_object(&object_id).unwrap().name, "table_updated");
+        assert_eq!(world.state.scene.root.children.len(), 2);
+        assert_eq!(world.get_object(&object_id).unwrap().pose.position.x, 10.0);
     }
 
     #[test]

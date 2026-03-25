@@ -155,12 +155,26 @@ impl SceneGraph {
         let id = object.id;
         let name = object.name.clone();
         self.objects.insert(id, object);
-        self.root.children.push(SceneNode {
-            name,
-            children: Vec::new(),
-            object_id: Some(id),
-        });
+        self.sync_root_node(id, name);
         self.refresh_relationships();
+    }
+
+    /// Replace an existing object in the scene.
+    ///
+    /// Returns the previous object when the ID exists, or `None` when the
+    /// scene does not contain the requested object.
+    pub fn replace_object(&mut self, object: SceneObject) -> Option<SceneObject> {
+        let id = object.id;
+        let name = object.name.clone();
+
+        if !self.objects.contains_key(&id) {
+            return None;
+        }
+
+        let previous = self.objects.insert(id, object)?;
+        self.sync_root_node(id, name);
+        self.refresh_relationships();
+        Some(previous)
     }
 
     /// Get an object by its ID.
@@ -214,14 +228,7 @@ impl SceneGraph {
             object.clone()
         };
 
-        if let Some(node) = self
-            .root
-            .children
-            .iter_mut()
-            .find(|node| node.object_id.as_ref() == Some(id))
-        {
-            node.name = updated.name.clone();
-        }
+        self.sync_root_node(*id, updated.name.clone());
 
         self.refresh_relationships();
         Some(updated)
@@ -252,6 +259,37 @@ impl SceneGraph {
     /// Recompute spatial relationships from the current object geometry.
     pub fn refresh_relationships(&mut self) {
         self.relationships = infer_relationships(&self.objects);
+    }
+
+    fn sync_root_node(&mut self, id: ObjectId, name: String) {
+        let mut found = false;
+        self.root.children.retain(|node| {
+            if node.object_id == Some(id) {
+                if found {
+                    false
+                } else {
+                    found = true;
+                    true
+                }
+            } else {
+                true
+            }
+        });
+
+        if let Some(node) = self
+            .root
+            .children
+            .iter_mut()
+            .find(|node| node.object_id == Some(id))
+        {
+            node.name = name;
+        } else {
+            self.root.children.push(SceneNode {
+                name,
+                children: Vec::new(),
+                object_id: Some(id),
+            });
+        }
     }
 }
 
@@ -476,6 +514,86 @@ mod tests {
         sg.add_object(obj);
         assert!(sg.get_object(&id).is_some());
         assert_eq!(sg.objects.len(), 1);
+        assert_eq!(sg.root.children.len(), 1);
+    }
+
+    #[test]
+    fn test_scene_graph_add_object_deduplicates_root_children_for_existing_id() {
+        let mut sg = SceneGraph::new();
+        let original = sample_object("cube");
+        let id = original.id;
+        sg.add_object(original);
+
+        let mut replacement = sample_object("cube_renamed");
+        replacement.id = id;
+        replacement.pose.position = Position {
+            x: 3.0,
+            y: 0.5,
+            z: -1.0,
+        };
+
+        sg.add_object(replacement);
+
+        assert_eq!(sg.objects.len(), 1);
+        assert_eq!(sg.root.children.len(), 1);
+        assert_eq!(sg.root.children[0].name, "cube_renamed");
+        assert_eq!(sg.get_object(&id).unwrap().name, "cube_renamed");
+    }
+
+    #[test]
+    fn test_scene_graph_replace_object_updates_hierarchy_and_relationships() {
+        let mut sg = SceneGraph::new();
+        let table = sample_object("table");
+        let table_id = table.id;
+        let mut mug = sample_object("mug");
+        mug.pose.position = Position {
+            x: 0.0,
+            y: 0.55,
+            z: 0.0,
+        };
+        mug.bbox = BBox {
+            min: Position {
+                x: -0.25,
+                y: 0.05,
+                z: -0.25,
+            },
+            max: Position {
+                x: 0.25,
+                y: 0.55,
+                z: 0.25,
+            },
+        };
+
+        sg.add_object(table);
+        sg.add_object(mug);
+        assert!(!sg.relationships.is_empty());
+
+        let mut replacement = sample_object("table_updated");
+        replacement.id = table_id;
+        replacement.pose.position = Position {
+            x: 10.0,
+            y: 0.5,
+            z: 0.0,
+        };
+        replacement.bbox = BBox {
+            min: Position {
+                x: 9.5,
+                y: 0.0,
+                z: -0.5,
+            },
+            max: Position {
+                x: 10.5,
+                y: 1.0,
+                z: 0.5,
+            },
+        };
+
+        let previous = sg.replace_object(replacement).expect("replacement");
+        assert_eq!(previous.name, "table");
+        assert_eq!(sg.objects.len(), 2);
+        assert_eq!(sg.root.children.len(), 2);
+        assert_eq!(sg.root.children[0].name, "table_updated");
+        assert!(sg.relationships.is_empty());
     }
 
     #[test]
