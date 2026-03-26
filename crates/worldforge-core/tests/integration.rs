@@ -382,10 +382,11 @@ async fn test_worldforge_compare_facade() {
     let comparison = worldforge.compare(vec![weaker, stronger]).unwrap();
     assert_eq!(comparison.predictions.len(), 2);
     assert_eq!(comparison.best_prediction, 1);
-    assert_eq!(
-        comparison.comparison.summary,
-        "Compared 2 providers, best: mock-high"
-    );
+    assert!(comparison
+        .comparison
+        .summary
+        .contains("Compared 2 providers; best: mock-high"));
+    assert!(comparison.comparison.summary.contains("quality 0.95"));
 }
 
 #[tokio::test]
@@ -1137,8 +1138,10 @@ async fn test_world_predict_multi_compares_providers() {
     assert!(multi.agreement_score > 0.0);
     assert!(multi.agreement_score <= 1.0);
     assert_eq!(multi.comparison.scores.len(), 2);
+    assert_eq!(multi.comparison.pairwise_agreements.len(), 1);
     assert_eq!(multi.comparison.scores[0].provider, "provider-a");
     assert_eq!(multi.comparison.scores[1].provider, "provider-b");
+    assert!(multi.comparison.consensus.average_quality_score >= 0.0);
 }
 
 #[tokio::test]

@@ -117,6 +117,13 @@ comparison = world.compare(
     steps=4,
 )
 best = comparison.best_prediction()
+provider_score = comparison.provider_scores()[0]
+state_diag = provider_score.state()
+pair = comparison.pairwise_agreements()[0]
+consensus = comparison.consensus()
+assert state_diag.object_preservation_rate >= 0.0
+assert pair.object_overlap_rate >= 0.0
+assert consensus.shared_object_count >= 0
 
 # Check live provider health
 health = wf.provider_health("mock")

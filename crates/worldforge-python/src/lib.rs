@@ -13,8 +13,9 @@ use pyo3::types::{PyBytes, PyList, PyModule, PyString};
 
 use worldforge_core::guardrail::GuardrailConfig;
 use worldforge_core::prediction::{
-    MultiPrediction, PlanExecution, PlanGoal, PlanGoalInput, PlannerType, PredictionConfig,
-    ProviderScore,
+    ComparisonConsensus, GuardrailDiagnostics, MultiPrediction, ObjectDiagnostic, ObjectDrift,
+    PairwiseAgreement, PlanExecution, PlanGoal, PlanGoalInput, PlannerType, PredictionConfig,
+    ProviderScore, StateDiagnostics,
 };
 use worldforge_core::provider::{
     CostEstimate, EmbeddingInput, EmbeddingOutput, GenerationConfig, GenerationPrompt, Operation,
@@ -1647,6 +1648,440 @@ impl PyPrediction {
     }
 }
 
+/// Stable object identity surfaced in compare diagnostics.
+#[pyclass(name = "ObjectDiagnostic")]
+#[derive(Debug, Clone)]
+pub struct PyObjectDiagnostic {
+    inner: ObjectDiagnostic,
+}
+
+#[pymethods]
+impl PyObjectDiagnostic {
+    /// Stable object identifier.
+    #[getter]
+    fn object_id(&self) -> String {
+        self.inner.object_id.to_string()
+    }
+
+    /// Human-readable object name.
+    #[getter]
+    fn object_name(&self) -> &str {
+        &self.inner.object_name
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ObjectDiagnostic(object_id='{}', object_name='{}')",
+            self.inner.object_id, self.inner.object_name
+        )
+    }
+}
+
+/// Per-object positional drift surfaced in compare diagnostics.
+#[pyclass(name = "ObjectDrift")]
+#[derive(Debug, Clone)]
+pub struct PyObjectDrift {
+    inner: ObjectDrift,
+}
+
+#[pymethods]
+impl PyObjectDrift {
+    /// Stable object identifier.
+    #[getter]
+    fn object_id(&self) -> String {
+        self.inner.object_id.to_string()
+    }
+
+    /// Human-readable object name.
+    #[getter]
+    fn object_name(&self) -> &str {
+        &self.inner.object_name
+    }
+
+    /// Euclidean drift distance in world units.
+    #[getter]
+    fn distance(&self) -> f32 {
+        self.inner.distance
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ObjectDrift(object_id='{}', object_name='{}', distance={:.3})",
+            self.inner.object_id, self.inner.object_name, self.inner.distance
+        )
+    }
+}
+
+/// Guardrail diagnostics within a multi-provider comparison.
+#[pyclass(name = "GuardrailDiagnostics")]
+#[derive(Debug, Clone)]
+pub struct PyGuardrailDiagnostics {
+    inner: GuardrailDiagnostics,
+}
+
+#[pymethods]
+impl PyGuardrailDiagnostics {
+    /// Number of guardrails evaluated.
+    #[getter]
+    fn evaluated_count(&self) -> usize {
+        self.inner.evaluated_count
+    }
+
+    /// Number of guardrails that passed.
+    #[getter]
+    fn passed_count(&self) -> usize {
+        self.inner.passed_count
+    }
+
+    /// Number of guardrails that failed.
+    #[getter]
+    fn failed_count(&self) -> usize {
+        self.inner.failed_count
+    }
+
+    /// Number of blocking guardrail failures.
+    #[getter]
+    fn blocking_failures(&self) -> usize {
+        self.inner.blocking_failures
+    }
+
+    /// Fraction of evaluated guardrails that passed.
+    #[getter]
+    fn pass_rate(&self) -> f32 {
+        self.inner.pass_rate
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "GuardrailDiagnostics(passed={}/{}, blocking_failures={})",
+            self.inner.passed_count, self.inner.evaluated_count, self.inner.blocking_failures
+        )
+    }
+}
+
+/// State-level diagnostics within a multi-provider comparison.
+#[pyclass(name = "StateDiagnostics")]
+#[derive(Debug, Clone)]
+pub struct PyStateDiagnostics {
+    inner: StateDiagnostics,
+}
+
+#[pymethods]
+impl PyStateDiagnostics {
+    /// Number of input-state objects before prediction.
+    #[getter]
+    fn input_object_count(&self) -> usize {
+        self.inner.input_object_count
+    }
+
+    /// Number of output-state objects after prediction.
+    #[getter]
+    fn output_object_count(&self) -> usize {
+        self.inner.output_object_count
+    }
+
+    /// Signed object-count delta (`output - input`).
+    #[getter]
+    fn object_count_delta(&self) -> i64 {
+        self.inner.object_count_delta
+    }
+
+    /// Number of preserved input objects.
+    #[getter]
+    fn preserved_object_count(&self) -> usize {
+        self.inner.preserved_object_count
+    }
+
+    /// Number of dropped input objects.
+    #[getter]
+    fn dropped_object_count(&self) -> usize {
+        self.inner.dropped_object_count
+    }
+
+    /// Number of newly introduced output objects.
+    #[getter]
+    fn novel_object_count(&self) -> usize {
+        self.inner.novel_object_count
+    }
+
+    /// Fraction of input objects preserved in the output.
+    #[getter]
+    fn object_preservation_rate(&self) -> f32 {
+        self.inner.object_preservation_rate
+    }
+
+    /// Number of input-state relationships before prediction.
+    #[getter]
+    fn input_relationship_count(&self) -> usize {
+        self.inner.input_relationship_count
+    }
+
+    /// Number of output-state relationships after prediction.
+    #[getter]
+    fn output_relationship_count(&self) -> usize {
+        self.inner.output_relationship_count
+    }
+
+    /// Signed relationship-count delta (`output - input`).
+    #[getter]
+    fn relationship_count_delta(&self) -> i64 {
+        self.inner.relationship_count_delta
+    }
+
+    /// Number of input relationships preserved in the output.
+    #[getter]
+    fn preserved_relationship_count(&self) -> usize {
+        self.inner.preserved_relationship_count
+    }
+
+    /// Fraction of input relationships preserved in the output.
+    #[getter]
+    fn relationship_preservation_rate(&self) -> f32 {
+        self.inner.relationship_preservation_rate
+    }
+
+    /// Mean positional drift across preserved objects.
+    #[getter]
+    fn average_position_shift(&self) -> f32 {
+        self.inner.average_position_shift
+    }
+
+    /// Maximum positional drift across preserved objects.
+    #[getter]
+    fn max_position_shift(&self) -> f32 {
+        self.inner.max_position_shift
+    }
+
+    /// Stable identities of dropped objects.
+    fn dropped_objects(&self) -> Vec<PyObjectDiagnostic> {
+        self.inner
+            .dropped_objects
+            .iter()
+            .cloned()
+            .map(|inner| PyObjectDiagnostic { inner })
+            .collect()
+    }
+
+    /// Stable identities of newly introduced objects.
+    fn novel_objects(&self) -> Vec<PyObjectDiagnostic> {
+        self.inner
+            .novel_objects
+            .iter()
+            .cloned()
+            .map(|inner| PyObjectDiagnostic { inner })
+            .collect()
+    }
+
+    /// Drift details for preserved objects.
+    fn object_drifts(&self) -> Vec<PyObjectDrift> {
+        self.inner
+            .object_drifts
+            .iter()
+            .cloned()
+            .map(|inner| PyObjectDrift { inner })
+            .collect()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "StateDiagnostics(objects={} ({:+}), relationships={} ({:+}), avg_shift={:.3})",
+            self.inner.output_object_count,
+            self.inner.object_count_delta,
+            self.inner.output_relationship_count,
+            self.inner.relationship_count_delta,
+            self.inner.average_position_shift
+        )
+    }
+}
+
+/// Pairwise agreement summary within a multi-provider comparison.
+#[pyclass(name = "PairwiseAgreement")]
+#[derive(Debug, Clone)]
+pub struct PyPairwiseAgreement {
+    inner: PairwiseAgreement,
+}
+
+#[pymethods]
+impl PyPairwiseAgreement {
+    /// First provider name.
+    #[getter]
+    fn provider_a(&self) -> &str {
+        &self.inner.provider_a
+    }
+
+    /// Second provider name.
+    #[getter]
+    fn provider_b(&self) -> &str {
+        &self.inner.provider_b
+    }
+
+    /// Aggregate agreement score for the provider pair.
+    #[getter]
+    fn agreement_score(&self) -> f32 {
+        self.inner.agreement_score
+    }
+
+    /// Number of shared output objects by stable ID.
+    #[getter]
+    fn common_object_count(&self) -> usize {
+        self.inner.common_object_count
+    }
+
+    /// Jaccard overlap across output object IDs.
+    #[getter]
+    fn object_overlap_rate(&self) -> f32 {
+        self.inner.object_overlap_rate
+    }
+
+    /// Signed output object-count delta (`provider_a - provider_b`).
+    #[getter]
+    fn object_count_delta(&self) -> i64 {
+        self.inner.object_count_delta
+    }
+
+    /// Jaccard overlap across output relationships.
+    #[getter]
+    fn relationship_overlap_rate(&self) -> f32 {
+        self.inner.relationship_overlap_rate
+    }
+
+    /// Signed output relationship-count delta (`provider_a - provider_b`).
+    #[getter]
+    fn relationship_count_delta(&self) -> i64 {
+        self.inner.relationship_count_delta
+    }
+
+    /// Position-based agreement score across shared objects.
+    #[getter]
+    fn position_agreement(&self) -> f32 {
+        self.inner.position_agreement
+    }
+
+    /// Mean positional delta across shared objects.
+    #[getter]
+    fn average_position_delta(&self) -> f32 {
+        self.inner.average_position_delta
+    }
+
+    /// Maximum positional delta across shared objects.
+    #[getter]
+    fn max_position_delta(&self) -> f32 {
+        self.inner.max_position_delta
+    }
+
+    /// Fraction of guardrail outcomes that agree by name.
+    #[getter]
+    fn guardrail_agreement_rate(&self) -> f32 {
+        self.inner.guardrail_agreement_rate
+    }
+
+    /// Absolute physics-score delta between providers.
+    #[getter]
+    fn physics_score_delta(&self) -> f32 {
+        self.inner.physics_score_delta
+    }
+
+    /// Absolute confidence delta between providers.
+    #[getter]
+    fn confidence_delta(&self) -> f32 {
+        self.inner.confidence_delta
+    }
+
+    /// Absolute latency delta in milliseconds.
+    #[getter]
+    fn latency_delta_ms(&self) -> u64 {
+        self.inner.latency_delta_ms
+    }
+
+    /// Highest positional disagreements across shared objects.
+    fn positional_disagreements(&self) -> Vec<PyObjectDrift> {
+        self.inner
+            .positional_disagreements
+            .iter()
+            .cloned()
+            .map(|inner| PyObjectDrift { inner })
+            .collect()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PairwiseAgreement(provider_a='{}', provider_b='{}', agreement_score={:.2})",
+            self.inner.provider_a, self.inner.provider_b, self.inner.agreement_score
+        )
+    }
+}
+
+/// Consensus diagnostics shared across all provider outputs in a comparison.
+#[pyclass(name = "ComparisonConsensus")]
+#[derive(Debug, Clone)]
+pub struct PyComparisonConsensus {
+    inner: ComparisonConsensus,
+}
+
+#[pymethods]
+impl PyComparisonConsensus {
+    /// Number of object identities shared by every provider output.
+    #[getter]
+    fn shared_object_count(&self) -> usize {
+        self.inner.shared_object_count
+    }
+
+    /// Shared object identities sorted by name then ID.
+    fn shared_objects(&self) -> Vec<PyObjectDiagnostic> {
+        self.inner
+            .shared_objects
+            .iter()
+            .cloned()
+            .map(|inner| PyObjectDiagnostic { inner })
+            .collect()
+    }
+
+    /// Number of relationships shared by every provider output.
+    #[getter]
+    fn shared_relationship_count(&self) -> usize {
+        self.inner.shared_relationship_count
+    }
+
+    /// Mean provider confidence across the comparison set.
+    #[getter]
+    fn average_confidence(&self) -> f32 {
+        self.inner.average_confidence
+    }
+
+    /// Mean guardrail pass rate across the comparison set.
+    #[getter]
+    fn average_guardrail_pass_rate(&self) -> f32 {
+        self.inner.average_guardrail_pass_rate
+    }
+
+    /// Mean provider quality score across the comparison set.
+    #[getter]
+    fn average_quality_score(&self) -> f32 {
+        self.inner.average_quality_score
+    }
+
+    /// Mean provider latency across the comparison set.
+    #[getter]
+    fn average_latency_ms(&self) -> u64 {
+        self.inner.average_latency_ms
+    }
+
+    /// Mean pairwise position delta across all provider pairs.
+    #[getter]
+    fn average_pairwise_position_delta(&self) -> f32 {
+        self.inner.average_pairwise_position_delta
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ComparisonConsensus(shared_object_count={}, shared_relationship_count={}, average_quality_score={:.2})",
+            self.inner.shared_object_count,
+            self.inner.shared_relationship_count,
+            self.inner.average_quality_score
+        )
+    }
+}
+
 /// Provider-specific score summary within a multi-provider comparison.
 #[pyclass(name = "ProviderScore")]
 #[derive(Debug, Clone)]
@@ -1660,6 +2095,12 @@ impl PyProviderScore {
     #[getter]
     fn provider(&self) -> &str {
         &self.inner.provider
+    }
+
+    /// Provider-reported confidence score.
+    #[getter]
+    fn confidence(&self) -> f32 {
+        self.inner.confidence
     }
 
     /// Overall physics plausibility score.
@@ -1681,6 +2122,26 @@ impl PyProviderScore {
         }
     }
 
+    /// Composite quality score used to rank the best provider.
+    #[getter]
+    fn quality_score(&self) -> f32 {
+        self.inner.quality_score
+    }
+
+    /// Guardrail diagnostics for the provider prediction.
+    fn guardrails(&self) -> PyGuardrailDiagnostics {
+        PyGuardrailDiagnostics {
+            inner: self.inner.guardrails.clone(),
+        }
+    }
+
+    /// State-derived diagnostics for the provider prediction.
+    fn state(&self) -> PyStateDiagnostics {
+        PyStateDiagnostics {
+            inner: self.inner.state.clone(),
+        }
+    }
+
     /// Serialize the score summary to JSON.
     fn to_json(&self) -> PyResult<String> {
         serde_json::to_string(&self.inner).map_err(|e| {
@@ -1690,8 +2151,11 @@ impl PyProviderScore {
 
     fn __repr__(&self) -> String {
         format!(
-            "ProviderScore(provider='{}', physics_score={:.2}, latency_ms={})",
-            self.inner.provider, self.inner.physics_scores.overall, self.inner.latency_ms
+            "ProviderScore(provider='{}', physics_score={:.2}, confidence={:.2}, latency_ms={})",
+            self.inner.provider,
+            self.inner.physics_scores.overall,
+            self.inner.confidence,
+            self.inner.latency_ms
         )
     }
 }
@@ -1748,6 +2212,24 @@ impl PyMultiPrediction {
             .cloned()
             .map(|inner| PyProviderScore { inner })
             .collect()
+    }
+
+    /// Pairwise agreement summaries across provider outputs.
+    fn pairwise_agreements(&self) -> Vec<PyPairwiseAgreement> {
+        self.inner
+            .comparison
+            .pairwise_agreements
+            .iter()
+            .cloned()
+            .map(|inner| PyPairwiseAgreement { inner })
+            .collect()
+    }
+
+    /// Consensus diagnostics shared across all compared providers.
+    fn consensus(&self) -> PyComparisonConsensus {
+        PyComparisonConsensus {
+            inner: self.inner.comparison.consensus.clone(),
+        }
     }
 
     /// The highest-quality prediction in the comparison.
@@ -5182,6 +5664,12 @@ fn worldforge(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyWorld>()?;
     m.add_class::<PyHistoryEntry>()?;
     m.add_class::<PyPrediction>()?;
+    m.add_class::<PyObjectDiagnostic>()?;
+    m.add_class::<PyObjectDrift>()?;
+    m.add_class::<PyGuardrailDiagnostics>()?;
+    m.add_class::<PyStateDiagnostics>()?;
+    m.add_class::<PyPairwiseAgreement>()?;
+    m.add_class::<PyComparisonConsensus>()?;
     m.add_class::<PyProviderScore>()?;
     m.add_class::<PyMultiPrediction>()?;
     m.add_class::<PyVideoClip>()?;
@@ -5727,7 +6215,18 @@ mod tests {
 
     #[test]
     fn test_world_compare_returns_multi_prediction() {
-        let world = PyWorld::new("compare_world", "mock");
+        let mut world = PyWorld::new("compare_world", "mock");
+        world
+            .add_object(&PySceneObject::new(
+                "mug",
+                &PyPosition::new(0.0, 0.0, 0.0),
+                &PyBBox::new(
+                    &PyPosition::new(-0.1, -0.1, -0.1),
+                    &PyPosition::new(0.1, 0.1, 0.1),
+                ),
+            ))
+            .unwrap();
+
         let comparison = world
             .compare(
                 &PyAction::move_to(1.0, 0.0, 0.0, 1.0),
@@ -5745,6 +6244,32 @@ mod tests {
         assert_eq!(comparison.best_prediction().provider(), "mock");
         assert!(comparison.summary().contains("Compared 2 providers"));
         assert_eq!(comparison.provider_scores().len(), 2);
+        assert_eq!(comparison.pairwise_agreements().len(), 1);
+        assert!(comparison.provider_scores()[0].quality_score() > 0.0);
+        assert!(
+            comparison.provider_scores()[0]
+                .state()
+                .relationship_preservation_rate()
+                >= 0.0
+        );
+        assert!(
+            comparison.consensus().shared_object_count()
+                <= comparison.provider_scores()[0]
+                    .state()
+                    .output_object_count()
+        );
+        assert!(
+            comparison.provider_scores()[0]
+                .state()
+                .output_object_count()
+                >= 1
+        );
+        assert_eq!(
+            comparison.provider_scores()[0]
+                .guardrails()
+                .evaluated_count(),
+            2
+        );
     }
 
     #[test]
@@ -6277,6 +6802,8 @@ mod tests {
         assert!(comparison.best_prediction_index() < comparison.prediction_count());
         assert_eq!(comparison.best_prediction().provider(), "mock");
         assert_eq!(comparison.provider_scores()[0].provider(), "mock");
+        assert_eq!(comparison.pairwise_agreements().len(), 1);
+        assert!(comparison.consensus().average_quality_score() > 0.0);
     }
 
     #[test]
@@ -6298,6 +6825,12 @@ mod tests {
 
         assert_eq!(restored.prediction_count(), 2);
         assert_eq!(restored.best_prediction().provider(), "mock");
+        assert_eq!(restored.pairwise_agreements().len(), 1);
+        assert_eq!(restored.provider_scores().len(), 2);
+        assert!(
+            restored.consensus().shared_object_count()
+                <= restored.provider_scores()[0].state().output_object_count()
+        );
         assert!(restored.__repr__().contains("MultiPrediction"));
     }
 

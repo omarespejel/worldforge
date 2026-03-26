@@ -3585,12 +3585,30 @@ mod tests {
         let id = v["data"]["id"].as_str().unwrap();
 
         let cmp_body = format!(
-            r#"{{"world_id":"{}","action":{{"Move":{{"target":{{"x":1.0,"y":0.0,"z":0.0}},"speed":1.0}}}},"providers":["mock"]}}"#,
+            r#"{{"world_id":"{}","action":{{"Move":{{"target":{{"x":1.0,"y":0.0,"z":0.0}},"speed":1.0}}}},"providers":["mock","mock"]}}"#,
             id
         );
         let (status, resp) = route("POST", "/v1/compare", &cmp_body, &state).await;
         assert_eq!(status, 200);
-        assert!(resp.contains("success"));
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(value["success"], true);
+        assert_eq!(
+            value["data"]["comparison"]["scores"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            value["data"]["comparison"]["pairwise_agreements"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(value["data"]["comparison"]["scores"][0]["state"]["output_object_count"].is_u64());
+        assert!(value["data"]["comparison"]["scores"][0]["quality_score"].is_number());
+        assert!(value["data"]["comparison"]["consensus"]["shared_object_count"].is_u64());
     }
 
     #[tokio::test]

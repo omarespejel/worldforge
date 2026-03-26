@@ -3,14 +3,17 @@
 //! Handles forward prediction of world states, multi-provider comparison,
 //! and planning through world models.
 
+use std::collections::{HashMap, HashSet};
+
 use serde::{Deserialize, Serialize};
 
 use crate::action::Action;
 use crate::error::{Result, WorldForgeError};
-use crate::guardrail::{Guardrail, GuardrailConfig, GuardrailResult};
+use crate::guardrail::{Guardrail, GuardrailConfig, GuardrailResult, ViolationSeverity};
 use crate::provider::CostEstimate;
+use crate::scene::SpatialRelationship;
 use crate::state::WorldState;
-use crate::types::{PredictionId, VideoClip};
+use crate::types::{ObjectId, PredictionId, VideoClip};
 
 /// Result of a single forward prediction.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,25 +105,188 @@ pub struct MultiPrediction {
 }
 
 /// Comparison report across multiple provider predictions.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ComparisonReport {
     /// Per-provider scores.
     pub scores: Vec<ProviderScore>,
+    /// Pairwise agreement metrics across provider outputs.
+    #[serde(default)]
+    pub pairwise_agreements: Vec<PairwiseAgreement>,
+    /// Consensus signals shared across all compared providers.
+    #[serde(default)]
+    pub consensus: ComparisonConsensus,
     /// Summary text.
     pub summary: String,
 }
 
 /// Score for a single provider in a comparison.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ProviderScore {
     /// Provider name.
     pub provider: String,
+    /// Provider-reported confidence.
+    #[serde(default)]
+    pub confidence: f32,
     /// Physics scores.
     pub physics_scores: PhysicsScores,
     /// Latency in milliseconds.
     pub latency_ms: u64,
     /// Cost estimate.
     pub cost: CostEstimate,
+    /// Guardrail pass/fail diagnostics for this prediction.
+    #[serde(default)]
+    pub guardrails: GuardrailDiagnostics,
+    /// State-level diagnostics derived from the input/output states.
+    #[serde(default)]
+    pub state: StateDiagnostics,
+    /// Composite quality score used to rank the best prediction.
+    #[serde(default)]
+    pub quality_score: f32,
+}
+
+/// Guardrail diagnostics for a provider prediction.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GuardrailDiagnostics {
+    /// Number of guardrails evaluated for the prediction.
+    pub evaluated_count: usize,
+    /// Number of passing guardrails.
+    pub passed_count: usize,
+    /// Number of failing guardrails.
+    pub failed_count: usize,
+    /// Number of blocking guardrail violations.
+    pub blocking_failures: usize,
+    /// Fraction of guardrails that passed.
+    pub pass_rate: f32,
+}
+
+/// State-level diagnostics for a provider prediction.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StateDiagnostics {
+    /// Number of input-state objects before prediction.
+    pub input_object_count: usize,
+    /// Number of output-state objects after prediction.
+    pub output_object_count: usize,
+    /// Signed object-count delta (`output - input`).
+    pub object_count_delta: i64,
+    /// Number of input objects preserved in the output by stable ID.
+    pub preserved_object_count: usize,
+    /// Number of input objects dropped by the provider.
+    pub dropped_object_count: usize,
+    /// Number of output objects newly introduced by the provider.
+    pub novel_object_count: usize,
+    /// Fraction of input objects preserved in the output.
+    pub object_preservation_rate: f32,
+    /// Number of input relationships before prediction.
+    pub input_relationship_count: usize,
+    /// Number of output relationships after prediction.
+    pub output_relationship_count: usize,
+    /// Signed relationship-count delta (`output - input`).
+    pub relationship_count_delta: i64,
+    /// Number of input relationships preserved in the output.
+    pub preserved_relationship_count: usize,
+    /// Fraction of input relationships preserved in the output.
+    pub relationship_preservation_rate: f32,
+    /// Mean positional drift across preserved objects.
+    pub average_position_shift: f32,
+    /// Maximum positional drift across preserved objects.
+    pub max_position_shift: f32,
+    /// Stable identities of dropped objects.
+    #[serde(default)]
+    pub dropped_objects: Vec<ObjectDiagnostic>,
+    /// Stable identities of newly introduced objects.
+    #[serde(default)]
+    pub novel_objects: Vec<ObjectDiagnostic>,
+    /// Drift details for preserved objects, sorted by decreasing distance.
+    #[serde(default)]
+    pub object_drifts: Vec<ObjectDrift>,
+}
+
+/// Stable object identity surfaced in comparison diagnostics.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ObjectDiagnostic {
+    /// Stable object identifier.
+    pub object_id: ObjectId,
+    /// Human-readable object name.
+    pub object_name: String,
+}
+
+/// Positional drift for a single object.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ObjectDrift {
+    /// Stable object identifier.
+    pub object_id: ObjectId,
+    /// Human-readable object name.
+    pub object_name: String,
+    /// Euclidean drift distance in world units.
+    pub distance: f32,
+}
+
+/// Pairwise agreement diagnostics between two provider outputs.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PairwiseAgreement {
+    /// First provider name.
+    pub provider_a: String,
+    /// Second provider name.
+    pub provider_b: String,
+    /// Aggregate agreement score for the pair (0.0–1.0).
+    pub agreement_score: f32,
+    /// Number of shared output objects by stable ID.
+    pub common_object_count: usize,
+    /// Jaccard overlap across output object IDs.
+    pub object_overlap_rate: f32,
+    /// Signed output object-count delta (`provider_a - provider_b`).
+    pub object_count_delta: i64,
+    /// Jaccard overlap across output spatial relationships.
+    pub relationship_overlap_rate: f32,
+    /// Signed output relationship-count delta (`provider_a - provider_b`).
+    pub relationship_count_delta: i64,
+    /// Agreement score derived from mean positional deltas.
+    pub position_agreement: f32,
+    /// Mean positional delta across shared objects.
+    pub average_position_delta: f32,
+    /// Maximum positional delta across shared objects.
+    pub max_position_delta: f32,
+    /// Fraction of guardrail outcomes that agree by name.
+    pub guardrail_agreement_rate: f32,
+    /// Absolute physics-score delta between providers.
+    pub physics_score_delta: f32,
+    /// Absolute confidence delta between providers.
+    pub confidence_delta: f32,
+    /// Absolute latency delta in milliseconds.
+    pub latency_delta_ms: u64,
+    /// Highest positional disagreements across shared objects.
+    #[serde(default)]
+    pub positional_disagreements: Vec<ObjectDrift>,
+}
+
+/// Consensus-level diagnostics shared across all compared providers.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ComparisonConsensus {
+    /// Number of object identities shared by every provider output.
+    pub shared_object_count: usize,
+    /// Shared object identities sorted by name then ID.
+    #[serde(default)]
+    pub shared_objects: Vec<ObjectDiagnostic>,
+    /// Number of relationships shared by every provider output.
+    pub shared_relationship_count: usize,
+    /// Mean provider confidence across the comparison set.
+    pub average_confidence: f32,
+    /// Mean guardrail pass rate across the comparison set.
+    pub average_guardrail_pass_rate: f32,
+    /// Mean provider quality score across the comparison set.
+    pub average_quality_score: f32,
+    /// Mean provider latency across the comparison set.
+    pub average_latency_ms: u64,
+    /// Mean pairwise position delta across all provider pairs.
+    pub average_pairwise_position_delta: f32,
 }
 
 impl MultiPrediction {
@@ -136,63 +302,601 @@ impl MultiPrediction {
             ));
         }
 
-        let best_prediction = predictions
+        let scores: Vec<_> = predictions.iter().map(build_provider_score).collect();
+        let best_prediction = scores
             .iter()
             .enumerate()
             .max_by(|(_, a), (_, b)| {
-                a.physics_scores
-                    .overall
-                    .partial_cmp(&b.physics_scores.overall)
+                a.quality_score
+                    .partial_cmp(&b.quality_score)
                     .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| {
+                        a.physics_scores
+                            .overall
+                            .partial_cmp(&b.physics_scores.overall)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .then_with(|| b.latency_ms.cmp(&a.latency_ms))
             })
             .map(|(index, _)| index)
             .unwrap_or(0);
-        let agreement_score = compute_agreement_score(&predictions);
-        let summary = format!(
-            "Compared {} providers, best: {}",
+        let pairwise_agreements = build_pairwise_agreements(&predictions);
+        let agreement_score = compute_agreement_score(&pairwise_agreements);
+        let consensus = build_consensus(&predictions, &scores, &pairwise_agreements);
+        let summary = build_comparison_summary(
             predictions.len(),
-            predictions[best_prediction].provider
+            &predictions[best_prediction].provider,
+            scores[best_prediction].quality_score,
+            consensus.shared_object_count,
+            agreement_score,
+            &pairwise_agreements,
         );
-        let scores = predictions
-            .iter()
-            .map(|prediction| ProviderScore {
-                provider: prediction.provider.clone(),
-                physics_scores: prediction.physics_scores,
-                latency_ms: prediction.latency_ms,
-                cost: prediction.cost.clone(),
-            })
-            .collect();
 
         Ok(Self {
             predictions,
             agreement_score,
             best_prediction,
-            comparison: ComparisonReport { scores, summary },
+            comparison: ComparisonReport {
+                scores,
+                pairwise_agreements,
+                consensus,
+                summary,
+            },
         })
     }
 }
 
-fn compute_agreement_score(predictions: &[Prediction]) -> f32 {
-    if predictions.len() <= 1 {
-        return 1.0;
+fn build_provider_score(prediction: &Prediction) -> ProviderScore {
+    ProviderScore {
+        provider: prediction.provider.clone(),
+        confidence: prediction.confidence,
+        physics_scores: prediction.physics_scores,
+        latency_ms: prediction.latency_ms,
+        cost: prediction.cost.clone(),
+        guardrails: build_guardrail_diagnostics(&prediction.guardrail_results),
+        state: build_state_diagnostics(&prediction.input_state, &prediction.output_state),
+        quality_score: 0.0,
     }
+    .with_quality_score()
+}
 
-    let mut total = 0.0f32;
-    let mut count = 0usize;
+trait ProviderScoreExt {
+    fn with_quality_score(self) -> Self;
+}
+
+impl ProviderScoreExt for ProviderScore {
+    fn with_quality_score(mut self) -> Self {
+        let latency_quality = 1.0 / (1.0 + self.latency_ms as f32 / 1_000.0);
+        self.quality_score = 0.30 * self.physics_scores.overall.clamp(0.0, 1.0)
+            + 0.20 * self.confidence.clamp(0.0, 1.0)
+            + 0.20 * self.guardrails.pass_rate.clamp(0.0, 1.0)
+            + 0.15 * self.state.object_preservation_rate.clamp(0.0, 1.0)
+            + 0.10 * self.state.relationship_preservation_rate.clamp(0.0, 1.0)
+            + 0.05 * latency_quality.clamp(0.0, 1.0);
+        self
+    }
+}
+
+fn build_guardrail_diagnostics(results: &[GuardrailResult]) -> GuardrailDiagnostics {
+    let evaluated_count = results.len();
+    let passed_count = results.iter().filter(|result| result.passed).count();
+    let failed_count = evaluated_count.saturating_sub(passed_count);
+    let blocking_failures = results
+        .iter()
+        .filter(|result| !result.passed && result.severity == ViolationSeverity::Blocking)
+        .count();
+    let pass_rate = if evaluated_count == 0 {
+        1.0
+    } else {
+        passed_count as f32 / evaluated_count as f32
+    };
+
+    GuardrailDiagnostics {
+        evaluated_count,
+        passed_count,
+        failed_count,
+        blocking_failures,
+        pass_rate,
+    }
+}
+
+fn build_state_diagnostics(
+    input_state: &WorldState,
+    output_state: &WorldState,
+) -> StateDiagnostics {
+    let input_objects = &input_state.scene.objects;
+    let output_objects = &output_state.scene.objects;
+
+    let preserved_ids: Vec<_> = input_objects
+        .keys()
+        .copied()
+        .filter(|object_id| output_objects.contains_key(object_id))
+        .collect();
+    let dropped_objects = collect_object_diagnostics(
+        input_objects
+            .iter()
+            .filter(|(object_id, _)| !output_objects.contains_key(*object_id))
+            .map(|(_, object)| object),
+    );
+    let novel_objects = collect_object_diagnostics(
+        output_objects
+            .iter()
+            .filter(|(object_id, _)| !input_objects.contains_key(*object_id))
+            .map(|(_, object)| object),
+    );
+    let object_drifts = collect_object_drifts(preserved_ids.iter().filter_map(|object_id| {
+        let input_object = input_objects.get(object_id)?;
+        let output_object = output_objects.get(object_id)?;
+        Some((
+            *object_id,
+            output_object.name.clone(),
+            input_object
+                .pose
+                .position
+                .distance(output_object.pose.position),
+        ))
+    }));
+    let average_position_shift = average_distance(&object_drifts);
+    let max_position_shift = max_distance(&object_drifts);
+    let input_relationship_count = input_state.scene.relationships.len();
+    let output_relationship_count = output_state.scene.relationships.len();
+    let input_relationships: HashSet<_> = input_state
+        .scene
+        .relationships
+        .iter()
+        .map(RelationshipSignature::from)
+        .collect();
+    let output_relationships: HashSet<_> = output_state
+        .scene
+        .relationships
+        .iter()
+        .map(RelationshipSignature::from)
+        .collect();
+    let preserved_relationship_count = input_relationships
+        .intersection(&output_relationships)
+        .count();
+    let object_preservation_rate = if input_objects.is_empty() {
+        1.0
+    } else {
+        preserved_ids.len() as f32 / input_objects.len() as f32
+    };
+    let relationship_preservation_rate = if input_relationships.is_empty() {
+        1.0
+    } else {
+        preserved_relationship_count as f32 / input_relationships.len() as f32
+    };
+
+    StateDiagnostics {
+        input_object_count: input_objects.len(),
+        output_object_count: output_objects.len(),
+        object_count_delta: output_objects.len() as i64 - input_objects.len() as i64,
+        preserved_object_count: preserved_ids.len(),
+        dropped_object_count: dropped_objects.len(),
+        novel_object_count: novel_objects.len(),
+        object_preservation_rate,
+        input_relationship_count,
+        output_relationship_count,
+        relationship_count_delta: output_relationship_count as i64
+            - input_relationship_count as i64,
+        preserved_relationship_count,
+        relationship_preservation_rate,
+        average_position_shift,
+        max_position_shift,
+        dropped_objects,
+        novel_objects,
+        object_drifts,
+    }
+}
+
+fn build_pairwise_agreements(predictions: &[Prediction]) -> Vec<PairwiseAgreement> {
+    let mut pairwise_agreements = Vec::new();
+
     for i in 0..predictions.len() {
         for j in (i + 1)..predictions.len() {
-            let diff = (predictions[i].physics_scores.overall
-                - predictions[j].physics_scores.overall)
-                .abs();
-            total += 1.0 - diff;
-            count += 1;
+            pairwise_agreements.push(build_pairwise_agreement(&predictions[i], &predictions[j]));
         }
     }
 
-    if count == 0 {
+    pairwise_agreements
+}
+
+fn build_pairwise_agreement(left: &Prediction, right: &Prediction) -> PairwiseAgreement {
+    let left_objects = &left.output_state.scene.objects;
+    let right_objects = &right.output_state.scene.objects;
+    let left_ids: HashSet<_> = left_objects.keys().copied().collect();
+    let right_ids: HashSet<_> = right_objects.keys().copied().collect();
+    let common_ids: Vec<_> = left_ids.intersection(&right_ids).copied().collect();
+    let object_overlap_rate = overlap_rate(left_ids.len(), right_ids.len(), common_ids.len());
+    let positional_disagreements =
+        collect_object_drifts(common_ids.iter().filter_map(|object_id| {
+            let left_object = left_objects.get(object_id)?;
+            let right_object = right_objects.get(object_id)?;
+            Some((
+                *object_id,
+                left_object.name.clone(),
+                left_object
+                    .pose
+                    .position
+                    .distance(right_object.pose.position),
+            ))
+        }));
+    let average_position_delta = average_distance(&positional_disagreements);
+    let max_position_delta = max_distance(&positional_disagreements);
+    let position_agreement = if common_ids.is_empty() {
         1.0
     } else {
+        1.0 / (1.0 + average_position_delta)
+    };
+
+    let left_relationships: HashSet<_> = left
+        .output_state
+        .scene
+        .relationships
+        .iter()
+        .map(RelationshipSignature::from)
+        .collect();
+    let right_relationships: HashSet<_> = right
+        .output_state
+        .scene
+        .relationships
+        .iter()
+        .map(RelationshipSignature::from)
+        .collect();
+    let shared_relationships = left_relationships
+        .intersection(&right_relationships)
+        .count();
+    let relationship_overlap_rate = overlap_rate(
+        left_relationships.len(),
+        right_relationships.len(),
+        shared_relationships,
+    );
+    let guardrail_agreement_rate =
+        build_guardrail_agreement_rate(&left.guardrail_results, &right.guardrail_results);
+    let physics_score_delta = (left.physics_scores.overall - right.physics_scores.overall).abs();
+    let confidence_delta = (left.confidence - right.confidence).abs();
+    let latency_delta_ms = left.latency_ms.abs_diff(right.latency_ms);
+    let agreement_score = 0.30 * object_overlap_rate
+        + 0.20 * relationship_overlap_rate
+        + 0.20 * position_agreement
+        + 0.15 * guardrail_agreement_rate
+        + 0.10 * (1.0 - physics_score_delta.clamp(0.0, 1.0))
+        + 0.05 * (1.0 - confidence_delta.clamp(0.0, 1.0));
+
+    PairwiseAgreement {
+        provider_a: left.provider.clone(),
+        provider_b: right.provider.clone(),
+        agreement_score,
+        common_object_count: common_ids.len(),
+        object_overlap_rate,
+        object_count_delta: left_objects.len() as i64 - right_objects.len() as i64,
+        relationship_overlap_rate,
+        relationship_count_delta: left_relationships.len() as i64
+            - right_relationships.len() as i64,
+        position_agreement,
+        average_position_delta,
+        max_position_delta,
+        guardrail_agreement_rate,
+        physics_score_delta,
+        confidence_delta,
+        latency_delta_ms,
+        positional_disagreements,
+    }
+}
+
+fn build_consensus(
+    predictions: &[Prediction],
+    scores: &[ProviderScore],
+    pairwise_agreements: &[PairwiseAgreement],
+) -> ComparisonConsensus {
+    let shared_objects = shared_output_objects(predictions);
+    let shared_relationship_count = shared_output_relationship_count(predictions);
+    let average_confidence = average_f32(scores.iter().map(|score| score.confidence));
+    let average_guardrail_pass_rate =
+        average_f32(scores.iter().map(|score| score.guardrails.pass_rate));
+    let average_quality_score = average_f32(scores.iter().map(|score| score.quality_score));
+    let average_latency_ms = average_u64(scores.iter().map(|score| score.latency_ms));
+    let average_pairwise_position_delta = average_f32(
+        pairwise_agreements
+            .iter()
+            .map(|pair| pair.average_position_delta),
+    );
+
+    ComparisonConsensus {
+        shared_object_count: shared_objects.len(),
+        shared_objects,
+        shared_relationship_count,
+        average_confidence,
+        average_guardrail_pass_rate,
+        average_quality_score,
+        average_latency_ms,
+        average_pairwise_position_delta,
+    }
+}
+
+fn build_guardrail_agreement_rate(
+    left_results: &[GuardrailResult],
+    right_results: &[GuardrailResult],
+) -> f32 {
+    let left_by_name: HashMap<_, _> = left_results
+        .iter()
+        .map(|result| (result.guardrail_name.as_str(), result.passed))
+        .collect();
+    let right_by_name: HashMap<_, _> = right_results
+        .iter()
+        .map(|result| (result.guardrail_name.as_str(), result.passed))
+        .collect();
+    let mut guardrail_names: HashSet<&str> = left_by_name.keys().copied().collect();
+    guardrail_names.extend(right_by_name.keys().copied());
+    if guardrail_names.is_empty() {
+        return 1.0;
+    }
+
+    let matches = guardrail_names
+        .iter()
+        .filter(|name| left_by_name.get(**name) == right_by_name.get(**name))
+        .count();
+    matches as f32 / guardrail_names.len() as f32
+}
+
+fn build_comparison_summary(
+    provider_count: usize,
+    best_provider: &str,
+    best_quality_score: f32,
+    shared_object_count: usize,
+    agreement_score: f32,
+    pairwise_agreements: &[PairwiseAgreement],
+) -> String {
+    match pairwise_agreements.iter().max_by(|left, right| {
+        left.agreement_score
+            .partial_cmp(&right.agreement_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    }) {
+        Some(strongest_pair) => format!(
+            "Compared {provider_count} providers; best: {best_provider} (quality {best_quality_score:.2}); shared objects: {shared_object_count}; average agreement: {agreement_score:.2}; strongest agreement: {} vs {} ({:.2})",
+            strongest_pair.provider_a, strongest_pair.provider_b, strongest_pair.agreement_score
+        ),
+        None => format!(
+            "Compared {provider_count} providers; best: {best_provider} (quality {best_quality_score:.2}); shared objects: {shared_object_count}; average agreement: {agreement_score:.2}"
+        ),
+    }
+}
+
+fn compute_agreement_score(pairwise_agreements: &[PairwiseAgreement]) -> f32 {
+    if pairwise_agreements.is_empty() {
+        return 1.0;
+    }
+
+    pairwise_agreements
+        .iter()
+        .map(|pair| pair.agreement_score)
+        .sum::<f32>()
+        / pairwise_agreements.len() as f32
+}
+
+fn collect_object_diagnostics<'a>(
+    objects: impl Iterator<Item = &'a crate::scene::SceneObject>,
+) -> Vec<ObjectDiagnostic> {
+    let mut diagnostics: Vec<_> = objects
+        .map(|object| ObjectDiagnostic {
+            object_id: object.id,
+            object_name: object.name.clone(),
+        })
+        .collect();
+    diagnostics.sort_by(|left, right| {
+        left.object_name
+            .cmp(&right.object_name)
+            .then_with(|| left.object_id.as_bytes().cmp(right.object_id.as_bytes()))
+    });
+    diagnostics
+}
+
+fn collect_object_drifts(
+    objects: impl Iterator<Item = (ObjectId, String, f32)>,
+) -> Vec<ObjectDrift> {
+    let mut drifts: Vec<_> = objects
+        .filter(|(_, _, distance)| *distance > f32::EPSILON)
+        .map(|(object_id, object_name, distance)| ObjectDrift {
+            object_id,
+            object_name,
+            distance,
+        })
+        .collect();
+    drifts.sort_by(|left, right| {
+        right
+            .distance
+            .partial_cmp(&left.distance)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.object_name.cmp(&right.object_name))
+            .then_with(|| left.object_id.as_bytes().cmp(right.object_id.as_bytes()))
+    });
+    drifts
+}
+
+fn shared_output_objects(predictions: &[Prediction]) -> Vec<ObjectDiagnostic> {
+    let mut shared_ids = predictions
+        .first()
+        .map(|prediction| {
+            prediction
+                .output_state
+                .scene
+                .objects
+                .keys()
+                .copied()
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default();
+
+    for prediction in predictions.iter().skip(1) {
+        let output_ids: HashSet<_> = prediction
+            .output_state
+            .scene
+            .objects
+            .keys()
+            .copied()
+            .collect();
+        shared_ids.retain(|object_id| output_ids.contains(object_id));
+    }
+
+    let Some(reference_prediction) = predictions.first() else {
+        return Vec::new();
+    };
+    collect_object_diagnostics(
+        reference_prediction
+            .output_state
+            .scene
+            .objects
+            .iter()
+            .filter(|(object_id, _)| shared_ids.contains(*object_id))
+            .map(|(_, object)| object),
+    )
+}
+
+fn shared_output_relationship_count(predictions: &[Prediction]) -> usize {
+    let mut shared_relationships = predictions
+        .first()
+        .map(|prediction| {
+            prediction
+                .output_state
+                .scene
+                .relationships
+                .iter()
+                .map(RelationshipSignature::from)
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default();
+
+    for prediction in predictions.iter().skip(1) {
+        let relationships: HashSet<_> = prediction
+            .output_state
+            .scene
+            .relationships
+            .iter()
+            .map(RelationshipSignature::from)
+            .collect();
+        shared_relationships.retain(|relationship| relationships.contains(relationship));
+    }
+
+    shared_relationships.len()
+}
+
+fn average_distance(drifts: &[ObjectDrift]) -> f32 {
+    if drifts.is_empty() {
+        0.0
+    } else {
+        drifts.iter().map(|drift| drift.distance).sum::<f32>() / drifts.len() as f32
+    }
+}
+
+fn max_distance(drifts: &[ObjectDrift]) -> f32 {
+    drifts
+        .iter()
+        .map(|drift| drift.distance)
+        .fold(0.0, f32::max)
+}
+
+fn overlap_rate(left_count: usize, right_count: usize, intersection_count: usize) -> f32 {
+    let union_count = left_count + right_count - intersection_count;
+    if union_count == 0 {
+        1.0
+    } else {
+        intersection_count as f32 / union_count as f32
+    }
+}
+
+fn average_f32(values: impl Iterator<Item = f32>) -> f32 {
+    let mut total = 0.0f32;
+    let mut count = 0usize;
+    for value in values {
+        total += value;
+        count += 1;
+    }
+
+    if count == 0 {
+        0.0
+    } else {
         total / count as f32
+    }
+}
+
+fn average_u64(values: impl Iterator<Item = u64>) -> u64 {
+    let mut total = 0u128;
+    let mut count = 0u128;
+    for value in values {
+        total += u128::from(value);
+        count += 1;
+    }
+
+    if count == 0 {
+        0
+    } else {
+        (total / count) as u64
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum RelationshipSignature {
+    On {
+        subject: ObjectId,
+        surface: ObjectId,
+    },
+    In {
+        subject: ObjectId,
+        container: ObjectId,
+    },
+    Near {
+        a: ObjectId,
+        b: ObjectId,
+    },
+    Touching {
+        a: ObjectId,
+        b: ObjectId,
+    },
+    Above {
+        subject: ObjectId,
+        reference: ObjectId,
+    },
+    Below {
+        subject: ObjectId,
+        reference: ObjectId,
+    },
+}
+
+impl From<&SpatialRelationship> for RelationshipSignature {
+    fn from(value: &SpatialRelationship) -> Self {
+        match value {
+            SpatialRelationship::On { subject, surface } => Self::On {
+                subject: *subject,
+                surface: *surface,
+            },
+            SpatialRelationship::In { subject, container } => Self::In {
+                subject: *subject,
+                container: *container,
+            },
+            SpatialRelationship::Near { a, b, .. } => {
+                let (a, b) = ordered_pair(*a, *b);
+                Self::Near { a, b }
+            }
+            SpatialRelationship::Touching { a, b } => {
+                let (a, b) = ordered_pair(*a, *b);
+                Self::Touching { a, b }
+            }
+            SpatialRelationship::Above { subject, reference } => Self::Above {
+                subject: *subject,
+                reference: *reference,
+            },
+            SpatialRelationship::Below { subject, reference } => Self::Below {
+                subject: *subject,
+                reference: *reference,
+            },
+        }
+    }
+}
+
+fn ordered_pair(left: ObjectId, right: ObjectId) -> (ObjectId, ObjectId) {
+    if left.as_bytes() <= right.as_bytes() {
+        (left, right)
+    } else {
+        (right, left)
     }
 }
 
@@ -439,7 +1143,9 @@ impl PlanExecution {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scene::SceneObject;
     use crate::state::WorldState;
+    use crate::types::{BBox, Pose, Position};
 
     fn sample_prediction(provider: &str, physics_score: f32, latency_ms: u64) -> Prediction {
         let state = WorldState::new(format!("{provider}-state"), provider);
@@ -470,6 +1176,156 @@ mod tests {
                 estimated_latency_ms: latency_ms,
             },
             guardrail_results: Vec::new(),
+            timestamp: chrono::Utc::now(),
+        }
+    }
+
+    fn diagnostic_prediction(
+        provider: &str,
+        physics_score: f32,
+        latency_ms: u64,
+        mug_x: f32,
+        keep_mug: bool,
+        add_cube: bool,
+        guardrail_passed: bool,
+    ) -> Prediction {
+        let mut input_state = WorldState::new(format!("{provider}-state"), provider);
+        let mut counter = SceneObject::new(
+            "counter",
+            Pose {
+                position: Position {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                ..Pose::default()
+            },
+            BBox {
+                min: Position {
+                    x: -1.0,
+                    y: -0.1,
+                    z: -1.0,
+                },
+                max: Position {
+                    x: 1.0,
+                    y: 0.0,
+                    z: 1.0,
+                },
+            },
+        );
+        counter.id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+        let mut mug = SceneObject::new(
+            "mug",
+            Pose {
+                position: Position {
+                    x: 0.0,
+                    y: 0.1,
+                    z: 0.0,
+                },
+                ..Pose::default()
+            },
+            BBox {
+                min: Position {
+                    x: -0.05,
+                    y: 0.0,
+                    z: -0.05,
+                },
+                max: Position {
+                    x: 0.05,
+                    y: 0.2,
+                    z: 0.05,
+                },
+            },
+        );
+        mug.id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap();
+        let mug_id = mug.id;
+        input_state.scene.add_object(counter);
+        input_state.scene.add_object(mug);
+
+        let mut output_state = input_state.clone();
+        if keep_mug {
+            output_state.scene.set_object_position(
+                &mug_id,
+                Position {
+                    x: mug_x,
+                    y: 0.1,
+                    z: 0.0,
+                },
+            );
+        } else {
+            output_state.scene.remove_object(&mug_id);
+        }
+
+        if add_cube {
+            let mut cube = SceneObject::new(
+                "cube",
+                Pose {
+                    position: Position {
+                        x: 0.4,
+                        y: 0.1,
+                        z: 0.0,
+                    },
+                    ..Pose::default()
+                },
+                BBox {
+                    min: Position {
+                        x: 0.3,
+                        y: 0.0,
+                        z: -0.1,
+                    },
+                    max: Position {
+                        x: 0.5,
+                        y: 0.2,
+                        z: 0.1,
+                    },
+                },
+            );
+            cube.id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000003").unwrap();
+            output_state.scene.add_object(cube);
+        }
+        output_state.scene.refresh_relationships();
+
+        Prediction {
+            id: uuid::Uuid::new_v4(),
+            provider: provider.to_string(),
+            model: format!("{provider}-model"),
+            input_state,
+            action: Action::Move {
+                target: Position {
+                    x: mug_x,
+                    y: 0.1,
+                    z: 0.0,
+                },
+                speed: 1.0,
+            },
+            output_state,
+            video: None,
+            confidence: physics_score,
+            physics_scores: PhysicsScores {
+                overall: physics_score,
+                object_permanence: physics_score,
+                gravity_compliance: physics_score,
+                collision_accuracy: physics_score,
+                spatial_consistency: physics_score,
+                temporal_consistency: physics_score,
+            },
+            latency_ms,
+            cost: CostEstimate {
+                usd: latency_ms as f64 / 1_000.0,
+                credits: if add_cube { 1.5 } else { 1.0 },
+                estimated_latency_ms: latency_ms,
+            },
+            guardrail_results: vec![GuardrailResult {
+                guardrail_name: "NoCollisions".to_string(),
+                passed: guardrail_passed,
+                violation_details: (!guardrail_passed)
+                    .then_some("collision between mug and counter".to_string()),
+                severity: if guardrail_passed {
+                    ViolationSeverity::Info
+                } else {
+                    ViolationSeverity::Blocking
+                },
+            }],
             timestamp: chrono::Utc::now(),
         }
     }
@@ -609,12 +1465,78 @@ mod tests {
         assert_eq!(multi.predictions.len(), 3);
         assert_eq!(multi.best_prediction, 1);
         assert_eq!(multi.comparison.scores.len(), 3);
-        assert_eq!(
-            multi.comparison.summary,
-            "Compared 3 providers, best: provider-b"
-        );
+        assert!(multi
+            .comparison
+            .summary
+            .contains("Compared 3 providers; best: provider-b"));
         assert!(multi.agreement_score > 0.0);
         assert!(multi.agreement_score <= 1.0);
+        assert!(
+            multi.comparison.scores[1].quality_score >= multi.comparison.scores[0].quality_score
+        );
+    }
+
+    #[test]
+    fn test_multi_prediction_collects_state_and_pairwise_diagnostics() {
+        let multi = MultiPrediction::try_from_predictions(vec![
+            diagnostic_prediction("provider-a", 0.52, 90, 0.20, true, false, true),
+            diagnostic_prediction("provider-b", 0.81, 110, 0.25, true, false, true),
+            diagnostic_prediction("provider-c", 0.73, 70, 0.20, false, true, false),
+        ])
+        .unwrap();
+
+        assert_eq!(multi.comparison.scores.len(), 3);
+        assert_eq!(multi.comparison.pairwise_agreements.len(), 3);
+        assert!(multi.comparison.summary.contains("strongest agreement"));
+        assert_eq!(multi.comparison.consensus.shared_object_count, 1);
+        assert_eq!(
+            multi.comparison.consensus.shared_objects[0].object_name,
+            "counter"
+        );
+        assert!(multi.comparison.consensus.average_quality_score > 0.0);
+
+        let provider_b = multi
+            .comparison
+            .scores
+            .iter()
+            .find(|score| score.provider == "provider-b")
+            .unwrap();
+        assert_eq!(provider_b.state.output_object_count, 2);
+        assert_eq!(provider_b.state.preserved_object_count, 2);
+        assert!(provider_b.state.preserved_relationship_count > 0);
+        assert!(provider_b.state.relationship_preservation_rate > 0.0);
+        assert!(provider_b.state.average_position_shift > 0.0);
+        assert_eq!(provider_b.guardrails.evaluated_count, 1);
+        assert_eq!(provider_b.guardrails.passed_count, 1);
+        assert!(provider_b.quality_score > 0.0);
+
+        let provider_c = multi
+            .comparison
+            .scores
+            .iter()
+            .find(|score| score.provider == "provider-c")
+            .unwrap();
+        assert_eq!(provider_c.state.dropped_object_count, 1);
+        assert_eq!(provider_c.state.novel_object_count, 1);
+        assert_eq!(provider_c.state.dropped_objects[0].object_name, "mug");
+        assert_eq!(provider_c.state.novel_objects[0].object_name, "cube");
+        assert_eq!(provider_c.guardrails.blocking_failures, 1);
+
+        let pair = multi
+            .comparison
+            .pairwise_agreements
+            .iter()
+            .find(|pair| pair.provider_a == "provider-a" && pair.provider_b == "provider-b")
+            .unwrap();
+        assert_eq!(pair.common_object_count, 2);
+        assert!(pair.object_overlap_rate > 0.99);
+        assert!(pair.average_position_delta > 0.0);
+        assert_eq!(pair.guardrail_agreement_rate, 1.0);
+
+        let json = serde_json::to_value(&multi).unwrap();
+        assert!(json["comparison"]["scores"][2]["state"]["dropped_objects"].is_array());
+        assert!(json["comparison"]["pairwise_agreements"][0]["agreement_score"].is_number());
+        assert!(json["comparison"]["consensus"]["average_quality_score"].is_number());
     }
 
     #[test]

@@ -1529,6 +1529,8 @@ async fn test_e2e_cross_provider_comparison() {
     assert!(multi.agreement_score >= 0.0);
     assert!(multi.agreement_score <= 1.0);
     assert!(multi.comparison.scores.len() == 2);
+    assert_eq!(multi.comparison.pairwise_agreements.len(), 1);
+    assert!(multi.comparison.consensus.average_quality_score >= 0.0);
 }
 
 /// Evaluation with leaderboard generation

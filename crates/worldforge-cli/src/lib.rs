@@ -2815,12 +2815,97 @@ async fn cmd_compare(
         "  Best provider: {}",
         multi.predictions[multi.best_prediction].provider
     );
+    println!(
+        "  Consensus: {} shared objects, {} shared relationships, avg quality {:.2}, avg latency {}ms",
+        multi.comparison.consensus.shared_object_count,
+        multi.comparison.consensus.shared_relationship_count,
+        multi.comparison.consensus.average_quality_score,
+        multi.comparison.consensus.average_latency_ms
+    );
+    println!("  Summary: {}", multi.comparison.summary);
     println!();
     for score in &multi.comparison.scores {
         println!(
-            "  {} — physics: {:.2}, latency: {}ms",
-            score.provider, score.physics_scores.overall, score.latency_ms
+            "  {} — quality: {:.2}, physics: {:.2}, confidence: {:.2}, latency: {}ms, guardrails: {}/{} passed",
+            score.provider,
+            score.quality_score,
+            score.physics_scores.overall,
+            score.confidence,
+            score.latency_ms,
+            score.guardrails.passed_count,
+            score.guardrails.evaluated_count
         );
+        println!(
+            "    objects: {} ({:+}), preserved {}/{}, relationships: {} ({:+}), preserved {}/{}",
+            score.state.output_object_count,
+            score.state.object_count_delta,
+            score.state.preserved_object_count,
+            score.state.input_object_count,
+            score.state.output_relationship_count,
+            score.state.relationship_count_delta,
+            score.state.preserved_relationship_count,
+            score.state.input_relationship_count
+        );
+        println!(
+            "    drift: avg {:.3}, max {:.3}",
+            score.state.average_position_shift, score.state.max_position_shift
+        );
+        if !score.state.novel_objects.is_empty() {
+            println!(
+                "    novel: {}",
+                score
+                    .state
+                    .novel_objects
+                    .iter()
+                    .map(|object| object.object_name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+        if !score.state.dropped_objects.is_empty() {
+            println!(
+                "    dropped: {}",
+                score
+                    .state
+                    .dropped_objects
+                    .iter()
+                    .map(|object| object.object_name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+    }
+
+    if !multi.comparison.consensus.shared_objects.is_empty() {
+        println!();
+        println!(
+            "Shared objects: {}",
+            multi
+                .comparison
+                .consensus
+                .shared_objects
+                .iter()
+                .map(|object| object.object_name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+
+    if !multi.comparison.pairwise_agreements.is_empty() {
+        println!();
+        println!("Pairwise agreement:");
+        for pair in &multi.comparison.pairwise_agreements {
+            println!(
+                "  {} vs {} — overall {:.2}, objects {:.2}, relationships {:.2}, avg position delta {:.3}, guardrails {:.2}",
+                pair.provider_a,
+                pair.provider_b,
+                pair.agreement_score,
+                pair.object_overlap_rate,
+                pair.relationship_overlap_rate,
+                pair.average_position_delta,
+                pair.guardrail_agreement_rate
+            );
+        }
     }
     Ok(())
 }
