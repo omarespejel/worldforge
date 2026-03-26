@@ -419,6 +419,29 @@ async fn test_live_http_provider_embed() {
 }
 
 #[tokio::test]
+async fn test_live_http_provider_reason_video_only() {
+    let server = spawn_test_server().await;
+    let body = serde_json::json!({
+        "query": "what do you see?",
+        "video": {
+            "frames": [],
+            "fps": 15.0,
+            "resolution": [320, 240],
+            "duration": 1.5
+        }
+    })
+    .to_string();
+
+    let (status, response) =
+        http_request(server.address, "POST", "/v1/providers/mock/reason", &body).await;
+    assert_eq!(status, 200);
+    assert!(response["data"]["answer"]
+        .as_str()
+        .unwrap()
+        .contains("echo the query"));
+}
+
+#[tokio::test]
 async fn test_live_http_patch_object_persists_position_updates() {
     let server = spawn_test_server().await;
     let world_id = create_test_world(server.address, "patch_world").await;

@@ -36,7 +36,7 @@ use error::Result;
 use prediction::{MultiPrediction, Prediction};
 use provider::{
     CostEstimate, EmbeddingInput, EmbeddingOutput, Operation, ProviderDescriptor,
-    ProviderHealthReport, ProviderRegistry,
+    ProviderHealthReport, ProviderRegistry, ReasoningInput, ReasoningOutput,
 };
 use state::{DynStateStore, WorldState};
 use world::World;
@@ -141,6 +141,97 @@ impl WorldForge {
     /// Estimate the cost of an operation for a provider.
     pub fn estimate_cost(&self, provider: &str, operation: &Operation) -> Result<CostEstimate> {
         self.registry.estimate_cost(provider, operation)
+    }
+
+    /// Ask a specific provider to reason about supplied state or video input.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the provider is unknown, reasoning is unsupported,
+    /// or the input does not include a state or video payload.
+    pub async fn reason(
+        &self,
+        provider: &str,
+        input: &ReasoningInput,
+        query: &str,
+    ) -> Result<ReasoningOutput> {
+        self.reason_with_fallback(provider, input, query, None)
+            .await
+            .map(|(_, output)| output)
+    }
+
+    /// Ask a specific provider to reason about supplied state or video input
+    /// with an optional fallback provider.
+    ///
+    /// Returns the provider name that ultimately satisfied the request alongside
+    /// the output.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the primary request fails and no fallback succeeds,
+    /// or if the input does not include a state or video payload.
+    pub async fn reason_with_fallback(
+        &self,
+        provider: &str,
+        input: &ReasoningInput,
+        query: &str,
+        fallback_provider: Option<&str>,
+    ) -> Result<(String, ReasoningOutput)> {
+        validate_reasoning_input(input)?;
+
+        match self.registry.get(provider) {
+            Ok(provider_ref) => match provider_ref.reason(input, query).await {
+                Ok(output) => Ok((provider.to_string(), output)),
+                Err(primary_error) => {
+                    let Some(fallback_provider) =
+                        fallback_provider.filter(|fallback| *fallback != provider)
+                    else {
+                        return Err(primary_error);
+                    };
+
+                    tracing::warn!(
+                        provider,
+                        fallback = fallback_provider,
+                        error = %primary_error,
+                        "reasoning failed on primary provider, attempting fallback"
+                    );
+
+                    match self.registry.get(fallback_provider)?.reason(input, query).await {
+                        Ok(output) => Ok((fallback_provider.to_string(), output)),
+                        Err(fallback_error) => Err(error::WorldForgeError::ProviderUnavailable {
+                            provider: provider.to_string(),
+                            reason: format!(
+                                "primary provider error: {primary_error}; fallback provider '{fallback_provider}' error: {fallback_error}"
+                            ),
+                        }),
+                    }
+                }
+            },
+            Err(primary_error) => {
+                let Some(fallback_provider) =
+                    fallback_provider.filter(|fallback| *fallback != provider)
+                else {
+                    return Err(primary_error);
+                };
+
+                tracing::warn!(
+                    provider,
+                    fallback = fallback_provider,
+                    error = %primary_error,
+                    "reasoning failed on primary provider, attempting fallback"
+                );
+
+                match self.registry.get(fallback_provider)?.reason(input, query).await {
+                    Ok(output) => Ok((fallback_provider.to_string(), output)),
+                    Err(fallback_error) => Err(error::WorldForgeError::ProviderUnavailable {
+                        provider: provider.to_string(),
+                        reason: format!(
+                            "primary provider error: {primary_error}; fallback provider '{fallback_provider}' error: {fallback_error}"
+                        ),
+                    }),
+                }
+            }
+        }
     }
 
     /// Request an embedding from a specific provider.
@@ -327,6 +418,16 @@ impl WorldForge {
     }
 }
 
+fn validate_reasoning_input(input: &ReasoningInput) -> Result<()> {
+    if input.state.is_none() && input.video.is_none() {
+        return Err(error::WorldForgeError::InvalidState(
+            "reasoning input must include state and/or video".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
 impl Default for WorldForge {
     fn default() -> Self {
         Self::new()
@@ -375,6 +476,11 @@ mod tests {
     }
 
     struct EmbedProvider;
+
+    struct ReasonProvider {
+        name: &'static str,
+        should_fail: bool,
+    }
 
     #[async_trait]
     impl WorldModelProvider for EmbedProvider {
@@ -479,6 +585,119 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl WorldModelProvider for ReasonProvider {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities {
+                predict: false,
+                generate: false,
+                reason: true,
+                transfer: false,
+                embed: false,
+                action_conditioned: false,
+                multi_view: false,
+                max_video_length_seconds: 0.0,
+                max_resolution: (0, 0),
+                fps_range: (0.0, 0.0),
+                supported_action_spaces: Vec::new(),
+                supports_depth: false,
+                supports_segmentation: false,
+                supports_planning: false,
+                latency_profile: LatencyProfile {
+                    p50_ms: 1,
+                    p95_ms: 1,
+                    p99_ms: 1,
+                    throughput_fps: 1.0,
+                },
+            }
+        }
+
+        async fn predict(
+            &self,
+            _state: &crate::state::WorldState,
+            _action: &crate::action::Action,
+            _config: &crate::prediction::PredictionConfig,
+        ) -> Result<crate::prediction::Prediction> {
+            Err(crate::error::WorldForgeError::UnsupportedCapability {
+                provider: self.name.to_string(),
+                capability: "predict".to_string(),
+            })
+        }
+
+        async fn generate(
+            &self,
+            _prompt: &crate::provider::GenerationPrompt,
+            _config: &crate::provider::GenerationConfig,
+        ) -> Result<crate::types::VideoClip> {
+            Err(crate::error::WorldForgeError::UnsupportedCapability {
+                provider: self.name.to_string(),
+                capability: "generate".to_string(),
+            })
+        }
+
+        async fn reason(&self, input: &ReasoningInput, query: &str) -> Result<ReasoningOutput> {
+            if self.should_fail {
+                return Err(crate::error::WorldForgeError::UnsupportedCapability {
+                    provider: self.name.to_string(),
+                    capability: "reason".to_string(),
+                });
+            }
+
+            Ok(ReasoningOutput {
+                answer: format!(
+                    "{}:{}:{}:{}",
+                    self.name,
+                    query,
+                    input.state.is_some(),
+                    input.video.is_some()
+                ),
+                confidence: 0.99,
+                evidence: vec![
+                    format!("state={}", input.state.is_some()),
+                    format!("video={}", input.video.is_some()),
+                ],
+            })
+        }
+
+        async fn embed(&self, _input: &EmbeddingInput) -> Result<EmbeddingOutput> {
+            Err(crate::error::WorldForgeError::UnsupportedCapability {
+                provider: self.name.to_string(),
+                capability: "embed".to_string(),
+            })
+        }
+
+        async fn transfer(
+            &self,
+            _source: &crate::types::VideoClip,
+            _controls: &SpatialControls,
+            _config: &TransferConfig,
+        ) -> Result<crate::types::VideoClip> {
+            Err(crate::error::WorldForgeError::UnsupportedCapability {
+                provider: self.name.to_string(),
+                capability: "transfer".to_string(),
+            })
+        }
+
+        async fn health_check(&self) -> Result<HealthStatus> {
+            Ok(HealthStatus {
+                healthy: true,
+                message: "healthy".to_string(),
+                latency_ms: 1,
+            })
+        }
+
+        fn estimate_cost(
+            &self,
+            _operation: &crate::provider::Operation,
+        ) -> crate::provider::CostEstimate {
+            crate::provider::CostEstimate::default()
+        }
+    }
+
     #[tokio::test]
     async fn test_worldforge_embed_delegates_to_provider() {
         let mut registry = crate::provider::ProviderRegistry::new();
@@ -513,5 +732,86 @@ mod tests {
         assert_eq!(provider, "embedder");
         assert_eq!(result.provider, "embedder");
         assert_eq!(result.model, "embedder-v1");
+    }
+
+    #[tokio::test]
+    async fn test_worldforge_reason_delegates_to_provider() {
+        let mut registry = crate::provider::ProviderRegistry::new();
+        registry.register(Box::new(ReasonProvider {
+            name: "reasoner",
+            should_fail: false,
+        }));
+        let wf = WorldForge::from_registry(registry);
+
+        let output = wf
+            .reason(
+                "reasoner",
+                &ReasoningInput {
+                    state: None,
+                    video: Some(crate::types::VideoClip {
+                        frames: Vec::new(),
+                        fps: 12.0,
+                        resolution: (320, 180),
+                        duration: 1.5,
+                    }),
+                },
+                "what do you see?",
+            )
+            .await
+            .unwrap();
+
+        assert!(output.answer.contains("reasoner:what do you see?"));
+        assert!(output.evidence.iter().any(|entry| entry == "video=true"));
+    }
+
+    #[tokio::test]
+    async fn test_worldforge_reason_uses_fallback_provider() {
+        let mut registry = crate::provider::ProviderRegistry::new();
+        registry.register(Box::new(ReasonProvider {
+            name: "primary",
+            should_fail: true,
+        }));
+        registry.register(Box::new(ReasonProvider {
+            name: "fallback",
+            should_fail: false,
+        }));
+        let wf = WorldForge::from_registry(registry);
+
+        let (provider, output) = wf
+            .reason_with_fallback(
+                "primary",
+                &ReasoningInput {
+                    state: Some(crate::state::WorldState::new("reason-world", "primary")),
+                    video: None,
+                },
+                "count the objects",
+                Some("fallback"),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(provider, "fallback");
+        assert!(output.answer.contains("fallback:count the objects"));
+    }
+
+    #[tokio::test]
+    async fn test_worldforge_reason_rejects_empty_input() {
+        let wf = WorldForge::new();
+        let error = wf
+            .reason(
+                "missing",
+                &ReasoningInput {
+                    state: None,
+                    video: None,
+                },
+                "what happens?",
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            crate::error::WorldForgeError::InvalidState(_)
+        ));
     }
 }

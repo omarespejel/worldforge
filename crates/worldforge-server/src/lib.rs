@@ -18,7 +18,7 @@ use worldforge_core::guardrail::{Guardrail, GuardrailConfig};
 use worldforge_core::prediction::{Plan, PlanGoal, PlanGoalInput, PlannerType, PredictionConfig};
 use worldforge_core::provider::{
     EmbeddingInput, GenerationConfig, GenerationPrompt, Operation, ProviderRegistry,
-    SpatialControls, TransferConfig,
+    ReasoningInput, SpatialControls, TransferConfig,
 };
 use worldforge_core::scene::{PhysicsProperties, SceneObject, SceneObjectPatch};
 use worldforge_core::state::{DynStateStore, StateFileFormat, StateStoreKind, WorldState};
@@ -292,6 +292,18 @@ struct GenerateRequest {
 struct EmbedRequest {
     #[serde(default)]
     text: Option<String>,
+    #[serde(default)]
+    video: Option<VideoClip>,
+    #[serde(default)]
+    fallback_provider: Option<String>,
+}
+
+/// JSON request body for provider reasoning.
+#[derive(Debug, Deserialize)]
+struct ProviderReasonRequest {
+    query: String,
+    #[serde(default)]
+    state: Option<WorldState>,
     #[serde(default)]
     video: Option<VideoClip>,
     #[serde(default)]
@@ -1057,6 +1069,120 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
 
                             match state.registry.get(fallback_provider) {
                                 Ok(provider) => match provider.embed(&input).await {
+                                    Ok(output) => (200, ApiResponse::ok(output)),
+                                    Err(fallback_error) => (
+                                        api_error_status(&fallback_error),
+                                        error_response(
+                                            &WorldForgeError::ProviderUnavailable {
+                                                provider: provider_name.to_string(),
+                                                reason: format!(
+                                                    "primary provider error: {primary_error}; fallback provider '{fallback_provider}' error: {fallback_error}"
+                                                ),
+                                            }
+                                            .to_string(),
+                                        ),
+                                    ),
+                                },
+                                Err(fallback_error) => (
+                                    api_error_status(&fallback_error),
+                                    error_response(
+                                        &WorldForgeError::ProviderUnavailable {
+                                            provider: provider_name.to_string(),
+                                            reason: format!(
+                                                "primary provider error: {primary_error}; fallback provider '{fallback_provider}' error: {fallback_error}"
+                                            ),
+                                        }
+                                        .to_string(),
+                                    ),
+                                ),
+                            }
+                        }
+                    }
+                }
+                Err(e) => (400, error_response(&format!("invalid request: {e}"))),
+            }
+        }
+
+        // POST /v1/providers/{name}/reason
+        ("POST", p) if p.starts_with("/v1/providers/") && p.ends_with("/reason") => {
+            let provider_name = p
+                .strip_prefix("/v1/providers/")
+                .and_then(|value| value.strip_suffix("/reason"))
+                .unwrap_or("");
+            match serde_json::from_str::<ProviderReasonRequest>(body) {
+                Ok(req) => {
+                    let input = ReasoningInput {
+                        state: req.state,
+                        video: req.video,
+                    };
+                    if input.state.is_none() && input.video.is_none() {
+                        return (
+                            400,
+                            error_response("reasoning input requires state and/or video"),
+                        );
+                    }
+
+                    match state.registry.get(provider_name) {
+                        Ok(provider) => match provider.reason(&input, &req.query).await {
+                            Ok(output) => (200, ApiResponse::ok(output)),
+                            Err(primary_error) => {
+                                let Some(fallback_provider) = req
+                                    .fallback_provider
+                                    .as_deref()
+                                    .filter(|fallback| *fallback != provider_name)
+                                else {
+                                    return (
+                                        api_error_status(&primary_error),
+                                        error_response(&primary_error.to_string()),
+                                    );
+                                };
+
+                                match state.registry.get(fallback_provider) {
+                                    Ok(provider) => match provider.reason(&input, &req.query).await
+                                    {
+                                        Ok(output) => (200, ApiResponse::ok(output)),
+                                        Err(fallback_error) => (
+                                            api_error_status(&fallback_error),
+                                            error_response(
+                                                &WorldForgeError::ProviderUnavailable {
+                                                    provider: provider_name.to_string(),
+                                                    reason: format!(
+                                                        "primary provider error: {primary_error}; fallback provider '{fallback_provider}' error: {fallback_error}"
+                                                    ),
+                                                }
+                                                .to_string(),
+                                            ),
+                                        ),
+                                    },
+                                    Err(fallback_error) => (
+                                        api_error_status(&fallback_error),
+                                        error_response(
+                                            &WorldForgeError::ProviderUnavailable {
+                                                provider: provider_name.to_string(),
+                                                reason: format!(
+                                                    "primary provider error: {primary_error}; fallback provider '{fallback_provider}' error: {fallback_error}"
+                                                ),
+                                            }
+                                            .to_string(),
+                                        ),
+                                    ),
+                                }
+                            }
+                        },
+                        Err(primary_error) => {
+                            let Some(fallback_provider) = req
+                                .fallback_provider
+                                .as_deref()
+                                .filter(|fallback| *fallback != provider_name)
+                            else {
+                                return (
+                                    api_error_status(&primary_error),
+                                    error_response(&primary_error.to_string()),
+                                );
+                            };
+
+                            match state.registry.get(fallback_provider) {
+                                Ok(provider) => match provider.reason(&input, &req.query).await {
                                     Ok(output) => (200, ApiResponse::ok(output)),
                                     Err(fallback_error) => (
                                         api_error_status(&fallback_error),
@@ -3068,6 +3194,64 @@ mod tests {
         assert_eq!(value["data"]["resolution"], serde_json::json!([800, 600]));
         assert_eq!(value["data"]["fps"], 24.0);
         assert_eq!(value["data"]["duration"], 1.5);
+    }
+
+    #[tokio::test]
+    async fn test_route_provider_reason() {
+        let state = test_state();
+        let body = serde_json::json!({
+            "query": "how many objects are here?",
+            "state": worldforge_core::state::WorldState::new("reason-world", "mock"),
+        });
+        let (status, resp) = route(
+            "POST",
+            "/v1/providers/mock/reason",
+            &body.to_string(),
+            &state,
+        )
+        .await;
+        assert_eq!(status, 200);
+
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert!(value["data"]["answer"].as_str().unwrap().contains("empty"));
+    }
+
+    #[tokio::test]
+    async fn test_route_provider_reason_uses_fallback_provider() {
+        let state = test_state();
+        let body = serde_json::json!({
+            "query": "what do you see?",
+            "video": {
+                "frames": [],
+                "fps": 15.0,
+                "resolution": [320, 240],
+                "duration": 1.5
+            },
+            "fallback_provider": "mock"
+        });
+        let (status, resp) = route(
+            "POST",
+            "/v1/providers/missing/reason",
+            &body.to_string(),
+            &state,
+        )
+        .await;
+        assert_eq!(status, 200);
+
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert!(value["data"]["answer"]
+            .as_str()
+            .unwrap()
+            .contains("echo the query"));
+    }
+
+    #[tokio::test]
+    async fn test_route_provider_reason_rejects_missing_inputs() {
+        let state = test_state();
+        let body = r#"{"query":"what happens?"}"#;
+        let (status, resp) = route("POST", "/v1/providers/mock/reason", body, &state).await;
+        assert_eq!(status, 400);
+        assert!(resp.contains("state and/or video"));
     }
 
     #[tokio::test]
