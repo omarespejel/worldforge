@@ -270,7 +270,12 @@ stored worlds or direct snapshot/video inputs.
 Portable world snapshots are now first-class across the user surfaces:
 - Python: `WorldForge.export_world(...)` / `WorldForge.import_world(...)`
 - CLI: `worldforge export ...` / `worldforge import ...`
-- REST: `GET /v1/worlds/{id}` to fetch a JSON snapshot and `POST /v1/worlds/import` to restore one
+- REST: `GET /v1/worlds/{id}/export?format=json|msgpack` and `POST /v1/worlds/import`
+
+REST export returns a JSON envelope with `format`, `encoding`, `sha256`, and
+`snapshot`. JSON snapshots use `encoding: "utf-8"`, while MessagePack snapshots
+use `encoding: "hex"` so they stay text-safe over HTTP. Import accepts either a
+raw `state` object or the exported snapshot payload shape.
 
 Recoverable history checkpoints are also available end-to-end:
 - Python: `world.history_state(index)` / `world.restore_history(index)`
@@ -417,9 +422,30 @@ curl -X POST http://127.0.0.1:8080/v1/worlds \
   -H 'content-type: application/json' \
   -d '{"prompt":"A kitchen with a mug","name":"Kitchen counter","provider":"mock"}'
 
+curl "http://127.0.0.1:8080/v1/worlds/<world-id>/export?format=json"
+
+curl "http://127.0.0.1:8080/v1/worlds/<world-id>/export?format=msgpack"
+
 curl -X POST http://127.0.0.1:8080/v1/worlds/import \
   -H 'content-type: application/json' \
-  -d @snapshot-import.json
+  -d '{
+    "format":"json",
+    "encoding":"utf-8",
+    "sha256":"<snapshot-sha256>",
+    "snapshot":"{...json snapshot...}",
+    "new_id":true,
+    "name":"Kitchen copy"
+  }'
+
+curl -X POST http://127.0.0.1:8080/v1/worlds/import \
+  -H 'content-type: application/json' \
+  -d '{
+    "format":"msgpack",
+    "encoding":"hex",
+    "sha256":"<snapshot-sha256>",
+    "snapshot":"<hex-encoded-msgpack>",
+    "new_id":true
+  }'
 
 curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/restore \
   -H 'content-type: application/json' \

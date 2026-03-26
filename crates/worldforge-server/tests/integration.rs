@@ -17,6 +17,7 @@ use worldforge_core::state::{FileStateStore, StateStore};
 use worldforge_providers::genie::GenieModel;
 use worldforge_providers::{GenieProvider, MockProvider};
 use worldforge_server::{Server, ServerConfig};
+use worldforge_verify::sha256_hash;
 
 /// Helper to create a server config with a unique temp directory.
 fn test_server_config() -> (FileStateStore, Arc<ProviderRegistry>) {
@@ -194,6 +195,49 @@ async fn export_world_snapshot(address: SocketAddr, world_id: &str, format: &str
     response
 }
 
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
+}
+
+fn hex_decode(value: &str) -> Vec<u8> {
+    fn hex_value(byte: u8) -> Option<u8> {
+        match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            b'A'..=b'F' => Some(byte - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    let bytes = value.as_bytes();
+    assert!(bytes.len().is_multiple_of(2));
+
+    let mut decoded = Vec::with_capacity(bytes.len() / 2);
+    for chunk in bytes.chunks_exact(2) {
+        let hi = hex_value(chunk[0]).expect("snapshot contains non-hex character");
+        let lo = hex_value(chunk[1]).expect("snapshot contains non-hex character");
+        decoded.push((hi << 4) | lo);
+    }
+
+    decoded
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    hex_encode(&sha256_hash(bytes))
+}
+
+fn assert_export_metadata(response: &Value, format: &str, encoding: &str, snapshot_bytes: &[u8]) {
+    assert_eq!(response["data"]["format"], format);
+    assert_eq!(response["data"]["encoding"], encoding);
+    assert_eq!(response["data"]["sha256"], sha256_hex(snapshot_bytes));
+}
+
 async fn import_world_snapshot(
     address: SocketAddr,
     snapshot: &str,
@@ -201,12 +245,32 @@ async fn import_world_snapshot(
     new_id: bool,
     name: Option<&str>,
 ) -> Value {
-    let body = serde_json::json!({
+    import_world_snapshot_with_metadata(address, snapshot, format, None, None, new_id, name).await
+}
+
+async fn import_world_snapshot_with_metadata(
+    address: SocketAddr,
+    snapshot: &str,
+    format: &str,
+    encoding: Option<&str>,
+    sha256: Option<&str>,
+    new_id: bool,
+    name: Option<&str>,
+) -> Value {
+    let mut body = serde_json::json!({
         "format": format,
         "snapshot": snapshot,
         "new_id": new_id,
         "name": name,
     });
+
+    if let Some(encoding) = encoding {
+        body["encoding"] = serde_json::Value::String(encoding.to_string());
+    }
+    if let Some(sha256) = sha256 {
+        body["sha256"] = serde_json::Value::String(sha256.to_string());
+    }
+
     let (status, response) =
         http_request(address, "POST", "/v1/worlds/import", &body.to_string()).await;
     assert_eq!(status, 201);
@@ -369,9 +433,10 @@ async fn test_live_http_snapshot_export_import_json_roundtrip() {
 
     let export = export_world_snapshot(server.address, &original_id, "json").await;
     assert_eq!(export["data"]["id"], original_id);
-    assert_eq!(export["data"]["format"], "json");
 
     let snapshot = export["data"]["snapshot"].as_str().unwrap();
+    let snapshot_bytes = snapshot.as_bytes();
+    assert_export_metadata(&export, "json", "utf-8", snapshot_bytes);
     let snapshot_json: Value = serde_json::from_str(snapshot).unwrap();
     assert_eq!(snapshot_json["metadata"]["name"], "json_export_world");
     assert_eq!(
@@ -437,12 +502,13 @@ async fn test_live_http_snapshot_export_import_msgpack_roundtrip() {
 
     let export = export_world_snapshot(server.address, &original_id, "msgpack").await;
     assert_eq!(export["data"]["id"], original_id);
-    assert_eq!(export["data"]["format"], "msgpack");
 
     let snapshot = export["data"]["snapshot"].as_str().unwrap();
     assert!(!snapshot.is_empty());
     assert!(snapshot.len() % 2 == 0);
     assert!(snapshot.chars().all(|ch| ch.is_ascii_hexdigit()));
+    let snapshot_bytes = hex_decode(snapshot);
+    assert_export_metadata(&export, "msgpack", "hex", &snapshot_bytes);
 
     let imported = import_world_snapshot(
         server.address,
@@ -480,6 +546,77 @@ async fn test_live_http_snapshot_export_import_msgpack_roundtrip() {
         "msgpack_snapshot_copy"
     );
     assert_eq!(loaded.1["data"]["time"]["step"], 1);
+}
+
+#[tokio::test]
+async fn test_live_http_snapshot_import_rejects_checksum_mismatch() {
+    let server = spawn_test_server().await;
+
+    let (status, create) = http_request(
+        server.address,
+        "POST",
+        "/v1/worlds",
+        r#"{"name":"checksum_world","provider":"mock"}"#,
+    )
+    .await;
+    assert_eq!(status, 201);
+    let world_id = create["data"]["id"].as_str().unwrap().to_string();
+
+    let export = export_world_snapshot(server.address, &world_id, "json").await;
+    let snapshot = export["data"]["snapshot"].as_str().unwrap();
+    let mut checksum = sha256_hex(snapshot.as_bytes());
+    checksum.replace_range(0..1, if &checksum[0..1] == "0" { "1" } else { "0" });
+
+    let body = serde_json::json!({
+        "format": "json",
+        "snapshot": snapshot,
+        "encoding": "utf-8",
+        "sha256": checksum,
+        "new_id": true,
+    });
+    let (status, response) = http_request(
+        server.address,
+        "POST",
+        "/v1/worlds/import",
+        &body.to_string(),
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert!(!response["success"].as_bool().unwrap_or(true));
+}
+
+#[tokio::test]
+async fn test_live_http_snapshot_import_rejects_invalid_encoding_metadata() {
+    let server = spawn_test_server().await;
+
+    let (status, create) = http_request(
+        server.address,
+        "POST",
+        "/v1/worlds",
+        r#"{"name":"encoding_world","provider":"mock"}"#,
+    )
+    .await;
+    assert_eq!(status, 201);
+    let world_id = create["data"]["id"].as_str().unwrap().to_string();
+
+    let export = export_world_snapshot(server.address, &world_id, "msgpack").await;
+    let snapshot = export["data"]["snapshot"].as_str().unwrap();
+
+    let body = serde_json::json!({
+        "format": "msgpack",
+        "snapshot": snapshot,
+        "encoding": "base64",
+        "new_id": true,
+    });
+    let (status, response) = http_request(
+        server.address,
+        "POST",
+        "/v1/worlds/import",
+        &body.to_string(),
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert!(!response["success"].as_bool().unwrap_or(true));
 }
 
 #[tokio::test]

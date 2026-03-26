@@ -30,8 +30,8 @@ use worldforge_core::world::World;
 use worldforge_eval::{EvalReportFormat, EvalSuite};
 use worldforge_verify::{
     prove_guardrail_plan, prove_inference_transition, prove_latest_inference, prove_provenance,
-    verify_bundle, verify_proof, VerificationBackend, VerificationBundle, VerificationResult,
-    ZkProof, ZkVerifier,
+    sha256_hash, verify_bundle, verify_proof, VerificationBackend, VerificationBundle,
+    VerificationResult, ZkProof, ZkVerifier,
 };
 
 /// Server configuration.
@@ -175,6 +175,12 @@ struct ImportWorldRequest {
     /// Snapshot payload when importing from an exported payload.
     #[serde(default)]
     snapshot: Option<String>,
+    /// Snapshot encoding when importing from an exported payload.
+    #[serde(default)]
+    encoding: Option<String>,
+    /// SHA-256 digest for the raw serialized snapshot bytes.
+    #[serde(default)]
+    sha256: Option<String>,
     /// Assign a new world ID before persisting the snapshot.
     #[serde(default)]
     new_id: bool,
@@ -613,23 +619,68 @@ fn error_response(msg: &str) -> String {
 fn encode_snapshot_payload(
     format: StateFileFormat,
     state: &WorldState,
-) -> std::result::Result<String, String> {
+) -> std::result::Result<SnapshotPayload, String> {
     let bytes = serialize_world_state(format, state).map_err(|error| error.to_string())?;
     match format {
-        StateFileFormat::Json => String::from_utf8(bytes)
-            .map_err(|error| format!("invalid JSON snapshot encoding: {error}")),
-        StateFileFormat::MessagePack => Ok(encode_hex(&bytes)),
+        StateFileFormat::Json => Ok(SnapshotPayload {
+            format: format.as_str().to_string(),
+            encoding: "utf-8".to_string(),
+            sha256: encode_hex(&sha256_hash(&bytes)),
+            snapshot: String::from_utf8(bytes)
+                .map_err(|error| format!("invalid JSON snapshot encoding: {error}"))?,
+        }),
+        StateFileFormat::MessagePack => Ok(SnapshotPayload {
+            format: format.as_str().to_string(),
+            encoding: "hex".to_string(),
+            sha256: encode_hex(&sha256_hash(&bytes)),
+            snapshot: encode_hex(&bytes),
+        }),
     }
 }
 
 fn decode_snapshot_payload(
     format: StateFileFormat,
     snapshot: &str,
+    encoding: Option<&str>,
+    sha256: Option<&str>,
 ) -> std::result::Result<Vec<u8>, String> {
-    match format {
-        StateFileFormat::Json => Ok(snapshot.as_bytes().to_vec()),
-        StateFileFormat::MessagePack => decode_hex(snapshot),
+    let expected_encoding = match format {
+        StateFileFormat::Json => "utf-8",
+        StateFileFormat::MessagePack => "hex",
+    };
+
+    if let Some(encoding) = encoding {
+        if !encoding.eq_ignore_ascii_case(expected_encoding) {
+            return Err(format!(
+                "snapshot encoding '{encoding}' does not match format '{}'",
+                format.as_str()
+            ));
+        }
     }
+
+    let bytes = match format {
+        StateFileFormat::Json => snapshot.as_bytes().to_vec(),
+        StateFileFormat::MessagePack => decode_hex(snapshot)?,
+    };
+
+    if let Some(expected_sha256) = sha256 {
+        let actual_sha256 = encode_hex(&sha256_hash(&bytes));
+        if !actual_sha256.eq_ignore_ascii_case(expected_sha256) {
+            return Err(format!(
+                "snapshot sha256 mismatch: expected {expected_sha256}, got {actual_sha256}"
+            ));
+        }
+    }
+
+    Ok(bytes)
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SnapshotPayload {
+    format: String,
+    encoding: String,
+    sha256: String,
+    snapshot: String,
 }
 
 fn encode_hex(bytes: &[u8]) -> String {
@@ -692,7 +743,12 @@ fn resolve_import_state(request: &ImportWorldRequest) -> std::result::Result<Wor
         .snapshot
         .as_deref()
         .ok_or_else(|| "import requires either `state` or `format` + `snapshot`".to_string())?;
-    let bytes = decode_snapshot_payload(format, snapshot)?;
+    let bytes = decode_snapshot_payload(
+        format,
+        snapshot,
+        request.encoding.as_deref(),
+        request.sha256.as_deref(),
+    )?;
     deserialize_world_state(format, &bytes).map_err(|error| error.to_string())
 }
 
@@ -1087,12 +1143,14 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
             match (id_str.parse::<WorldId>(), format.parse::<StateFileFormat>()) {
                 (Ok(id), Ok(format)) => match state.store.load(&id).await {
                     Ok(ws) => match encode_snapshot_payload(format, &ws) {
-                        Ok(snapshot) => (
+                        Ok(payload) => (
                             200,
                             ApiResponse::ok(serde_json::json!({
                                 "id": id.to_string(),
-                                "format": format.as_str(),
-                                "snapshot": snapshot,
+                                "format": payload.format,
+                                "encoding": payload.encoding,
+                                "sha256": payload.sha256,
+                                "snapshot": payload.snapshot,
                             })),
                         ),
                         Err(error) => (500, error_response(&error)),
@@ -2565,6 +2623,13 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert_eq!(value["data"]["id"], source_id.to_string());
         assert_eq!(value["data"]["format"], "json");
+        assert_eq!(value["data"]["encoding"], "utf-8");
+        assert_eq!(
+            value["data"]["sha256"],
+            encode_hex(&sha256_hash(
+                value["data"]["snapshot"].as_str().unwrap().as_bytes()
+            ))
+        );
 
         let snapshot = value["data"]["snapshot"].as_str().unwrap();
         let restored: WorldState = serde_json::from_str(snapshot).unwrap();
@@ -2573,6 +2638,8 @@ mod tests {
 
         let import_body = serde_json::json!({
             "format": "json",
+            "encoding": "utf-8",
+            "sha256": value["data"]["sha256"],
             "snapshot": snapshot,
             "new_id": true,
             "name": "imported-json-world",
@@ -2618,6 +2685,13 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert_eq!(value["data"]["id"], source_id.to_string());
         assert_eq!(value["data"]["format"], "msgpack");
+        assert_eq!(value["data"]["encoding"], "hex");
+        assert_eq!(
+            value["data"]["sha256"],
+            encode_hex(&sha256_hash(
+                &decode_hex(value["data"]["snapshot"].as_str().unwrap()).unwrap()
+            ))
+        );
 
         let snapshot = value["data"]["snapshot"].as_str().unwrap();
         assert!(!snapshot.is_empty());
@@ -2625,6 +2699,8 @@ mod tests {
 
         let import_body = serde_json::json!({
             "format": "msgpack",
+            "encoding": "hex",
+            "sha256": value["data"]["sha256"],
             "snapshot": snapshot,
             "name": "imported-msgpack-world",
         });
@@ -2654,6 +2730,75 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn test_route_import_world_rejects_checksum_mismatch() {
+        let state = test_state();
+        let source = sample_export_state("import-checksum-world");
+        let source_id = source.id;
+        state.store.save(&source).await.unwrap();
+
+        let (status, resp) = route(
+            "GET",
+            &format!("/v1/worlds/{source_id}/export?format=json"),
+            "",
+            &state,
+        )
+        .await;
+        assert_eq!(status, 200);
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+
+        let import_body = serde_json::json!({
+            "format": "json",
+            "encoding": "utf-8",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "snapshot": value["data"]["snapshot"],
+        });
+
+        let (status, resp) = route(
+            "POST",
+            "/v1/worlds/import",
+            &import_body.to_string(),
+            &state,
+        )
+        .await;
+        assert_eq!(status, 400);
+        assert!(resp.contains("sha256 mismatch"));
+    }
+
+    #[tokio::test]
+    async fn test_route_import_world_rejects_wrong_encoding() {
+        let state = test_state();
+        let source = sample_export_state("import-encoding-world");
+        let source_id = source.id;
+        state.store.save(&source).await.unwrap();
+
+        let (status, resp) = route(
+            "GET",
+            &format!("/v1/worlds/{source_id}/export?format=msgpack"),
+            "",
+            &state,
+        )
+        .await;
+        assert_eq!(status, 200);
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+
+        let import_body = serde_json::json!({
+            "format": "msgpack",
+            "encoding": "utf-8",
+            "snapshot": value["data"]["snapshot"],
+        });
+
+        let (status, resp) = route(
+            "POST",
+            "/v1/worlds/import",
+            &import_body.to_string(),
+            &state,
+        )
+        .await;
+        assert_eq!(status, 400);
+        assert!(resp.contains("does not match format"));
     }
 
     #[tokio::test]
