@@ -1042,6 +1042,7 @@ fn test_state_history_evolution() {
                 latency_ms: 100 + i * 10,
             }),
             provider: "mock".to_string(),
+            snapshot: None,
         });
     }
 

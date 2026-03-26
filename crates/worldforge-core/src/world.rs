@@ -531,6 +531,31 @@ impl World {
         &self.state
     }
 
+    /// Reconstruct a prior world state from a recorded history checkpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WorldForgeError::InvalidState` if the requested checkpoint is
+    /// unavailable.
+    pub fn history_state(&self, index: usize) -> Result<WorldState> {
+        self.state.history_state(index)
+    }
+
+    /// Restore this world in place to a recorded history checkpoint.
+    ///
+    /// The world's default provider is updated to match the restored
+    /// checkpoint's recorded provider.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WorldForgeError::InvalidState` if the requested checkpoint is
+    /// unavailable.
+    pub fn restore_history(&mut self, index: usize) -> Result<()> {
+        self.state.restore_history(index)?;
+        self.default_provider = self.state.current_state_provider();
+        Ok(())
+    }
+
     async fn predict_from_state(
         &self,
         state: &WorldState,
@@ -3592,6 +3617,46 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(error, WorldForgeError::InvalidState(_)));
+    }
+
+    #[test]
+    fn test_restore_history_rewinds_world_state_and_provider() {
+        let registry = std::sync::Arc::new(ProviderRegistry::new());
+        let mut world = World::new(WorldState::new("restore-world", "mock"), "mock", registry);
+
+        world.state.ensure_history_initialized("mock").unwrap();
+        world.state.time = SimTime {
+            step: 1,
+            seconds: 0.5,
+            dt: 0.5,
+        };
+        world.state.metadata.name = "restore-world-step-1".to_string();
+        world
+            .state
+            .record_current_state(None, None, "backup")
+            .unwrap();
+
+        world.state.time = SimTime {
+            step: 2,
+            seconds: 1.0,
+            dt: 0.5,
+        };
+        world.state.metadata.name = "restore-world-step-2".to_string();
+        world
+            .state
+            .record_current_state(None, None, "mock")
+            .unwrap();
+
+        let checkpoint = world.history_state(1).unwrap();
+        assert_eq!(checkpoint.time.step, 1);
+        assert_eq!(checkpoint.metadata.name, "restore-world-step-1");
+        assert_eq!(checkpoint.history.len(), 2);
+
+        world.restore_history(1).unwrap();
+        assert_eq!(world.current_state().time.step, 1);
+        assert_eq!(world.current_state().metadata.name, "restore-world-step-1");
+        assert_eq!(world.current_state().history.len(), 2);
+        assert_eq!(world.default_provider, "backup");
     }
 
     #[derive(Debug, Clone)]

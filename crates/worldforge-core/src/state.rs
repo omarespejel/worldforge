@@ -84,6 +84,9 @@ pub struct HistoryEntry {
     pub prediction: Option<PredictionSummary>,
     /// Provider that generated this state.
     pub provider: String,
+    /// Recoverable snapshot of the world at this checkpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<HistorySnapshot>,
 }
 
 /// Lightweight summary of a prediction for history storage.
@@ -95,6 +98,20 @@ pub struct PredictionSummary {
     pub physics_score: f32,
     /// Latency in milliseconds.
     pub latency_ms: u64,
+}
+
+/// Recoverable world checkpoint stored alongside a history entry.
+///
+/// The snapshot captures the materialized world fields for a checkpoint
+/// without recursively embedding the history log itself.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistorySnapshot {
+    /// Simulation time captured by the checkpoint.
+    pub time: SimTime,
+    /// Scene graph materialized at this checkpoint.
+    pub scene: SceneGraph,
+    /// World metadata active at this checkpoint.
+    pub metadata: WorldMetadata,
 }
 
 /// Compression mode for state history.
@@ -189,6 +206,15 @@ impl WorldState {
             .unwrap_or_else(|| self.metadata.created_by.clone())
     }
 
+    /// Capture the current world fields as a recoverable history snapshot.
+    pub fn snapshot(&self) -> HistorySnapshot {
+        HistorySnapshot {
+            time: self.time,
+            scene: self.scene.clone(),
+            metadata: self.metadata.clone(),
+        }
+    }
+
     /// Record the current state as a history checkpoint.
     pub fn record_current_state(
         &mut self,
@@ -203,6 +229,7 @@ impl WorldState {
             action,
             prediction,
             provider: provider.into(),
+            snapshot: Some(self.snapshot()),
         });
         Ok(())
     }
@@ -228,6 +255,88 @@ impl WorldState {
 
         self.record_current_state(None, None, provider)?;
         Ok(true)
+    }
+
+    /// Ensure the latest history entry has a recoverable snapshot payload.
+    ///
+    /// This upgrades legacy states written before checkpoint payloads were added.
+    pub fn ensure_latest_history_snapshot(&mut self) -> Result<bool> {
+        if self.history.is_empty() {
+            return Ok(false);
+        }
+
+        let needs_snapshot = self
+            .history
+            .latest()
+            .map(|entry| entry.snapshot.is_none())
+            .unwrap_or(false);
+        if !needs_snapshot {
+            return Ok(false);
+        }
+
+        if !current_state_matches_latest_history(self)? {
+            return Ok(false);
+        }
+
+        let snapshot = self.snapshot();
+        if let Some(entry) = self.history.states.back_mut() {
+            entry.snapshot = Some(snapshot);
+            return Ok(true);
+        }
+
+        Ok(false)
+    }
+
+    /// Reconstruct the world state captured by a specific history entry.
+    ///
+    /// The returned state preserves the world ID and truncates history after the
+    /// requested checkpoint so future operations continue from that point.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WorldForgeError::InvalidState` if the index is out of bounds or
+    /// the requested checkpoint predates recoverable snapshots.
+    pub fn history_state(&self, index: usize) -> Result<Self> {
+        let entry_count = self.history.len();
+        let Some(entry) = self.history.states.get(index) else {
+            return Err(WorldForgeError::InvalidState(format!(
+                "history index {index} out of range for {entry_count} entries"
+            )));
+        };
+
+        let snapshot = match &entry.snapshot {
+            Some(snapshot) => snapshot.clone(),
+            None if index + 1 == entry_count && current_state_matches_latest_history(self)? => {
+                self.snapshot()
+            }
+            None => {
+                return Err(WorldForgeError::InvalidState(format!(
+                    "history checkpoint {index} does not include a recoverable snapshot"
+                )))
+            }
+        };
+
+        let mut history = self.history.clone();
+        history.states.truncate(index + 1);
+
+        Ok(Self {
+            id: self.id,
+            time: snapshot.time,
+            scene: snapshot.scene,
+            history,
+            metadata: snapshot.metadata,
+        })
+    }
+
+    /// Restore this world state in place to a specific history checkpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WorldForgeError::InvalidState` if the checkpoint cannot be
+    /// reconstructed.
+    pub fn restore_history(&mut self, index: usize) -> Result<()> {
+        *self = self.history_state(index)?;
+        Ok(())
     }
 }
 
@@ -509,6 +618,7 @@ impl StateStore for FileStateStore {
         let mut normalized = state.clone();
         let provider = normalized.current_state_provider();
         normalized.ensure_history_initialized(provider)?;
+        normalized.ensure_latest_history_snapshot()?;
         tokio::fs::create_dir_all(&self.path)
             .await
             .map_err(|e| WorldForgeError::InternalError(format!("failed to create dir: {e}")))?;
@@ -677,6 +787,7 @@ impl StateStore for SqliteStateStore {
         let mut normalized = state.clone();
         let provider = normalized.current_state_provider();
         normalized.ensure_history_initialized(provider)?;
+        normalized.ensure_latest_history_snapshot()?;
         let id = normalized.id.to_string();
         let json = serde_json::to_string(&normalized)
             .map_err(|e| WorldForgeError::SerializationError(e.to_string()))?;
@@ -773,6 +884,7 @@ mod tests {
         let latest = state.history.latest().unwrap();
         assert_eq!(latest.provider, "mock");
         assert_eq!(latest.time, state.time);
+        assert!(latest.snapshot.is_some());
     }
 
     #[test]
@@ -784,6 +896,7 @@ mod tests {
             action: None,
             prediction: None,
             provider: "mock".to_string(),
+            snapshot: None,
         });
 
         let repaired = state.ensure_current_state_recorded("mock").unwrap();
@@ -811,10 +924,96 @@ mod tests {
                 action: None,
                 prediction: None,
                 provider: "mock".to_string(),
+                snapshot: None,
             });
         }
         assert_eq!(history.len(), 3);
         assert_eq!(history.latest().unwrap().time.step, 4);
+    }
+
+    #[test]
+    fn test_world_state_history_state_restores_prior_checkpoint() {
+        let mut state = WorldState::new("restore", "mock");
+        state.ensure_history_initialized("mock").unwrap();
+
+        state.time = SimTime {
+            step: 1,
+            seconds: 0.5,
+            dt: 0.5,
+        };
+        state.metadata.name = "restore-step-1".to_string();
+        state.record_current_state(None, None, "mock").unwrap();
+
+        state.time = SimTime {
+            step: 2,
+            seconds: 1.0,
+            dt: 0.5,
+        };
+        state.metadata.name = "restore-step-2".to_string();
+        state.record_current_state(None, None, "mock").unwrap();
+
+        let restored = state.history_state(1).unwrap();
+        assert_eq!(restored.time.step, 1);
+        assert_eq!(restored.metadata.name, "restore-step-1");
+        assert_eq!(restored.history.len(), 2);
+        assert_eq!(restored.history.latest().unwrap().time.step, 1);
+    }
+
+    #[test]
+    fn test_world_state_restore_history_mutates_in_place() {
+        let mut state = WorldState::new("restore-in-place", "mock");
+        state.ensure_history_initialized("mock").unwrap();
+
+        state.time = SimTime {
+            step: 1,
+            seconds: 0.25,
+            dt: 0.25,
+        };
+        state.metadata.name = "step-one".to_string();
+        state.record_current_state(None, None, "mock").unwrap();
+
+        state.time = SimTime {
+            step: 2,
+            seconds: 0.5,
+            dt: 0.25,
+        };
+        state.metadata.name = "step-two".to_string();
+        state.record_current_state(None, None, "mock").unwrap();
+
+        state.restore_history(0).unwrap();
+        assert_eq!(state.time.step, 0);
+        assert_eq!(state.metadata.name, "restore-in-place");
+        assert_eq!(state.history.len(), 1);
+    }
+
+    #[test]
+    fn test_world_state_history_state_rejects_missing_legacy_snapshot() {
+        let mut state = WorldState::new("legacy-restore", "mock");
+        state.history.push(HistoryEntry {
+            time: state.time,
+            state_hash: [1; 32],
+            action: None,
+            prediction: None,
+            provider: "mock".to_string(),
+            snapshot: None,
+        });
+        state.history.push(HistoryEntry {
+            time: SimTime {
+                step: 1,
+                seconds: 1.0,
+                dt: 1.0,
+            },
+            state_hash: [2; 32],
+            action: None,
+            prediction: None,
+            provider: "mock".to_string(),
+            snapshot: None,
+        });
+
+        let error = state.history_state(0).unwrap_err();
+        assert!(
+            matches!(error, WorldForgeError::InvalidState(message) if message.contains("recoverable snapshot"))
+        );
     }
 
     #[test]
@@ -953,6 +1152,30 @@ mod tests {
 
         store.delete(&id).await.unwrap();
         assert!(store.load(&id).await.is_err());
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn test_file_state_store_backfills_latest_legacy_snapshot() {
+        let dir = std::env::temp_dir().join(format!("worldforge-legacy-{}", uuid::Uuid::new_v4()));
+        let store = FileStateStore::new(&dir);
+
+        let mut state = WorldState::new("legacy-world", "mock");
+        let latest_hash = canonical_state_hash(&state).unwrap();
+        state.history.push(HistoryEntry {
+            time: state.time,
+            state_hash: latest_hash,
+            action: None,
+            prediction: None,
+            provider: "mock".to_string(),
+            snapshot: None,
+        });
+
+        store.save(&state).await.unwrap();
+
+        let loaded = store.load(&state.id).await.unwrap();
+        assert!(loaded.history.latest().unwrap().snapshot.is_some());
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }

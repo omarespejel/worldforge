@@ -274,6 +274,19 @@ pub enum Commands {
         output_json: Option<PathBuf>,
     },
 
+    /// Restore a persisted world to a recorded history checkpoint.
+    Restore {
+        /// World ID.
+        #[arg(long)]
+        world: String,
+        /// Zero-based history checkpoint index to restore.
+        #[arg(long)]
+        history_index: usize,
+        /// Optional path to write the restored world JSON payload.
+        #[arg(long)]
+        output_json: Option<PathBuf>,
+    },
+
     /// Delete a world.
     Delete {
         /// World ID.
@@ -852,6 +865,19 @@ pub async fn run() -> Result<()> {
         Commands::Show { world } => cmd_show(store.as_ref(), &world).await,
         Commands::History { world, output_json } => {
             cmd_history(store.as_ref(), &world, output_json.as_deref()).await
+        }
+        Commands::Restore {
+            world,
+            history_index,
+            output_json,
+        } => {
+            cmd_restore(
+                store.as_ref(),
+                &world,
+                history_index,
+                output_json.as_deref(),
+            )
+            .await
         }
         Commands::Delete { world } => cmd_delete(store.as_ref(), &world).await,
         Commands::Export {
@@ -2131,6 +2157,37 @@ async fn cmd_history(
         println!("      prediction={prediction}");
     }
 
+    Ok(())
+}
+
+async fn cmd_restore(
+    store: &(impl StateStore + ?Sized),
+    world_id: &str,
+    history_index: usize,
+    output_json: Option<&Path>,
+) -> Result<()> {
+    let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
+    let mut state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    state
+        .restore_history(history_index)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    store
+        .save(&state)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    if let Some(path) = output_json {
+        write_json_file(path, &state)?;
+        println!("Wrote restored world JSON to {}", path.display());
+    }
+
+    println!(
+        "Restored world {} to history checkpoint {} (step {}, {} entries retained)",
+        state.id,
+        history_index,
+        state.time.step,
+        state.history.len()
+    );
     Ok(())
 }
 
@@ -3625,6 +3682,34 @@ mod tests {
                 assert_eq!(output_json, Some(PathBuf::from("/tmp/history.json")));
             }
             _ => panic!("expected History"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_restore_command() {
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "restore",
+            "--world",
+            "123e4567-e89b-12d3-a456-426614174000",
+            "--history-index",
+            "2",
+            "--output-json",
+            "/tmp/restored.json",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Restore {
+                world,
+                history_index,
+                output_json,
+            } => {
+                assert_eq!(world, "123e4567-e89b-12d3-a456-426614174000");
+                assert_eq!(history_index, 2);
+                assert_eq!(output_json, Some(PathBuf::from("/tmp/restored.json")));
+            }
+            _ => panic!("expected Restore"),
         }
     }
 
@@ -5132,6 +5217,46 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert!(entries[0]["action"].is_null());
         assert_eq!(entries[1]["provider"], "mock");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn test_cmd_restore_rewinds_persisted_world() {
+        let dir = std::env::temp_dir().join(format!("wf-cli-restore-{}", uuid::Uuid::new_v4()));
+        let store = StateStoreKind::File(dir.join("state"))
+            .open()
+            .await
+            .unwrap();
+        let state = WorldState::new("restore", "mock");
+        let world_id = state.id.to_string();
+        store.save(&state).await.unwrap();
+
+        cmd_predict(
+            store.as_ref(),
+            &world_id,
+            "set-weather rain",
+            1,
+            "mock",
+            None,
+            None,
+            true,
+        )
+        .await
+        .unwrap();
+
+        let restored_path = dir.join("restored.json");
+        cmd_restore(store.as_ref(), &world_id, 0, Some(&restored_path))
+            .await
+            .unwrap();
+
+        let restored: WorldState = read_json_file(&restored_path).unwrap();
+        assert_eq!(restored.time.step, 0);
+        assert_eq!(restored.history.len(), 1);
+
+        let persisted = store.load(&state.id).await.unwrap();
+        assert_eq!(persisted.time.step, 0);
+        assert_eq!(persisted.history.len(), 1);
 
         let _ = fs::remove_dir_all(dir);
     }

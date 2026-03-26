@@ -1034,6 +1034,7 @@ mod tests {
             action: None,
             prediction: None,
             provider: "mock".to_string(),
+            snapshot: None,
         });
         world.history.push(HistoryEntry {
             time: SimTime {
@@ -1051,6 +1052,7 @@ mod tests {
                 latency_ms: 12,
             }),
             provider: "mock".to_string(),
+            snapshot: None,
         });
 
         let artifact = latest_inference_artifact(&world, None).unwrap();

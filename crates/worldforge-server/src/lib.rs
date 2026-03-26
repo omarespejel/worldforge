@@ -242,6 +242,12 @@ struct ExecutePlanRequest {
     disable_guardrails: bool,
 }
 
+/// JSON request body for restoring a world to a history checkpoint.
+#[derive(Debug, Deserialize)]
+struct RestoreWorldRequest {
+    history_index: usize,
+}
+
 fn default_max_steps() -> u32 {
     10
 }
@@ -554,10 +560,11 @@ fn api_error_status(error: &WorldForgeError) -> u16 {
     }
 }
 
-fn resolve_world_provider<'a>(state: &'a WorldState, requested: Option<&'a str>) -> &'a str {
+fn resolve_world_provider(state: &WorldState, requested: Option<&str>) -> String {
     requested
         .filter(|provider| !provider.is_empty())
-        .unwrap_or(state.metadata.created_by.as_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| state.current_state_provider())
 }
 
 fn build_scene_object(request: CreateObjectRequest) -> SceneObject {
@@ -1118,6 +1125,38 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
             }
         }
 
+        // POST /v1/worlds/{id}/restore
+        ("POST", p) if p.starts_with("/v1/worlds/") && p.ends_with("/restore") => {
+            let id_str = p
+                .strip_prefix("/v1/worlds/")
+                .and_then(|value| value.strip_suffix("/restore"))
+                .unwrap_or("");
+            match id_str.parse::<WorldId>() {
+                Ok(id) => match serde_json::from_str::<RestoreWorldRequest>(body) {
+                    Ok(req) => match state.store.load(&id).await {
+                        Ok(mut ws) => match ws.restore_history(req.history_index) {
+                            Ok(()) => match state.store.save(&ws).await {
+                                Ok(()) => {
+                                    state.worlds.write().await.insert(id, ws.clone());
+                                    (200, ApiResponse::ok(ws))
+                                }
+                                Err(error) => (
+                                    500,
+                                    error_response(&format!("failed to save world: {error}")),
+                                ),
+                            },
+                            Err(error) => {
+                                (api_error_status(&error), error_response(&error.to_string()))
+                            }
+                        },
+                        Err(error) => (404, error_response(&error.to_string())),
+                    },
+                    Err(error) => (400, error_response(&format!("invalid request: {error}"))),
+                },
+                Err(_) => (400, error_response("invalid world ID")),
+            }
+        }
+
         // GET /v1/worlds/{id}/objects
         ("GET", p) if p.starts_with("/v1/worlds/") && p.ends_with("/objects") => {
             let id_str = p
@@ -1127,7 +1166,7 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
             match id_str.parse::<WorldId>() {
                 Ok(id) => match state.store.load(&id).await {
                     Ok(ws) => {
-                        let provider = ws.metadata.created_by.clone();
+                        let provider = ws.current_state_provider();
                         let world = worldforge_core::world::World::new(
                             ws,
                             provider,
@@ -1154,7 +1193,7 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                             Ok(ws) => ws,
                             Err(error) => return (404, error_response(&error.to_string())),
                         };
-                        let provider = ws.metadata.created_by.clone();
+                        let provider = ws.current_state_provider();
                         let mut world = worldforge_core::world::World::new(
                             ws,
                             provider,
@@ -1193,7 +1232,7 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                     match serde_json::from_str::<SceneObjectPatch>(body) {
                         Ok(req) => match state.store.load(&world_id).await {
                             Ok(ws) => {
-                                let provider = ws.metadata.created_by.clone();
+                                let provider = ws.current_state_provider();
                                 let mut world = worldforge_core::world::World::new(
                                     ws,
                                     provider,
@@ -1243,7 +1282,7 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
             ) {
                 (Ok(world_id), Ok(object_id)) => match state.store.load(&world_id).await {
                     Ok(ws) => {
-                        let provider = ws.metadata.created_by.clone();
+                        let provider = ws.current_state_provider();
                         let world = worldforge_core::world::World::new(
                             ws,
                             provider,
@@ -1275,7 +1314,7 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
             ) {
                 (Ok(world_id), Ok(object_id)) => match state.store.load(&world_id).await {
                     Ok(ws) => {
-                        let provider = ws.metadata.created_by.clone();
+                        let provider = ws.current_state_provider();
                         let mut world = worldforge_core::world::World::new(
                             ws,
                             provider,
@@ -1337,7 +1376,7 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                                 req.config
                             };
                             let provider_name =
-                                resolve_world_provider(&ws, req.provider.as_deref()).to_string();
+                                resolve_world_provider(&ws, req.provider.as_deref());
                             let mut world = worldforge_core::world::World::new(
                                 ws,
                                 provider_name,
@@ -1390,8 +1429,7 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                             Ok(ws) => ws,
                             Err(e) => return (404, error_response(&e.to_string())),
                         };
-                        let provider_name =
-                            resolve_world_provider(&ws, req.provider.as_deref()).to_string();
+                        let provider_name = resolve_world_provider(&ws, req.provider.as_deref());
                         let world = worldforge_core::world::World::new(
                             ws,
                             provider_name.clone(),
@@ -1434,8 +1472,7 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                             Ok(ws) => ws,
                             Err(e) => return (404, error_response(&e.to_string())),
                         };
-                        let provider_name =
-                            resolve_world_provider(&ws, req.provider.as_deref()).to_string();
+                        let provider_name = resolve_world_provider(&ws, req.provider.as_deref());
                         if let Err(e) = state.registry.get(&provider_name) {
                             return (404, error_response(&e.to_string()));
                         }
@@ -1483,8 +1520,7 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                             Ok(ws) => ws,
                             Err(e) => return (404, error_response(&e.to_string())),
                         };
-                        let provider_name =
-                            resolve_world_provider(&ws, req.provider.as_deref()).to_string();
+                        let provider_name = resolve_world_provider(&ws, req.provider.as_deref());
                         if let Err(e) = state.registry.get(&provider_name) {
                             return (404, error_response(&e.to_string()));
                         }
@@ -1584,7 +1620,7 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                                         }
                                     };
                                     let provider_name =
-                                        resolve_world_provider(&ws, req.provider.as_deref()).to_string();
+                                        resolve_world_provider(&ws, req.provider.as_deref());
                                     if let Err(e) = state.registry.get(&provider_name) {
                                         return (404, error_response(&e.to_string()));
                                     }
@@ -2234,6 +2270,60 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert!(entries[0]["action"].is_null());
         assert_eq!(entries[1]["provider"], "mock");
+    }
+
+    #[tokio::test]
+    async fn test_route_restore_world_history_checkpoint() {
+        let state = test_state();
+        let id = seed_world(&state, "restore-world", "mock").await;
+        let predict_body =
+            r#"{"action":{"SetWeather":{"weather":"Rain"}},"disable_guardrails":true}"#;
+
+        let (status, _) = route(
+            "POST",
+            &format!("/v1/worlds/{id}/predict"),
+            predict_body,
+            &state,
+        )
+        .await;
+        assert_eq!(status, 200);
+
+        let restore_body = r#"{"history_index":0}"#;
+        let (status, resp) = route(
+            "POST",
+            &format!("/v1/worlds/{id}/restore"),
+            restore_body,
+            &state,
+        )
+        .await;
+        assert_eq!(status, 200);
+
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(value["data"]["time"]["step"], 0);
+        assert_eq!(
+            value["data"]["history"]["states"].as_array().unwrap().len(),
+            1
+        );
+
+        let persisted = state.store.load(&id).await.unwrap();
+        assert_eq!(persisted.time.step, 0);
+        assert_eq!(persisted.history.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_route_restore_world_history_rejects_unknown_index() {
+        let state = test_state();
+        let id = seed_world(&state, "restore-error", "mock").await;
+
+        let (status, resp) = route(
+            "POST",
+            &format!("/v1/worlds/{id}/restore"),
+            r#"{"history_index":99}"#,
+            &state,
+        )
+        .await;
+        assert_eq!(status, 400);
+        assert!(resp.contains("history index 99 out of range"));
     }
 
     #[tokio::test]

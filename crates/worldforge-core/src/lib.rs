@@ -291,7 +291,7 @@ impl WorldForge {
     /// Load a world from the configured state store.
     pub async fn load_world_from_store(&self, id: &crate::types::WorldId) -> Result<World> {
         let state = self.load_state(id).await?;
-        let provider_name = state.metadata.created_by.clone();
+        let provider_name = state.current_state_provider();
         self.registry.get(&provider_name)?;
         Ok(World::new(state, provider_name, Arc::clone(&self.registry)))
     }

@@ -149,6 +149,12 @@ history = world.history()
 assert len(history) >= 2
 assert history[0].action_json is None
 assert history[-1].provider == "mock"
+
+# Reconstruct or restore a prior checkpoint
+checkpoint = world.history_state(0)
+assert checkpoint.step == 0
+world.restore_history(0)
+assert world.step == 0
 ```
 
 The Python package also exposes `worldforge.providers`, `worldforge.eval`, and
@@ -198,6 +204,11 @@ Portable world snapshots are now first-class across the user surfaces:
 - Python: `WorldForge.export_world(...)` / `WorldForge.import_world(...)`
 - CLI: `worldforge export ...` / `worldforge import ...`
 - REST: `GET /v1/worlds/{id}` to fetch a JSON snapshot and `POST /v1/worlds/import` to restore one
+
+Recoverable history checkpoints are also available end-to-end:
+- Python: `world.history_state(index)` / `world.restore_history(index)`
+- CLI: `worldforge restore --world <id> --history-index <n>`
+- REST: `POST /v1/worlds/{id}/restore` with `{"history_index": <n>}`
 
 ## Python Installation
 
@@ -283,6 +294,7 @@ cargo run -p worldforge-cli -- export --world <id> --output snapshots/world.json
 cargo run -p worldforge-cli -- export --world <id> --output snapshots/world.msgpack --format msgpack
 cargo run -p worldforge-cli -- import --input snapshots/world.msgpack --format msgpack --new-id --name kitchen-copy
 cargo run -p worldforge-cli -- history --world <id> --output-json histories/<id>.json
+cargo run -p worldforge-cli -- restore --world <id> --history-index 0 --output-json restored/<id>.json
 cargo run -p worldforge-cli -- predict --world <id> --action "move 1 0 0" --provider runway --fallback-provider mock --timeout-ms 500
 cargo run -p worldforge-cli -- plan --world <id> --goal "spawn cube" --planner cem
 cargo run -p worldforge-cli -- plan --world <id> --goal "spawn cube" --planner cem --guardrails-json guardrails.json --output-json plans/generated.json
@@ -339,6 +351,10 @@ curl -X POST http://127.0.0.1:8080/v1/worlds \
 curl -X POST http://127.0.0.1:8080/v1/worlds/import \
   -H 'content-type: application/json' \
   -d @snapshot-import.json
+
+curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/restore \
+  -H 'content-type: application/json' \
+  -d '{"history_index":0}'
 
 curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/objects \
   -H 'content-type: application/json' \

@@ -44,10 +44,11 @@ fn auto_detect_registry() -> Arc<worldforge_core::provider::ProviderRegistry> {
     Arc::new(worldforge_providers::auto_detect())
 }
 
-fn resolve_provider_name<'a>(state: &'a WorldState, provider: Option<&'a str>) -> &'a str {
+fn resolve_provider_name(world: &CoreWorld, provider: Option<&str>) -> String {
     provider
         .filter(|name| !name.is_empty())
-        .unwrap_or(state.metadata.created_by.as_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| world.default_provider.clone())
 }
 
 fn new_runtime() -> PyResult<tokio::runtime::Runtime> {
@@ -110,7 +111,7 @@ fn snapshot_bytes(snapshot: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
 }
 
 fn world_from_state(state: WorldState, registry: Arc<ProviderRegistry>) -> PyWorld {
-    let provider = state.metadata.created_by.clone();
+    let provider = state.current_state_provider();
     PyWorld {
         world: CoreWorld::new(state, provider, Arc::clone(&registry)),
         registry,
@@ -957,6 +958,25 @@ impl PyWorld {
             .collect()
     }
 
+    /// Return a detached world view for a specific recorded history checkpoint.
+    fn history_state(&self, index: usize) -> PyResult<Self> {
+        let state = self.world.history_state(index).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "failed to reconstruct history checkpoint: {e}"
+            ))
+        })?;
+        Ok(world_from_state(state, Arc::clone(&self.registry)))
+    }
+
+    /// Restore this world in place to a specific history checkpoint.
+    fn restore_history(&mut self, index: usize) -> PyResult<()> {
+        self.world.restore_history(index).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "failed to restore history checkpoint: {e}"
+            ))
+        })
+    }
+
     /// Export the world state as JSON.
     fn to_json(&self) -> PyResult<String> {
         serde_json::to_string_pretty(&self.world.state).map_err(|e| {
@@ -970,7 +990,7 @@ impl PyWorld {
         let state: WorldState = serde_json::from_str(json).map_err(|e| {
             pyo3::exceptions::PyValueError::new_err(format!("deserialization error: {e}"))
         })?;
-        let provider = state.metadata.created_by.clone();
+        let provider = state.current_state_provider();
         let registry = auto_detect_registry();
         Ok(Self {
             world: CoreWorld::new(state, provider, Arc::clone(&registry)),
@@ -1038,8 +1058,8 @@ impl PyWorld {
             pyo3::exceptions::PyRuntimeError::new_err(format!("failed to create runtime: {e}"))
         })?;
 
-        let provider_name = resolve_provider_name(&self.world.state, provider);
-        self.world.default_provider = provider_name.to_string();
+        let provider_name = resolve_provider_name(&self.world, provider);
+        self.world.default_provider = provider_name.clone();
         let mut config = PredictionConfig {
             steps,
             return_video,
@@ -1132,10 +1152,10 @@ impl PyWorld {
             pyo3::exceptions::PyRuntimeError::new_err(format!("failed to create runtime: {e}"))
         })?;
 
-        let provider_name = resolve_provider_name(&self.world.state, provider);
+        let provider_name = resolve_provider_name(&self.world, provider);
         let world = CoreWorld::new(
             self.world.state.clone(),
-            provider_name.to_string(),
+            provider_name.clone(),
             Arc::clone(&self.registry),
         );
         let planner = planner_from_args(
@@ -1184,10 +1204,10 @@ impl PyWorld {
         disable_guardrails: bool,
     ) -> PyResult<PyPlanExecution> {
         let rt = new_runtime()?;
-        let provider_name = resolve_provider_name(&self.world.state, provider);
+        let provider_name = resolve_provider_name(&self.world, provider);
         let mut world = CoreWorld::new(
             self.world.state.clone(),
-            provider_name.to_string(),
+            provider_name.clone(),
             Arc::clone(&self.registry),
         );
         let mut config = PredictionConfig {
@@ -1203,7 +1223,7 @@ impl PyWorld {
         }
 
         let execution = rt
-            .block_on(world.execute_plan_with_provider(&plan.inner, &config, provider_name))
+            .block_on(world.execute_plan_with_provider(&plan.inner, &config, &provider_name))
             .map_err(|e| {
                 pyo3::exceptions::PyRuntimeError::new_err(format!("plan execution failed: {e}"))
             })?;
@@ -1222,11 +1242,11 @@ impl PyWorld {
     ) -> PyResult<PyReasoningOutput> {
         let rt = new_runtime()?;
 
-        let provider_name = resolve_provider_name(&self.world.state, provider);
+        let provider_name = resolve_provider_name(&self.world, provider);
         let output = rt
             .block_on(self.world.reason_with_provider_and_fallback(
                 query,
-                provider_name,
+                &provider_name,
                 fallback_provider,
             ))
             .map_err(|e| {
@@ -1387,7 +1407,7 @@ impl PyPrediction {
     /// Get the predicted output state as a `World`.
     fn output_world(&self) -> PyWorld {
         let state = self.inner.output_state.clone();
-        let provider = state.metadata.created_by.clone();
+        let provider = state.current_state_provider();
         let registry = auto_detect_registry();
         PyWorld {
             world: CoreWorld::new(state, provider, Arc::clone(&registry)),
@@ -2990,7 +3010,7 @@ impl PyPlanExecution {
     /// Final committed world state after the plan completed.
     fn final_world(&self) -> PyWorld {
         let state = self.inner.final_state.clone();
-        let provider = state.metadata.created_by.clone();
+        let provider = state.current_state_provider();
         let registry = auto_detect_registry();
         PyWorld {
             world: CoreWorld::new(state, provider, Arc::clone(&registry)),
@@ -5192,6 +5212,30 @@ mod tests {
         assert_eq!(history[1].provider(), "mock");
         assert!(history[1].action_json().unwrap().is_some());
         assert!(history[1].confidence().is_some());
+    }
+
+    #[test]
+    fn test_world_history_state_and_restore_rewind_checkpoint() {
+        let mut world = PyWorld::new("history_restore_world", "mock");
+        world
+            .predict(
+                &PyAction::move_to(1.0, 0.0, 0.0, 1.0),
+                1,
+                None,
+                None,
+                false,
+                None,
+                false,
+            )
+            .unwrap();
+
+        let checkpoint = world.history_state(0).unwrap();
+        assert_eq!(checkpoint.step(), 0);
+        assert_eq!(checkpoint.history_length(), 1);
+
+        world.restore_history(0).unwrap();
+        assert_eq!(world.step(), 0);
+        assert_eq!(world.history_length(), 1);
     }
 
     #[test]
