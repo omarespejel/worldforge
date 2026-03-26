@@ -362,6 +362,19 @@ pub struct Plan {
     pub iterations_used: u32,
 }
 
+/// Result of executing a materialized plan against a live world.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanExecution {
+    /// Step-by-step predictions produced while replaying the plan.
+    pub predictions: Vec<Prediction>,
+    /// Final committed world state after all actions succeeded.
+    pub final_state: WorldState,
+    /// Aggregate cost across all executed prediction steps.
+    pub total_cost: CostEstimate,
+    /// End-to-end execution time in milliseconds.
+    pub execution_time_ms: u64,
+}
+
 impl Default for PredictionConfig {
     fn default() -> Self {
         Self {
@@ -389,6 +402,36 @@ impl Default for PhysicsScores {
             collision_accuracy: 0.0,
             spatial_consistency: 0.0,
             temporal_consistency: 0.0,
+        }
+    }
+}
+
+impl PlanExecution {
+    /// Build an execution report from a completed sequence of predictions.
+    pub fn from_predictions(
+        predictions: Vec<Prediction>,
+        final_state: WorldState,
+        execution_time_ms: u64,
+    ) -> Self {
+        let total_cost = predictions.iter().fold(
+            CostEstimate {
+                usd: 0.0,
+                credits: 0.0,
+                estimated_latency_ms: 0,
+            },
+            |mut total, prediction| {
+                total.usd += prediction.cost.usd;
+                total.credits += prediction.cost.credits;
+                total.estimated_latency_ms += prediction.cost.estimated_latency_ms;
+                total
+            },
+        );
+
+        Self {
+            predictions,
+            final_state,
+            total_cost,
+            execution_time_ms,
         }
     }
 }

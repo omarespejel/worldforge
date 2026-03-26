@@ -15,7 +15,7 @@ use serde::Serialize;
 use worldforge_core::action::{Action, Weather};
 use worldforge_core::guardrail::{Guardrail, GuardrailConfig};
 use worldforge_core::prediction::{
-    PlanGoal, PlanGoalInput, PlanRequest, PlannerType, PredictionConfig,
+    Plan, PlanExecution, PlanGoal, PlanGoalInput, PlanRequest, PlannerType, PredictionConfig,
 };
 use worldforge_core::provider::{
     EmbeddingInput, GenerationConfig, GenerationPrompt, Operation, ProviderDescriptor,
@@ -398,6 +398,40 @@ pub enum Commands {
         #[arg(long, default_value_t = false)]
         disable_guardrails: bool,
         /// Optional path to write the generated `Plan` as JSON.
+        #[arg(long)]
+        output_json: Option<PathBuf>,
+    },
+
+    /// Execute a previously generated plan against a persisted world.
+    ExecutePlan {
+        /// World ID.
+        #[arg(long)]
+        world: String,
+        /// JSON file containing a serialized `Plan`.
+        #[arg(long)]
+        plan_json: PathBuf,
+        /// Optional provider override. Defaults to the world's current provider.
+        #[arg(long)]
+        provider: Option<String>,
+        /// Optional fallback provider if the primary provider fails.
+        #[arg(long)]
+        fallback_provider: Option<String>,
+        /// Number of prediction steps per action during execution.
+        #[arg(long, default_value = "1")]
+        steps: u32,
+        /// Maximum time to wait for each provider response before timing out.
+        #[arg(long)]
+        timeout_ms: Option<u64>,
+        /// Optional JSON file containing `Vec<GuardrailConfig>`.
+        #[arg(long)]
+        guardrails_json: Option<PathBuf>,
+        /// Return per-step preview clips in the execution report.
+        #[arg(long, default_value_t = false)]
+        return_video: bool,
+        /// Disable WorldForge's automatic guardrail checks.
+        #[arg(long, default_value_t = false)]
+        disable_guardrails: bool,
+        /// Optional path to write the execution report as JSON.
         #[arg(long)]
         output_json: Option<PathBuf>,
     },
@@ -971,6 +1005,35 @@ pub async fn run() -> Result<()> {
             )
             .await
         }
+        Commands::ExecutePlan {
+            world,
+            plan_json,
+            provider,
+            fallback_provider,
+            steps,
+            timeout_ms,
+            guardrails_json,
+            return_video,
+            disable_guardrails,
+            output_json,
+        } => {
+            cmd_execute_plan(
+                store.as_ref(),
+                &world,
+                ExecutePlanOptions {
+                    plan_json: &plan_json,
+                    provider: provider.as_deref(),
+                    fallback_provider: fallback_provider.as_deref(),
+                    steps,
+                    timeout_ms,
+                    guardrails_json: guardrails_json.as_deref(),
+                    return_video,
+                    disable_guardrails,
+                    output_json: output_json.as_deref(),
+                },
+            )
+            .await
+        }
         Commands::Verify {
             world,
             proof_type,
@@ -1325,6 +1388,18 @@ struct PlanOptions<'a> {
     output_json: Option<&'a Path>,
 }
 
+struct ExecutePlanOptions<'a> {
+    plan_json: &'a Path,
+    provider: Option<&'a str>,
+    fallback_provider: Option<&'a str>,
+    steps: u32,
+    timeout_ms: Option<u64>,
+    guardrails_json: Option<&'a Path>,
+    return_video: bool,
+    disable_guardrails: bool,
+    output_json: Option<&'a Path>,
+}
+
 struct CompareOptions<'a> {
     steps: u32,
     fallback_provider: Option<&'a str>,
@@ -1618,6 +1693,19 @@ fn print_bundle_verification<T: Serialize>(
         serde_json::to_string_pretty(&report.artifact).context("failed to serialize artifact")?
     );
     Ok(())
+}
+
+fn print_plan_execution(report: &PlanExecution) {
+    println!("Plan executed:");
+    println!("  Steps: {}", report.predictions.len());
+    println!("  Execution time: {}ms", report.execution_time_ms);
+    println!("  Total USD: {:.4}", report.total_cost.usd);
+    println!("  Total credits: {:.2}", report.total_cost.credits);
+    println!(
+        "  Estimated latency: {}ms",
+        report.total_cost.estimated_latency_ms
+    );
+    println!("  Final step: {}", report.final_state.time.step);
 }
 
 async fn cmd_create(
@@ -2298,6 +2386,72 @@ async fn cmd_plan(
         write_json_file(path, &plan)?;
         println!();
         println!("Saved plan JSON: {}", path.display());
+    }
+
+    Ok(())
+}
+
+async fn cmd_execute_plan(
+    store: &(impl StateStore + ?Sized),
+    world_id: &str,
+    options: ExecutePlanOptions<'_>,
+) -> Result<()> {
+    let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
+    let state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let plan: Plan = read_json_file(options.plan_json)?;
+
+    let provider_name = options
+        .provider
+        .filter(|name| !name.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| state.current_state_provider());
+    let provider_name = provider_name.as_str();
+    let registry = Arc::new(auto_detect_registry());
+    require_provider(&registry, provider_name)?;
+    if let Some(fallback_provider) = options.fallback_provider {
+        require_provider(&registry, fallback_provider)
+            .context("invalid fallback provider for execute-plan command")?;
+    }
+
+    let mut world = worldforge_core::world::World::new(state, provider_name, registry);
+    let mut config = PredictionConfig {
+        steps: options.steps,
+        return_video: options.return_video,
+        guardrails: read_guardrails(options.guardrails_json)?,
+        fallback_provider: options.fallback_provider.map(ToOwned::to_owned),
+        max_latency_ms: options.timeout_ms,
+        ..PredictionConfig::default()
+    };
+    if options.disable_guardrails {
+        config = config.disable_guardrails();
+    }
+
+    let report = world
+        .execute_plan_with_provider(&plan, &config, provider_name)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    store
+        .save(world.current_state())
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    print_plan_execution(&report);
+    for (index, prediction) in report.predictions.iter().enumerate() {
+        println!(
+            "  Step {}: {} via {} (physics {:.2}, latency {}ms)",
+            index + 1,
+            serde_json::to_string(&prediction.action)
+                .unwrap_or_else(|_| format!("{:?}", prediction.action)),
+            prediction.provider,
+            prediction.physics_scores.overall,
+            prediction.latency_ms
+        );
+    }
+
+    if let Some(path) = options.output_json {
+        write_json_file(path, &report)?;
+        println!("Saved execution JSON: {}", path.display());
     }
 
     Ok(())
@@ -3844,6 +3998,60 @@ mod tests {
     }
 
     #[test]
+    fn test_cli_parse_execute_plan_command() {
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "execute-plan",
+            "--world",
+            "123e4567-e89b-12d3-a456-426614174000",
+            "--plan-json",
+            "/tmp/plan.json",
+            "--provider",
+            "runway",
+            "--fallback-provider",
+            "mock",
+            "--steps",
+            "2",
+            "--timeout-ms",
+            "50",
+            "--guardrails-json",
+            "/tmp/guardrails.json",
+            "--return-video",
+            "--disable-guardrails",
+            "--output-json",
+            "/tmp/execution.json",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::ExecutePlan {
+                world,
+                plan_json,
+                provider,
+                fallback_provider,
+                steps,
+                timeout_ms,
+                guardrails_json,
+                return_video,
+                disable_guardrails,
+                output_json,
+            } => {
+                assert_eq!(world, "123e4567-e89b-12d3-a456-426614174000");
+                assert_eq!(plan_json, PathBuf::from("/tmp/plan.json"));
+                assert_eq!(provider.as_deref(), Some("runway"));
+                assert_eq!(fallback_provider.as_deref(), Some("mock"));
+                assert_eq!(steps, 2);
+                assert_eq!(timeout_ms, Some(50));
+                assert_eq!(guardrails_json, Some(PathBuf::from("/tmp/guardrails.json")));
+                assert!(return_video);
+                assert!(disable_guardrails);
+                assert_eq!(output_json, Some(PathBuf::from("/tmp/execution.json")));
+            }
+            _ => panic!("expected ExecutePlan"),
+        }
+    }
+
+    #[test]
     fn test_cli_parse_verify_command_with_artifacts() {
         let cli = Cli::try_parse_from([
             "worldforge",
@@ -4334,6 +4542,91 @@ mod tests {
             let error = result.unwrap_err().to_string().to_lowercase();
             assert!(error.contains("native planning") || error.contains("unsupported"));
         }
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn test_cmd_execute_plan_writes_output_json_and_persists_state() {
+        let dir =
+            std::env::temp_dir().join(format!("wf-cli-execute-plan-{}", uuid::Uuid::new_v4()));
+        let store = StateStoreKind::File(dir.join("state"))
+            .open()
+            .await
+            .unwrap();
+        let mut state = WorldState::new("execute-plan", "mock");
+        let object = SceneObject::new(
+            "ball",
+            Pose::default(),
+            BBox::from_center_half_extents(
+                Position::default(),
+                Vec3 {
+                    x: 0.1,
+                    y: 0.1,
+                    z: 0.1,
+                },
+            ),
+        );
+        let object_id = object.id;
+        state.scene.add_object(object);
+        store.save(&state).await.unwrap();
+
+        let plan = Plan {
+            actions: vec![Action::Move {
+                target: Position {
+                    x: 1.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                speed: 1.0,
+            }],
+            predicted_states: Vec::new(),
+            predicted_videos: None,
+            total_cost: 0.0,
+            success_probability: 1.0,
+            guardrail_compliance: Vec::new(),
+            planning_time_ms: 0,
+            iterations_used: 1,
+        };
+        let plan_path = dir.join("plan.json");
+        let execution_path = dir.join("execution.json");
+        write_json_file(&plan_path, &plan).unwrap();
+
+        cmd_execute_plan(
+            store.as_ref(),
+            &state.id.to_string(),
+            ExecutePlanOptions {
+                plan_json: &plan_path,
+                provider: None,
+                fallback_provider: None,
+                steps: 1,
+                timeout_ms: None,
+                guardrails_json: None,
+                return_video: false,
+                disable_guardrails: false,
+                output_json: Some(&execution_path),
+            },
+        )
+        .await
+        .unwrap();
+
+        let report: PlanExecution = read_json_file(&execution_path).unwrap();
+        assert_eq!(report.predictions.len(), 1);
+        assert_eq!(report.final_state.time.step, 1);
+
+        let persisted = store.load(&state.id).await.unwrap();
+        assert_eq!(persisted.time.step, 1);
+        assert_eq!(persisted.history.len(), 2);
+        assert!(
+            persisted
+                .scene
+                .get_object(&object_id)
+                .unwrap()
+                .pose
+                .position
+                .x
+                > 0.5
+        );
 
         let _ = fs::remove_dir_all(dir);
     }

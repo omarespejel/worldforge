@@ -15,7 +15,7 @@ use tokio::sync::RwLock;
 use worldforge_core::action::Action;
 use worldforge_core::error::WorldForgeError;
 use worldforge_core::guardrail::{Guardrail, GuardrailConfig};
-use worldforge_core::prediction::{PlanGoal, PlanGoalInput, PlannerType, PredictionConfig};
+use worldforge_core::prediction::{Plan, PlanGoal, PlanGoalInput, PlannerType, PredictionConfig};
 use worldforge_core::provider::{
     EmbeddingInput, GenerationConfig, GenerationPrompt, Operation, ProviderRegistry,
     SpatialControls, TransferConfig,
@@ -213,6 +213,18 @@ struct PlanRequest {
     replanning_interval: Option<u32>,
     #[serde(default)]
     guardrails: Vec<GuardrailConfig>,
+    #[serde(default)]
+    disable_guardrails: bool,
+}
+
+/// JSON request body for plan execution.
+#[derive(Debug, Deserialize)]
+struct ExecutePlanRequest {
+    plan: Plan,
+    #[serde(default)]
+    config: PredictionConfig,
+    #[serde(default)]
+    provider: Option<String>,
     #[serde(default)]
     disable_guardrails: bool,
 }
@@ -1365,7 +1377,11 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
         }
 
         // POST /v1/worlds/{id}/plan
-        ("POST", p) if p.starts_with("/v1/worlds/") && p.ends_with("/plan") => {
+        ("POST", p)
+            if p.starts_with("/v1/worlds/")
+                && p.ends_with("/plan")
+                && !p.ends_with("/execute-plan") =>
+        {
             let id_str = p
                 .strip_prefix("/v1/worlds/")
                 .and_then(|s| s.strip_suffix("/plan"))
@@ -1402,6 +1418,57 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                         );
                         match world.plan(&plan_req).await {
                             Ok(plan) => (200, ApiResponse::ok(plan)),
+                            Err(error) => {
+                                (api_error_status(&error), error_response(&error.to_string()))
+                            }
+                        }
+                    }
+                    Err(e) => (400, error_response(&format!("invalid request: {e}"))),
+                },
+                Err(_) => (400, error_response("invalid world ID")),
+            }
+        }
+
+        // POST /v1/worlds/{id}/execute-plan
+        ("POST", p) if p.starts_with("/v1/worlds/") && p.ends_with("/execute-plan") => {
+            let id_str = p
+                .strip_prefix("/v1/worlds/")
+                .and_then(|s| s.strip_suffix("/execute-plan"))
+                .unwrap_or("");
+            match id_str.parse::<WorldId>() {
+                Ok(id) => match serde_json::from_str::<ExecutePlanRequest>(body) {
+                    Ok(req) => {
+                        let ws = match state.store.load(&id).await {
+                            Ok(ws) => ws,
+                            Err(e) => return (404, error_response(&e.to_string())),
+                        };
+                        let provider_name =
+                            resolve_world_provider(&ws, req.provider.as_deref()).to_string();
+                        if let Err(e) = state.registry.get(&provider_name) {
+                            return (404, error_response(&e.to_string()));
+                        }
+
+                        let mut world = worldforge_core::world::World::new(
+                            ws,
+                            &provider_name,
+                            Arc::clone(&state.registry),
+                        );
+                        let mut config = req.config;
+                        if req.disable_guardrails {
+                            config = config.disable_guardrails();
+                        }
+
+                        match world
+                            .execute_plan_with_provider(&req.plan, &config, &provider_name)
+                            .await
+                        {
+                            Ok(report) => match state.store.save(world.current_state()).await {
+                                Ok(()) => (200, ApiResponse::ok(report)),
+                                Err(error) => (
+                                    500,
+                                    error_response(&format!("failed to save world: {error}")),
+                                ),
+                            },
                             Err(error) => {
                                 (api_error_status(&error), error_response(&error.to_string()))
                             }
@@ -2302,6 +2369,158 @@ mod tests {
                 weather: worldforge_core::action::Weather::Rain
             })
         ));
+    }
+
+    #[tokio::test]
+    async fn test_route_execute_plan_commits_world_state() {
+        let state = test_state();
+        let body = r#"{"name":"execute_world","provider":"mock"}"#;
+        let (status, resp) = route("POST", "/v1/worlds", body, &state).await;
+        assert_eq!(status, 201);
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let id = value["data"]["id"].as_str().unwrap();
+
+        let execute_body = serde_json::json!({
+            "plan": {
+                "actions": [
+                    {
+                        "Move": {
+                            "target": { "x": 1.0, "y": 0.0, "z": 0.0 },
+                            "speed": 1.0
+                        }
+                    }
+                ],
+                "predicted_states": [],
+                "predicted_videos": null,
+                "total_cost": 0.0,
+                "success_probability": 1.0,
+                "guardrail_compliance": [],
+                "planning_time_ms": 0,
+                "iterations_used": 1
+            }
+        })
+        .to_string();
+
+        let (status, resp) = route(
+            "POST",
+            &format!("/v1/worlds/{id}/execute-plan"),
+            &execute_body,
+            &state,
+        )
+        .await;
+        assert_eq!(status, 200);
+
+        let execution: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(
+            execution["data"]["predictions"].as_array().unwrap().len(),
+            1
+        );
+        assert_eq!(execution["data"]["final_state"]["time"]["step"], 1);
+
+        let (status, resp) = route("GET", &format!("/v1/worlds/{id}"), "", &state).await;
+        assert_eq!(status, 200);
+        let persisted: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(persisted["data"]["time"]["step"], 1);
+        assert_eq!(
+            persisted["data"]["history"]["states"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn test_route_execute_plan_guardrail_failure_is_atomic() {
+        let state = test_state();
+        let body = r#"{"name":"execute_guardrails","provider":"mock"}"#;
+        let (status, resp) = route("POST", "/v1/worlds", body, &state).await;
+        assert_eq!(status, 201);
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let id = value["data"]["id"].as_str().unwrap();
+
+        let object_body = serde_json::json!({
+            "name": "ball",
+            "position": { "x": 0.0, "y": 0.5, "z": 0.0 },
+            "bbox": {
+                "min": { "x": -0.1, "y": 0.4, "z": -0.1 },
+                "max": { "x": 0.1, "y": 0.6, "z": 0.1 }
+            }
+        })
+        .to_string();
+        let (status, _) = route(
+            "POST",
+            &format!("/v1/worlds/{id}/objects"),
+            &object_body,
+            &state,
+        )
+        .await;
+        assert_eq!(status, 201);
+        let world_id = id.parse::<WorldId>().unwrap();
+        let baseline = state.store.load(&world_id).await.unwrap();
+
+        let execute_body = serde_json::json!({
+            "plan": {
+                "actions": [
+                    {
+                        "Move": {
+                            "target": { "x": 1.0, "y": 0.0, "z": 0.0 },
+                            "speed": 1.0
+                        }
+                    }
+                ],
+                "predicted_states": [],
+                "predicted_videos": null,
+                "total_cost": 0.0,
+                "success_probability": 1.0,
+                "guardrail_compliance": [],
+                "planning_time_ms": 0,
+                "iterations_used": 1
+            },
+            "config": {
+                "guardrails": [
+                    {
+                        "guardrail": {
+                            "BoundaryConstraint": {
+                                "bounds": {
+                                    "min": { "x": -0.25, "y": -0.25, "z": -0.25 },
+                                    "max": { "x": 0.25, "y": 0.25, "z": 0.25 }
+                                }
+                            }
+                        },
+                        "blocking": true
+                    }
+                ]
+            }
+        })
+        .to_string();
+
+        let (status, _) = route(
+            "POST",
+            &format!("/v1/worlds/{id}/execute-plan"),
+            &execute_body,
+            &state,
+        )
+        .await;
+        assert_eq!(status, 409);
+
+        let persisted = state.store.load(&world_id).await.unwrap();
+        assert_eq!(persisted.time.step, baseline.time.step);
+        assert_eq!(persisted.history.len(), baseline.history.len());
+        assert_eq!(
+            persisted
+                .scene
+                .find_object_by_name("ball")
+                .unwrap()
+                .pose
+                .position,
+            baseline
+                .scene
+                .find_object_by_name("ball")
+                .unwrap()
+                .pose
+                .position
+        );
     }
 
     #[tokio::test]

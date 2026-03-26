@@ -97,6 +97,11 @@ goal_json = """
 """
 plan = world.plan(goal_json=goal_json, max_steps=4, planner="sampling")
 
+# Execute the materialized plan against the live world state
+execution = world.execute_plan(plan, provider="mock")
+assert execution.step_count == len(plan.actions)
+assert execution.final_world().step == world.step
+
 # Compare provider outputs for the same action
 comparison = world.compare(
     Action.move_to(0.5, 0.8, 0.0),
@@ -265,6 +270,7 @@ cargo run -p worldforge-cli -- predict --world <id> --action "move 1 0 0" --prov
 cargo run -p worldforge-cli -- plan --world <id> --goal "spawn cube" --planner cem
 cargo run -p worldforge-cli -- plan --world <id> --goal "spawn cube" --planner cem --guardrails-json guardrails.json --output-json plans/generated.json
 cargo run -p worldforge-cli -- plan --world <id> --goal-json goals/object-at.json --planner sampling --output-json plans/object-at.json
+cargo run -p worldforge-cli -- execute-plan --world <id> --plan-json plans/generated.json --output-json plans/executed.json
 cargo run -p worldforge-cli -- generate --provider mock --prompt "A cube rolling across a table" --duration-seconds 5 --output-json clips/generated.json
 cargo run -p worldforge-cli -- transfer --provider mock --source-json clips/generated.json --output-json clips/transferred.json
 cargo run -p worldforge-cli -- reason --world <id> --query "Will the mug fall if pushed?"
@@ -333,6 +339,10 @@ curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/plan \
 curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/plan \
   -H 'content-type: application/json' \
   -d '{"goal":{"type":"condition","condition":{"ObjectAt":{"object":"<object-id>","position":{"x":1.0,"y":0.8,"z":0.0},"tolerance":0.05}}},"planner":"sampling","num_samples":48,"top_k":5}'
+
+curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/execute-plan \
+  -H 'content-type: application/json' \
+  -d @plans/execution-request.json
 
 curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/verify \
   -H 'content-type: application/json' \
@@ -423,7 +433,9 @@ object positions and semantic labels, and can score deterministic clips against
 optional ground-truth video references. They can also assert final-state
 conditions using the core `Condition` semantics for relational checks. Structured
 `condition` and `goal_image` planning payloads are exercised end to end across
-the CLI, REST server, and Python bindings. Scene object seeding and inspection are
+the CLI, REST server, and Python bindings, and serialized plans can now be
+executed against persisted worlds through each surface with atomic state
+commit-on-success semantics. Scene object seeding and inspection are
 now exposed across the CLI and REST server as first-class operations instead of
 requiring direct JSON state editing, and Python scene objects can round-trip
 through JSON for interop with those workflows. Provider discovery now exposes

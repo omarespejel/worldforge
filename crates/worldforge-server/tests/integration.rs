@@ -741,6 +741,70 @@ async fn test_live_http_plan_uses_requested_planner() {
 }
 
 #[tokio::test]
+async fn test_live_http_execute_plan_persists_state() {
+    let server = spawn_test_server().await;
+
+    let world_id = create_test_world(server.address, "execute_plan_world").await;
+    let _ = create_test_object(
+        server.address,
+        &world_id,
+        serde_json::json!({
+            "name": "ball",
+            "position": { "x": 0.0, "y": 0.5, "z": 0.0 },
+            "bbox": {
+                "min": { "x": -0.1, "y": 0.4, "z": -0.1 },
+                "max": { "x": 0.1, "y": 0.6, "z": 0.1 }
+            }
+        }),
+    )
+    .await;
+
+    let execute_body = serde_json::json!({
+        "plan": {
+            "actions": [
+                {
+                    "Move": {
+                        "target": { "x": 1.0, "y": 0.5, "z": 0.0 },
+                        "speed": 1.0
+                    }
+                }
+            ],
+            "predicted_states": [],
+            "predicted_videos": null,
+            "total_cost": 0.0,
+            "success_probability": 1.0,
+            "guardrail_compliance": [],
+            "planning_time_ms": 0,
+            "iterations_used": 1
+        }
+    })
+    .to_string();
+    let (status, execution) = http_request(
+        server.address,
+        "POST",
+        &format!("/v1/worlds/{world_id}/execute-plan"),
+        &execute_body,
+    )
+    .await;
+
+    assert_eq!(status, 200);
+    assert_eq!(
+        execution["data"]["predictions"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(execution["data"]["final_state"]["time"]["step"], 1);
+
+    let (status, world) =
+        http_request(server.address, "GET", &format!("/v1/worlds/{world_id}"), "").await;
+    assert_eq!(status, 200);
+    assert_eq!(world["data"]["time"]["step"], 1);
+    assert_eq!(
+        world["data"]["history"]["states"].as_array().unwrap().len(),
+        2
+    );
+}
+
+#[tokio::test]
 async fn test_live_http_plan_provider_native_with_mock() {
     let server = spawn_test_server().await;
 

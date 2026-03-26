@@ -12,7 +12,7 @@ use crate::error::{Result, WorldForgeError};
 use crate::goal_image;
 use crate::guardrail::{evaluate_guardrails, has_blocking_violation};
 use crate::prediction::{
-    MultiPrediction, Plan, PlanRequest, PlannerType, Prediction, PredictionConfig,
+    MultiPrediction, Plan, PlanExecution, PlanRequest, PlannerType, Prediction, PredictionConfig,
 };
 use crate::provider::{
     GenerationConfig, GenerationPrompt, Operation, ProviderRegistry, ReasoningInput,
@@ -475,6 +475,55 @@ impl World {
 
         candidate.plan.planning_time_ms = start.elapsed().as_millis() as u64;
         Ok(candidate.plan)
+    }
+
+    /// Execute a materialized plan against the world's default provider.
+    ///
+    /// The world state is only committed if every step succeeds.
+    #[instrument(skip(self, plan, config))]
+    pub async fn execute_plan(
+        &mut self,
+        plan: &Plan,
+        config: &PredictionConfig,
+    ) -> Result<PlanExecution> {
+        let provider_name = self.default_provider.clone();
+        self.execute_plan_with_provider(plan, config, &provider_name)
+            .await
+    }
+
+    /// Execute a materialized plan against a specific provider.
+    ///
+    /// The world state is only committed if every step succeeds.
+    #[instrument(skip(self, plan, config))]
+    pub async fn execute_plan_with_provider(
+        &mut self,
+        plan: &Plan,
+        config: &PredictionConfig,
+        provider_name: &str,
+    ) -> Result<PlanExecution> {
+        let start = std::time::Instant::now();
+        let mut sandbox = Self::new(
+            self.state.clone(),
+            self.default_provider.clone(),
+            std::sync::Arc::clone(&self.registry),
+        );
+        let mut predictions = Vec::with_capacity(plan.actions.len());
+
+        for action in &plan.actions {
+            let prediction = sandbox
+                .predict_with_provider(action, config, provider_name)
+                .await?;
+            predictions.push(prediction);
+        }
+
+        let final_state = sandbox.state.clone();
+        self.state = final_state.clone();
+
+        Ok(PlanExecution::from_predictions(
+            predictions,
+            final_state,
+            start.elapsed().as_millis() as u64,
+        ))
     }
 
     /// Get the current world state.
@@ -2710,6 +2759,165 @@ mod tests {
             WorldForgeError::PlanningFailed { reason }
                 if reason.contains("predicted states")
         ));
+    }
+
+    #[tokio::test]
+    async fn test_execute_plan_commits_final_state_and_history() {
+        let (state, object_id) = sample_planning_state();
+        let registry = std::sync::Arc::new({
+            let mut registry = ProviderRegistry::new();
+            registry.register(Box::new(PlanningProvider::new("planner", 1.0, false)));
+            registry
+        });
+        let planner_world = World::new(state.clone(), "planner", std::sync::Arc::clone(&registry));
+        let request = PlanRequest {
+            current_state: state.clone(),
+            goal: PlanGoal::Description("move ball to position (2.0, 0.0, 0.0)".to_string()),
+            max_steps: 3,
+            guardrails: Vec::new(),
+            planner: PlannerType::Sampling {
+                num_samples: 16,
+                top_k: 4,
+            },
+            timeout_seconds: 5.0,
+        };
+        let plan = planner_world.plan(&request).await.unwrap();
+
+        let mut world = World::new(state, "planner", registry);
+        let execution = world
+            .execute_plan(&plan, &PredictionConfig::default())
+            .await
+            .unwrap();
+
+        let final_position = world
+            .current_state()
+            .scene
+            .get_object(&object_id)
+            .unwrap()
+            .pose
+            .position;
+        assert_eq!(execution.predictions.len(), plan.actions.len());
+        assert_eq!(world.current_state().history.len(), plan.actions.len() + 1);
+        assert_eq!(world.current_state().time.step, plan.actions.len() as u64);
+        assert_eq!(execution.final_state.time.step, plan.actions.len() as u64);
+        assert!(final_position.x > 1.5);
+    }
+
+    #[tokio::test]
+    async fn test_execute_plan_is_atomic_on_guardrail_failure() {
+        let (state, object_id) = sample_planning_state();
+        let registry = std::sync::Arc::new({
+            let mut registry = ProviderRegistry::new();
+            registry.register(Box::new(PlanningProvider::new("planner", 1.0, false)));
+            registry
+        });
+        let initial_position = state.scene.get_object(&object_id).unwrap().pose.position;
+        let mut world = World::new(state, "planner", registry);
+        let plan = Plan {
+            actions: vec![Action::Move {
+                target: Position {
+                    x: 1.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                speed: 1.0,
+            }],
+            predicted_states: Vec::new(),
+            predicted_videos: None,
+            total_cost: 0.0,
+            success_probability: 1.0,
+            guardrail_compliance: Vec::new(),
+            planning_time_ms: 0,
+            iterations_used: 1,
+        };
+        let config = PredictionConfig {
+            guardrails: vec![crate::guardrail::GuardrailConfig {
+                guardrail: crate::guardrail::Guardrail::BoundaryConstraint {
+                    bounds: crate::types::BBox {
+                        min: Position {
+                            x: -0.25,
+                            y: -0.25,
+                            z: -0.25,
+                        },
+                        max: Position {
+                            x: 0.25,
+                            y: 0.25,
+                            z: 0.25,
+                        },
+                    },
+                },
+                blocking: true,
+            }],
+            ..PredictionConfig::default()
+        };
+
+        let error = world.execute_plan(&plan, &config).await.unwrap_err();
+
+        assert!(matches!(error, WorldForgeError::GuardrailBlocked { .. }));
+        assert!(world.current_state().history.is_empty());
+        assert_eq!(
+            world
+                .current_state()
+                .scene
+                .get_object(&object_id)
+                .unwrap()
+                .pose
+                .position,
+            initial_position
+        );
+    }
+
+    #[tokio::test]
+    async fn test_execute_plan_uses_fallback_provider() {
+        let (state, object_id) = sample_planning_state();
+        let registry = std::sync::Arc::new({
+            let mut registry = ProviderRegistry::new();
+            registry.register(Box::new(FailingProvider::new("primary")));
+            registry.register(Box::new(PlanningProvider::new("fallback", 1.0, false)));
+            registry
+        });
+        let mut world = World::new(state, "primary", registry);
+        let plan = Plan {
+            actions: vec![Action::Move {
+                target: Position {
+                    x: 1.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                speed: 1.0,
+            }],
+            predicted_states: Vec::new(),
+            predicted_videos: None,
+            total_cost: 0.0,
+            success_probability: 1.0,
+            guardrail_compliance: Vec::new(),
+            planning_time_ms: 0,
+            iterations_used: 1,
+        };
+        let config = PredictionConfig {
+            fallback_provider: Some("fallback".to_string()),
+            ..PredictionConfig::default()
+        };
+
+        let execution = world.execute_plan(&plan, &config).await.unwrap();
+
+        assert_eq!(execution.predictions.len(), 1);
+        assert_eq!(execution.predictions[0].provider, "fallback");
+        assert_eq!(
+            world.current_state().history.latest().unwrap().provider,
+            "fallback"
+        );
+        assert!(
+            world
+                .current_state()
+                .scene
+                .get_object(&object_id)
+                .unwrap()
+                .pose
+                .position
+                .x
+                > 0.5
+        );
     }
 
     #[tokio::test]

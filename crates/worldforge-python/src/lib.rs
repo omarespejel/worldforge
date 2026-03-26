@@ -13,7 +13,8 @@ use pyo3::types::{PyList, PyModule};
 
 use worldforge_core::guardrail::GuardrailConfig;
 use worldforge_core::prediction::{
-    MultiPrediction, PlanGoal, PlanGoalInput, PlannerType, PredictionConfig, ProviderScore,
+    MultiPrediction, PlanExecution, PlanGoal, PlanGoalInput, PlannerType, PredictionConfig,
+    ProviderScore,
 };
 use worldforge_core::provider::{
     CostEstimate, EmbeddingInput, EmbeddingOutput, GenerationConfig, GenerationPrompt, Operation,
@@ -1111,6 +1112,49 @@ impl PyWorld {
             pyo3::exceptions::PyRuntimeError::new_err(format!("planning failed: {e}"))
         })?;
         Ok(PyPlan { inner: plan })
+    }
+
+    /// Execute a previously generated plan against the live world state.
+    #[pyo3(signature = (plan, steps=1, provider=None, fallback_provider=None, return_video=false, max_latency_ms=None, guardrails_json=None, disable_guardrails=false))]
+    #[allow(clippy::too_many_arguments)]
+    fn execute_plan(
+        &mut self,
+        plan: &PyPlan,
+        steps: u32,
+        provider: Option<&str>,
+        fallback_provider: Option<&str>,
+        return_video: bool,
+        max_latency_ms: Option<u64>,
+        guardrails_json: Option<&str>,
+        disable_guardrails: bool,
+    ) -> PyResult<PyPlanExecution> {
+        let rt = new_runtime()?;
+        let provider_name = resolve_provider_name(&self.world.state, provider);
+        let mut world = CoreWorld::new(
+            self.world.state.clone(),
+            provider_name.to_string(),
+            Arc::clone(&self.registry),
+        );
+        let mut config = PredictionConfig {
+            steps,
+            return_video,
+            max_latency_ms,
+            fallback_provider: fallback_provider.map(ToOwned::to_owned),
+            guardrails: parse_guardrails_json(guardrails_json)?,
+            ..PredictionConfig::default()
+        };
+        if disable_guardrails {
+            config = config.disable_guardrails();
+        }
+
+        let execution = rt
+            .block_on(world.execute_plan_with_provider(&plan.inner, &config, provider_name))
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("plan execution failed: {e}"))
+            })?;
+        self.world.state = world.current_state().clone();
+
+        Ok(PyPlanExecution { inner: execution })
     }
 
     /// Ask a provider to reason about the current world state.
@@ -2789,6 +2833,80 @@ impl PyPlan {
             self.inner.actions.len(),
             self.inner.success_probability,
             self.inner.planning_time_ms
+        )
+    }
+}
+
+/// Result of executing a plan against a live world.
+#[pyclass(name = "PlanExecution")]
+#[derive(Debug, Clone)]
+pub struct PyPlanExecution {
+    inner: PlanExecution,
+}
+
+#[pymethods]
+impl PyPlanExecution {
+    /// Number of executed plan steps.
+    #[getter]
+    fn step_count(&self) -> usize {
+        self.inner.predictions.len()
+    }
+
+    /// End-to-end execution time in milliseconds.
+    #[getter]
+    fn execution_time_ms(&self) -> u64 {
+        self.inner.execution_time_ms
+    }
+
+    /// Aggregate execution cost.
+    fn total_cost(&self) -> PyCostEstimate {
+        PyCostEstimate {
+            inner: self.inner.total_cost.clone(),
+        }
+    }
+
+    /// Per-step prediction results emitted while replaying the plan.
+    fn predictions(&self) -> Vec<PyPrediction> {
+        self.inner
+            .predictions
+            .iter()
+            .cloned()
+            .map(|inner| PyPrediction { inner })
+            .collect()
+    }
+
+    /// Final committed world state after the plan completed.
+    fn final_world(&self) -> PyWorld {
+        let state = self.inner.final_state.clone();
+        let provider = state.metadata.created_by.clone();
+        let registry = auto_detect_registry();
+        PyWorld {
+            world: CoreWorld::new(state, provider, Arc::clone(&registry)),
+            registry,
+        }
+    }
+
+    /// Serialize the execution report to JSON.
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    }
+
+    /// Deserialize an execution report from JSON.
+    #[staticmethod]
+    fn from_json(json: &str) -> PyResult<Self> {
+        let inner: PlanExecution = serde_json::from_str(json).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("deserialization error: {e}"))
+        })?;
+        Ok(Self { inner })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PlanExecution(steps={}, execution_time_ms={})",
+            self.inner.predictions.len(),
+            self.inner.execution_time_ms
         )
     }
 }
@@ -4473,6 +4591,7 @@ fn worldforge(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCostEstimate>()?;
     m.add_class::<PyWorldForge>()?;
     m.add_class::<PyPlan>()?;
+    m.add_class::<PyPlanExecution>()?;
     m.add_class::<PyEvalScenario>()?;
     m.add_class::<PyEvalSuite>()?;
     m.add_class::<PyPhysicsEval>()?;
@@ -5908,6 +6027,59 @@ mod tests {
             .expect("ball should still exist");
         let x = ball["pose"]["position"]["x"].as_f64().unwrap();
         assert!(x > 0.5);
+    }
+
+    #[test]
+    fn test_execute_plan_updates_world_and_roundtrips_json() {
+        let mut world = PyWorld::new("execute_plan", "mock");
+        let position = PyPosition::new(0.0, 0.5, 0.0);
+        let bbox = PyBBox::new(
+            &PyPosition::new(-0.1, 0.4, -0.1),
+            &PyPosition::new(0.1, 0.6, 0.1),
+        );
+        let object = PySceneObject::new("ball", &position, &bbox);
+        world.add_object(&object).unwrap();
+
+        let plan = world
+            .plan(
+                Some("move ball to position (1.0, 0.5, 0.0)"),
+                None,
+                4,
+                10.0,
+                Some("mock"),
+                "sampling",
+                Some(48),
+                Some(5),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                false,
+            )
+            .unwrap();
+        let execution = world
+            .execute_plan(&plan, 1, Some("mock"), None, false, None, None, false)
+            .unwrap();
+
+        assert!(execution.step_count() > 0);
+        assert_eq!(world.step(), execution.final_world().step());
+        assert_eq!(world.history().len(), execution.step_count() + 1);
+        assert!(
+            execution
+                .final_world()
+                .get_object("ball")
+                .unwrap()
+                .position()
+                .x()
+                > 0.5
+        );
+
+        let json = execution.to_json().unwrap();
+        let roundtrip = PyPlanExecution::from_json(&json).unwrap();
+        assert_eq!(roundtrip.step_count(), execution.step_count());
     }
 
     // --- Evaluation tests ---
