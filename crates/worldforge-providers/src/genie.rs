@@ -2076,6 +2076,16 @@ fn tensor_fingerprint(tensor: &Tensor) -> u64 {
                 seed ^= stable_hash(&value.to_bits().to_le_bytes()).rotate_left(7);
             }
         }
+        TensorData::Float16(values) => {
+            for value in values.iter().take(32) {
+                seed ^= stable_hash(&value.to_le_bytes()).rotate_left(7);
+            }
+        }
+        TensorData::BFloat16(values) => {
+            for value in values.iter().take(32) {
+                seed ^= stable_hash(&value.to_le_bytes()).rotate_left(7);
+            }
+        }
         TensorData::UInt8(values) => {
             for value in values.iter().take(64) {
                 seed ^= u64::from(*value).rotate_left((*value % 23) as u32);
@@ -2702,6 +2712,27 @@ mod tests {
         assert!((clip.fps - 12.0).abs() < f32::EPSILON);
         assert_eq!(clip.frames.len(), source.frames.len());
         assert!(clip.frames.iter().all(|frame| frame.camera.is_some()));
+    }
+
+    #[test]
+    fn test_tensor_fingerprint_supports_half_precision() {
+        let half_tensor = Tensor {
+            data: TensorData::Float16(vec![0x3c00, 0xc000]),
+            shape: vec![2],
+            dtype: DType::Float16,
+            device: Device::Cpu,
+        };
+        let bfloat16_tensor = Tensor {
+            data: TensorData::BFloat16(vec![0x3f80, 0xc000]),
+            shape: vec![2],
+            dtype: DType::BFloat16,
+            device: Device::Cpu,
+        };
+
+        assert_ne!(
+            tensor_fingerprint(&half_tensor),
+            tensor_fingerprint(&bfloat16_tensor)
+        );
     }
 
     #[tokio::test]

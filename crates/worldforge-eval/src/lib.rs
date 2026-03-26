@@ -1375,10 +1375,49 @@ fn tensor_values(data: &TensorData) -> Vec<f64> {
     match data {
         TensorData::Float32(values) => values.iter().map(|value| *value as f64).collect(),
         TensorData::Float64(values) => values.clone(),
+        TensorData::Float16(values) => values
+            .iter()
+            .map(|value| half_bits_to_f32(*value) as f64)
+            .collect(),
+        TensorData::BFloat16(values) => values
+            .iter()
+            .map(|value| bfloat16_bits_to_f32(*value) as f64)
+            .collect(),
         TensorData::UInt8(values) => values.iter().map(|value| *value as f64).collect(),
         TensorData::Int32(values) => values.iter().map(|value| *value as f64).collect(),
         TensorData::Int64(values) => values.iter().map(|value| *value as f64).collect(),
     }
+}
+
+fn half_bits_to_f32(bits: u16) -> f32 {
+    let sign = ((bits & 0x8000) as u32) << 16;
+    let exponent = ((bits & 0x7c00) >> 10) as u32;
+    let mantissa = (bits & 0x03ff) as u32;
+
+    let f32_bits = match exponent {
+        0 => {
+            if mantissa == 0 {
+                sign
+            } else {
+                let mut mantissa = mantissa;
+                let mut exponent = -14i32;
+                while (mantissa & 0x0400) == 0 {
+                    mantissa <<= 1;
+                    exponent -= 1;
+                }
+                mantissa &= 0x03ff;
+                sign | (((exponent + 127) as u32) << 23) | (mantissa << 13)
+            }
+        }
+        0x1f => sign | 0x7f80_0000 | (mantissa << 13),
+        _ => sign | (((exponent as i32 - 15 + 127) as u32) << 23) | (mantissa << 13),
+    };
+
+    f32::from_bits(f32_bits)
+}
+
+fn bfloat16_bits_to_f32(bits: u16) -> f32 {
+    f32::from_bits((bits as u32) << 16)
 }
 
 fn default_tensor_scale(tensor: &Tensor) -> f64 {
@@ -1714,6 +1753,15 @@ mod tests {
             resolution: (1, 1),
             duration: 0.5,
         }
+    }
+
+    #[test]
+    fn test_tensor_values_supports_half_precision() {
+        let half_values = TensorData::Float16(vec![0x3c00, 0xc000, 0x3800]);
+        let bfloat16_values = TensorData::BFloat16(vec![0x3f80, 0xc000, 0x3f00]);
+
+        assert_eq!(tensor_values(&half_values), vec![1.0, -2.0, 0.5]);
+        assert_eq!(tensor_values(&bfloat16_values), vec![1.0, -2.0, 0.5]);
     }
 
     #[async_trait]

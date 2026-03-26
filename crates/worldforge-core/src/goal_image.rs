@@ -152,55 +152,36 @@ fn tensor_grayscale(tensor: &Tensor) -> Option<(u32, u32, Vec<f32>)> {
 }
 
 fn tensor_values(tensor: &Tensor) -> Option<Vec<f32>> {
-    let values = match &tensor.data {
-        TensorData::Float32(values) => {
+    let values = tensor.data.to_f32_values();
+    Some(match tensor.data.storage_kind() {
+        crate::types::TensorStorageKind::Float16
+        | crate::types::TensorStorageKind::Float32
+        | crate::types::TensorStorageKind::Float64
+        | crate::types::TensorStorageKind::BFloat16 => {
             let scale = values
                 .iter()
                 .copied()
                 .fold(1.0f32, |acc, value| acc.max(value.abs()).max(1.0));
             values
-                .iter()
-                .map(|value| (*value / scale).clamp(0.0, 1.0))
+                .into_iter()
+                .map(|value| (value / scale).clamp(0.0, 1.0))
                 .collect()
         }
-        TensorData::Float64(values) => {
+        crate::types::TensorStorageKind::UInt8 => {
+            values.into_iter().map(|value| value / 255.0).collect()
+        }
+        crate::types::TensorStorageKind::Int32 | crate::types::TensorStorageKind::Int64 => {
             let scale = values
                 .iter()
                 .copied()
-                .fold(1.0f64, |acc, value| acc.max(value.abs()).max(1.0));
+                .map(|value| value.abs().max(1.0))
+                .fold(1.0f32, f32::max);
             values
-                .iter()
-                .map(|value| ((*value / scale).clamp(0.0, 1.0)) as f32)
+                .into_iter()
+                .map(|value| (value / scale).clamp(0.0, 1.0))
                 .collect()
         }
-        TensorData::UInt8(values) => values.iter().map(|value| *value as f32 / 255.0).collect(),
-        TensorData::Int32(values) => {
-            let scale = values
-                .iter()
-                .copied()
-                .map(|value| value.abs().max(1))
-                .max()
-                .unwrap_or(1) as f32;
-            values
-                .iter()
-                .map(|value| (*value as f32 / scale).clamp(0.0, 1.0))
-                .collect()
-        }
-        TensorData::Int64(values) => {
-            let scale = values
-                .iter()
-                .copied()
-                .map(|value| value.abs().max(1))
-                .max()
-                .unwrap_or(1) as f32;
-            values
-                .iter()
-                .map(|value| (*value as f32 / scale).clamp(0.0, 1.0))
-                .collect()
-        }
-    };
-
-    Some(values)
+    })
 }
 
 fn image_dimensions(tensor: &Tensor) -> Option<(u32, u32, usize)> {
@@ -228,13 +209,7 @@ fn image_dimensions(tensor: &Tensor) -> Option<(u32, u32, usize)> {
 }
 
 fn tensor_element_count(tensor: &Tensor) -> usize {
-    match &tensor.data {
-        TensorData::Float32(values) => values.len(),
-        TensorData::Float64(values) => values.len(),
-        TensorData::UInt8(values) => values.len(),
-        TensorData::Int32(values) => values.len(),
-        TensorData::Int64(values) => values.len(),
-    }
+    tensor.element_count()
 }
 
 fn scene_bounds(state: &WorldState) -> SceneBounds {
@@ -372,7 +347,7 @@ mod tests {
     use super::*;
 
     use crate::scene::SceneObject;
-    use crate::types::{BBox, Pose, SimTime, TensorData};
+    use crate::types::{BBox, DType, Device, Pose, SimTime, Tensor, TensorData};
 
     fn sample_state() -> WorldState {
         let mut state = WorldState::new("goal-image", "mock");
@@ -416,6 +391,34 @@ mod tests {
             TensorData::Float32(values) => assert_eq!(values.len(), 192),
             _ => panic!("expected float32 tensor"),
         }
+    }
+
+    #[test]
+    fn test_goal_image_tensor_values_accept_half_precision_storage() {
+        let tensor = Tensor {
+            data: TensorData::Float16(vec![0x3c00, 0xbc00, 0x0000, 0x3800]),
+            shape: vec![2, 2],
+            dtype: DType::Float16,
+            device: Device::Cpu,
+        };
+
+        let values = tensor_values(&tensor).expect("tensor values");
+        assert_eq!(values.len(), 4);
+        assert!(values.iter().all(|value| (0.0..=1.0).contains(value)));
+    }
+
+    #[test]
+    fn test_goal_image_tensor_values_accept_bfloat16_storage() {
+        let tensor = Tensor {
+            data: TensorData::BFloat16(vec![0x3f80, 0xbf80, 0x0000, 0x3f00]),
+            shape: vec![2, 2],
+            dtype: DType::BFloat16,
+            device: Device::Cpu,
+        };
+
+        let values = tensor_values(&tensor).expect("tensor values");
+        assert_eq!(values.len(), 4);
+        assert!(values.iter().all(|value| (0.0..=1.0).contains(value)));
     }
 
     #[test]

@@ -25,16 +25,39 @@ pub struct Tensor {
 /// Raw storage for tensor data.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TensorData {
+    /// 16-bit floating point values stored as IEEE 754 half-precision bits.
+    Float16(Vec<u16>),
     /// 32-bit floating point values.
     Float32(Vec<f32>),
     /// 64-bit floating point values.
     Float64(Vec<f64>),
+    /// 16-bit brain floating point values stored as raw `bfloat16` bits.
+    BFloat16(Vec<u16>),
     /// 8-bit unsigned integer values.
     UInt8(Vec<u8>),
     /// 32-bit signed integer values.
     Int32(Vec<i32>),
     /// 64-bit signed integer values.
     Int64(Vec<i64>),
+}
+
+/// Backing storage kind used by a [`TensorData`] value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TensorStorageKind {
+    /// 16-bit floating point values stored as IEEE 754 half-precision bits.
+    Float16,
+    /// 32-bit floating point values.
+    Float32,
+    /// 64-bit floating point values.
+    Float64,
+    /// 16-bit brain floating point values stored as raw `bfloat16` bits.
+    BFloat16,
+    /// 8-bit unsigned integer values.
+    UInt8,
+    /// 32-bit signed integer values.
+    Int32,
+    /// 64-bit signed integer values.
+    Int64,
 }
 
 /// Tensor element data type.
@@ -52,6 +75,30 @@ pub enum DType {
     Int32,
     /// Signed 64-bit integer.
     Int64,
+}
+
+/// Validation error returned when a tensor's metadata and storage disagree.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum TensorValidationError {
+    /// The tensor data storage does not match the declared dtype.
+    #[error("tensor storage kind {actual:?} does not match declared dtype {expected:?}")]
+    DTypeMismatch {
+        /// Declared tensor dtype.
+        expected: DType,
+        /// Backing storage dtype.
+        actual: TensorStorageKind,
+    },
+    /// The tensor shape does not match the number of stored elements.
+    #[error("tensor shape expects {expected} elements but storage contains {actual}")]
+    ElementCountMismatch {
+        /// Expected element count derived from the shape.
+        expected: usize,
+        /// Actual stored element count.
+        actual: usize,
+    },
+    /// The tensor shape is too large to compute a safe element count.
+    #[error("tensor shape element count overflowed")]
+    ShapeOverflow,
 }
 
 /// Compute device for tensor operations.
@@ -370,20 +417,128 @@ impl Rotation {
 impl Tensor {
     /// Create a new tensor filled with zeros.
     pub fn zeros(shape: Vec<usize>, dtype: DType) -> Self {
-        let size: usize = shape.iter().product();
-        let data = match dtype {
-            DType::Float32 | DType::Float16 | DType::BFloat16 => {
-                TensorData::Float32(vec![0.0; size])
-            }
-            DType::UInt8 => TensorData::UInt8(vec![0; size]),
-            DType::Int32 => TensorData::Int32(vec![0; size]),
-            DType::Int64 => TensorData::Int64(vec![0; size]),
-        };
+        let size = shape_element_count(&shape).unwrap_or(0);
+        let data = TensorData::zeros(size, dtype);
         Self {
             data,
             shape,
             dtype,
             device: Device::Cpu,
+        }
+    }
+
+    /// Return the number of stored elements.
+    pub fn element_count(&self) -> usize {
+        self.data.len()
+    }
+
+    /// Return the number of elements implied by the tensor shape.
+    pub fn shape_element_count(&self) -> Option<usize> {
+        shape_element_count(&self.shape)
+    }
+
+    /// Check whether the declared dtype matches the backing storage.
+    pub fn storage_matches_dtype(&self) -> bool {
+        matches!(
+            (self.dtype, self.data.storage_kind()),
+            (DType::Float16, TensorStorageKind::Float16)
+                | (DType::Float32, TensorStorageKind::Float32)
+                | (DType::BFloat16, TensorStorageKind::BFloat16)
+                | (DType::UInt8, TensorStorageKind::UInt8)
+                | (DType::Int32, TensorStorageKind::Int32)
+                | (DType::Int64, TensorStorageKind::Int64)
+        )
+    }
+
+    /// Validate that the tensor metadata matches its storage.
+    pub fn validate(&self) -> std::result::Result<(), TensorValidationError> {
+        let Some(expected) = self.shape_element_count() else {
+            return Err(TensorValidationError::ShapeOverflow);
+        };
+        let actual = self.element_count();
+        if expected != actual {
+            return Err(TensorValidationError::ElementCountMismatch { expected, actual });
+        }
+        if !self.storage_matches_dtype() {
+            return Err(TensorValidationError::DTypeMismatch {
+                expected: self.dtype,
+                actual: self.data.storage_kind(),
+            });
+        }
+        Ok(())
+    }
+}
+
+impl TensorData {
+    /// Return the number of stored elements.
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Float16(values) => values.len(),
+            Self::Float32(values) => values.len(),
+            Self::Float64(values) => values.len(),
+            Self::BFloat16(values) => values.len(),
+            Self::UInt8(values) => values.len(),
+            Self::Int32(values) => values.len(),
+            Self::Int64(values) => values.len(),
+        }
+    }
+
+    /// Check whether this storage contains no elements.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Return the backing storage kind.
+    pub fn storage_kind(&self) -> TensorStorageKind {
+        match self {
+            Self::Float16(_) => TensorStorageKind::Float16,
+            Self::Float32(_) => TensorStorageKind::Float32,
+            Self::Float64(_) => TensorStorageKind::Float64,
+            Self::BFloat16(_) => TensorStorageKind::BFloat16,
+            Self::UInt8(_) => TensorStorageKind::UInt8,
+            Self::Int32(_) => TensorStorageKind::Int32,
+            Self::Int64(_) => TensorStorageKind::Int64,
+        }
+    }
+
+    /// Check whether this storage matches a declared dtype.
+    pub fn matches_dtype(&self, dtype: DType) -> bool {
+        matches!(
+            (dtype, self.storage_kind()),
+            (DType::Float16, TensorStorageKind::Float16)
+                | (DType::Float32, TensorStorageKind::Float32)
+                | (DType::BFloat16, TensorStorageKind::BFloat16)
+                | (DType::UInt8, TensorStorageKind::UInt8)
+                | (DType::Int32, TensorStorageKind::Int32)
+                | (DType::Int64, TensorStorageKind::Int64)
+        )
+    }
+
+    /// Convert the underlying storage to `f32` values.
+    pub fn to_f32_values(&self) -> Vec<f32> {
+        match self {
+            Self::Float16(values) => values.iter().map(|value| f16_bits_to_f32(*value)).collect(),
+            Self::Float32(values) => values.clone(),
+            Self::Float64(values) => values.iter().map(|value| *value as f32).collect(),
+            Self::BFloat16(values) => values
+                .iter()
+                .map(|value| bf16_bits_to_f32(*value))
+                .collect(),
+            Self::UInt8(values) => values.iter().map(|value| *value as f32).collect(),
+            Self::Int32(values) => values.iter().map(|value| *value as f32).collect(),
+            Self::Int64(values) => values.iter().map(|value| *value as f32).collect(),
+        }
+    }
+
+    /// Create zero-filled storage for the requested dtype.
+    pub fn zeros(size: usize, dtype: DType) -> Self {
+        match dtype {
+            DType::Float16 => Self::Float16(vec![0; size]),
+            DType::Float32 => Self::Float32(vec![0.0; size]),
+            DType::BFloat16 => Self::BFloat16(vec![0; size]),
+            DType::UInt8 => Self::UInt8(vec![0; size]),
+            DType::Int32 => Self::Int32(vec![0; size]),
+            DType::Int64 => Self::Int64(vec![0; size]),
         }
     }
 }
@@ -470,18 +625,117 @@ impl BBox {
     }
 }
 
+fn shape_element_count(shape: &[usize]) -> Option<usize> {
+    shape
+        .iter()
+        .copied()
+        .try_fold(1usize, |acc, dim| acc.checked_mul(dim))
+}
+
+fn f16_bits_to_f32(bits: u16) -> f32 {
+    let sign = ((bits & 0x8000) as u32) << 16;
+    let exponent = ((bits >> 10) & 0x1f) as u32;
+    let mantissa = (bits & 0x03ff) as u32;
+
+    let value = match exponent {
+        0 => {
+            if mantissa == 0 {
+                sign
+            } else {
+                let mut mantissa = mantissa;
+                let mut exponent = -14i32;
+                while (mantissa & 0x0400) == 0 {
+                    mantissa <<= 1;
+                    exponent -= 1;
+                }
+                mantissa &= 0x03ff;
+                let exponent = ((exponent + 127) as u32) << 23;
+                sign | exponent | (mantissa << 13)
+            }
+        }
+        0x1f => sign | 0x7f80_0000 | (mantissa << 13),
+        _ => {
+            let exponent = (exponent + 112) << 23;
+            sign | exponent | (mantissa << 13)
+        }
+    };
+
+    f32::from_bits(value)
+}
+
+fn bf16_bits_to_f32(bits: u16) -> f32 {
+    f32::from_bits((bits as u32) << 16)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_tensor_zeros() {
-        let t = Tensor::zeros(vec![2, 3], DType::Float32);
-        assert_eq!(t.shape, vec![2, 3]);
-        match &t.data {
-            TensorData::Float32(v) => assert_eq!(v.len(), 6),
-            _ => panic!("expected Float32"),
+        for dtype in [
+            DType::Float16,
+            DType::Float32,
+            DType::BFloat16,
+            DType::UInt8,
+            DType::Int32,
+            DType::Int64,
+        ] {
+            let t = Tensor::zeros(vec![2, 3], dtype);
+            assert_eq!(t.shape.as_slice(), &[2, 3]);
+            assert_eq!(t.element_count(), 6);
+            assert!(t.storage_matches_dtype());
+            assert!(t.validate().is_ok());
+            match (dtype, &t.data) {
+                (DType::Float16, TensorData::Float16(v)) => assert_eq!(v, &vec![0; 6]),
+                (DType::Float32, TensorData::Float32(v)) => assert_eq!(v, &vec![0.0; 6]),
+                (DType::BFloat16, TensorData::BFloat16(v)) => assert_eq!(v, &vec![0; 6]),
+                (DType::UInt8, TensorData::UInt8(v)) => assert_eq!(v, &vec![0; 6]),
+                (DType::Int32, TensorData::Int32(v)) => assert_eq!(v, &vec![0; 6]),
+                (DType::Int64, TensorData::Int64(v)) => assert_eq!(v, &vec![0; 6]),
+                _ => panic!("unexpected tensor storage"),
+            }
         }
+    }
+
+    #[test]
+    fn test_tensor_validate_rejects_shape_or_dtype_mismatch() {
+        let shape_mismatch = Tensor {
+            data: TensorData::Float32(vec![0.0; 3]),
+            shape: vec![2, 2],
+            dtype: DType::Float32,
+            device: Device::Cpu,
+        };
+        assert!(matches!(
+            shape_mismatch.validate(),
+            Err(TensorValidationError::ElementCountMismatch {
+                expected: 4,
+                actual: 3
+            })
+        ));
+
+        let dtype_mismatch = Tensor {
+            data: TensorData::Float16(vec![0; 4]),
+            shape: vec![4],
+            dtype: DType::Float32,
+            device: Device::Cpu,
+        };
+        assert!(matches!(
+            dtype_mismatch.validate(),
+            Err(TensorValidationError::DTypeMismatch {
+                expected: DType::Float32,
+                actual: TensorStorageKind::Float16
+            })
+        ));
+    }
+
+    #[test]
+    fn test_tensor_data_to_f32_values_handles_half_formats() {
+        let data = TensorData::Float16(vec![0x3c00, 0xbc00, 0x0000]);
+        assert_eq!(data.to_f32_values(), vec![1.0, -1.0, 0.0]);
+
+        let data = TensorData::BFloat16(vec![0x3f80, 0xbf80, 0x0000]);
+        assert_eq!(data.to_f32_values(), vec![1.0, -1.0, 0.0]);
     }
 
     #[test]
@@ -841,16 +1095,10 @@ mod tests {
                 dt in arb_dtype()
             ) {
                 let t = Tensor::zeros(vec![d1, d2], dt);
-                prop_assert_eq!(t.shape, vec![d1, d2]);
-                let expected_size = d1 * d2;
-                let actual_size = match &t.data {
-                    TensorData::Float32(v) => v.len(),
-                    TensorData::Float64(v) => v.len(),
-                    TensorData::UInt8(v) => v.len(),
-                    TensorData::Int32(v) => v.len(),
-                    TensorData::Int64(v) => v.len(),
-                };
-                prop_assert_eq!(actual_size, expected_size);
+                prop_assert_eq!(t.shape.as_slice(), &[d1, d2]);
+                prop_assert_eq!(t.element_count(), d1 * d2);
+                prop_assert!(t.storage_matches_dtype());
+                prop_assert!(t.validate().is_ok());
             }
         }
     }
