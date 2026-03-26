@@ -145,6 +145,19 @@ struct CreateWorldRequest {
     provider: String,
 }
 
+/// JSON request body for importing a serialized world snapshot.
+#[derive(Debug, Deserialize)]
+struct ImportWorldRequest {
+    /// Serialized world snapshot to import.
+    state: WorldState,
+    /// Assign a new world ID before persisting the snapshot.
+    #[serde(default)]
+    new_id: bool,
+    /// Optional replacement world name.
+    #[serde(default)]
+    name: Option<String>,
+}
+
 /// JSON request body for prediction.
 #[derive(Debug, Deserialize)]
 struct PredictRequest {
@@ -861,6 +874,39 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                         "object_count": ws.scene.objects.len(),
                     })),
                 )
+            }
+            Err(e) => (400, error_response(&format!("invalid request: {e}"))),
+        },
+
+        // POST /v1/worlds/import
+        ("POST", "/v1/worlds/import") => match serde_json::from_str::<ImportWorldRequest>(body) {
+            Ok(req) => {
+                let mut imported = req.state;
+
+                if req.new_id {
+                    imported.id = WorldId::new_v4();
+                }
+
+                if let Some(name) = req
+                    .name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    imported.metadata.name = name.to_string();
+                }
+
+                let provider = imported.current_state_provider();
+                if let Err(error) = imported.ensure_current_state_recorded(provider) {
+                    return (api_error_status(&error), error_response(&error.to_string()));
+                }
+
+                let id = imported.id;
+                if let Err(error) = state.store.save(&imported).await {
+                    return (500, error_response(&error.to_string()));
+                }
+                state.worlds.write().await.insert(id, imported.clone());
+                (201, ApiResponse::ok(imported))
             }
             Err(e) => (400, error_response(&format!("invalid request: {e}"))),
         },
@@ -1982,6 +2028,115 @@ mod tests {
                 .len()
                 >= 2
         );
+    }
+
+    #[tokio::test]
+    async fn test_route_import_world_persists_cache_and_store() {
+        let state = test_state();
+        let mut source = WorldState::new("original-world", "mock");
+        source.metadata.description = "Imported from snapshot".to_string();
+        source.scene.add_object(SceneObject::new(
+            "anchor",
+            Pose::default(),
+            BBox {
+                min: Position {
+                    x: -0.5,
+                    y: 0.0,
+                    z: -0.5,
+                },
+                max: Position {
+                    x: 0.5,
+                    y: 1.0,
+                    z: 0.5,
+                },
+            },
+        ));
+        let body = serde_json::json!({
+            "state": source,
+        });
+
+        let (status, resp) = route("POST", "/v1/worlds/import", &body.to_string(), &state).await;
+        assert_eq!(status, 201);
+
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let id = value["data"]["id"].as_str().unwrap();
+        assert_eq!(value["data"]["metadata"]["name"], "original-world");
+        assert_eq!(
+            value["data"]["metadata"]["description"],
+            "Imported from snapshot"
+        );
+
+        let parsed_id = id.parse::<WorldId>().unwrap();
+        let stored = state.store.load(&parsed_id).await.unwrap();
+        assert_eq!(stored.id.to_string(), id);
+        assert_eq!(stored.metadata.description, "Imported from snapshot");
+
+        let cache = state.worlds.read().await;
+        assert!(cache.contains_key(&parsed_id));
+        assert_eq!(
+            cache.get(&parsed_id).unwrap().metadata.description,
+            "Imported from snapshot"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_route_import_world_allows_name_override() {
+        let state = test_state();
+        let source = WorldState::new("original-world", "mock");
+        let body = serde_json::json!({
+            "state": source,
+            "name": "renamed-world",
+        });
+
+        let (status, resp) = route("POST", "/v1/worlds/import", &body.to_string(), &state).await;
+        assert_eq!(status, 201);
+
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let id = value["data"]["id"].as_str().unwrap();
+        assert_eq!(value["data"]["metadata"]["name"], "renamed-world");
+
+        let parsed_id = id.parse::<WorldId>().unwrap();
+        let stored = state.store.load(&parsed_id).await.unwrap();
+        assert_eq!(stored.metadata.name, "renamed-world");
+
+        let cache = state.worlds.read().await;
+        assert_eq!(
+            cache.get(&parsed_id).unwrap().metadata.name,
+            "renamed-world"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_route_import_world_with_new_id_creates_new_snapshot() {
+        let state = test_state();
+        let source = WorldState::new("source-world", "mock");
+        let original_id = source.id;
+        state.store.save(&source).await.unwrap();
+        let body = serde_json::json!({
+            "state": source,
+            "new_id": true,
+        });
+
+        let (status, resp) = route("POST", "/v1/worlds/import", &body.to_string(), &state).await;
+        assert_eq!(status, 201);
+
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let imported_id = value["data"]["id"]
+            .as_str()
+            .unwrap()
+            .parse::<WorldId>()
+            .unwrap();
+        assert_ne!(imported_id, original_id);
+
+        let imported = state.store.load(&imported_id).await.unwrap();
+        assert_eq!(imported.metadata.name, "source-world");
+
+        let original = state.store.load(&original_id).await.unwrap();
+        assert_eq!(original.id, original_id);
+
+        let cache = state.worlds.read().await;
+        assert!(cache.contains_key(&imported_id));
+        assert!(!cache.contains_key(&original_id));
     }
 
     #[tokio::test]
