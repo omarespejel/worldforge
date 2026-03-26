@@ -207,16 +207,19 @@ The same embedding surface is exposed over the CLI as `worldforge embed` and
 over the REST API as `POST /v1/providers/{name}/embed`.
 
 Provider-scoped reasoning is also available without persisting a world first.
-In Python, supply a world snapshot, a JSON snapshot, a clip, or any
-combination of those inputs:
+In Python, `WorldForge()` auto-registers Genie as a local surrogate, so you
+can use it immediately. `GENIE_API_KEY` and `GENIE_API_ENDPOINT` are optional
+remote hints, not discovery gates. You can still supply a world snapshot, a
+JSON snapshot, a clip, or any combination of those inputs:
 
 ```python
 from worldforge import WorldForge
 
 wf = WorldForge()
+assert "genie" in wf.providers()
 world = wf.create_world_from_prompt("A kitchen counter with a mug", provider="mock")
 reasoning = wf.reason(
-    "mock",
+    "genie",
     "how many objects are here?",
     world_json=world.to_json(),
 )
@@ -482,7 +485,9 @@ Direct provider generation and world-state reasoning are now exposed across the
 CLI, REST server, and Python bindings as well, with REST requests defaulting to
 each stored world's configured provider instead of hard-coding `mock`. Stateless
 provider reasoning now accepts either a persisted world snapshot or a raw video
-clip in Python and over REST. The CLI
+clip in Python and over REST, and Python registers Genie as a local surrogate by
+default. `GENIE_API_KEY` and `GENIE_API_ENDPOINT` remain optional remote hints,
+not discovery gates. The CLI
 `eval` command can now overlay a persisted world onto each scenario fixture via
 `--world`, which keeps the public evaluation workflow aligned with stored state
 without dropping suite-specific setup. Provider transfer is now exposed end-to-end in
@@ -490,9 +495,10 @@ the core, CLI, REST server, and Python bindings with JSON clip round-tripping
 for reusable workflows. File-backed (JSON or MessagePack), SQLite-backed, and
 Redis-backed world persistence are all supported through the shared `StateStore` abstraction across the core,
 CLI, REST server, and Python bindings. Cosmos and Runway adapters have API wiring in place,
-and Genie now ships as a deterministic low-resolution surrogate backend for
+and Genie ships as a deterministic low-resolution surrogate backend for
 interactive world generation, scene-grounded reasoning, controlled transfer,
-and provider-native planning while the public API remains limited. Planning now
+and provider-native planning. `GENIE_API_KEY` and `GENIE_API_ENDPOINT` are
+optional remote hints, not discovery gates. Planning now
 accepts serialized guardrail configurations across the CLI, REST server, and
 Python bindings, and verification now operates on explicit state transitions or
 real generated plans instead of placeholder proof inputs. The CLI can export

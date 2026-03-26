@@ -2217,9 +2217,13 @@ pub struct PyGenieProvider {
 #[pymethods]
 impl PyGenieProvider {
     #[new]
-    #[pyo3(signature = (api_key, model="genie3", endpoint=None))]
-    fn new(api_key: &str, model: &str, endpoint: Option<&str>) -> PyResult<Self> {
+    /// Create a Genie provider wrapper.
+    ///
+    /// The API key is optional for the local surrogate.
+    #[pyo3(signature = (api_key=None, model="genie3", endpoint=None))]
+    fn new(api_key: Option<&str>, model: &str, endpoint: Option<&str>) -> PyResult<Self> {
         let model = parse_genie_model(model)?;
+        let api_key = api_key.unwrap_or("");
         let inner = match endpoint {
             Some(endpoint) => GenieProvider::with_endpoint(model, api_key, endpoint),
             None => GenieProvider::new(model, api_key),
@@ -2537,7 +2541,8 @@ impl PyWorldForge {
         let store = rt.block_on(store_kind.open()).map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("failed to open state store: {e}"))
         })?;
-        let wf = worldforge_providers::auto_detect_worldforge_with_state_store(store);
+        let mut wf = worldforge_providers::auto_detect_worldforge_with_state_store(store);
+        ensure_python_default_genie(&mut wf)?;
         Ok(Self { inner: wf })
     }
 
@@ -2935,6 +2940,22 @@ impl PyWorldForge {
     fn __repr__(&self) -> String {
         format!("WorldForge(providers={:?})", self.inner.providers())
     }
+}
+
+fn ensure_python_default_genie(wf: &mut worldforge_core::WorldForge) -> PyResult<()> {
+    if wf.providers().contains(&"genie") {
+        return Ok(());
+    }
+
+    wf.register_provider(Box::new(GenieProvider::new(
+        worldforge_providers::genie::GenieModel::Genie3,
+        "",
+    )))
+    .map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!(
+            "failed to register default Genie surrogate: {e}"
+        ))
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -5566,6 +5587,12 @@ mod tests {
         assert!(format!("{error}").contains("reason requires world, world_json, or video"));
     }
 
+    #[test]
+    fn test_genie_provider_construction_accepts_missing_api_key() {
+        let provider = PyGenieProvider::new(None, "genie3", None).unwrap();
+        assert_eq!(provider.name(), "genie");
+    }
+
     // --- Action tests ---
 
     #[test]
@@ -5681,6 +5708,32 @@ mod tests {
         let wf = test_worldforge();
         let providers = wf.providers();
         assert!(providers.contains(&"mock".to_string()));
+        assert!(providers.contains(&"genie".to_string()));
+    }
+
+    #[test]
+    fn test_worldforge_genie_surrogate_is_available_without_credentials() {
+        let wf = test_worldforge();
+        let health = wf.provider_health("genie").unwrap();
+        assert!(health.healthy());
+
+        let clip = PyVideoClip {
+            inner: VideoClip {
+                frames: Vec::new(),
+                fps: 8.0,
+                resolution: (64, 64),
+                duration: 1.0,
+            },
+        };
+        let output = wf
+            .reason("genie", "what do you see?", None, None, Some(&clip), None)
+            .unwrap();
+
+        assert!(output.answer().contains("frame(s)"));
+        assert!(output
+            .evidence()
+            .iter()
+            .any(|entry| entry.contains("frames:")));
     }
 
     #[test]
