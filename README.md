@@ -206,6 +206,34 @@ alias adds Cosmos-backed reasoning only when `NVIDIA_API_KEY` is also present.
 The same embedding surface is exposed over the CLI as `worldforge embed` and
 over the REST API as `POST /v1/providers/{name}/embed`.
 
+Provider-scoped reasoning is also available without persisting a world first.
+In Python, supply a world snapshot, a JSON snapshot, a clip, or any
+combination of those inputs:
+
+```python
+from worldforge import WorldForge
+
+wf = WorldForge()
+world = wf.create_world_from_prompt("A kitchen counter with a mug", provider="mock")
+reasoning = wf.reason(
+    "mock",
+    "how many objects are here?",
+    world_json=world.to_json(),
+)
+assert "object" in reasoning.answer
+```
+
+The same stateless surface is available over REST:
+
+```bash
+curl -X POST http://127.0.0.1:8080/v1/providers/mock/reason \
+  -H 'content-type: application/json' \
+  -d '{"query":"what do you see?","video":{"frames":[],"fps":8.0,"resolution":[64,64],"duration":1.0}}'
+```
+
+The CLI `reason` command follows the same provider-scoped pattern for either
+stored worlds or direct snapshot/video inputs.
+
 Portable world snapshots are now first-class across the user surfaces:
 - Python: `WorldForge.export_world(...)` / `WorldForge.import_world(...)`
 - CLI: `worldforge export ...` / `worldforge import ...`
@@ -452,7 +480,9 @@ relational natural-language goals like spawning an object next to a named
 anchor instead of collapsing those requests into plain anchor existence checks.
 Direct provider generation and world-state reasoning are now exposed across the
 CLI, REST server, and Python bindings as well, with REST requests defaulting to
-each stored world's configured provider instead of hard-coding `mock`. The CLI
+each stored world's configured provider instead of hard-coding `mock`. Stateless
+provider reasoning now accepts either a persisted world snapshot or a raw video
+clip in Python and over REST. The CLI
 `eval` command can now overlay a persisted world onto each scenario fixture via
 `--world`, which keeps the public evaluation workflow aligned with stored state
 without dropping suite-specific setup. Provider transfer is now exposed end-to-end in

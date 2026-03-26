@@ -13,13 +13,15 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use worldforge_core::action::{Action, Weather};
+use worldforge_core::error::WorldForgeError;
 use worldforge_core::guardrail::{Guardrail, GuardrailConfig};
 use worldforge_core::prediction::{
     Plan, PlanExecution, PlanGoal, PlanGoalInput, PlanRequest, PlannerType, PredictionConfig,
 };
 use worldforge_core::provider::{
     EmbeddingInput, GenerationConfig, GenerationPrompt, Operation, ProviderDescriptor,
-    ProviderHealthReport, ProviderRegistry, SpatialControls, TransferConfig, WorldModelProvider,
+    ProviderHealthReport, ProviderRegistry, ReasoningInput, ReasoningOutput, SpatialControls,
+    TransferConfig, WorldModelProvider,
 };
 use worldforge_core::scene::{PhysicsProperties, SceneObject, SceneObjectPatch};
 use worldforge_core::state::{
@@ -269,9 +271,15 @@ pub enum Commands {
 
     /// Ask a provider to reason about the current world state.
     Reason {
-        /// World ID.
+        /// Optional world ID. When omitted, supply `--state-json` and/or `--video-json`.
         #[arg(long)]
-        world: String,
+        world: Option<String>,
+        /// Optional JSON file containing a serialized `WorldState`.
+        #[arg(long)]
+        state_json: Option<PathBuf>,
+        /// Optional JSON file containing a serialized `VideoClip`.
+        #[arg(long)]
+        video_json: Option<PathBuf>,
         /// Natural-language reasoning query.
         #[arg(long)]
         query: String,
@@ -281,6 +289,9 @@ pub enum Commands {
         /// Optional fallback provider if the selected provider fails.
         #[arg(long)]
         fallback_provider: Option<String>,
+        /// Optional path to write the reasoning JSON payload.
+        #[arg(long)]
+        output_json: Option<PathBuf>,
     },
 
     /// List all saved worlds.
@@ -880,16 +891,24 @@ pub async fn run() -> Result<()> {
         }
         Commands::Reason {
             world,
+            state_json,
+            video_json,
             query,
             provider,
             fallback_provider,
+            output_json,
         } => {
             cmd_reason(
                 store.as_ref(),
-                &world,
-                &query,
-                provider.as_deref(),
-                fallback_provider.as_deref(),
+                ReasonOptions {
+                    world: world.as_deref(),
+                    state_json: state_json.as_deref(),
+                    video_json: video_json.as_deref(),
+                    query: &query,
+                    provider: provider.as_deref(),
+                    fallback_provider: fallback_provider.as_deref(),
+                    output_json: output_json.as_deref(),
+                },
             )
             .await
         }
@@ -1503,6 +1522,16 @@ struct EmbedOptions<'a> {
     output_json: Option<&'a Path>,
 }
 
+struct ReasonOptions<'a> {
+    world: Option<&'a str>,
+    state_json: Option<&'a Path>,
+    video_json: Option<&'a Path>,
+    query: &'a str,
+    provider: Option<&'a str>,
+    fallback_provider: Option<&'a str>,
+    output_json: Option<&'a Path>,
+}
+
 struct PlanOptions<'a> {
     max_steps: u32,
     planner_name: &'a str,
@@ -1573,6 +1602,12 @@ struct VerifyProofOptions<'a> {
 struct ProofVerificationReport {
     proof: ZkProof,
     verification: VerificationResult,
+}
+
+#[derive(Serialize)]
+struct ReasoningResponse {
+    provider: String,
+    reasoning: ReasoningOutput,
 }
 
 fn require_provider<'a>(
@@ -2087,23 +2122,63 @@ async fn cmd_embed(provider_name: &str, options: EmbedOptions<'_>) -> Result<()>
     Ok(())
 }
 
-async fn cmd_reason(
-    store: &(impl StateStore + ?Sized),
-    world_id: &str,
-    query: &str,
-    provider: Option<&str>,
-    fallback_provider: Option<&str>,
-) -> Result<()> {
-    let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
-    let state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
-    let provider_name = resolve_provider_name(&state, provider).to_string();
+async fn cmd_reason(store: &(impl StateStore + ?Sized), options: ReasonOptions<'_>) -> Result<()> {
     let registry = Arc::new(auto_detect_registry());
-    let world = worldforge_core::world::World::new(state, &provider_name, registry);
+    let world_state = load_reasoning_state(store, options.world, options.state_json).await?;
+    let video = match options.video_json {
+        Some(path) => Some(read_json_file(path)?),
+        None => None,
+    };
 
-    let (resolved_provider, output) = world
-        .reason_with_provider_and_fallback(query, &provider_name, fallback_provider)
+    if world_state.is_none() && video.is_none() {
+        return Err(anyhow::anyhow!(
+            "reason requires --world, --state-json, or --video-json"
+        ));
+    }
+
+    let provider_name = match options.provider.filter(|value| !value.is_empty()) {
+        Some(provider) => provider.to_string(),
+        None if options.world.is_some() => world_state
+            .as_ref()
+            .map(WorldState::current_state_provider)
+            .ok_or_else(|| anyhow::anyhow!("failed to load world state for reasoning"))?,
+        None => {
+            return Err(anyhow::anyhow!(
+                "reason requires --provider when --world is not provided"
+            ));
+        }
+    };
+
+    let use_world_flow =
+        options.world.is_some() && options.state_json.is_none() && options.video_json.is_none();
+
+    let (resolved_provider, output) = if use_world_flow {
+        let state = world_state.expect("world flow requires loaded state");
+        let world =
+            worldforge_core::world::World::new(state, &provider_name, Arc::clone(&registry));
+        world
+            .reason_with_provider_and_fallback(
+                options.query,
+                &provider_name,
+                options.fallback_provider,
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+    } else {
+        let input = ReasoningInput {
+            state: world_state,
+            video,
+        };
+        reason_with_provider_and_fallback(
+            registry.as_ref(),
+            &provider_name,
+            &input,
+            options.query,
+            options.fallback_provider,
+        )
         .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        .map_err(|e| anyhow::anyhow!("{e}"))?
+    };
 
     println!("Reasoning completed:");
     println!("  Provider: {resolved_provider}");
@@ -2113,12 +2188,110 @@ async fn cmd_reason(
         println!("  Evidence: none");
     } else {
         println!("  Evidence:");
-        for evidence in output.evidence {
+        for evidence in &output.evidence {
             println!("    - {evidence}");
         }
     }
 
+    if let Some(path) = options.output_json {
+        write_json_file(
+            path,
+            &ReasoningResponse {
+                provider: resolved_provider,
+                reasoning: output,
+            },
+        )?;
+        println!("  Output JSON: {}", path.display());
+    }
+
     Ok(())
+}
+
+async fn reason_with_provider_and_fallback(
+    registry: &ProviderRegistry,
+    provider_name: &str,
+    input: &ReasoningInput,
+    query: &str,
+    fallback_provider: Option<&str>,
+) -> Result<(String, ReasoningOutput)> {
+    match registry.get(provider_name) {
+        Ok(provider) => match provider.reason(input, query).await {
+            Ok(output) => Ok((provider_name.to_string(), output)),
+            Err(primary_error) => {
+                let Some(fallback_provider) =
+                    fallback_provider.filter(|fallback| *fallback != provider_name)
+                else {
+                    return Err(primary_error.into());
+                };
+
+                match registry.get(fallback_provider) {
+                    Ok(provider) => match provider.reason(input, query).await {
+                        Ok(output) => Ok((fallback_provider.to_string(), output)),
+                        Err(fallback_error) => Err(WorldForgeError::ProviderUnavailable {
+                            provider: provider_name.to_string(),
+                            reason: format!(
+                                "primary provider error: {primary_error}; fallback provider '{fallback_provider}' error: {fallback_error}"
+                            ),
+                        }
+                        .into()),
+                    },
+                    Err(fallback_error) => Err(WorldForgeError::ProviderUnavailable {
+                        provider: provider_name.to_string(),
+                        reason: format!(
+                            "primary provider error: {primary_error}; fallback provider '{fallback_provider}' error: {fallback_error}"
+                        ),
+                    }
+                    .into()),
+                }
+            }
+        },
+        Err(primary_error) => {
+            let Some(fallback_provider) =
+                fallback_provider.filter(|fallback| *fallback != provider_name)
+            else {
+                return Err(primary_error.into());
+            };
+
+            match registry.get(fallback_provider) {
+                Ok(provider) => match provider.reason(input, query).await {
+                    Ok(output) => Ok((fallback_provider.to_string(), output)),
+                    Err(fallback_error) => Err(WorldForgeError::ProviderUnavailable {
+                        provider: provider_name.to_string(),
+                        reason: format!(
+                            "primary provider error: {primary_error}; fallback provider '{fallback_provider}' error: {fallback_error}"
+                        ),
+                    }
+                    .into()),
+                },
+                Err(fallback_error) => Err(WorldForgeError::ProviderUnavailable {
+                    provider: provider_name.to_string(),
+                    reason: format!(
+                        "primary provider error: {primary_error}; fallback provider '{fallback_provider}' error: {fallback_error}"
+                    ),
+                }
+                .into()),
+            }
+        }
+    }
+}
+
+async fn load_reasoning_state(
+    store: &(impl StateStore + ?Sized),
+    world: Option<&str>,
+    state_json: Option<&Path>,
+) -> Result<Option<WorldState>> {
+    match (world, state_json) {
+        (Some(_), Some(_)) => Err(anyhow::anyhow!(
+            "--world and --state-json are mutually exclusive"
+        )),
+        (Some(world_id), None) => {
+            let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
+            let state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+            Ok(Some(state))
+        }
+        (None, Some(path)) => read_json_file(path).map(Some),
+        (None, None) => Ok(None),
+    }
 }
 
 async fn cmd_list(store: &(impl StateStore + ?Sized)) -> Result<()> {
@@ -4153,14 +4326,65 @@ mod tests {
         match cli.command {
             Commands::Reason {
                 world,
+                state_json,
+                video_json,
                 query,
                 provider,
                 fallback_provider,
+                output_json,
             } => {
-                assert_eq!(world, "123e4567-e89b-12d3-a456-426614174000");
+                assert_eq!(
+                    world,
+                    Some("123e4567-e89b-12d3-a456-426614174000".to_string())
+                );
+                assert!(state_json.is_none());
+                assert!(video_json.is_none());
                 assert_eq!(query, "will the mug fall?");
                 assert_eq!(provider.as_deref(), Some("cosmos"));
                 assert_eq!(fallback_provider.as_deref(), Some("mock"));
+                assert!(output_json.is_none());
+            }
+            _ => panic!("expected Reason"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_reason_command_direct_provider() {
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "reason",
+            "--state-json",
+            "/tmp/state.json",
+            "--video-json",
+            "/tmp/video.json",
+            "--query",
+            "what do you see?",
+            "--provider",
+            "mock",
+            "--fallback-provider",
+            "cosmos",
+            "--output-json",
+            "/tmp/reason.json",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Reason {
+                world,
+                state_json,
+                video_json,
+                query,
+                provider,
+                fallback_provider,
+                output_json,
+            } => {
+                assert!(world.is_none());
+                assert_eq!(state_json, Some(PathBuf::from("/tmp/state.json")));
+                assert_eq!(video_json, Some(PathBuf::from("/tmp/video.json")));
+                assert_eq!(query, "what do you see?");
+                assert_eq!(provider.as_deref(), Some("mock"));
+                assert_eq!(fallback_provider.as_deref(), Some("cosmos"));
+                assert_eq!(output_json, Some(PathBuf::from("/tmp/reason.json")));
             }
             _ => panic!("expected Reason"),
         }
@@ -4858,6 +5082,87 @@ mod tests {
         assert_eq!(value["provider"], "mock");
         assert_eq!(value["model"], "mock-embedding-v1");
         assert_eq!(value["embedding"]["shape"], serde_json::json!([32]));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn test_cmd_reason_direct_provider_writes_output_json() {
+        let dir = std::env::temp_dir().join(format!("wf-cli-reason-{}", uuid::Uuid::new_v4()));
+        let store = StateStoreKind::File(dir.join("state"))
+            .open()
+            .await
+            .unwrap();
+        let video_path = dir.join("video.json");
+        let output_path = dir.join("output.json");
+        let clip = VideoClip {
+            frames: Vec::new(),
+            fps: 12.0,
+            resolution: (320, 180),
+            duration: 1.5,
+        };
+        write_json_file(&video_path, &clip).unwrap();
+
+        cmd_reason(
+            store.as_ref(),
+            ReasonOptions {
+                world: None,
+                state_json: None,
+                video_json: Some(&video_path),
+                query: "what do you see?",
+                provider: Some("mock"),
+                fallback_provider: None,
+                output_json: Some(&output_path),
+            },
+        )
+        .await
+        .unwrap();
+
+        let value: serde_json::Value = read_json_file(&output_path).unwrap();
+        assert_eq!(value["provider"], "mock");
+        assert!(value["reasoning"]["answer"]
+            .as_str()
+            .unwrap()
+            .contains("echo the query"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn test_cmd_reason_requires_provider_without_world() {
+        let dir = std::env::temp_dir().join(format!(
+            "wf-cli-reason-missing-provider-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let store = StateStoreKind::File(dir.join("state"))
+            .open()
+            .await
+            .unwrap();
+        let video_path = dir.join("video.json");
+        let clip = VideoClip {
+            frames: Vec::new(),
+            fps: 12.0,
+            resolution: (320, 180),
+            duration: 1.5,
+        };
+        write_json_file(&video_path, &clip).unwrap();
+
+        let error = cmd_reason(
+            store.as_ref(),
+            ReasonOptions {
+                world: None,
+                state_json: None,
+                video_json: Some(&video_path),
+                query: "what do you see?",
+                provider: None,
+                fallback_provider: None,
+                output_json: None,
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("requires --provider"));
 
         let _ = fs::remove_dir_all(dir);
     }

@@ -19,7 +19,7 @@ use worldforge_core::prediction::{
 use worldforge_core::provider::{
     CostEstimate, EmbeddingInput, EmbeddingOutput, GenerationConfig, GenerationPrompt, Operation,
     ProviderCapabilities, ProviderDescriptor, ProviderHealthReport, ProviderRegistry,
-    SpatialControls, TransferConfig, WorldModelProvider,
+    ReasoningInput, ReasoningOutput, SpatialControls, TransferConfig, WorldModelProvider,
 };
 use worldforge_core::scene::SceneObject;
 use worldforge_core::state::{
@@ -1709,7 +1709,7 @@ impl PyEmbeddingOutput {
 #[pyclass(name = "ReasoningOutput")]
 #[derive(Debug, Clone)]
 pub struct PyReasoningOutput {
-    inner: worldforge_core::provider::ReasoningOutput,
+    inner: ReasoningOutput,
 }
 
 #[pymethods]
@@ -2656,6 +2656,44 @@ impl PyWorldForge {
             })?
             .1;
         Ok(PyEmbeddingOutput { inner: output })
+    }
+
+    /// Ask a provider to reason about a supplied world state or video clip.
+    #[pyo3(signature = (provider, query, world=None, world_json=None, video=None, fallback_provider=None))]
+    fn reason(
+        &self,
+        provider: &str,
+        query: &str,
+        world: Option<&PyWorld>,
+        world_json: Option<&str>,
+        video: Option<&PyVideoClip>,
+        fallback_provider: Option<&str>,
+    ) -> PyResult<PyReasoningOutput> {
+        let world_state = resolve_eval_world_state(world, world_json)?;
+        let video = video.map(|clip| clip.inner.clone());
+
+        if world_state.is_none() && video.is_none() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "reason requires world, world_json, or video",
+            ));
+        }
+
+        let input = ReasoningInput {
+            state: world_state,
+            video,
+        };
+
+        let rt = new_runtime()?;
+        let (_, output) = rt
+            .block_on(
+                self.inner
+                    .reason_with_fallback(provider, &input, query, fallback_provider),
+            )
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("reasoning failed: {e}"))
+            })?;
+
+        Ok(PyReasoningOutput { inner: output })
     }
 
     /// Create a new world with the given name and provider.
@@ -5459,6 +5497,73 @@ mod tests {
         let output = world.reason("will it fall?", None, Some("mock")).unwrap();
         assert!(output.answer().contains("empty"));
         assert_eq!(output.evidence(), vec!["objects: none".to_string()]);
+    }
+
+    #[test]
+    fn test_worldforge_reason_uses_world_json_and_video() {
+        let wf = test_worldforge();
+        let mut world = PyWorld::new("reason_world", "mock");
+        let position = PyPosition::new(0.0, 0.5, 0.0);
+        let bbox = PyBBox::new(
+            &PyPosition::new(-0.1, 0.4, -0.1),
+            &PyPosition::new(0.1, 0.6, 0.1),
+        );
+        world
+            .add_object(&PySceneObject::new("mug", &position, &bbox))
+            .unwrap();
+        let world_json = world.to_json().unwrap();
+        let clip = PyVideoClip {
+            inner: VideoClip {
+                frames: Vec::new(),
+                fps: 8.0,
+                resolution: (64, 64),
+                duration: 1.0,
+            },
+        };
+
+        let output = wf
+            .reason(
+                "mock",
+                "how many objects are here?",
+                None,
+                Some(&world_json),
+                Some(&clip),
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(output.answer(), "I can account for 1 object(s): mug.");
+        assert!(output.evidence().iter().any(|entry| entry.contains("mug")));
+    }
+
+    #[test]
+    fn test_worldforge_reason_video_only_echoes_query() {
+        let wf = test_worldforge();
+        let clip = PyVideoClip {
+            inner: VideoClip {
+                frames: Vec::new(),
+                fps: 8.0,
+                resolution: (64, 64),
+                duration: 1.0,
+            },
+        };
+
+        let output = wf
+            .reason("mock", "what do you see?", None, None, Some(&clip), None)
+            .unwrap();
+
+        assert!(output.answer().contains("echo the query"));
+        assert_eq!(output.evidence(), vec!["state: unavailable".to_string()]);
+    }
+
+    #[test]
+    fn test_worldforge_reason_rejects_missing_inputs() {
+        let wf = test_worldforge();
+        let error = wf
+            .reason("mock", "what happens?", None, None, None, None)
+            .unwrap_err();
+
+        assert!(format!("{error}").contains("reason requires world, world_json, or video"));
     }
 
     // --- Action tests ---
