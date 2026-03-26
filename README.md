@@ -44,7 +44,7 @@ Prediction and planning requests apply conservative collision and energy checks 
 ## Quick Example
 
 ```python
-from worldforge import Action, BBox, Position, SceneObject, WorldForge
+from worldforge import Action, BBox, Position, SceneObject, SceneObjectPatch, WorldForge
 from worldforge.providers import MockProvider
 
 # Initialize with auto-detected providers
@@ -68,6 +68,14 @@ seeded = wf.create_world_from_prompt(
     name="kitchen-counter-seeded",
 )
 assert seeded.object_count > 0
+
+# Inspect and patch scene objects by stable ID
+mug = world.objects()[0]
+patch = SceneObjectPatch()
+patch.set_position(Position(0.1, 0.8, 0.0))
+patch.set_graspable(True)
+world.update_object_patch(mug.id, patch)
+assert world.get_object_by_id(mug.id).is_graspable
 
 # Predict the next state
 prediction = world.predict(Action.move_to(0.25, 0.8, 0.0), steps=10)
@@ -556,6 +564,10 @@ The mock provider now serves as a higher-fidelity offline reference backend:
 object motion keeps bounding boxes and inferred relationships in sync,
 predictions can emit lightweight preview video/depth/segmentation outputs, and
 reasoning answers are grounded in the current scene instead of fixed strings.
+Python scene management now exposes stable object-ID lookup, full object
+listing, and partial patch updates in addition to the original name-based
+helpers, which brings the Python surface in line with the CLI and REST object
+editing workflows.
 
 ## License
 

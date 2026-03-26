@@ -21,7 +21,7 @@ use worldforge_core::provider::{
     ProviderCapabilities, ProviderDescriptor, ProviderHealthReport, ProviderRegistry,
     ReasoningInput, ReasoningOutput, SpatialControls, TransferConfig, WorldModelProvider,
 };
-use worldforge_core::scene::SceneObject;
+use worldforge_core::scene::{SceneObject, SceneObjectPatch};
 use worldforge_core::state::{
     deserialize_world_state, serialize_world_state, HistoryEntry,
     StateFileFormat as CoreStateFileFormat, StateStoreKind, WorldState,
@@ -58,10 +58,18 @@ fn new_runtime() -> PyResult<tokio::runtime::Runtime> {
     })
 }
 
+fn parse_uuid(value: &str, label: &str) -> PyResult<uuid::Uuid> {
+    value.parse().map_err(|_| {
+        pyo3::exceptions::PyValueError::new_err(format!("invalid {label} ID (must be UUID)"))
+    })
+}
+
 fn parse_world_id(world_id: &str) -> PyResult<uuid::Uuid> {
-    world_id
-        .parse()
-        .map_err(|_| pyo3::exceptions::PyValueError::new_err("invalid world ID (must be UUID)"))
+    parse_uuid(world_id, "world")
+}
+
+fn parse_object_id(object_id: &str) -> PyResult<uuid::Uuid> {
+    parse_uuid(object_id, "object")
 }
 
 fn state_store_kind(
@@ -818,6 +826,152 @@ impl PySceneObject {
     }
 }
 
+/// A partial update for an existing scene object.
+#[pyclass(name = "SceneObjectPatch")]
+#[derive(Debug, Clone, Default)]
+pub struct PySceneObjectPatch {
+    inner: SceneObjectPatch,
+}
+
+#[pymethods]
+impl PySceneObjectPatch {
+    /// Create an empty object patch.
+    #[new]
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set or clear the replacement name.
+    #[pyo3(signature = (name=None))]
+    fn set_name(&mut self, name: Option<String>) {
+        self.inner.name = name;
+    }
+
+    /// Set or clear the replacement position.
+    #[pyo3(signature = (position=None))]
+    fn set_position(&mut self, position: Option<&PyPosition>) {
+        self.inner.position = position.map(|position| position.inner);
+    }
+
+    /// Set or clear the replacement rotation.
+    #[pyo3(signature = (rotation=None))]
+    fn set_rotation(&mut self, rotation: Option<&PyRotation>) {
+        self.inner.rotation = rotation.map(|rotation| rotation.inner);
+    }
+
+    /// Set or clear the replacement bounding box.
+    #[pyo3(signature = (bbox=None))]
+    fn set_bbox(&mut self, bbox: Option<&PyBBox>) {
+        self.inner.bbox = bbox.map(|bbox| bbox.inner);
+    }
+
+    /// Set or clear the replacement velocity.
+    #[pyo3(signature = (velocity=None))]
+    fn set_velocity(&mut self, velocity: Option<&PyVelocity>) {
+        self.inner.velocity = velocity.map(|velocity| velocity.inner);
+    }
+
+    /// Set or clear the replacement semantic label.
+    #[pyo3(signature = (semantic_label=None))]
+    fn set_semantic_label(&mut self, semantic_label: Option<String>) {
+        self.inner.semantic_label = semantic_label;
+    }
+
+    /// Set or clear the replacement mass.
+    #[pyo3(signature = (mass=None))]
+    fn set_mass(&mut self, mass: Option<f32>) {
+        self.inner.mass = mass;
+    }
+
+    /// Set or clear the replacement friction coefficient.
+    #[pyo3(signature = (friction=None))]
+    fn set_friction(&mut self, friction: Option<f32>) {
+        self.inner.friction = friction;
+    }
+
+    /// Set or clear the replacement restitution coefficient.
+    #[pyo3(signature = (restitution=None))]
+    fn set_restitution(&mut self, restitution: Option<f32>) {
+        self.inner.restitution = restitution;
+    }
+
+    /// Set or clear the replacement material name.
+    #[pyo3(signature = (material=None))]
+    fn set_material(&mut self, material: Option<String>) {
+        self.inner.material = material;
+    }
+
+    /// Set or clear the replacement immovable flag.
+    #[pyo3(signature = (is_static=None))]
+    fn set_static(&mut self, is_static: Option<bool>) {
+        self.inner.is_static = is_static;
+    }
+
+    /// Set or clear the replacement graspable flag.
+    #[pyo3(signature = (is_graspable=None))]
+    fn set_graspable(&mut self, is_graspable: Option<bool>) {
+        self.inner.is_graspable = is_graspable;
+    }
+
+    /// Convert the patch to JSON.
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    }
+
+    /// Create a patch from JSON.
+    #[staticmethod]
+    fn from_json(json: &str) -> PyResult<Self> {
+        let inner: SceneObjectPatch = serde_json::from_str(json).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("deserialization error: {e}"))
+        })?;
+        Ok(Self { inner })
+    }
+
+    fn __repr__(&self) -> String {
+        let mut fields = Vec::new();
+        if self.inner.name.is_some() {
+            fields.push("name");
+        }
+        if self.inner.position.is_some() {
+            fields.push("position");
+        }
+        if self.inner.rotation.is_some() {
+            fields.push("rotation");
+        }
+        if self.inner.bbox.is_some() {
+            fields.push("bbox");
+        }
+        if self.inner.velocity.is_some() {
+            fields.push("velocity");
+        }
+        if self.inner.semantic_label.is_some() {
+            fields.push("semantic_label");
+        }
+        if self.inner.mass.is_some() {
+            fields.push("mass");
+        }
+        if self.inner.friction.is_some() {
+            fields.push("friction");
+        }
+        if self.inner.restitution.is_some() {
+            fields.push("restitution");
+        }
+        if self.inner.material.is_some() {
+            fields.push("material");
+        }
+        if self.inner.is_static.is_some() {
+            fields.push("is_static");
+        }
+        if self.inner.is_graspable.is_some() {
+            fields.push("is_graspable");
+        }
+
+        format!("SceneObjectPatch(fields=[{}])", fields.join(", "))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // World
 // ---------------------------------------------------------------------------
@@ -929,6 +1083,16 @@ impl PyWorld {
             .map(|o| PySceneObject { inner: o.clone() })
     }
 
+    /// Get an object by its stable ID.
+    fn get_object_by_id(&self, object_id: &str) -> PyResult<Option<PySceneObject>> {
+        let object_id = parse_object_id(object_id)?;
+        Ok(self
+            .world
+            .get_object(&object_id)
+            .cloned()
+            .map(|inner| PySceneObject { inner }))
+    }
+
     /// Remove an object by name. Returns True if found.
     fn remove_object(&mut self, name: &str) -> bool {
         if let Some(object_id) = self.world.get_object_by_name(name).map(|object| object.id) {
@@ -936,6 +1100,21 @@ impl PyWorld {
         } else {
             false
         }
+    }
+
+    /// Remove an object by its stable ID.
+    fn remove_object_by_id(&mut self, object_id: &str) -> PyResult<Option<PySceneObject>> {
+        let object_id = parse_object_id(object_id)?;
+        if self.world.get_object(&object_id).is_none() {
+            return Ok(None);
+        }
+
+        self.world
+            .remove_object(&object_id)
+            .map(|inner| Some(PySceneObject { inner }))
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("failed to remove object: {e}"))
+            })
     }
 
     /// List all object names in the scene.
@@ -947,6 +1126,35 @@ impl PyWorld {
             .into_iter()
             .map(|o| o.name.clone())
             .collect()
+    }
+
+    /// List all scene objects with their IDs and metadata.
+    fn objects(&self) -> Vec<PySceneObject> {
+        self.world
+            .list_objects()
+            .into_iter()
+            .map(|inner| PySceneObject { inner })
+            .collect()
+    }
+
+    /// Apply a partial update to an object using its stable ID.
+    fn update_object_patch(
+        &mut self,
+        object_id: &str,
+        patch: &PySceneObjectPatch,
+    ) -> PyResult<PySceneObject> {
+        let object_id = parse_object_id(object_id)?;
+        self.world
+            .update_object(&object_id, patch.inner.clone())
+            .map(|inner| PySceneObject { inner })
+            .map_err(|e| match e {
+                worldforge_core::error::WorldForgeError::InvalidState(message) => {
+                    pyo3::exceptions::PyKeyError::new_err(message)
+                }
+                _ => pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "failed to patch object: {e}"
+                )),
+            })
     }
 
     /// Get the number of history entries.
@@ -4970,6 +5178,7 @@ fn worldforge(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyBBox>()?;
     m.add_class::<PyVelocity>()?;
     m.add_class::<PySceneObject>()?;
+    m.add_class::<PySceneObjectPatch>()?;
     m.add_class::<PyWorld>()?;
     m.add_class::<PyHistoryEntry>()?;
     m.add_class::<PyPrediction>()?;
@@ -5155,6 +5364,36 @@ mod tests {
     }
 
     #[test]
+    fn test_scene_object_patch_json_roundtrip() {
+        let mut patch = PySceneObjectPatch::new();
+        patch.set_name(Some("crate".to_string()));
+        patch.set_position(Some(&PyPosition::new(2.0, 3.0, 4.0)));
+        patch.set_mass(Some(2.5));
+        patch.set_static(Some(true));
+
+        let json = patch.to_json().unwrap();
+        let restored = PySceneObjectPatch::from_json(&json).unwrap();
+
+        let mut world = PyWorld::new("test", "mock");
+        let origin = PyPosition::new(0.0, 0.0, 0.0);
+        let min = PyPosition::new(-1.0, -1.0, -1.0);
+        let max = PyPosition::new(1.0, 1.0, 1.0);
+        let bbox = PyBBox::new(&min, &max);
+        let object = PySceneObject::new("cube", &origin, &bbox);
+        let object_id = object.id();
+
+        world.add_object(&object).unwrap();
+        let updated = world.update_object_patch(&object_id, &restored).unwrap();
+
+        assert_eq!(updated.name(), "crate");
+        assert_eq!(updated.position().x(), 2.0);
+        assert_eq!(updated.position().y(), 3.0);
+        assert_eq!(updated.position().z(), 4.0);
+        assert_eq!(updated.mass(), Some(2.5));
+        assert!(updated.is_static());
+    }
+
+    #[test]
     fn test_world_create() {
         let world = PyWorld::new("test_world", "mock");
         assert_eq!(world.name(), "test_world");
@@ -5285,6 +5524,85 @@ mod tests {
         assert_eq!(names.len(), 2);
         assert!(names.contains(&"a".to_string()));
         assert!(names.contains(&"b".to_string()));
+    }
+
+    #[test]
+    fn test_world_objects_returns_sorted_scene_objects() {
+        let mut world = PyWorld::new("test", "mock");
+        let pos = PyPosition::new(0.0, 0.0, 0.0);
+        let min = PyPosition::new(-1.0, -1.0, -1.0);
+        let max = PyPosition::new(1.0, 1.0, 1.0);
+        let bbox = PyBBox::new(&min, &max);
+
+        world
+            .add_object(&PySceneObject::new("b", &pos, &bbox))
+            .unwrap();
+        world
+            .add_object(&PySceneObject::new("a", &pos, &bbox))
+            .unwrap();
+
+        let objects = world.objects();
+        assert_eq!(objects.len(), 2);
+        assert_eq!(objects[0].name(), "a");
+        assert_eq!(objects[1].name(), "b");
+    }
+
+    #[test]
+    fn test_world_object_id_access_and_patch_flow() {
+        let mut world = PyWorld::new("test", "mock");
+        let pos = PyPosition::new(0.0, 0.0, 0.0);
+        let min = PyPosition::new(-1.0, -1.0, -1.0);
+        let max = PyPosition::new(1.0, 1.0, 1.0);
+        let bbox = PyBBox::new(&min, &max);
+        let object = PySceneObject::new("cube", &pos, &bbox);
+        let object_id = object.id();
+
+        world.add_object(&object).unwrap();
+
+        let fetched = world.get_object_by_id(&object_id).unwrap().unwrap();
+        assert_eq!(fetched.id(), object_id);
+        assert_eq!(fetched.name(), "cube");
+
+        let mut patch = PySceneObjectPatch::new();
+        patch.set_name(Some("crate".to_string()));
+        patch.set_position(Some(&PyPosition::new(2.0, 0.5, -1.0)));
+        patch.set_velocity(Some(&PyVelocity::new(0.0, 0.1, 0.0)));
+        patch.set_material(Some("wood".to_string()));
+        patch.set_graspable(Some(true));
+
+        let updated = world.update_object_patch(&object_id, &patch).unwrap();
+        assert_eq!(updated.id(), object_id);
+        assert_eq!(updated.name(), "crate");
+        assert_eq!(updated.position().x(), 2.0);
+        assert_eq!(updated.position().y(), 0.5);
+        assert_eq!(updated.position().z(), -1.0);
+        assert_eq!(updated.velocity().y(), 0.1);
+        assert_eq!(updated.material(), Some("wood"));
+        assert!(updated.is_graspable());
+
+        let removed = world.remove_object_by_id(&object_id).unwrap().unwrap();
+        assert_eq!(removed.id(), object_id);
+        assert_eq!(world.object_count(), 0);
+        assert!(world.get_object_by_id(&object_id).unwrap().is_none());
+        assert!(world.remove_object_by_id(&object_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_world_update_object_patch_missing_returns_error() {
+        let mut world = PyWorld::new("test", "mock");
+        let mut patch = PySceneObjectPatch::new();
+        patch.set_name(Some("ghost".to_string()));
+
+        let missing_id = uuid::Uuid::new_v4().to_string();
+        let err = world.update_object_patch(&missing_id, &patch).unwrap_err();
+        assert!(err.to_string().contains("object not found"));
+    }
+
+    #[test]
+    fn test_world_get_object_by_id_rejects_invalid_uuid() {
+        let world = PyWorld::new("test", "mock");
+        let err = world.get_object_by_id("not-a-uuid").unwrap_err();
+        assert!(err.to_string().contains("invalid object ID"));
     }
 
     #[test]

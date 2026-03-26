@@ -13,6 +13,7 @@ class WorldForgeInstallContractTests(unittest.TestCase):
 
         self.assertIsNotNone(worldforge)
         self.assertTrue(hasattr(worldforge, "WorldForge"))
+        self.assertTrue(hasattr(worldforge, "SceneObjectPatch"))
         self.assertIsNotNone(EvalSuite)
         self.assertIsNotNone(MockProvider)
         self.assertIsNotNone(ZkVerifier)

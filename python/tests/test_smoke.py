@@ -44,6 +44,27 @@ class WorldForgePythonPackageSmokeTests(unittest.TestCase):
             loaded = forge.load_world(world_id)
             self.assertIn("red_mug", loaded.list_objects())
 
+            objects = loaded.objects()
+            self.assertEqual(len(objects), 1)
+            object_id = objects[0].id
+            fetched = loaded.get_object_by_id(object_id)
+            self.assertIsNotNone(fetched)
+            self.assertEqual(fetched.name, "red_mug")
+
+            patch = worldforge.SceneObjectPatch()
+            patch.set_name("coffee_mug")
+            patch.set_position(worldforge.Position(0.1, 0.8, 0.0))
+            patch.set_graspable(True)
+            updated = loaded.update_object_patch(object_id, patch)
+            self.assertEqual(updated.id, object_id)
+            self.assertEqual(updated.name, "coffee_mug")
+            self.assertTrue(updated.is_graspable)
+
+            removed = loaded.remove_object_by_id(object_id)
+            self.assertIsNotNone(removed)
+            self.assertEqual(removed.id, object_id)
+            self.assertEqual(loaded.object_count, 0)
+
     def test_generation_transfer_eval_and_verification_helpers(self) -> None:
         worldforge = self.worldforge
         forge = worldforge.WorldForge()
