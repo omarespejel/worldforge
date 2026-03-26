@@ -281,6 +281,7 @@ cargo run -p worldforge-cli -- verify-proof --guardrail-bundle-json proofs/guard
 cargo run -p worldforge-cli -- verify-proof --proof-json proofs/raw-proof.json
 cargo run -p worldforge-cli -- eval --list-suites
 cargo run -p worldforge-cli -- eval --suite physics
+cargo run -p worldforge-cli -- eval --suite physics --world <id>
 cargo run -p worldforge-cli -- eval --suite-json evals/custom.json --providers mock,jepa --output-json reports/custom-eval.json
 cargo run -p worldforge-cli -- serve --bind 127.0.0.1:8080
 
@@ -405,10 +406,11 @@ dynamics rather than vendor planning endpoints. Heuristic planners now parse
 relational natural-language goals like spawning an object next to a named
 anchor instead of collapsing those requests into plain anchor existence checks.
 Direct provider generation and world-state reasoning are now exposed across the
-CLI, REST
-server, and Python bindings as well, with REST requests defaulting to each
-stored world's configured provider instead of hard-coding `mock`. Provider
-transfer is now exposed end-to-end in
+CLI, REST server, and Python bindings as well, with REST requests defaulting to
+each stored world's configured provider instead of hard-coding `mock`. The CLI
+`eval` command can now overlay a persisted world onto each scenario fixture via
+`--world`, which keeps the public evaluation workflow aligned with stored state
+without dropping suite-specific setup. Provider transfer is now exposed end-to-end in
 the core, CLI, REST server, and Python bindings with JSON clip round-tripping
 for reusable workflows. File-backed (JSON or MessagePack) and SQLite-backed world persistence are
 both supported through the shared `StateStore` abstraction across the core,

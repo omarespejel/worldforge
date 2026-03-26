@@ -3286,31 +3286,101 @@ impl PyEvalSuite {
             .collect()
     }
 
-    #[pyo3(signature = (providers="mock"))]
-    fn run(&self, providers: &str) -> PyResult<Vec<PyEvalResult>> {
-        Ok(crate::run_eval_suite_report(&self.inner, providers)?
-            .provider_summaries
-            .iter()
-            .map(to_py_eval_result)
-            .collect())
+    /// Run the evaluation suite and return provider summaries.
+    ///
+    /// When `world` or `world_json` is supplied, each scenario is evaluated
+    /// against that world state instead of its baked-in initial state.
+    #[pyo3(signature = (providers="mock", world=None, world_json=None))]
+    fn run(
+        &self,
+        providers: &str,
+        world: Option<&PyWorld>,
+        world_json: Option<&str>,
+    ) -> PyResult<Vec<PyEvalResult>> {
+        let world_state = resolve_eval_world_state(world, world_json)?;
+        Ok(
+            run_eval_suite_report_with_world(&self.inner, providers, world_state.as_ref())?
+                .provider_summaries
+                .iter()
+                .map(to_py_eval_result)
+                .collect(),
+        )
     }
 
-    #[pyo3(signature = (providers="mock"))]
-    fn run_report(&self, providers: &str) -> PyResult<String> {
-        serde_json::to_string_pretty(&crate::run_eval_suite_report(&self.inner, providers)?)
-            .map_err(|e| {
-                pyo3::exceptions::PyRuntimeError::new_err(format!(
-                    "failed to serialize evaluation report: {e}"
-                ))
-            })
-    }
-
-    #[pyo3(signature = (providers="mock"))]
-    fn run_report_data(&self, providers: &str) -> PyResult<PyEvalReport> {
-        Ok(to_py_eval_report(crate::run_eval_suite_report(
+    /// Run the evaluation suite and return the full report JSON.
+    ///
+    /// When `world` or `world_json` is supplied, each scenario is evaluated
+    /// against that world state instead of its baked-in initial state.
+    #[pyo3(signature = (providers="mock", world=None, world_json=None))]
+    fn run_report(
+        &self,
+        providers: &str,
+        world: Option<&PyWorld>,
+        world_json: Option<&str>,
+    ) -> PyResult<String> {
+        let world_state = resolve_eval_world_state(world, world_json)?;
+        serde_json::to_string_pretty(&run_eval_suite_report_with_world(
             &self.inner,
             providers,
+            world_state.as_ref(),
+        )?)
+        .map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "failed to serialize evaluation report: {e}"
+            ))
+        })
+    }
+
+    /// Run the evaluation suite and return the structured report object.
+    ///
+    /// When `world` or `world_json` is supplied, each scenario is evaluated
+    /// against that world state instead of its baked-in initial state.
+    #[pyo3(signature = (providers="mock", world=None, world_json=None))]
+    fn run_report_data(
+        &self,
+        providers: &str,
+        world: Option<&PyWorld>,
+        world_json: Option<&str>,
+    ) -> PyResult<PyEvalReport> {
+        let world_state = resolve_eval_world_state(world, world_json)?;
+        Ok(to_py_eval_report(run_eval_suite_report_with_world(
+            &self.inner,
+            providers,
+            world_state.as_ref(),
         )?))
+    }
+
+    /// Run the evaluation suite against a supplied world and return provider summaries.
+    #[pyo3(signature = (providers="mock", world=None, world_json=None))]
+    fn run_with_world(
+        &self,
+        providers: &str,
+        world: Option<&PyWorld>,
+        world_json: Option<&str>,
+    ) -> PyResult<Vec<PyEvalResult>> {
+        self.run(providers, world, world_json)
+    }
+
+    /// Run the evaluation suite against a supplied world and return the full report JSON.
+    #[pyo3(signature = (providers="mock", world=None, world_json=None))]
+    fn run_report_with_world(
+        &self,
+        providers: &str,
+        world: Option<&PyWorld>,
+        world_json: Option<&str>,
+    ) -> PyResult<String> {
+        self.run_report(providers, world, world_json)
+    }
+
+    /// Run the evaluation suite against a supplied world and return the structured report.
+    #[pyo3(signature = (providers="mock", world=None, world_json=None))]
+    fn run_report_data_with_world(
+        &self,
+        providers: &str,
+        world: Option<&PyWorld>,
+        world_json: Option<&str>,
+    ) -> PyResult<PyEvalReport> {
+        self.run_report_data(providers, world, world_json)
     }
 
     fn to_json(&self) -> PyResult<String> {
@@ -3457,6 +3527,14 @@ fn run_eval_suite_report(
     suite: &worldforge_eval::EvalSuite,
     providers: &str,
 ) -> PyResult<worldforge_eval::EvalReport> {
+    run_eval_suite_report_with_world(suite, providers, None)
+}
+
+fn run_eval_suite_report_with_world(
+    suite: &worldforge_eval::EvalSuite,
+    providers: &str,
+    world_state: Option<&WorldState>,
+) -> PyResult<worldforge_eval::EvalReport> {
     let rt = new_runtime()?;
     let registry = auto_detect_registry();
     let provider_names = parse_provider_names(providers);
@@ -3468,8 +3546,29 @@ fn run_eval_suite_report(
         provider_list.push(provider);
     }
 
-    rt.block_on(suite.run(&provider_list))
-        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("evaluation failed: {e}")))
+    match world_state {
+        Some(world_state) => rt.block_on(suite.run_with_world_state(&provider_list, world_state)),
+        None => rt.block_on(suite.run(&provider_list)),
+    }
+    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("evaluation failed: {e}")))
+}
+
+fn resolve_eval_world_state(
+    world: Option<&PyWorld>,
+    world_json: Option<&str>,
+) -> PyResult<Option<WorldState>> {
+    match (world, world_json) {
+        (Some(_), Some(_)) => Err(pyo3::exceptions::PyValueError::new_err(
+            "world and world_json are mutually exclusive",
+        )),
+        (Some(world), None) => Ok(Some(world.world.state.clone())),
+        (None, Some(json)) => serde_json::from_str::<WorldState>(json)
+            .map(Some)
+            .map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!("failed to parse world JSON: {e}"))
+            }),
+        (None, None) => Ok(None),
+    }
 }
 
 /// List the built-in evaluation suite names.
@@ -6135,6 +6234,91 @@ mod tests {
             .scenario_summaries()
             .iter()
             .any(|summary| summary.scenario() == "object_drop"));
+    }
+
+    #[test]
+    fn test_eval_suite_run_report_data_with_world_object_uses_supplied_state() {
+        let suite = PyEvalSuite {
+            inner: worldforge_eval::EvalSuite {
+                name: "World-aware".to_string(),
+                scenarios: vec![worldforge_eval::EvalScenario {
+                    name: "find_mug".to_string(),
+                    description: "Check the supplied world state".to_string(),
+                    initial_state: WorldState::new("empty", "eval"),
+                    actions: vec![],
+                    expected_outcomes: vec![worldforge_eval::ExpectedOutcome::ObjectExists {
+                        name: "mug".to_string(),
+                    }],
+                    ground_truth: None,
+                }],
+                dimensions: vec![worldforge_eval::EvalDimension::ObjectPermanence],
+            },
+        };
+
+        let empty_report = suite
+            .run_report_data_with_world("mock", None, None)
+            .unwrap();
+        assert_eq!(
+            empty_report.provider_summaries()[0].scenario_pass_rate(),
+            0.0
+        );
+        assert_eq!(
+            empty_report.provider_summaries()[0].outcome_pass_rate(),
+            0.0
+        );
+
+        let mut world = PyWorld::new("world-aware", "mock");
+        let position = PyPosition::new(0.0, 0.5, 0.0);
+        let bbox = PyBBox::new(
+            &PyPosition::new(-0.1, 0.4, -0.1),
+            &PyPosition::new(0.1, 0.6, 0.1),
+        );
+        world
+            .add_object(&PySceneObject::new("mug", &position, &bbox))
+            .unwrap();
+
+        let report = suite
+            .run_report_data_with_world("mock", Some(&world), None)
+            .unwrap();
+        assert_eq!(report.provider_summaries()[0].scenario_pass_rate(), 1.0);
+        assert_eq!(report.provider_summaries()[0].outcome_pass_rate(), 1.0);
+    }
+
+    #[test]
+    fn test_eval_suite_run_report_data_with_world_json_uses_supplied_state() {
+        let suite = PyEvalSuite {
+            inner: worldforge_eval::EvalSuite {
+                name: "World-aware JSON".to_string(),
+                scenarios: vec![worldforge_eval::EvalScenario {
+                    name: "find_mug".to_string(),
+                    description: "Check the supplied world JSON".to_string(),
+                    initial_state: WorldState::new("empty", "eval"),
+                    actions: vec![],
+                    expected_outcomes: vec![worldforge_eval::ExpectedOutcome::ObjectExists {
+                        name: "mug".to_string(),
+                    }],
+                    ground_truth: None,
+                }],
+                dimensions: vec![worldforge_eval::EvalDimension::ObjectPermanence],
+            },
+        };
+
+        let mut world = PyWorld::new("world-aware-json", "mock");
+        let position = PyPosition::new(0.0, 0.5, 0.0);
+        let bbox = PyBBox::new(
+            &PyPosition::new(-0.1, 0.4, -0.1),
+            &PyPosition::new(0.1, 0.6, 0.1),
+        );
+        world
+            .add_object(&PySceneObject::new("mug", &position, &bbox))
+            .unwrap();
+        let world_json = world.to_json().unwrap();
+
+        let report = suite
+            .run_report_data_with_world("mock", None, Some(&world_json))
+            .unwrap();
+        assert_eq!(report.provider_summaries()[0].scenario_pass_rate(), 1.0);
+        assert_eq!(report.provider_summaries()[0].outcome_pass_rate(), 1.0);
     }
 
     // --- ZK Verification tests ---
