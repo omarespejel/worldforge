@@ -21,7 +21,9 @@ use worldforge_core::provider::{
     SpatialControls, TransferConfig, WorldModelProvider,
 };
 use worldforge_core::scene::SceneObject;
-use worldforge_core::state::{HistoryEntry, StateStoreKind, WorldState};
+use worldforge_core::state::{
+    HistoryEntry, StateFileFormat as CoreStateFileFormat, StateStoreKind, WorldState,
+};
 use worldforge_core::types::{BBox, Position, Rotation, TensorData, Velocity, VideoClip};
 use worldforge_core::world::World as CoreWorld;
 use worldforge_providers::{
@@ -62,9 +64,18 @@ fn state_store_kind(
     state_backend: &str,
     state_dir: &str,
     state_db_path: Option<&str>,
+    state_file_format: &str,
 ) -> PyResult<StateStoreKind> {
     match state_backend {
-        "file" => Ok(StateStoreKind::File(state_dir.into())),
+        "file" => {
+            let format = state_file_format
+                .parse::<CoreStateFileFormat>()
+                .map_err(pyo3::exceptions::PyValueError::new_err)?;
+            Ok(StateStoreKind::FileWithFormat {
+                path: state_dir.into(),
+                format,
+            })
+        }
         "sqlite" => Ok(StateStoreKind::Sqlite(
             state_db_path
                 .map(Into::into)
@@ -2340,9 +2351,15 @@ pub struct PyWorldForge {
 impl PyWorldForge {
     /// Create a new WorldForge instance with auto-detected providers.
     #[new]
-    #[pyo3(signature = (state_backend="file", state_dir=".worldforge", state_db_path=None))]
-    fn new(state_backend: &str, state_dir: &str, state_db_path: Option<&str>) -> PyResult<Self> {
-        let store_kind = state_store_kind(state_backend, state_dir, state_db_path)?;
+    #[pyo3(signature = (state_backend="file", state_dir=".worldforge", state_db_path=None, state_file_format="json"))]
+    fn new(
+        state_backend: &str,
+        state_dir: &str,
+        state_db_path: Option<&str>,
+        state_file_format: &str,
+    ) -> PyResult<Self> {
+        let store_kind =
+            state_store_kind(state_backend, state_dir, state_db_path, state_file_format)?;
         let rt = new_runtime()?;
         let store = rt.block_on(store_kind.open()).map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("failed to open state store: {e}"))
@@ -4465,7 +4482,7 @@ mod tests {
     use super::*;
 
     fn test_worldforge() -> PyWorldForge {
-        PyWorldForge::new("file", ".worldforge-python-tests", None).unwrap()
+        PyWorldForge::new("file", ".worldforge-python-tests", None, "json").unwrap()
     }
 
     #[test]
@@ -5445,7 +5462,7 @@ mod tests {
     fn test_worldforge_file_store_roundtrip() {
         let state_dir =
             std::env::temp_dir().join(format!("wf-python-file-{}", uuid::Uuid::new_v4()));
-        let wf = PyWorldForge::new("file", state_dir.to_str().unwrap(), None).unwrap();
+        let wf = PyWorldForge::new("file", state_dir.to_str().unwrap(), None, "json").unwrap();
         let world = wf.create_world("persisted_world", "mock").unwrap();
         let world_id = wf.save_world(&world).unwrap();
 
@@ -5470,6 +5487,7 @@ mod tests {
             "sqlite",
             state_dir.to_str().unwrap(),
             Some(state_db_path.to_str().unwrap()),
+            "json",
         )
         .unwrap();
         let world = wf.create_world("sqlite_world", "mock").unwrap();
@@ -5477,6 +5495,26 @@ mod tests {
 
         let loaded = wf.load_world(&world_id).unwrap();
         assert_eq!(loaded.name(), "sqlite_world");
+        assert_eq!(wf.list_worlds().unwrap(), vec![world_id.clone()]);
+
+        wf.delete_world(&world_id).unwrap();
+        assert!(wf.list_worlds().unwrap().is_empty());
+
+        let _ = std::fs::remove_dir_all(&state_dir);
+    }
+
+    #[test]
+    fn test_worldforge_msgpack_file_store_roundtrip() {
+        let state_dir =
+            std::env::temp_dir().join(format!("wf-python-msgpack-{}", uuid::Uuid::new_v4()));
+        let wf = PyWorldForge::new("file", state_dir.to_str().unwrap(), None, "msgpack").unwrap();
+        let world = wf.create_world("msgpack_world", "mock").unwrap();
+        let world_id = wf.save_world(&world).unwrap();
+
+        assert!(state_dir.join(format!("{world_id}.msgpack")).exists());
+
+        let loaded = wf.load_world(&world_id).unwrap();
+        assert_eq!(loaded.name(), "msgpack_world");
         assert_eq!(wf.list_worlds().unwrap(), vec![world_id.clone()]);
 
         wf.delete_world(&world_id).unwrap();

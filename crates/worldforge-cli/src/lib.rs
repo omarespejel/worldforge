@@ -22,7 +22,9 @@ use worldforge_core::provider::{
     ProviderHealthReport, ProviderRegistry, SpatialControls, TransferConfig, WorldModelProvider,
 };
 use worldforge_core::scene::{PhysicsProperties, SceneObject, SceneObjectPatch};
-use worldforge_core::state::{DynStateStore, StateStore, StateStoreKind, WorldState};
+use worldforge_core::state::{
+    DynStateStore, StateFileFormat as CoreStateFileFormat, StateStore, StateStoreKind, WorldState,
+};
 use worldforge_core::types::{BBox, Pose, Position, Rotation, Velocity, VideoClip};
 use worldforge_eval::EvalSuite;
 use worldforge_verify::{
@@ -34,7 +36,7 @@ use worldforge_verify::{
 /// Persistence backend used by the CLI.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum StateBackend {
-    /// Store world states as JSON files in a directory.
+    /// Store world states as JSON or MessagePack files in a directory.
     File,
     /// Store world states in a SQLite database file.
     Sqlite,
@@ -45,6 +47,24 @@ impl StateBackend {
         match self {
             Self::File => "file",
             Self::Sqlite => "sqlite",
+        }
+    }
+}
+
+/// Serialization format for file-backed world persistence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum StateFileFormat {
+    /// Persist human-readable JSON files.
+    Json,
+    /// Persist compact MessagePack files.
+    Msgpack,
+}
+
+impl StateFileFormat {
+    fn as_core(self) -> CoreStateFileFormat {
+        match self {
+            Self::Json => CoreStateFileFormat::Json,
+            Self::Msgpack => CoreStateFileFormat::MessagePack,
         }
     }
 }
@@ -73,6 +93,10 @@ pub struct Cli {
     /// Persistence backend for world state.
     #[arg(long, value_enum, default_value_t = StateBackend::File, global = true)]
     pub state_backend: StateBackend,
+
+    /// Serialization format for file-backed state storage.
+    #[arg(long, value_enum, default_value_t = StateFileFormat::Json, global = true)]
+    pub state_file_format: StateFileFormat,
 
     /// Explicit SQLite database path when using the sqlite backend.
     #[arg(long, global = true)]
@@ -607,6 +631,7 @@ pub async fn run() -> Result<()> {
             return cmd_serve(
                 &cli.state_dir,
                 cli.state_backend,
+                cli.state_file_format,
                 cli.state_db_path.as_deref(),
                 bind,
             )
@@ -1013,10 +1038,14 @@ pub async fn run() -> Result<()> {
 fn state_store_kind(
     state_dir: &Path,
     state_backend: StateBackend,
+    state_file_format: StateFileFormat,
     state_db_path: Option<&Path>,
 ) -> StateStoreKind {
     match state_backend {
-        StateBackend::File => StateStoreKind::File(state_dir.to_path_buf()),
+        StateBackend::File => StateStoreKind::FileWithFormat {
+            path: state_dir.to_path_buf(),
+            format: state_file_format.as_core(),
+        },
         StateBackend::Sqlite => StateStoreKind::Sqlite(
             state_db_path
                 .map(Path::to_path_buf)
@@ -1029,6 +1058,7 @@ async fn open_state_store(cli: &Cli) -> Result<DynStateStore> {
     state_store_kind(
         &cli.state_dir,
         cli.state_backend,
+        cli.state_file_format,
         cli.state_db_path.as_deref(),
     )
     .open()
@@ -2542,6 +2572,7 @@ fn cmd_estimate(provider_name: &str, options: EstimateOptions) -> Result<()> {
 async fn cmd_serve(
     state_dir: &Path,
     state_backend: StateBackend,
+    state_file_format: StateFileFormat,
     state_db_path: Option<&Path>,
     bind: &str,
 ) -> Result<()> {
@@ -2550,6 +2581,7 @@ async fn cmd_serve(
         bind_address: bind.to_string(),
         state_dir: state_dir.display().to_string(),
         state_backend: state_backend.as_str().to_string(),
+        state_file_format: state_file_format.as_core().as_str().to_string(),
         state_db_path: state_db_path.map(|path| path.display().to_string()),
     };
 
@@ -2732,10 +2764,21 @@ mod tests {
 
         assert_eq!(cli.state_dir, PathBuf::from(".wf-test"));
         assert_eq!(cli.state_backend, StateBackend::File);
+        assert_eq!(cli.state_file_format, StateFileFormat::Json);
         match cli.command {
             Commands::Serve { bind } => assert_eq!(bind, "127.0.0.1:9000"),
             _ => panic!("expected Serve"),
         }
+    }
+
+    #[test]
+    fn test_cli_parse_msgpack_file_backend() {
+        let cli =
+            Cli::try_parse_from(["worldforge", "--state-file-format", "msgpack", "list"]).unwrap();
+
+        assert_eq!(cli.state_backend, StateBackend::File);
+        assert_eq!(cli.state_file_format, StateFileFormat::Msgpack);
+        assert!(matches!(cli.command, Commands::List));
     }
 
     #[test]
@@ -2810,8 +2853,29 @@ mod tests {
     #[test]
     fn test_state_store_kind_defaults_sqlite_path_under_state_dir() {
         assert_eq!(
-            state_store_kind(Path::new(".wf"), StateBackend::Sqlite, None),
+            state_store_kind(
+                Path::new(".wf"),
+                StateBackend::Sqlite,
+                StateFileFormat::Json,
+                None
+            ),
             StateStoreKind::Sqlite(PathBuf::from(".wf/worldforge.db"))
+        );
+    }
+
+    #[test]
+    fn test_state_store_kind_uses_explicit_file_format() {
+        assert_eq!(
+            state_store_kind(
+                Path::new(".wf"),
+                StateBackend::File,
+                StateFileFormat::Msgpack,
+                None
+            ),
+            StateStoreKind::FileWithFormat {
+                path: PathBuf::from(".wf"),
+                format: CoreStateFileFormat::MessagePack,
+            }
         );
     }
 

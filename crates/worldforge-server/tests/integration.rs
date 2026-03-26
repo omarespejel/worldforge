@@ -76,6 +76,33 @@ async fn spawn_test_server_sqlite() -> TestServer {
             state_dir: state_dir.display().to_string(),
             state_backend: "sqlite".to_string(),
             state_db_path: Some(state_dir.join("worldforge.db").display().to_string()),
+            ..ServerConfig::default()
+        },
+        Arc::new(registry),
+    )
+    .await
+    .unwrap();
+    let address = server.local_addr().unwrap();
+    let task = tokio::spawn(server.run());
+
+    TestServer {
+        address,
+        state_dir,
+        task,
+    }
+}
+
+async fn spawn_test_server_msgpack() -> TestServer {
+    let state_dir = std::env::temp_dir().join(format!("wf-http-msgpack-{}", uuid::Uuid::new_v4()));
+    let mut registry = ProviderRegistry::new();
+    registry.register(Box::new(MockProvider::new()));
+
+    let server = Server::bind(
+        ServerConfig {
+            bind_address: "127.0.0.1:0".to_string(),
+            state_dir: state_dir.display().to_string(),
+            state_file_format: "msgpack".to_string(),
+            ..ServerConfig::default()
         },
         Arc::new(registry),
     )
@@ -296,6 +323,49 @@ async fn test_live_http_world_lifecycle_sqlite() {
     .await;
     assert_eq!(status, 201);
     let world_id = create["data"]["id"].as_str().unwrap().to_string();
+
+    let predict_body =
+        r#"{"action":{"Move":{"target":{"x":1.0,"y":0.0,"z":0.0},"speed":1.0}},"provider":"mock"}"#;
+    let (status, prediction) = http_request(
+        server.address,
+        "POST",
+        &format!("/v1/worlds/{world_id}/predict"),
+        predict_body,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(prediction["data"]["provider"], "mock");
+
+    let (status, world) =
+        http_request(server.address, "GET", &format!("/v1/worlds/{world_id}"), "").await;
+    assert_eq!(status, 200);
+    assert_eq!(world["data"]["time"]["step"], 1);
+
+    let (status, list) = http_request(server.address, "GET", "/v1/worlds", "").await;
+    assert_eq!(status, 200);
+    assert!(list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["id"] == world_id));
+}
+
+#[tokio::test]
+async fn test_live_http_world_lifecycle_msgpack_file_store() {
+    let server = spawn_test_server_msgpack().await;
+
+    let (status, create) = http_request(
+        server.address,
+        "POST",
+        "/v1/worlds",
+        r#"{"name":"msgpack_world","provider":"mock"}"#,
+    )
+    .await;
+    assert_eq!(status, 201);
+    let world_id = create["data"]["id"].as_str().unwrap().to_string();
+
+    let persisted_path = server.state_dir.join(format!("{world_id}.msgpack"));
+    assert!(persisted_path.exists());
 
     let predict_body =
         r#"{"action":{"Move":{"target":{"x":1.0,"y":0.0,"z":0.0},"speed":1.0}},"provider":"mock"}"#;

@@ -127,6 +127,9 @@ wf = WorldForge(state_backend="sqlite", state_db_path=".worldforge/worldforge.db
 wf.save_world(world)
 same_world = wf.load_world(world.id)
 
+wf_msgpack = WorldForge(state_backend="file", state_file_format="msgpack")
+wf_msgpack.save_world(world)
+
 # Inspect retained state history
 history = world.history()
 assert len(history) >= 2
@@ -257,6 +260,7 @@ cargo run -p worldforge-cli -- providers --health
 cargo run -p worldforge-cli -- estimate --provider cosmos --operation generate --duration-seconds 5 --width 1280 --height 720
 cargo run -p worldforge-cli -- list
 cargo run -p worldforge-cli -- --state-backend sqlite --state-db-path .worldforge/worldforge.db list
+cargo run -p worldforge-cli -- --state-file-format msgpack list
 cargo run -p worldforge-cli -- history --world <id> --output-json histories/<id>.json
 cargo run -p worldforge-cli -- predict --world <id> --action "move 1 0 0" --provider runway --fallback-provider mock --timeout-ms 500
 cargo run -p worldforge-cli -- plan --world <id> --goal "spawn cube" --planner cem
@@ -277,6 +281,7 @@ cargo run -p worldforge-cli -- serve --bind 127.0.0.1:8080
 
 # Or run the dedicated server binary
 cargo run -p worldforge-server -- --bind 127.0.0.1:8080 --state-dir .worldforge
+cargo run -p worldforge-server -- --bind 127.0.0.1:8080 --state-dir .worldforge --state-file-format msgpack
 
 # Build and smoke-test the Python package
 python3 -m venv .venv
@@ -297,6 +302,7 @@ Start the server with either the CLI or the dedicated binary:
 worldforge serve --bind 127.0.0.1:8080
 # or
 worldforge-server --bind 127.0.0.1:8080 --state-dir .worldforge
+worldforge-server --bind 127.0.0.1:8080 --state-dir .worldforge --state-file-format msgpack
 worldforge-server --bind 127.0.0.1:8080 --state-backend sqlite --state-db-path .worldforge/worldforge.db
 ```
 
@@ -395,7 +401,7 @@ server, and Python bindings as well, with REST requests defaulting to each
 stored world's configured provider instead of hard-coding `mock`. Provider
 transfer is now exposed end-to-end in
 the core, CLI, REST server, and Python bindings with JSON clip round-tripping
-for reusable workflows. File-backed and SQLite-backed world persistence are
+for reusable workflows. File-backed (JSON or MessagePack) and SQLite-backed world persistence are
 both supported through the shared `StateStore` abstraction across the core,
 CLI, REST server, and Python bindings. Cosmos and Runway adapters have API wiring in place,
 and Genie now ships as a deterministic low-resolution surrogate backend for

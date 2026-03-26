@@ -21,7 +21,7 @@ use worldforge_core::provider::{
     SpatialControls, TransferConfig,
 };
 use worldforge_core::scene::{PhysicsProperties, SceneObject, SceneObjectPatch};
-use worldforge_core::state::{DynStateStore, StateStoreKind, WorldState};
+use worldforge_core::state::{DynStateStore, StateFileFormat, StateStoreKind, WorldState};
 use worldforge_core::types::{BBox, Pose, Position, Rotation, Velocity, VideoClip, WorldId};
 use worldforge_core::world::World;
 use worldforge_eval::EvalSuite;
@@ -39,6 +39,8 @@ pub struct ServerConfig {
     pub state_dir: String,
     /// Persistence backend to use: `file` or `sqlite`.
     pub state_backend: String,
+    /// Serialization format for the file-backed state store.
+    pub state_file_format: String,
     /// Optional SQLite database path override.
     pub state_db_path: Option<String>,
 }
@@ -49,6 +51,7 @@ impl Default for ServerConfig {
             bind_address: "127.0.0.1:8080".to_string(),
             state_dir: ".worldforge".to_string(),
             state_backend: "file".to_string(),
+            state_file_format: "json".to_string(),
             state_db_path: None,
         }
     }
@@ -57,7 +60,16 @@ impl Default for ServerConfig {
 impl ServerConfig {
     fn resolve_state_store_kind(&self) -> anyhow::Result<StateStoreKind> {
         match self.state_backend.as_str() {
-            "file" => Ok(StateStoreKind::File(self.state_dir.clone().into())),
+            "file" => {
+                let format = self
+                    .state_file_format
+                    .parse::<StateFileFormat>()
+                    .map_err(anyhow::Error::msg)?;
+                Ok(StateStoreKind::FileWithFormat {
+                    path: self.state_dir.clone().into(),
+                    format,
+                })
+            }
             "sqlite" => Ok(StateStoreKind::Sqlite(
                 self.state_db_path
                     .as_deref()
@@ -1737,7 +1749,10 @@ mod tests {
 
         assert_eq!(
             config.resolve_state_store_kind().unwrap(),
-            StateStoreKind::File("/tmp/worldforge".into())
+            StateStoreKind::FileWithFormat {
+                path: "/tmp/worldforge".into(),
+                format: StateFileFormat::Json,
+            }
         );
     }
 
@@ -1753,6 +1768,23 @@ mod tests {
         assert_eq!(
             config.resolve_state_store_kind().unwrap(),
             StateStoreKind::Sqlite("/tmp/worldforge/worldforge.db".into())
+        );
+    }
+
+    #[test]
+    fn test_server_config_resolves_msgpack_file_store() {
+        let config = ServerConfig {
+            state_dir: "/tmp/worldforge".to_string(),
+            state_file_format: "msgpack".to_string(),
+            ..ServerConfig::default()
+        };
+
+        assert_eq!(
+            config.resolve_state_store_kind().unwrap(),
+            StateStoreKind::FileWithFormat {
+                path: "/tmp/worldforge".into(),
+                format: StateFileFormat::MessagePack,
+            }
         );
     }
 

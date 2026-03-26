@@ -3,7 +3,7 @@
 //! Provides the `StateStore` trait and built-in file/SQLite
 //! implementations for saving and loading world state.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 #[cfg(feature = "sqlite")]
 use std::path::Path;
 use std::path::PathBuf;
@@ -354,11 +354,65 @@ pub trait StateStore: Send + Sync {
 /// Shared pointer to a dynamically selected state store implementation.
 pub type DynStateStore = Arc<dyn StateStore>;
 
+/// Serialization format for file-backed world-state persistence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StateFileFormat {
+    /// Human-readable JSON files.
+    Json,
+    /// Compact MessagePack files.
+    MessagePack,
+}
+
+impl StateFileFormat {
+    /// Return the canonical user-facing identifier for this format.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::MessagePack => "msgpack",
+        }
+    }
+
+    fn extension(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::MessagePack => "msgpack",
+        }
+    }
+
+    fn alternate(self) -> Self {
+        match self {
+            Self::Json => Self::MessagePack,
+            Self::MessagePack => Self::Json,
+        }
+    }
+}
+
+impl std::str::FromStr for StateFileFormat {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "json" => Ok(Self::Json),
+            "msgpack" | "messagepack" => Ok(Self::MessagePack),
+            other => Err(format!(
+                "unknown state file format: {other}. Available formats: json, msgpack"
+            )),
+        }
+    }
+}
+
 /// Concrete state-store implementation to open at runtime.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StateStoreKind {
     /// Persist each world state as a JSON file in the given directory.
     File(PathBuf),
+    /// Persist each world state as a file in the given directory using an explicit format.
+    FileWithFormat {
+        /// Directory for persisted state files.
+        path: PathBuf,
+        /// Serialization format for the files in this store.
+        format: StateFileFormat,
+    },
     /// Persist all world states in a SQLite database file.
     #[cfg(feature = "sqlite")]
     Sqlite(PathBuf),
@@ -369,6 +423,10 @@ impl StateStoreKind {
     pub async fn open(&self) -> Result<DynStateStore> {
         match self {
             Self::File(path) => Ok(Arc::new(FileStateStore::new(path.clone()))),
+            Self::FileWithFormat { path, format } => Ok(Arc::new(FileStateStore::new_with_format(
+                path.clone(),
+                *format,
+            ))),
             #[cfg(feature = "sqlite")]
             Self::Sqlite(path) => Ok(Arc::new(SqliteStateStore::from_path(path).await?)),
         }
@@ -380,16 +438,48 @@ impl StateStoreKind {
 pub struct FileStateStore {
     /// Directory for state files.
     pub path: PathBuf,
+    /// Serialization format used when writing state files.
+    pub format: StateFileFormat,
 }
 
 impl FileStateStore {
     /// Create a new file-based state store at the given directory.
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+        Self::new_with_format(path, StateFileFormat::Json)
     }
 
-    fn state_path(&self, id: &WorldId) -> PathBuf {
-        self.path.join(format!("{}.json", id))
+    /// Create a new file-based state store with an explicit on-disk format.
+    pub fn new_with_format(path: impl Into<PathBuf>, format: StateFileFormat) -> Self {
+        Self {
+            path: path.into(),
+            format,
+        }
+    }
+
+    fn state_path_for_format(&self, id: &WorldId, format: StateFileFormat) -> PathBuf {
+        self.path.join(format!("{}.{}", id, format.extension()))
+    }
+
+    fn candidate_formats(&self) -> [StateFileFormat; 2] {
+        [self.format, self.format.alternate()]
+    }
+
+    fn serialize_state(format: StateFileFormat, state: &WorldState) -> Result<Vec<u8>> {
+        match format {
+            StateFileFormat::Json => serde_json::to_vec_pretty(state)
+                .map_err(|e| WorldForgeError::SerializationError(e.to_string())),
+            StateFileFormat::MessagePack => rmp_serde::to_vec_named(state)
+                .map_err(|e| WorldForgeError::SerializationError(e.to_string())),
+        }
+    }
+
+    fn deserialize_state(format: StateFileFormat, data: &[u8]) -> Result<WorldState> {
+        match format {
+            StateFileFormat::Json => serde_json::from_slice(data)
+                .map_err(|e| WorldForgeError::SerializationError(e.to_string())),
+            StateFileFormat::MessagePack => rmp_serde::from_slice(data)
+                .map_err(|e| WorldForgeError::SerializationError(e.to_string())),
+        }
     }
 }
 
@@ -402,20 +492,31 @@ impl StateStore for FileStateStore {
         tokio::fs::create_dir_all(&self.path)
             .await
             .map_err(|e| WorldForgeError::InternalError(format!("failed to create dir: {e}")))?;
-        let json = serde_json::to_string_pretty(&normalized)
-            .map_err(|e| WorldForgeError::SerializationError(e.to_string()))?;
-        tokio::fs::write(self.state_path(&normalized.id), json)
-            .await
-            .map_err(|e| WorldForgeError::InternalError(format!("failed to write state: {e}")))?;
+        let payload = Self::serialize_state(self.format, &normalized)?;
+        tokio::fs::write(
+            self.state_path_for_format(&normalized.id, self.format),
+            payload,
+        )
+        .await
+        .map_err(|e| WorldForgeError::InternalError(format!("failed to write state: {e}")))?;
         Ok(())
     }
 
     async fn load(&self, id: &WorldId) -> Result<WorldState> {
-        let path = self.state_path(id);
-        let data = tokio::fs::read_to_string(&path)
-            .await
-            .map_err(|_| WorldForgeError::WorldNotFound(*id))?;
-        serde_json::from_str(&data).map_err(|e| WorldForgeError::SerializationError(e.to_string()))
+        for format in self.candidate_formats() {
+            let path = self.state_path_for_format(id, format);
+            match tokio::fs::read(&path).await {
+                Ok(data) => return Self::deserialize_state(format, &data),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    return Err(WorldForgeError::InternalError(format!(
+                        "failed to read state: {error}"
+                    )))
+                }
+            }
+        }
+
+        Err(WorldForgeError::WorldNotFound(*id))
     }
 
     async fn list(&self) -> Result<Vec<WorldId>> {
@@ -426,7 +527,7 @@ impl StateStore for FileStateStore {
             return Ok(Vec::new());
         }
 
-        let mut ids = Vec::new();
+        let mut ids = HashSet::new();
         let mut entries = tokio::fs::read_dir(&self.path)
             .await
             .map_err(|e| WorldForgeError::InternalError(format!("failed to read dir: {e}")))?;
@@ -436,22 +537,43 @@ impl StateStore for FileStateStore {
             .map_err(|e| WorldForgeError::InternalError(e.to_string()))?
         {
             if let Some(name) = entry.file_name().to_str() {
-                if let Some(id_str) = name.strip_suffix(".json") {
+                if let Some(id_str) = name
+                    .strip_suffix(".json")
+                    .or_else(|| name.strip_suffix(".msgpack"))
+                {
                     if let Ok(id) = id_str.parse::<WorldId>() {
-                        ids.push(id);
+                        ids.insert(id);
                     }
                 }
             }
         }
+
+        let mut ids = ids.into_iter().collect::<Vec<_>>();
+        ids.sort_unstable_by_key(|id| id.as_u128());
         Ok(ids)
     }
 
     async fn delete(&self, id: &WorldId) -> Result<()> {
-        let path = self.state_path(id);
-        tokio::fs::remove_file(&path)
-            .await
-            .map_err(|_| WorldForgeError::WorldNotFound(*id))?;
-        Ok(())
+        let mut deleted_any = false;
+
+        for format in self.candidate_formats() {
+            let path = self.state_path_for_format(id, format);
+            match tokio::fs::remove_file(&path).await {
+                Ok(()) => deleted_any = true,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(WorldForgeError::InternalError(format!(
+                        "failed to delete state: {error}"
+                    )))
+                }
+            }
+        }
+
+        if deleted_any {
+            Ok(())
+        } else {
+            Err(WorldForgeError::WorldNotFound(*id))
+        }
     }
 }
 
@@ -681,6 +803,23 @@ mod tests {
         assert_eq!(ws.metadata.name, ws2.metadata.name);
     }
 
+    #[test]
+    fn test_state_file_format_parsing() {
+        assert_eq!(
+            "json".parse::<StateFileFormat>().unwrap(),
+            StateFileFormat::Json
+        );
+        assert_eq!(
+            "msgpack".parse::<StateFileFormat>().unwrap(),
+            StateFileFormat::MessagePack
+        );
+        assert_eq!(
+            "messagepack".parse::<StateFileFormat>().unwrap(),
+            StateFileFormat::MessagePack
+        );
+        assert!("yaml".parse::<StateFileFormat>().is_err());
+    }
+
     #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn test_sqlite_state_store() {
@@ -725,6 +864,7 @@ mod tests {
         let id = state.id;
 
         store.save(&state).await.unwrap();
+        assert!(dir.join(format!("{id}.json")).exists());
         let loaded = store.load(&id).await.unwrap();
         assert_eq!(loaded.id, id);
         assert_eq!(loaded.history.len(), 1);
@@ -748,6 +888,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_file_state_store_msgpack_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("worldforge-msgpack-{}", uuid::Uuid::new_v4()));
+        let store = FileStateStore::new_with_format(&dir, StateFileFormat::MessagePack);
+
+        let state = WorldState::new("msgpack-world", "mock");
+        let id = state.id;
+
+        store.save(&state).await.unwrap();
+        assert!(dir.join(format!("{id}.msgpack")).exists());
+
+        let loaded = store.load(&id).await.unwrap();
+        assert_eq!(loaded.id, id);
+        assert_eq!(loaded.metadata.name, "msgpack-world");
+
+        let ids = store.list().await.unwrap();
+        assert_eq!(ids, vec![id]);
+
+        store.delete(&id).await.unwrap();
+        assert!(store.load(&id).await.is_err());
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn test_file_state_store_loads_alternate_format() {
+        let dir =
+            std::env::temp_dir().join(format!("worldforge-alt-format-{}", uuid::Uuid::new_v4()));
+        let json_store = FileStateStore::new(&dir);
+        let msgpack_store = FileStateStore::new_with_format(&dir, StateFileFormat::MessagePack);
+
+        let state = WorldState::new("alternate-format", "mock");
+        let id = state.id;
+
+        json_store.save(&state).await.unwrap();
+        let loaded_from_msgpack_store = msgpack_store.load(&id).await.unwrap();
+        assert_eq!(loaded_from_msgpack_store.id, id);
+
+        msgpack_store.delete(&id).await.unwrap();
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn test_file_state_store_list_deduplicates_multiple_formats() {
+        let dir = std::env::temp_dir().join(format!("worldforge-dedup-{}", uuid::Uuid::new_v4()));
+        let json_store = FileStateStore::new(&dir);
+        let msgpack_store = FileStateStore::new_with_format(&dir, StateFileFormat::MessagePack);
+
+        let state = WorldState::new("dedup-world", "mock");
+        let id = state.id;
+
+        json_store.save(&state).await.unwrap();
+        msgpack_store.save(&state).await.unwrap();
+
+        let ids = json_store.list().await.unwrap();
+        assert_eq!(ids, vec![id]);
+
+        json_store.delete(&id).await.unwrap();
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
     async fn test_state_store_kind_opens_file_store() {
         let dir = std::env::temp_dir().join(format!("worldforge-kind-{}", uuid::Uuid::new_v4()));
         let store = StateStoreKind::File(dir.clone()).open().await.unwrap();
@@ -757,6 +958,27 @@ mod tests {
         let loaded = store.load(&state.id).await.unwrap();
         assert_eq!(loaded.id, state.id);
         assert_eq!(loaded.history.len(), 1);
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn test_state_store_kind_opens_file_store_with_explicit_format() {
+        let dir =
+            std::env::temp_dir().join(format!("worldforge-kind-msgpack-{}", uuid::Uuid::new_v4()));
+        let store = StateStoreKind::FileWithFormat {
+            path: dir.clone(),
+            format: StateFileFormat::MessagePack,
+        }
+        .open()
+        .await
+        .unwrap();
+        let state = WorldState::new("kind-msgpack", "mock");
+
+        store.save(&state).await.unwrap();
+        let loaded = store.load(&state.id).await.unwrap();
+        assert_eq!(loaded.metadata.name, "kind-msgpack");
+        assert!(dir.join(format!("{}.msgpack", state.id)).exists());
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }

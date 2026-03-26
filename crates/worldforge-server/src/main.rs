@@ -10,12 +10,13 @@ const USAGE: &str = "\
 WorldForge REST API server
 
 Usage:
-  worldforge-server [--bind <addr>] [--state-dir <path>] [--state-backend <file|sqlite>] [--state-db-path <path>]
+  worldforge-server [--bind <addr>] [--state-dir <path>] [--state-backend <file|sqlite>] [--state-file-format <json|msgpack>] [--state-db-path <path>]
 
 Options:
   --bind <addr>             Address to bind to (default: 127.0.0.1:8080)
   --state-dir <path>        Directory for file-backed state or default SQLite location (default: .worldforge)
   --state-backend <kind>    Persistence backend: file or sqlite (default: file)
+  --state-file-format <fmt> File-store serialization format: json or msgpack (default: json)
   --state-db-path <path>    SQLite database path override
   -h, --help                Show this help text";
 
@@ -42,6 +43,11 @@ where
                 config.state_backend = args
                     .next()
                     .ok_or_else(|| anyhow::anyhow!("missing value for --state-backend"))?;
+            }
+            "--state-file-format" => {
+                config.state_file_format = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("missing value for --state-file-format"))?;
             }
             "--state-db-path" => {
                 config.state_db_path = Some(
@@ -80,6 +86,7 @@ mod tests {
         assert_eq!(config.bind_address, "127.0.0.1:8080");
         assert_eq!(config.state_dir, ".worldforge");
         assert_eq!(config.state_backend, "file");
+        assert_eq!(config.state_file_format, "json");
         assert_eq!(config.state_db_path, None);
     }
 
@@ -92,6 +99,8 @@ mod tests {
             "/tmp/worldforge".to_string(),
             "--state-backend".to_string(),
             "sqlite".to_string(),
+            "--state-file-format".to_string(),
+            "msgpack".to_string(),
             "--state-db-path".to_string(),
             "/tmp/worldforge/state.db".to_string(),
         ])
@@ -100,6 +109,7 @@ mod tests {
         assert_eq!(config.bind_address, "127.0.0.1:9001");
         assert_eq!(config.state_dir, "/tmp/worldforge");
         assert_eq!(config.state_backend, "sqlite");
+        assert_eq!(config.state_file_format, "msgpack");
         assert_eq!(
             config.state_db_path.as_deref(),
             Some("/tmp/worldforge/state.db")
