@@ -1801,17 +1801,23 @@ impl WorldModelProvider for GenieProvider {
     }
 
     async fn health_check(&self) -> Result<HealthStatus> {
-        let healthy = !self.api_key.trim().is_empty() && self.is_endpoint_valid();
+        let healthy = self.api_key.trim().is_empty() || self.is_endpoint_valid();
         Ok(HealthStatus {
             healthy,
             message: if healthy {
-                format!(
-                    "Genie surrogate ready: {} at {}",
-                    self.model_name(),
-                    self.endpoint
-                )
-            } else if self.api_key.trim().is_empty() {
-                "missing Genie API key".to_string()
+                if self.api_key.trim().is_empty() {
+                    format!(
+                        "Genie surrogate ready: {} at {}",
+                        self.model_name(),
+                        self.endpoint
+                    )
+                } else {
+                    format!(
+                        "Genie remote override ready: {} at {}",
+                        self.model_name(),
+                        self.endpoint
+                    )
+                }
             } else {
                 format!("invalid Genie endpoint: {}", self.endpoint)
             },
@@ -2791,7 +2797,7 @@ mod tests {
         let provider = GenieProvider::new(GenieModel::Genie3, "secret");
         let health = provider.health_check().await.unwrap();
         assert!(health.healthy);
-        assert!(health.message.contains("Genie surrogate ready"));
+        assert!(health.message.contains("Genie remote override ready"));
 
         let cost = provider.estimate_cost(&Operation::Generate {
             duration_seconds: 2.5,
@@ -2800,5 +2806,23 @@ mod tests {
         assert!(cost.usd > 0.0);
         assert!(cost.credits > 0.0);
         assert!(cost.estimated_latency_ms > 0);
+    }
+
+    #[tokio::test]
+    async fn test_genie_health_is_healthy_without_api_key() {
+        let provider = GenieProvider::new(GenieModel::Genie3, "");
+        let health = provider.health_check().await.unwrap();
+
+        assert!(health.healthy);
+        assert!(health.message.contains("Genie surrogate ready"));
+    }
+
+    #[tokio::test]
+    async fn test_genie_health_ignores_invalid_endpoint_without_api_key() {
+        let provider = GenieProvider::with_endpoint(GenieModel::Genie3, "", "not-a-valid-endpoint");
+        let health = provider.health_check().await.unwrap();
+
+        assert!(health.healthy);
+        assert!(health.message.contains("Genie surrogate ready"));
     }
 }

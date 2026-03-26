@@ -428,6 +428,19 @@ impl EnvVarGuard {
 
         Self { previous }
     }
+
+    fn clear(vars: &[&str]) -> Self {
+        let previous = vars
+            .iter()
+            .map(|name| ((*name).to_string(), std::env::var_os(name)))
+            .collect();
+
+        for name in vars {
+            std::env::remove_var(name);
+        }
+
+        Self { previous }
+    }
 }
 
 impl Drop for EnvVarGuard {
@@ -451,6 +464,27 @@ fn with_env_vars<T>(vars: &[(&str, &str)], f: impl FnOnce() -> T) -> T {
 fn test_auto_detect_registry_mock_present() {
     let registry = auto_detect();
     assert!(registry.get("mock").is_ok());
+}
+
+#[test]
+fn test_auto_detect_registry_includes_genie_without_env_vars() {
+    let _guard = env_lock().lock().unwrap();
+    let _env = EnvVarGuard::clear(&[
+        "NVIDIA_API_KEY",
+        "NVIDIA_API_ENDPOINT",
+        "RUNWAY_API_SECRET",
+        "JEPA_MODEL_PATH",
+        "JEPA_BACKEND",
+        "GENIE_API_KEY",
+        "GENIE_API_ENDPOINT",
+    ]);
+
+    let registry = auto_detect();
+    assert!(registry.get("genie").is_ok());
+    assert!(registry
+        .find_by_capability("reason")
+        .iter()
+        .any(|provider| provider.name() == "genie"));
 }
 
 #[test]

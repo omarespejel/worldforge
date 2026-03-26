@@ -38,7 +38,8 @@ use worldforge_core::WorldForge;
 /// - `RUNWAY_API_SECRET` → registers a `RunwayProvider`
 /// - `JEPA_MODEL_PATH` → registers `JepaProvider`
 /// - `JEPA_BACKEND` → optional backend override (`burn`, `pytorch`, `onnx`, `safetensors`)
-/// - `GENIE_API_KEY` → registers `GenieProvider` (Genie 3 surrogate + future remote hint)
+/// - `GENIE_API_KEY` → optional credential hint for `GenieProvider`
+/// - `GENIE_API_ENDPOINT` → optional endpoint override for `GenieProvider`
 ///
 /// A `MockProvider` is always registered for testing.
 /// The auto-detected Cosmos entry is capability-complete for its documented
@@ -107,14 +108,16 @@ pub fn auto_detect() -> ProviderRegistry {
         registry.register(Box::new(JepaProvider::new(path, backend)));
     }
 
-    // Genie: optional credentials act as a future remote hint, but the
-    // local surrogate is what actually powers the adapter today.
-    if let Ok(api_key) = std::env::var("GENIE_API_KEY") {
-        registry.register(Box::new(GenieProvider::new(
-            genie::GenieModel::Genie3,
-            api_key,
-        )));
-    }
+    // Genie is always available as a deterministic local surrogate.
+    // Environment variables only provide optional remote hints/overrides.
+    let genie_api_key = std::env::var("GENIE_API_KEY").unwrap_or_default();
+    let genie = match std::env::var("GENIE_API_ENDPOINT") {
+        Ok(endpoint) => {
+            GenieProvider::with_endpoint(genie::GenieModel::Genie3, genie_api_key, endpoint)
+        }
+        Err(_) => GenieProvider::new(genie::GenieModel::Genie3, genie_api_key),
+    };
+    registry.register(Box::new(genie));
 
     registry
 }
@@ -157,7 +160,7 @@ mod tests {
     }
 
     impl EnvVarGuard {
-        fn new(vars: &[(&str, &str)]) -> Self {
+        fn set(vars: &[(&str, &str)]) -> Self {
             let previous = vars
                 .iter()
                 .map(|(name, _)| ((*name).to_string(), std::env::var_os(name)))
@@ -165,6 +168,19 @@ mod tests {
 
             for (name, value) in vars {
                 std::env::set_var(name, value);
+            }
+
+            Self { previous }
+        }
+
+        fn clear(vars: &[&str]) -> Self {
+            let previous = vars
+                .iter()
+                .map(|name| ((*name).to_string(), std::env::var_os(name)))
+                .collect();
+
+            for name in vars {
+                std::env::remove_var(name);
             }
 
             Self { previous }
@@ -249,17 +265,30 @@ mod tests {
 
     #[test]
     fn test_auto_detect_no_env_vars() {
-        // Without env vars set, only mock should be registered
-        // (We can't guarantee env vars aren't set in CI, so just
-        // verify mock is present)
+        let _guard = env_lock().lock().unwrap();
+        let _env = EnvVarGuard::clear(&[
+            "NVIDIA_API_KEY",
+            "NVIDIA_API_ENDPOINT",
+            "RUNWAY_API_SECRET",
+            "JEPA_MODEL_PATH",
+            "JEPA_BACKEND",
+            "GENIE_API_KEY",
+            "GENIE_API_ENDPOINT",
+        ]);
+
         let registry = auto_detect();
         assert!(registry.get("mock").is_ok());
+        assert!(registry.get("genie").is_ok());
+        assert!(registry
+            .find_by_capability("reason")
+            .iter()
+            .any(|provider| provider.name() == "genie"));
     }
 
     #[test]
     fn test_auto_detect_registers_full_stack_cosmos() {
         let _guard = env_lock().lock().unwrap();
-        let _env = EnvVarGuard::new(&[
+        let _env = EnvVarGuard::set(&[
             ("NVIDIA_API_KEY", "cosmos-test-key"),
             ("NVIDIA_API_ENDPOINT", "https://example.invalid/cosmos"),
         ]);
@@ -285,7 +314,7 @@ mod tests {
     #[test]
     fn test_auto_detect_registers_full_stack_runway() {
         let _guard = env_lock().lock().unwrap();
-        let _env = EnvVarGuard::new(&[("RUNWAY_API_SECRET", "runway-test-secret")]);
+        let _env = EnvVarGuard::set(&[("RUNWAY_API_SECRET", "runway-test-secret")]);
 
         let registry = auto_detect();
         let capabilities = registry.get("runway").unwrap().capabilities();
@@ -310,7 +339,7 @@ mod tests {
             })
             .to_string(),
         );
-        let _env = EnvVarGuard::new(&[
+        let _env = EnvVarGuard::set(&[
             ("NVIDIA_API_KEY", "cosmos-test-key"),
             ("NVIDIA_API_ENDPOINT", &reason_endpoint),
             ("RUNWAY_API_SECRET", "runway-test-secret"),
