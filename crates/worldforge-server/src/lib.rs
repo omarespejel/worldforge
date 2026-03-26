@@ -24,7 +24,7 @@ use worldforge_core::scene::{PhysicsProperties, SceneObject, SceneObjectPatch};
 use worldforge_core::state::{DynStateStore, StateFileFormat, StateStoreKind, WorldState};
 use worldforge_core::types::{BBox, Pose, Position, Rotation, Velocity, VideoClip, WorldId};
 use worldforge_core::world::World;
-use worldforge_eval::EvalSuite;
+use worldforge_eval::{EvalReportFormat, EvalSuite};
 use worldforge_verify::{
     prove_guardrail_plan, prove_inference_transition, prove_latest_inference, prove_provenance,
     verify_bundle, verify_proof, VerificationBackend, VerificationBundle, VerificationResult,
@@ -443,6 +443,19 @@ struct EvaluateRequest {
     suite_definition: Option<EvalSuite>,
     #[serde(default)]
     providers: Vec<String>,
+    #[serde(default)]
+    report_format: Option<EvalReportFormat>,
+}
+
+/// Rendered evaluation report artifact returned for non-JSON exports.
+#[derive(Debug, Serialize)]
+struct RenderedEvalReport {
+    /// Suite name used for the evaluation.
+    suite: String,
+    /// Requested report format.
+    format: EvalReportFormat,
+    /// Rendered report body.
+    content: String,
 }
 
 fn resolve_eval_suite(request: &EvaluateRequest) -> std::result::Result<EvalSuite, String> {
@@ -1889,7 +1902,24 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                             }
 
                             match suite.run_with_world_state(&provider_refs, &ws).await {
-                                Ok(report) => (200, ApiResponse::ok(report)),
+                                Ok(report) => {
+                                    let format =
+                                        req.report_format.unwrap_or(EvalReportFormat::Json);
+                                    match format {
+                                        EvalReportFormat::Json => (200, ApiResponse::ok(report)),
+                                        other => match report.render(other) {
+                                            Ok(content) => (
+                                                200,
+                                                ApiResponse::ok(RenderedEvalReport {
+                                                    suite: report.suite.clone(),
+                                                    format: other,
+                                                    content,
+                                                }),
+                                            ),
+                                            Err(error) => (500, error_response(&error.to_string())),
+                                        },
+                                    }
+                                }
                                 Err(e) => (500, error_response(&e.to_string())),
                             }
                         }
@@ -3137,6 +3167,47 @@ mod tests {
             value["data"]["provider_summaries"][0]["provider"],
             "alt-mock"
         );
+    }
+
+    #[tokio::test]
+    async fn test_route_evaluate_renders_markdown_report() {
+        let state = test_state();
+        let id = seed_world(&state, "eval-world", "mock").await;
+        let body = r#"{"suite":"physics","report_format":"markdown"}"#;
+
+        let (status, resp) =
+            route("POST", &format!("/v1/worlds/{id}/evaluate"), body, &state).await;
+        assert_eq!(status, 200);
+
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(value["data"]["format"], "markdown");
+        assert_eq!(value["data"]["suite"], "Physics Standard");
+        assert!(value["data"]["content"]
+            .as_str()
+            .unwrap()
+            .contains("# Evaluation Report: Physics Standard"));
+    }
+
+    #[tokio::test]
+    async fn test_route_evaluate_renders_csv_report() {
+        let state = test_state();
+        let id = seed_world(&state, "eval-world", "mock").await;
+        let body = r#"{"suite":"physics","report_format":"csv"}"#;
+
+        let (status, resp) =
+            route("POST", &format!("/v1/worlds/{id}/evaluate"), body, &state).await;
+        assert_eq!(status, 200);
+
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(value["data"]["format"], "csv");
+        assert_eq!(value["data"]["suite"], "Physics Standard");
+        let content = value["data"]["content"].as_str().unwrap();
+        assert!(content
+            .lines()
+            .next()
+            .unwrap()
+            .contains("suite,provider,scenario"));
+        assert!(content.contains("Physics Standard,mock,object_drop"));
     }
 
     #[tokio::test]

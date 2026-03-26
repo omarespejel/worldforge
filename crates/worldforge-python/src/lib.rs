@@ -3359,6 +3359,7 @@ impl PyEvalScenarioSummary {
 #[pyclass(name = "EvalReport")]
 #[derive(Debug, Clone)]
 pub struct PyEvalReport {
+    inner: worldforge_eval::EvalReport,
     suite: String,
     provider_summaries: Vec<PyEvalResult>,
     dimension_summaries: Vec<PyEvalDimensionSummary>,
@@ -3397,6 +3398,42 @@ impl PyEvalReport {
     #[getter]
     fn total_outcomes(&self) -> usize {
         self.total_outcomes
+    }
+
+    fn to_json(&self) -> PyResult<String> {
+        self.inner.to_json_pretty().map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    }
+
+    #[staticmethod]
+    fn from_json(json: &str) -> PyResult<Self> {
+        worldforge_eval::EvalReport::from_json_str(json)
+            .map(to_py_eval_report)
+            .map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!("invalid eval report JSON: {e}"))
+            })
+    }
+
+    fn to_markdown(&self) -> PyResult<String> {
+        self.inner
+            .to_markdown()
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("render error: {e}")))
+    }
+
+    fn to_csv(&self) -> PyResult<String> {
+        self.inner
+            .to_csv()
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("render error: {e}")))
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "EvalReport(suite='{}', providers={}, scenarios={})",
+            self.suite,
+            self.provider_summaries.len(),
+            self.scenario_summaries.len()
+        )
     }
 }
 
@@ -3674,40 +3711,47 @@ fn to_py_eval_result(summary: &worldforge_eval::ProviderSummary) -> PyEvalResult
 }
 
 fn to_py_eval_report(report: worldforge_eval::EvalReport) -> PyEvalReport {
+    let provider_summaries = report
+        .provider_summaries
+        .iter()
+        .map(to_py_eval_result)
+        .collect();
+    let dimension_summaries = report
+        .dimension_summaries
+        .iter()
+        .cloned()
+        .map(|summary| PyEvalDimensionSummary {
+            dimension: summary.dimension,
+            provider_scores: summary.provider_scores,
+            best_provider: summary.best_provider,
+            best_score: summary.best_score,
+        })
+        .collect();
+    let scenario_summaries = report
+        .scenario_summaries
+        .iter()
+        .cloned()
+        .map(|summary| PyEvalScenarioSummary {
+            scenario: summary.scenario,
+            description: summary.description,
+            provider_scores: summary.provider_scores,
+            passed_by: summary.passed_by,
+            failed_by: summary.failed_by,
+            best_provider: summary.best_provider,
+            best_score: summary.best_score,
+            outcomes_passed: summary.outcomes_passed,
+            total_outcomes: summary.total_outcomes,
+        })
+        .collect();
+
     PyEvalReport {
-        suite: report.suite,
-        provider_summaries: report
-            .provider_summaries
-            .iter()
-            .map(to_py_eval_result)
-            .collect(),
-        dimension_summaries: report
-            .dimension_summaries
-            .into_iter()
-            .map(|summary| PyEvalDimensionSummary {
-                dimension: summary.dimension,
-                provider_scores: summary.provider_scores,
-                best_provider: summary.best_provider,
-                best_score: summary.best_score,
-            })
-            .collect(),
-        scenario_summaries: report
-            .scenario_summaries
-            .into_iter()
-            .map(|summary| PyEvalScenarioSummary {
-                scenario: summary.scenario,
-                description: summary.description,
-                provider_scores: summary.provider_scores,
-                passed_by: summary.passed_by,
-                failed_by: summary.failed_by,
-                best_provider: summary.best_provider,
-                best_score: summary.best_score,
-                outcomes_passed: summary.outcomes_passed,
-                total_outcomes: summary.total_outcomes,
-            })
-            .collect(),
+        suite: report.suite.clone(),
+        provider_summaries,
+        dimension_summaries,
+        scenario_summaries,
         outcomes_passed: report.outcomes_passed,
         total_outcomes: report.total_outcomes,
+        inner: report,
     }
 }
 
@@ -6709,6 +6753,27 @@ mod tests {
             .scenario_summaries()
             .iter()
             .any(|summary| summary.scenario() == "object_drop"));
+    }
+
+    #[test]
+    fn test_eval_report_roundtrips_and_renders_artifacts() {
+        let report = run_eval_report_data("physics", "mock", None).unwrap();
+
+        let json = report.to_json().unwrap();
+        let restored = PyEvalReport::from_json(&json).unwrap();
+        assert_eq!(restored.suite(), "Physics Standard");
+
+        let markdown = restored.to_markdown().unwrap();
+        assert!(markdown.contains("# Evaluation Report: Physics Standard"));
+        assert!(markdown.contains("## Leaderboard"));
+
+        let csv = restored.to_csv().unwrap();
+        assert!(csv
+            .lines()
+            .next()
+            .unwrap()
+            .contains("suite,provider,scenario"));
+        assert!(csv.contains("Physics Standard,mock,object_drop"));
     }
 
     #[test]

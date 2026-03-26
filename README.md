@@ -173,6 +173,10 @@ from worldforge.verify import ZkVerifier
 
 suite = EvalSuite.from_builtin("physics")
 report = suite.run_report_data("mock")
+markdown = report.to_markdown()
+csv = report.to_csv()
+assert markdown.startswith("# Evaluation Report:")
+assert "suite,provider,scenario" in csv
 
 verifier = ZkVerifier(backend="stark")  # or "mock" / "ezkl"
 guardrail_bundle = plan.prove_guardrail_bundle()
@@ -183,6 +187,17 @@ assert guardrail_report.current_verification.valid
 world.predict(Action.move_to(0.35, 0.8, 0.0), steps=2)
 inference_bundle = world.prove_latest_inference_bundle()
 assert inference_bundle.verify().current_verification.valid
+```
+
+The CLI can export the same evaluation report as multiple artifacts in one run:
+
+```bash
+worldforge eval \
+  --suite physics \
+  --providers mock \
+  --output-json /tmp/eval-report.json \
+  --output-markdown /tmp/eval-report.md \
+  --output-csv /tmp/eval-report.csv
 ```
 
 ## Rust Quickstart
@@ -450,6 +465,10 @@ curl http://127.0.0.1:8080/v1/evals/suites
 curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/evaluate \
   -H 'content-type: application/json' \
   -d '{"suite":"physics","providers":["mock"]}'
+
+curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/evaluate \
+  -H 'content-type: application/json' \
+  -d '{"suite":"physics","providers":["mock"],"report_format":"markdown"}'
 
 curl http://127.0.0.1:8080/v1/providers
 

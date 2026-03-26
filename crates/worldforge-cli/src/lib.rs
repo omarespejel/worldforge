@@ -29,7 +29,7 @@ use worldforge_core::state::{
     StateFileFormat as CoreStateFileFormat, StateStore, StateStoreKind, WorldState,
 };
 use worldforge_core::types::{BBox, Pose, Position, Rotation, Vec3, Velocity, VideoClip};
-use worldforge_eval::EvalSuite;
+use worldforge_eval::{EvalReportFormat, EvalSuite};
 use worldforge_verify::{
     prove_guardrail_plan, prove_inference_transition, prove_latest_inference, prove_provenance,
     verify_bundle, verify_proof, BundleVerificationReport, VerificationBackend, VerificationBundle,
@@ -419,6 +419,12 @@ pub enum Commands {
         /// Optional path to write the evaluation report as JSON.
         #[arg(long)]
         output_json: Option<PathBuf>,
+        /// Optional path to write the evaluation report as Markdown.
+        #[arg(long)]
+        output_markdown: Option<PathBuf>,
+        /// Optional path to write the evaluation report as CSV.
+        #[arg(long)]
+        output_csv: Option<PathBuf>,
     },
 
     /// Compare predictions across providers.
@@ -1071,6 +1077,8 @@ pub async fn run() -> Result<()> {
             providers,
             list_suites,
             output_json,
+            output_markdown,
+            output_csv,
         } => {
             cmd_eval(
                 Some(store.as_ref()),
@@ -1081,6 +1089,8 @@ pub async fn run() -> Result<()> {
                     providers: &providers,
                     list_suites,
                     output_json: output_json.as_deref(),
+                    output_markdown: output_markdown.as_deref(),
+                    output_csv: output_csv.as_deref(),
                 },
             )
             .await
@@ -1570,6 +1580,8 @@ struct EvalOptions<'a> {
     providers: &'a str,
     list_suites: bool,
     output_json: Option<&'a Path>,
+    output_markdown: Option<&'a Path>,
+    output_csv: Option<&'a Path>,
 }
 
 struct VerifyOptions<'a> {
@@ -1643,6 +1655,14 @@ fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<()> {
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
     let contents = serde_json::to_string_pretty(value).context("failed to serialize JSON")?;
+    fs::write(path, contents).with_context(|| format!("failed to write {}", path.display()))
+}
+
+fn write_text_file(path: &Path, contents: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
     fs::write(path, contents).with_context(|| format!("failed to write {}", path.display()))
 }
 
@@ -2647,7 +2667,31 @@ async fn cmd_eval(store: Option<&dyn StateStore>, options: EvalOptions<'_>) -> R
     };
 
     if let Some(path) = options.output_json {
-        write_json_file(path, &report)?;
+        write_text_file(
+            path,
+            &report
+                .render(EvalReportFormat::Json)
+                .map_err(|e| anyhow::anyhow!("{e}"))?,
+        )?;
+        println!("Saved evaluation JSON: {}", path.display());
+    }
+    if let Some(path) = options.output_markdown {
+        write_text_file(
+            path,
+            &report
+                .render(EvalReportFormat::Markdown)
+                .map_err(|e| anyhow::anyhow!("{e}"))?,
+        )?;
+        println!("Saved evaluation Markdown: {}", path.display());
+    }
+    if let Some(path) = options.output_csv {
+        write_text_file(
+            path,
+            &report
+                .render(EvalReportFormat::Csv)
+                .map_err(|e| anyhow::anyhow!("{e}"))?,
+        )?;
+        println!("Saved evaluation CSV: {}", path.display());
     }
 
     println!("Evaluation Report: {}", report.suite);
@@ -4522,6 +4566,10 @@ mod tests {
             "mock,jepa",
             "--output-json",
             "/tmp/eval-report.json",
+            "--output-markdown",
+            "/tmp/eval-report.md",
+            "--output-csv",
+            "/tmp/eval-report.csv",
         ])
         .unwrap();
 
@@ -4533,6 +4581,8 @@ mod tests {
                 providers,
                 list_suites,
                 output_json,
+                output_markdown,
+                output_csv,
             } => {
                 assert!(suite.is_none());
                 assert_eq!(suite_json, Some(PathBuf::from("/tmp/custom-suite.json")));
@@ -4540,6 +4590,8 @@ mod tests {
                 assert_eq!(providers, "mock,jepa");
                 assert!(!list_suites);
                 assert_eq!(output_json, Some(PathBuf::from("/tmp/eval-report.json")));
+                assert_eq!(output_markdown, Some(PathBuf::from("/tmp/eval-report.md")));
+                assert_eq!(output_csv, Some(PathBuf::from("/tmp/eval-report.csv")));
             }
             _ => panic!("expected Eval"),
         }
@@ -4563,6 +4615,8 @@ mod tests {
                 world,
                 providers,
                 list_suites,
+                output_markdown,
+                output_csv,
                 ..
             } => {
                 assert_eq!(suite.as_deref(), Some("physics"));
@@ -4572,6 +4626,8 @@ mod tests {
                 );
                 assert_eq!(providers, "mock");
                 assert!(!list_suites);
+                assert!(output_markdown.is_none());
+                assert!(output_csv.is_none());
             }
             _ => panic!("expected Eval"),
         }
@@ -4893,6 +4949,8 @@ mod tests {
                 providers: "mock",
                 list_suites: false,
                 output_json: Some(&report_path),
+                output_markdown: None,
+                output_csv: None,
             },
         )
         .await
@@ -5004,6 +5062,8 @@ mod tests {
                 providers: "mock",
                 list_suites: false,
                 output_json: Some(&report_path),
+                output_markdown: None,
+                output_csv: None,
             },
         )
         .await
@@ -5013,6 +5073,43 @@ mod tests {
         assert_eq!(report["suite"], "World-aware eval");
         assert_eq!(report["results"][0]["outcomes"][0]["passed"], true);
         assert_eq!(report["results"][0]["outcomes"][1]["passed"], true);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn test_cmd_eval_writes_markdown_and_csv_reports() {
+        let dir =
+            std::env::temp_dir().join(format!("wf-cli-eval-artifacts-{}", uuid::Uuid::new_v4()));
+        let markdown_path = dir.join("report.md");
+        let csv_path = dir.join("report.csv");
+
+        cmd_eval(
+            None,
+            EvalOptions {
+                suite_name: Some("physics"),
+                suite_json: None,
+                world: None,
+                providers: "mock",
+                list_suites: false,
+                output_json: None,
+                output_markdown: Some(&markdown_path),
+                output_csv: Some(&csv_path),
+            },
+        )
+        .await
+        .unwrap();
+
+        let markdown = fs::read_to_string(&markdown_path).unwrap();
+        let csv = fs::read_to_string(&csv_path).unwrap();
+        assert!(markdown.contains("# Evaluation Report: Physics Standard"));
+        assert!(markdown.contains("## Leaderboard"));
+        assert!(csv
+            .lines()
+            .next()
+            .unwrap()
+            .contains("suite,provider,scenario"));
+        assert!(csv.contains("Physics Standard,mock,object_drop"));
 
         let _ = fs::remove_dir_all(dir);
     }

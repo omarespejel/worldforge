@@ -5,8 +5,10 @@
 //! temporal coherence.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::fs;
 use std::path::Path;
+use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
@@ -194,6 +196,250 @@ pub struct EvalReport {
     pub outcomes_passed: usize,
     /// Total number of evaluated outcomes across the full report.
     pub total_outcomes: usize,
+}
+
+/// Supported serialization and rendering formats for evaluation reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum EvalReportFormat {
+    /// Pretty-printed JSON with the full structured report payload.
+    #[default]
+    Json,
+    /// A human-readable Markdown report with summary tables.
+    Markdown,
+    /// A CSV export with one row per provider/scenario result.
+    Csv,
+}
+
+impl EvalReportFormat {
+    /// Canonical lowercase identifier for this format.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::Markdown => "markdown",
+            Self::Csv => "csv",
+        }
+    }
+}
+
+impl fmt::Display for EvalReportFormat {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for EvalReportFormat {
+    type Err = WorldForgeError;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "json" => Ok(Self::Json),
+            "markdown" | "md" => Ok(Self::Markdown),
+            "csv" => Ok(Self::Csv),
+            other => Err(WorldForgeError::InvalidState(format!(
+                "unknown evaluation report format: {other}. Available: json, markdown, csv"
+            ))),
+        }
+    }
+}
+
+impl EvalReport {
+    /// Deserialize a full evaluation report from JSON.
+    pub fn from_json_str(json: &str) -> Result<Self> {
+        serde_json::from_str(json)
+            .map_err(|error| WorldForgeError::SerializationError(error.to_string()))
+    }
+
+    /// Serialize the report to pretty JSON.
+    pub fn to_json_pretty(&self) -> Result<String> {
+        serde_json::to_string_pretty(self)
+            .map_err(|error| WorldForgeError::SerializationError(error.to_string()))
+    }
+
+    /// Render the report using one of the supported export formats.
+    pub fn render(&self, format: EvalReportFormat) -> Result<String> {
+        match format {
+            EvalReportFormat::Json => self.to_json_pretty(),
+            EvalReportFormat::Markdown => self.to_markdown(),
+            EvalReportFormat::Csv => self.to_csv(),
+        }
+    }
+
+    /// Render a deterministic Markdown summary of the report.
+    pub fn to_markdown(&self) -> Result<String> {
+        let mut output = String::new();
+        output.push_str("# Evaluation Report: ");
+        output.push_str(&self.suite);
+        output.push_str("\n\n");
+        output.push_str("## Summary\n\n");
+        output.push_str(&format!(
+            "- Providers evaluated: {}\n- Scenarios evaluated: {}\n- Outcomes passed: {}/{}\n\n",
+            self.provider_summaries.len(),
+            self.scenario_summaries.len(),
+            self.outcomes_passed,
+            self.total_outcomes,
+        ));
+
+        output.push_str("## Leaderboard\n\n");
+        if self.leaderboard.is_empty() {
+            output.push_str("_No leaderboard entries recorded._\n\n");
+        } else {
+            output.push_str(
+                "| Provider | Avg Score | Avg Latency (ms) | Scenarios Passed |\n| --- | ---: | ---: | ---: |\n",
+            );
+            for entry in &self.leaderboard {
+                output.push_str(&format!(
+                    "| {} | {:.3} | {} | {}/{} |\n",
+                    markdown_cell(&entry.provider),
+                    entry.average_score,
+                    entry.average_latency_ms,
+                    entry.scenarios_passed,
+                    entry.total_scenarios,
+                ));
+            }
+            output.push('\n');
+        }
+
+        output.push_str("## Provider Summaries\n\n");
+        if self.provider_summaries.is_empty() {
+            output.push_str("_No provider summaries recorded._\n\n");
+        } else {
+            for summary in &self.provider_summaries {
+                output.push_str("### ");
+                output.push_str(&summary.provider);
+                output.push_str("\n\n");
+                output.push_str(&format!(
+                    "- Average score: {:.3}\n- Average latency: {} ms\n- Scenario pass rate: {} ({}/{})\n- Outcome pass rate: {} ({}/{})\n",
+                    summary.average_score,
+                    summary.average_latency_ms,
+                    format_percent(summary.scenario_pass_rate),
+                    summary.scenarios_passed,
+                    summary.total_scenarios,
+                    format_percent(summary.outcome_pass_rate),
+                    summary.outcomes_passed,
+                    summary.total_outcomes,
+                ));
+
+                if summary.dimension_scores.is_empty() {
+                    output.push_str("\n_No dimension scores recorded._\n\n");
+                } else {
+                    output.push_str("\n| Dimension | Score |\n| --- | ---: |\n");
+                    let mut dimensions: Vec<_> = summary.dimension_scores.iter().collect();
+                    dimensions.sort_by(|left, right| left.0.cmp(right.0));
+                    for (dimension, score) in dimensions {
+                        output.push_str(&format!(
+                            "| {} | {:.3} |\n",
+                            markdown_cell(dimension),
+                            score,
+                        ));
+                    }
+                    output.push('\n');
+                }
+            }
+        }
+
+        output.push_str("## Dimension Summaries\n\n");
+        if self.dimension_summaries.is_empty() {
+            output.push_str("_No dimension summaries recorded._\n\n");
+        } else {
+            output.push_str(
+                "| Dimension | Best Provider | Best Score | Provider Scores |\n| --- | --- | ---: | --- |\n",
+            );
+            for summary in &self.dimension_summaries {
+                let provider_scores = provider_score_list(&summary.provider_scores);
+                output.push_str(&format!(
+                    "| {} | {} | {} | {} |\n",
+                    markdown_cell(&summary.dimension),
+                    markdown_optional(summary.best_provider.as_deref()),
+                    format_optional_score(summary.best_score),
+                    markdown_cell(&provider_scores),
+                ));
+            }
+            output.push('\n');
+        }
+
+        output.push_str("## Scenario Summaries\n\n");
+        if self.scenario_summaries.is_empty() {
+            output.push_str("_No scenario summaries recorded._\n");
+        } else {
+            output.push_str("| Scenario | Best Provider | Best Score | Outcomes | Passed By | Failed By |\n| --- | --- | ---: | ---: | --- | --- |\n");
+            for summary in &self.scenario_summaries {
+                output.push_str(&format!(
+                    "| {} | {} | {} | {}/{} | {} | {} |\n",
+                    markdown_cell(&summary.scenario),
+                    markdown_optional(summary.best_provider.as_deref()),
+                    format_optional_score(summary.best_score),
+                    summary.outcomes_passed,
+                    summary.total_outcomes,
+                    markdown_joined_list(&summary.passed_by),
+                    markdown_joined_list(&summary.failed_by),
+                ));
+            }
+        }
+
+        Ok(output)
+    }
+
+    /// Render the report as CSV with one row per provider/scenario result.
+    pub fn to_csv(&self) -> Result<String> {
+        let mut output = String::new();
+        let score_keys = report_score_keys(&self.results);
+
+        let mut header = vec![
+            "suite".to_string(),
+            "provider".to_string(),
+            "scenario".to_string(),
+            "overall_score".to_string(),
+            "latency_ms".to_string(),
+            "passed_outcomes".to_string(),
+            "total_outcomes".to_string(),
+            "all_outcomes_passed".to_string(),
+        ];
+        header.extend(score_keys.iter().cloned());
+        output.push_str(&header.join(","));
+        output.push('\n');
+
+        for result in &self.results {
+            let passed_outcomes = result
+                .outcomes
+                .iter()
+                .filter(|outcome| outcome.passed)
+                .count();
+            let total_outcomes = result.outcomes.len();
+            let all_outcomes_passed = total_outcomes > 0 && passed_outcomes == total_outcomes;
+            let mut row = vec![
+                csv_cell(&self.suite),
+                csv_cell(&result.provider),
+                csv_cell(&result.scenario),
+                csv_cell(
+                    &result
+                        .scores
+                        .get("overall")
+                        .map(|score| format!("{score:.3}"))
+                        .unwrap_or_default(),
+                ),
+                result.latency_ms.to_string(),
+                passed_outcomes.to_string(),
+                total_outcomes.to_string(),
+                all_outcomes_passed.to_string(),
+            ];
+
+            for score_key in &score_keys {
+                row.push(csv_cell(
+                    &result
+                        .scores
+                        .get(score_key)
+                        .map(|score| format!("{score:.3}"))
+                        .unwrap_or_default(),
+                ));
+            }
+
+            output.push_str(&row.join(","));
+            output.push('\n');
+        }
+
+        Ok(output)
+    }
 }
 
 /// One row in the evaluation leaderboard.
@@ -1721,6 +1967,69 @@ fn build_scenario_summaries(
         .collect()
 }
 
+fn format_percent(value: f32) -> String {
+    format!("{:.1}%", value * 100.0)
+}
+
+fn format_optional_score(value: Option<f32>) -> String {
+    value
+        .map(|score| format!("{score:.3}"))
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn markdown_optional(value: Option<&str>) -> String {
+    value.map(markdown_cell).unwrap_or_else(|| "-".to_string())
+}
+
+fn markdown_joined_list(values: &[String]) -> String {
+    if values.is_empty() {
+        "-".to_string()
+    } else {
+        markdown_cell(&values.join(", "))
+    }
+}
+
+fn markdown_cell(value: &str) -> String {
+    if value.is_empty() {
+        "-".to_string()
+    } else {
+        value.replace('|', "\\|").replace('\n', "<br>")
+    }
+}
+
+fn provider_score_list(provider_scores: &HashMap<String, f32>) -> String {
+    if provider_scores.is_empty() {
+        return "-".to_string();
+    }
+
+    let mut entries: Vec<_> = provider_scores.iter().collect();
+    entries.sort_by(|left, right| left.0.cmp(right.0));
+    entries
+        .into_iter()
+        .map(|(provider, score)| format!("{provider}: {score:.3}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn report_score_keys(results: &[EvalResult]) -> Vec<String> {
+    let mut keys: Vec<_> = results
+        .iter()
+        .flat_map(|result| result.scores.keys().cloned())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    keys.sort();
+    keys
+}
+
+fn csv_cell(value: &str) -> String {
+    if value.contains([',', '"', '\n']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2064,6 +2373,27 @@ mod tests {
         assert!(!suite.dimensions.is_empty());
     }
 
+    #[test]
+    fn test_eval_report_format_parsing_supports_known_variants() {
+        assert_eq!(
+            "json".parse::<EvalReportFormat>().unwrap(),
+            EvalReportFormat::Json
+        );
+        assert_eq!(
+            "markdown".parse::<EvalReportFormat>().unwrap(),
+            EvalReportFormat::Markdown
+        );
+        assert_eq!(
+            "md".parse::<EvalReportFormat>().unwrap(),
+            EvalReportFormat::Markdown
+        );
+        assert_eq!(
+            "csv".parse::<EvalReportFormat>().unwrap(),
+            EvalReportFormat::Csv
+        );
+        assert!("yaml".parse::<EvalReportFormat>().is_err());
+    }
+
     #[tokio::test]
     async fn test_eval_suite_run() {
         let suite = EvalSuite::physics_standard();
@@ -2076,6 +2406,62 @@ mod tests {
         assert_eq!(report.dimension_summaries.len(), suite.dimensions.len());
         assert_eq!(report.scenario_summaries.len(), suite.scenarios.len());
         assert_eq!(report.leaderboard[0].provider, "mock");
+    }
+
+    #[tokio::test]
+    async fn test_eval_report_renderers_are_roundtrip_and_deterministic() {
+        let suite = EvalSuite::physics_standard();
+        let provider = MockProvider::new();
+        let providers: Vec<&dyn WorldModelProvider> = vec![&provider];
+        let report = suite.run(&providers).await.unwrap();
+
+        let json = report.to_json_pretty().unwrap();
+        let roundtrip = EvalReport::from_json_str(&json).unwrap();
+        assert_eq!(roundtrip.suite, report.suite);
+        assert_eq!(roundtrip.results.len(), report.results.len());
+
+        let markdown = report.to_markdown().unwrap();
+        assert!(markdown.contains("# Evaluation Report: Physics Standard"));
+        assert!(markdown.contains("## Leaderboard"));
+        assert!(markdown.contains("## Provider Summaries"));
+        assert!(markdown.contains("## Scenario Summaries"));
+
+        let csv = report.to_csv().unwrap();
+        let lines: Vec<_> = csv.lines().collect();
+        assert_eq!(lines.len(), report.results.len() + 1);
+        assert!(lines[0].contains("suite,provider,scenario,overall_score"));
+        assert!(lines[0].contains("object_permanence"));
+        assert!(csv.contains("Physics Standard,mock,object_drop"));
+    }
+
+    #[test]
+    fn test_eval_report_csv_escapes_text_fields() {
+        let report = EvalReport {
+            suite: "Physics, Standard".to_string(),
+            results: vec![EvalResult {
+                provider: "mock".to_string(),
+                scenario: "drop \"mug\"".to_string(),
+                scores: HashMap::from([(String::from("overall"), 0.95)]),
+                latency_ms: 12,
+                video: None,
+                video_metrics: None,
+                outcomes: vec![OutcomeResult {
+                    description: "prediction".to_string(),
+                    passed: true,
+                    details: None,
+                }],
+            }],
+            leaderboard: Vec::new(),
+            provider_summaries: Vec::new(),
+            dimension_summaries: Vec::new(),
+            scenario_summaries: Vec::new(),
+            outcomes_passed: 1,
+            total_outcomes: 1,
+        };
+
+        let csv = report.to_csv().unwrap();
+        assert!(csv.contains("\"Physics, Standard\""));
+        assert!(csv.contains("\"drop \"\"mug\"\"\""));
     }
 
     #[tokio::test]
