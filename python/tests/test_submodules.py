@@ -1,14 +1,14 @@
 import tempfile
 import unittest
 
-try:
-    import worldforge
-except ModuleNotFoundError:  # pragma: no cover - exercised by discovery when the package is absent
-    worldforge = None
+from _helpers import require_installed_module
 
 
 class WorldForgeSubmoduleImportTests(unittest.TestCase):
-    @unittest.skipUnless(worldforge is not None, "worldforge package is not installed")
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.worldforge = require_installed_module("worldforge")
+
     def test_provider_submodule_exports_provider_classes(self) -> None:
         from worldforge.providers import (
             CosmosProvider,
@@ -24,7 +24,6 @@ class WorldForgeSubmoduleImportTests(unittest.TestCase):
         self.assertIsNotNone(MockProvider)
         self.assertIsNotNone(RunwayProvider)
 
-    @unittest.skipUnless(worldforge is not None, "worldforge package is not installed")
     def test_eval_and_verify_submodules_are_importable(self) -> None:
         from worldforge.eval import EvalScenario, EvalSuite, PhysicsEval
         from worldforge.verify import (
@@ -54,10 +53,10 @@ class WorldForgeSubmoduleImportTests(unittest.TestCase):
         self.assertIsNotNone(ZkProof)
         self.assertIsNotNone(ZkVerifier)
 
-    @unittest.skipUnless(worldforge is not None, "worldforge package is not installed")
     def test_manual_provider_registration_flow(self) -> None:
         from worldforge.providers import MockProvider
 
+        worldforge = self.worldforge
         with tempfile.TemporaryDirectory(prefix="worldforge-python-registration-") as state_dir:
             forge = worldforge.WorldForge(state_dir=state_dir)
             provider = MockProvider(name="manual-mock")

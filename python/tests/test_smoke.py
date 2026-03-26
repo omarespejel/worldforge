@@ -1,15 +1,16 @@
 import tempfile
 import unittest
 
-try:
-    import worldforge
-except ModuleNotFoundError:  # pragma: no cover - exercised by discovery when the package is absent
-    worldforge = None
+from _helpers import require_installed_module
 
 
 class WorldForgePythonPackageSmokeTests(unittest.TestCase):
-    @unittest.skipUnless(worldforge is not None, "worldforge package is not installed")
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.worldforge = require_installed_module("worldforge")
+
     def test_world_prediction_compare_and_persistence_flow(self) -> None:
+        worldforge = self.worldforge
         with tempfile.TemporaryDirectory(prefix="worldforge-python-smoke-") as state_dir:
             forge = worldforge.WorldForge(state_dir=state_dir)
             self.assertIn("mock", forge.providers())
@@ -43,8 +44,8 @@ class WorldForgePythonPackageSmokeTests(unittest.TestCase):
             loaded = forge.load_world(world_id)
             self.assertIn("red_mug", loaded.list_objects())
 
-    @unittest.skipUnless(worldforge is not None, "worldforge package is not installed")
     def test_generation_transfer_eval_and_verification_helpers(self) -> None:
+        worldforge = self.worldforge
         forge = worldforge.WorldForge()
 
         clip = forge.generate("A cube rolling across a table", "mock", duration_seconds=1.0)
@@ -65,8 +66,8 @@ class WorldForgePythonPackageSmokeTests(unittest.TestCase):
         self.assertTrue(valid)
         self.assertTrue(details)
 
-    @unittest.skipUnless(worldforge is not None, "worldforge package is not installed")
     def test_typed_verification_bundle_flow(self) -> None:
+        worldforge = self.worldforge
         from worldforge.verify import ZkVerifier, prove_inference_transition_bundle
 
         world = worldforge.World("verify-python", "mock")

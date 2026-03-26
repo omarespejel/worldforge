@@ -186,17 +186,16 @@ The Python bindings now ship as an installable package from this repository via
 [`maturin`](https://github.com/PyO3/maturin):
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
-python -m unittest discover -s python/tests
+bash scripts/test_python_package.sh
 ```
 
-This builds the `worldforge` extension module from
+That script creates an isolated virtual environment, installs the package in
+editable mode, verifies that `worldforge` and its submodules import from the
+installed package, and then runs `python -m unittest discover -s python/tests`
+against the installed bindings. The editable install is defined by
 [`crates/worldforge-python/Cargo.toml`](./crates/worldforge-python/Cargo.toml)
-using the root [`pyproject.toml`](./pyproject.toml). `pip install -e .` resolves
-the `maturin` build backend automatically, so no separate global install is
-required.
+and the root [`pyproject.toml`](./pyproject.toml), so no separate global
+`maturin` installation is required.
 
 ## Architecture
 

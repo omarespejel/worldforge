@@ -16,15 +16,16 @@ Thank you for your interest in contributing to WorldForge!
 The PyO3 module is packaged from the workspace root with `maturin` via
 [`pyproject.toml`](./pyproject.toml):
 
-1. Create a virtual environment: `python3 -m venv .venv`
-2. Activate it: `source .venv/bin/activate`
-3. Build an editable install: `pip install -e .`
-4. Run the installed-module smoke tests: `python -m unittest discover -s python/tests`
+1. Run the canonical package validation script: `bash scripts/test_python_package.sh`
+2. Inspect `python/tests/` for the installed-package smoke coverage that script executes
+3. Use the same script before sending a PR; CI runs it in `.github/workflows/python-package.yml`
 
 The root [`pyproject.toml`](./pyproject.toml) points at
 `crates/worldforge-python/Cargo.toml`, so Python consumers can install the
-package without knowing the Rust crate layout. `pip` resolves the `maturin`
-build backend automatically during the editable install.
+package without knowing the Rust crate layout. The validation script creates a
+throwaway virtual environment, performs an editable install, checks the
+installed `worldforge` imports, and then runs the Python smoke tests against
+that environment.
 
 ## Project Structure
 
