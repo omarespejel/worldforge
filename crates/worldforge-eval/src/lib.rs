@@ -14,7 +14,7 @@ use worldforge_core::action::{evaluate_condition, Action, Condition};
 use worldforge_core::error::{Result, WorldForgeError};
 use worldforge_core::prediction::{PhysicsScores, PredictionConfig};
 use worldforge_core::provider::WorldModelProvider;
-use worldforge_core::state::WorldState;
+use worldforge_core::state::{WorldMetadata, WorldState};
 use worldforge_core::types::{Position, Tensor, TensorData, VideoClip};
 
 const BUILTIN_SUITE_NAMES: [&str; 4] = ["physics", "manipulation", "spatial", "comprehensive"];
@@ -379,6 +379,19 @@ impl EvalSuite {
         }
 
         Ok(())
+    }
+
+    /// Run the suite against a supplied world state.
+    ///
+    /// The supplied world is merged over each scenario's fixture state before
+    /// evaluation. This preserves the scenario's action fixtures while letting
+    /// persisted world context influence the results.
+    pub async fn run_with_world_state(
+        &self,
+        providers: &[&dyn WorldModelProvider],
+        world_state: &WorldState,
+    ) -> Result<EvalReport> {
+        self.run_internal(providers, Some(world_state)).await
     }
 
     /// Create a standard physics evaluation suite.
@@ -804,6 +817,14 @@ impl EvalSuite {
 
     /// Run the evaluation suite against a set of providers.
     pub async fn run(&self, providers: &[&dyn WorldModelProvider]) -> Result<EvalReport> {
+        self.run_internal(providers, None).await
+    }
+
+    async fn run_internal(
+        &self,
+        providers: &[&dyn WorldModelProvider],
+        world_state: Option<&WorldState>,
+    ) -> Result<EvalReport> {
         self.validate()?;
         let mut all_results = Vec::new();
 
@@ -835,9 +856,13 @@ impl EvalSuite {
                 let config = prediction_config_for_scenario(scenario);
                 let mut score_accumulator = ScenarioAccumulator::default();
                 let mut outcomes = Vec::new();
-
-                // Run prediction for each action
                 let mut current_state = scenario.initial_state.clone();
+
+                if let Some(world_state) = world_state {
+                    current_state = merge_world_state(&current_state, world_state);
+                }
+
+                // Run prediction for each action.
                 let mut prediction_failed = false;
                 for action in &scenario.actions {
                     match provider.predict(&current_state, action, &config).await {
@@ -930,6 +955,65 @@ impl EvalSuite {
             total_outcomes,
         })
     }
+}
+
+fn merge_world_state(base: &WorldState, overlay: &WorldState) -> WorldState {
+    let mut merged = base.clone();
+
+    merged.time = overlay.time;
+    merged.history = if overlay.history.is_empty() {
+        base.history.clone()
+    } else {
+        overlay.history.clone()
+    };
+    merged.metadata = merge_world_metadata(&base.metadata, &overlay.metadata);
+
+    for object in sorted_scene_objects(&overlay.scene) {
+        if merged.scene.objects.contains_key(&object.id) {
+            let _ = merged.scene.replace_object(object.clone());
+        } else {
+            merged.scene.add_object(object.clone());
+        }
+    }
+
+    merged
+}
+
+fn merge_world_metadata(base: &WorldMetadata, overlay: &WorldMetadata) -> WorldMetadata {
+    let mut tags = base.tags.clone();
+    for tag in &overlay.tags {
+        if !tags.contains(tag) {
+            tags.push(tag.clone());
+        }
+    }
+
+    WorldMetadata {
+        name: if overlay.name.is_empty() {
+            base.name.clone()
+        } else {
+            overlay.name.clone()
+        },
+        description: if overlay.description.is_empty() {
+            base.description.clone()
+        } else {
+            overlay.description.clone()
+        },
+        created_by: if overlay.created_by.is_empty() {
+            base.created_by.clone()
+        } else {
+            overlay.created_by.clone()
+        },
+        created_at: overlay.created_at,
+        tags,
+    }
+}
+
+fn sorted_scene_objects(
+    scene: &worldforge_core::scene::SceneGraph,
+) -> Vec<worldforge_core::scene::SceneObject> {
+    let mut objects: Vec<_> = scene.objects.values().cloned().collect();
+    objects.sort_by(|left, right| left.id.as_bytes().cmp(right.id.as_bytes()));
+    objects
 }
 
 #[derive(Debug, Default)]
@@ -1992,6 +2076,82 @@ mod tests {
         assert_eq!(report.dimension_summaries.len(), suite.dimensions.len());
         assert_eq!(report.scenario_summaries.len(), suite.scenarios.len());
         assert_eq!(report.leaderboard[0].provider, "mock");
+    }
+
+    #[tokio::test]
+    async fn test_eval_suite_run_with_world_state_overlays_scenario_fixture() {
+        use worldforge_core::scene::SceneObject;
+        use worldforge_core::types::{BBox, Pose, Position};
+
+        let object_id = uuid::Uuid::new_v4();
+        let mut scenario_state = WorldState::new("overlay_fixture", "eval");
+        let mut fixture_object = SceneObject::new(
+            "cube",
+            Pose {
+                position: Position {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                ..Pose::default()
+            },
+            BBox {
+                min: Position {
+                    x: -0.1,
+                    y: -0.1,
+                    z: -0.1,
+                },
+                max: Position {
+                    x: 0.1,
+                    y: 0.1,
+                    z: 0.1,
+                },
+            },
+        );
+        fixture_object.id = object_id;
+        scenario_state.scene.add_object(fixture_object);
+
+        let suite = EvalSuite {
+            name: "World Overlay".to_string(),
+            scenarios: vec![EvalScenario {
+                name: "object_position".to_string(),
+                description: "Check whether the cube remains at the fixture position".to_string(),
+                initial_state: scenario_state.clone(),
+                actions: Vec::new(),
+                expected_outcomes: vec![ExpectedOutcome::ObjectPosition {
+                    name: "cube".to_string(),
+                    position: Position {
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    },
+                    tolerance: 0.05,
+                }],
+                ground_truth: None,
+            }],
+            dimensions: vec![EvalDimension::SpatialConsistency],
+        };
+        let provider = MockProvider::new();
+        let providers: Vec<&dyn WorldModelProvider> = vec![&provider];
+
+        let baseline = suite.run(&providers).await.unwrap();
+        assert!(baseline.results[0].outcomes[0].passed);
+
+        let mut overlay_state = scenario_state;
+        overlay_state.scene.set_object_position(
+            &object_id,
+            Position {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        );
+
+        let world_aware = suite
+            .run_with_world_state(&providers, &overlay_state)
+            .await
+            .unwrap();
+        assert!(!world_aware.results[0].outcomes[0].passed);
     }
 
     #[test]

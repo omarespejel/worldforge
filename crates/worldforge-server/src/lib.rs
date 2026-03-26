@@ -1618,12 +1618,8 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                 .and_then(|s| s.strip_suffix("/evaluate"))
                 .unwrap_or("");
             match id_str.parse::<WorldId>() {
-                Ok(id) => {
-                    if let Err(error) = state.store.load(&id).await {
-                        return (404, error_response(&error.to_string()));
-                    }
-
-                    match serde_json::from_str::<EvaluateRequest>(body) {
+                Ok(id) => match state.store.load(&id).await {
+                    Ok(ws) => match serde_json::from_str::<EvaluateRequest>(body) {
                         Ok(req) => {
                             let suite = match resolve_eval_suite(&req) {
                                 Ok(suite) => suite,
@@ -1651,14 +1647,15 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                                 }
                             }
 
-                            match suite.run(&provider_refs).await {
+                            match suite.run_with_world_state(&provider_refs, &ws).await {
                                 Ok(report) => (200, ApiResponse::ok(report)),
                                 Err(e) => (500, error_response(&e.to_string())),
                             }
                         }
                         Err(e) => (400, error_response(&format!("invalid request: {e}"))),
-                    }
-                }
+                    },
+                    Err(error) => (404, error_response(&error.to_string())),
+                },
                 Err(_) => (400, error_response("invalid world ID")),
             }
         }
@@ -1805,6 +1802,40 @@ mod tests {
         let id = world.id;
         state.store.save(&world).await.unwrap();
         id
+    }
+
+    async fn seed_world_with_object(
+        state: &Arc<AppState>,
+        name: &str,
+        provider: &str,
+        object_name: &str,
+        position: Position,
+    ) -> (WorldId, uuid::Uuid) {
+        let mut world = WorldState::new(name, provider);
+        let object = SceneObject::new(
+            object_name,
+            Pose {
+                position,
+                ..Pose::default()
+            },
+            BBox {
+                min: Position {
+                    x: position.x - 0.1,
+                    y: position.y - 0.1,
+                    z: position.z - 0.1,
+                },
+                max: Position {
+                    x: position.x + 0.1,
+                    y: position.y + 0.1,
+                    z: position.z + 0.1,
+                },
+            },
+        );
+        let object_id = object.id;
+        world.scene.add_object(object);
+        let id = world.id;
+        state.store.save(&world).await.unwrap();
+        (id, object_id)
     }
 
     #[test]
@@ -2538,6 +2569,110 @@ mod tests {
             value["data"]["dimension_summaries"][0]["dimension"],
             "object_permanence"
         );
+    }
+
+    #[tokio::test]
+    async fn test_route_evaluate_uses_persisted_world_state() {
+        let state = test_state();
+        let (world_id, object_id) = seed_world_with_object(
+            &state,
+            "eval-overlay-world",
+            "mock",
+            "cube",
+            Position {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        )
+        .await;
+
+        let mut fixture_state = WorldState::new("eval-overlay-world", "mock");
+        let mut fixture_object = SceneObject::new(
+            "cube",
+            Pose {
+                position: Position {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                ..Pose::default()
+            },
+            BBox {
+                min: Position {
+                    x: -0.1,
+                    y: -0.1,
+                    z: -0.1,
+                },
+                max: Position {
+                    x: 0.1,
+                    y: 0.1,
+                    z: 0.1,
+                },
+            },
+        );
+        fixture_object.id = object_id;
+        fixture_state.scene.add_object(fixture_object);
+
+        let suite = EvalSuite {
+            name: "World Overlay".to_string(),
+            scenarios: vec![worldforge_eval::EvalScenario {
+                name: "object_position".to_string(),
+                description: "Evaluate the persisted world state".to_string(),
+                initial_state: fixture_state.clone(),
+                actions: Vec::new(),
+                expected_outcomes: vec![worldforge_eval::ExpectedOutcome::ObjectPosition {
+                    name: "cube".to_string(),
+                    position: Position {
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    },
+                    tolerance: 0.05,
+                }],
+                ground_truth: None,
+            }],
+            dimensions: vec![worldforge_eval::EvalDimension::SpatialConsistency],
+        };
+
+        let body = serde_json::json!({
+            "suite_definition": suite,
+            "providers": ["mock"],
+        })
+        .to_string();
+
+        let (status, resp) = route(
+            "POST",
+            &format!("/v1/worlds/{world_id}/evaluate"),
+            &body,
+            &state,
+        )
+        .await;
+        assert_eq!(status, 200);
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(value["data"]["results"][0]["outcomes"][0]["passed"], true);
+
+        let mut mutated = state.store.load(&world_id).await.unwrap();
+        mutated.scene.set_object_position(
+            &object_id,
+            Position {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        );
+        state.store.save(&mutated).await.unwrap();
+
+        let (status, resp) = route(
+            "POST",
+            &format!("/v1/worlds/{world_id}/evaluate"),
+            &body,
+            &state,
+        )
+        .await;
+        assert_eq!(status, 200);
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(value["data"]["results"][0]["outcomes"][0]["passed"], false);
     }
 
     #[tokio::test]
