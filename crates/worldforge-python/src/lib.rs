@@ -9,7 +9,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use pyo3::prelude::*;
-use pyo3::types::{PyList, PyModule};
+use pyo3::types::{PyBytes, PyList, PyModule, PyString};
 
 use worldforge_core::guardrail::GuardrailConfig;
 use worldforge_core::prediction::{
@@ -23,7 +23,8 @@ use worldforge_core::provider::{
 };
 use worldforge_core::scene::SceneObject;
 use worldforge_core::state::{
-    HistoryEntry, StateFileFormat as CoreStateFileFormat, StateStoreKind, WorldState,
+    deserialize_world_state, serialize_world_state, HistoryEntry,
+    StateFileFormat as CoreStateFileFormat, StateStoreKind, WorldState,
 };
 use worldforge_core::types::{BBox, Position, Rotation, TensorData, Velocity, VideoClip};
 use worldforge_core::world::World as CoreWorld;
@@ -86,6 +87,60 @@ fn state_store_kind(
             "unknown state backend: {other}. Available: file, sqlite"
         ))),
     }
+}
+
+fn parse_snapshot_format(format: &str) -> PyResult<CoreStateFileFormat> {
+    format
+        .parse::<CoreStateFileFormat>()
+        .map_err(pyo3::exceptions::PyValueError::new_err)
+}
+
+fn snapshot_bytes(snapshot: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
+    if let Ok(bytes) = snapshot.extract::<&[u8]>() {
+        return Ok(bytes.to_vec());
+    }
+
+    if let Ok(text) = snapshot.extract::<&str>() {
+        return Ok(text.as_bytes().to_vec());
+    }
+
+    Err(pyo3::exceptions::PyTypeError::new_err(
+        "snapshot must be `str` for JSON or `bytes` for MessagePack",
+    ))
+}
+
+fn world_from_state(state: WorldState, registry: Arc<ProviderRegistry>) -> PyWorld {
+    let provider = state.metadata.created_by.clone();
+    PyWorld {
+        world: CoreWorld::new(state, provider, Arc::clone(&registry)),
+        registry,
+    }
+}
+
+fn normalize_imported_state(
+    state: &mut WorldState,
+    new_id: bool,
+    name: Option<&str>,
+) -> PyResult<()> {
+    let mut rebase = new_id;
+
+    if let Some(name) = name.map(str::trim).filter(|value| !value.is_empty()) {
+        state.metadata.name = name.to_string();
+        rebase = true;
+    }
+
+    if rebase {
+        state.id = uuid::Uuid::new_v4();
+        state.history.states.clear();
+        let provider = state.current_state_provider();
+        state.ensure_history_initialized(provider).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "failed to normalize imported world state: {e}"
+            ))
+        })?;
+    }
+
+    Ok(())
 }
 
 fn parse_guardrails_json(guardrails_json: Option<&str>) -> PyResult<Vec<GuardrailConfig>> {
@@ -2620,6 +2675,63 @@ impl PyWorldForge {
                 pyo3::exceptions::PyRuntimeError::new_err(format!("failed to load world: {e}"))
             })?;
         Ok(PyWorld { world, registry })
+    }
+
+    /// Export a persisted world snapshot.
+    ///
+    /// Returns a Python `str` when `format="json"` and raw `bytes` when
+    /// `format="msgpack"`.
+    #[pyo3(signature = (world_id, format="json"))]
+    fn export_world(&self, py: Python<'_>, world_id: &str, format: &str) -> PyResult<Py<PyAny>> {
+        let id = parse_world_id(world_id)?;
+        let format = parse_snapshot_format(format)?;
+        let rt = new_runtime()?;
+        let state = rt.block_on(self.inner.load_state(&id)).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("failed to export world: {e}"))
+        })?;
+        let bytes = serialize_world_state(format, &state).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("failed to export world: {e}"))
+        })?;
+
+        Ok(match format {
+            CoreStateFileFormat::Json => {
+                let json = String::from_utf8(bytes).map_err(|e| {
+                    pyo3::exceptions::PyValueError::new_err(format!(
+                        "failed to convert JSON snapshot to text: {e}"
+                    ))
+                })?;
+                PyString::new_bound(py, &json).into_any().unbind()
+            }
+            CoreStateFileFormat::MessagePack => PyBytes::new_bound(py, &bytes).into_any().unbind(),
+        })
+    }
+
+    /// Import a world snapshot into the configured store and return the stored world.
+    ///
+    /// Accepts JSON text or bytes when `format="json"` and MessagePack bytes
+    /// when `format="msgpack"`. If `new_id` or `name` is supplied, the imported
+    /// world is rebased to a fresh initial history entry before persistence.
+    #[pyo3(signature = (snapshot, format="json", new_id=false, name=None))]
+    fn import_world(
+        &self,
+        snapshot: &Bound<'_, PyAny>,
+        format: &str,
+        new_id: bool,
+        name: Option<&str>,
+    ) -> PyResult<PyWorld> {
+        let format = parse_snapshot_format(format)?;
+        let mut state =
+            deserialize_world_state(format, &snapshot_bytes(snapshot)?).map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!("failed to import world: {e}"))
+            })?;
+        normalize_imported_state(&mut state, new_id, name)?;
+
+        let rt = new_runtime()?;
+        let registry = self.inner.registry_arc();
+        rt.block_on(self.inner.save_state(&state)).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("failed to import world: {e}"))
+        })?;
+        Ok(world_from_state(state, registry))
     }
 
     /// List all persisted world IDs in the configured state store.
@@ -5788,6 +5900,73 @@ mod tests {
 
         wf.delete_world(&world_id).unwrap();
         assert!(wf.list_worlds().unwrap().is_empty());
+
+        let _ = std::fs::remove_dir_all(&state_dir);
+    }
+
+    #[test]
+    fn test_worldforge_export_import_json_roundtrip() {
+        let state_dir =
+            std::env::temp_dir().join(format!("wf-python-export-json-{}", uuid::Uuid::new_v4()));
+        let wf = PyWorldForge::new("file", state_dir.to_str().unwrap(), None, "json").unwrap();
+        let mut world = wf.create_world("snapshot_world", "mock").unwrap();
+        let position = PyPosition::new(0.0, 0.8, 0.0);
+        let bbox = PyBBox::new(
+            &PyPosition::new(-0.05, 0.75, -0.05),
+            &PyPosition::new(0.05, 0.85, 0.05),
+        );
+        world
+            .add_object(&PySceneObject::new("mug", &position, &bbox))
+            .unwrap();
+        let world_id = wf.save_world(&world).unwrap();
+
+        pyo3::Python::with_gil(|py| {
+            let snapshot = wf.export_world(py, &world_id, "json").unwrap();
+            let json = snapshot.bind(py).extract::<String>().unwrap();
+            assert!(json.contains("\"snapshot_world\""));
+            assert!(json.contains("\"mug\""));
+
+            let snapshot = pyo3::types::PyString::new_bound(py, &json).into_any();
+            let imported = wf
+                .import_world(&snapshot, "json", true, Some("snapshot_world_copy"))
+                .unwrap();
+
+            assert_eq!(imported.name(), "snapshot_world_copy");
+            assert_ne!(imported.id(), world_id);
+            assert_eq!(imported.object_count(), 1);
+        });
+
+        let _ = std::fs::remove_dir_all(&state_dir);
+    }
+
+    #[test]
+    fn test_worldforge_export_import_msgpack_roundtrip() {
+        let state_dir =
+            std::env::temp_dir().join(format!("wf-python-export-msgpack-{}", uuid::Uuid::new_v4()));
+        let wf = PyWorldForge::new("file", state_dir.to_str().unwrap(), None, "msgpack").unwrap();
+        let mut world = wf.create_world("msgpack_snapshot_world", "mock").unwrap();
+        let position = PyPosition::new(0.0, 0.8, 0.0);
+        let bbox = PyBBox::new(
+            &PyPosition::new(-0.05, 0.75, -0.05),
+            &PyPosition::new(0.05, 0.85, 0.05),
+        );
+        world
+            .add_object(&PySceneObject::new("cube", &position, &bbox))
+            .unwrap();
+        let world_id = wf.save_world(&world).unwrap();
+
+        pyo3::Python::with_gil(|py| {
+            let snapshot = wf.export_world(py, &world_id, "msgpack").unwrap();
+            let bytes = snapshot.bind(py).extract::<Vec<u8>>().unwrap();
+            assert!(!bytes.is_empty());
+
+            let snapshot = pyo3::types::PyBytes::new_bound(py, &bytes).into_any();
+            let imported = wf.import_world(&snapshot, "msgpack", false, None).unwrap();
+
+            assert_eq!(imported.id(), world_id);
+            assert_eq!(imported.name(), "msgpack_snapshot_world");
+            assert_eq!(imported.object_count(), 1);
+        });
 
         let _ = std::fs::remove_dir_all(&state_dir);
     }
