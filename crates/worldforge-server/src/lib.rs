@@ -896,11 +896,6 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                     imported.metadata.name = name.to_string();
                 }
 
-                let provider = imported.current_state_provider();
-                if let Err(error) = imported.ensure_current_state_recorded(provider) {
-                    return (api_error_status(&error), error_response(&error.to_string()));
-                }
-
                 let id = imported.id;
                 if let Err(error) = state.store.save(&imported).await {
                     return (500, error_response(&error.to_string()));

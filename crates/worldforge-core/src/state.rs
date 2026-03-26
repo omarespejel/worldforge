@@ -4,9 +4,7 @@
 //! implementations for saving and loading world state.
 
 use std::collections::{HashSet, VecDeque};
-#[cfg(feature = "sqlite")]
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -387,6 +385,46 @@ impl StateFileFormat {
     }
 }
 
+/// Serialize a world state using the requested snapshot format.
+pub fn serialize_world_state(format: StateFileFormat, state: &WorldState) -> Result<Vec<u8>> {
+    match format {
+        StateFileFormat::Json => serde_json::to_vec_pretty(state)
+            .map_err(|e| WorldForgeError::SerializationError(e.to_string())),
+        StateFileFormat::MessagePack => rmp_serde::to_vec_named(state)
+            .map_err(|e| WorldForgeError::SerializationError(e.to_string())),
+    }
+}
+
+/// Deserialize a world state using the requested snapshot format.
+pub fn deserialize_world_state(format: StateFileFormat, data: &[u8]) -> Result<WorldState> {
+    match format {
+        StateFileFormat::Json => serde_json::from_slice(data)
+            .map_err(|e| WorldForgeError::SerializationError(e.to_string())),
+        StateFileFormat::MessagePack => rmp_serde::from_slice(data)
+            .map_err(|e| WorldForgeError::SerializationError(e.to_string())),
+    }
+}
+
+/// Infer the snapshot format from a file path extension.
+///
+/// Recognized extensions are `json`, `msgpack`, and `messagepack`.
+pub fn infer_state_file_format(path: impl AsRef<Path>) -> Result<StateFileFormat> {
+    let path = path.as_ref();
+    let Some(extension) = path.extension().and_then(|ext| ext.to_str()) else {
+        return Err(WorldForgeError::InvalidState(format!(
+            "snapshot path '{}' is missing a file extension",
+            path.display()
+        )));
+    };
+
+    extension.parse::<StateFileFormat>().map_err(|_| {
+        WorldForgeError::InvalidState(format!(
+            "snapshot path '{}' uses an unknown extension '{extension}'",
+            path.display()
+        ))
+    })
+}
+
 impl std::str::FromStr for StateFileFormat {
     type Err = String;
 
@@ -463,24 +501,6 @@ impl FileStateStore {
     fn candidate_formats(&self) -> [StateFileFormat; 2] {
         [self.format, self.format.alternate()]
     }
-
-    fn serialize_state(format: StateFileFormat, state: &WorldState) -> Result<Vec<u8>> {
-        match format {
-            StateFileFormat::Json => serde_json::to_vec_pretty(state)
-                .map_err(|e| WorldForgeError::SerializationError(e.to_string())),
-            StateFileFormat::MessagePack => rmp_serde::to_vec_named(state)
-                .map_err(|e| WorldForgeError::SerializationError(e.to_string())),
-        }
-    }
-
-    fn deserialize_state(format: StateFileFormat, data: &[u8]) -> Result<WorldState> {
-        match format {
-            StateFileFormat::Json => serde_json::from_slice(data)
-                .map_err(|e| WorldForgeError::SerializationError(e.to_string())),
-            StateFileFormat::MessagePack => rmp_serde::from_slice(data)
-                .map_err(|e| WorldForgeError::SerializationError(e.to_string())),
-        }
-    }
 }
 
 #[async_trait::async_trait]
@@ -492,7 +512,7 @@ impl StateStore for FileStateStore {
         tokio::fs::create_dir_all(&self.path)
             .await
             .map_err(|e| WorldForgeError::InternalError(format!("failed to create dir: {e}")))?;
-        let payload = Self::serialize_state(self.format, &normalized)?;
+        let payload = serialize_world_state(self.format, &normalized)?;
         tokio::fs::write(
             self.state_path_for_format(&normalized.id, self.format),
             payload,
@@ -506,7 +526,7 @@ impl StateStore for FileStateStore {
         for format in self.candidate_formats() {
             let path = self.state_path_for_format(id, format);
             match tokio::fs::read(&path).await {
-                Ok(data) => return Self::deserialize_state(format, &data),
+                Ok(data) => return deserialize_world_state(format, &data),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(error) => {
                     return Err(WorldForgeError::InternalError(format!(
@@ -537,12 +557,15 @@ impl StateStore for FileStateStore {
             .map_err(|e| WorldForgeError::InternalError(e.to_string()))?
         {
             if let Some(name) = entry.file_name().to_str() {
-                if let Some(id_str) = name
-                    .strip_suffix(".json")
-                    .or_else(|| name.strip_suffix(".msgpack"))
-                {
-                    if let Ok(id) = id_str.parse::<WorldId>() {
-                        ids.insert(id);
+                if infer_state_file_format(name).is_ok() {
+                    if let Some(id_str) = name
+                        .strip_suffix(".json")
+                        .or_else(|| name.strip_suffix(".msgpack"))
+                        .or_else(|| name.strip_suffix(".messagepack"))
+                    {
+                        if let Ok(id) = id_str.parse::<WorldId>() {
+                            ids.insert(id);
+                        }
                     }
                 }
             }
@@ -818,6 +841,62 @@ mod tests {
             StateFileFormat::MessagePack
         );
         assert!("yaml".parse::<StateFileFormat>().is_err());
+    }
+
+    #[test]
+    fn test_infer_state_file_format() {
+        assert_eq!(
+            infer_state_file_format(Path::new("snapshot.json")).unwrap(),
+            StateFileFormat::Json
+        );
+        assert_eq!(
+            infer_state_file_format(Path::new("snapshot.msgpack")).unwrap(),
+            StateFileFormat::MessagePack
+        );
+        assert_eq!(
+            infer_state_file_format(Path::new("snapshot.messagepack")).unwrap(),
+            StateFileFormat::MessagePack
+        );
+        assert!(matches!(
+            infer_state_file_format(Path::new("snapshot")),
+            Err(WorldForgeError::InvalidState(message)) if message.contains("missing a file extension")
+        ));
+        assert!(matches!(
+            infer_state_file_format(Path::new("snapshot.yaml")),
+            Err(WorldForgeError::InvalidState(message)) if message.contains("unknown extension")
+        ));
+    }
+
+    #[test]
+    fn test_world_state_snapshot_codec_roundtrip_json() {
+        let mut state = WorldState::new("codec-json", "mock");
+        state.metadata.description = "json roundtrip".to_string();
+
+        let bytes = serialize_world_state(StateFileFormat::Json, &state).unwrap();
+        let restored = deserialize_world_state(StateFileFormat::Json, &bytes).unwrap();
+
+        assert_eq!(restored.id, state.id);
+        assert_eq!(restored.metadata.name, state.metadata.name);
+        assert_eq!(restored.metadata.description, state.metadata.description);
+    }
+
+    #[test]
+    fn test_world_state_snapshot_codec_roundtrip_msgpack() {
+        let mut state = WorldState::new("codec-msgpack", "mock");
+        state.metadata.description = "msgpack roundtrip".to_string();
+
+        let bytes = serialize_world_state(StateFileFormat::MessagePack, &state).unwrap();
+        let restored = deserialize_world_state(StateFileFormat::MessagePack, &bytes).unwrap();
+
+        assert_eq!(restored.id, state.id);
+        assert_eq!(restored.metadata.name, state.metadata.name);
+        assert_eq!(restored.metadata.description, state.metadata.description);
+    }
+
+    #[test]
+    fn test_world_state_snapshot_codec_rejects_invalid_bytes() {
+        let err = deserialize_world_state(StateFileFormat::Json, b"not json").unwrap_err();
+        assert!(matches!(err, WorldForgeError::SerializationError(_)));
     }
 
     #[cfg(feature = "sqlite")]

@@ -135,6 +135,15 @@ same_world = wf.load_world(world.id)
 wf_msgpack = WorldForge(state_backend="file", state_file_format="msgpack")
 wf_msgpack.save_world(world)
 
+# Export/import portable snapshots from the configured store
+snapshot_json = wf.export_world(world.id, format="json")
+restored = wf.import_world(snapshot_json, format="json", new_id=True, name="kitchen-copy")
+assert restored.id != world.id
+
+snapshot_msgpack = wf_msgpack.export_world(world.id, format="msgpack")
+same_world = wf_msgpack.import_world(snapshot_msgpack, format="msgpack")
+assert same_world.id == world.id
+
 # Inspect retained state history
 history = world.history()
 assert len(history) >= 2
@@ -184,6 +193,11 @@ adapter-native deterministic planning under the stable vendor names.
 
 The same embedding surface is exposed over the CLI as `worldforge embed` and
 over the REST API as `POST /v1/providers/{name}/embed`.
+
+Portable world snapshots are now first-class across the user surfaces:
+- Python: `WorldForge.export_world(...)` / `WorldForge.import_world(...)`
+- CLI: `worldforge export ...` / `worldforge import ...`
+- REST: `GET /v1/worlds/{id}` to fetch a JSON snapshot and `POST /v1/worlds/import` to restore one
 
 ## Python Installation
 
@@ -265,6 +279,9 @@ cargo run -p worldforge-cli -- estimate --provider cosmos --operation generate -
 cargo run -p worldforge-cli -- list
 cargo run -p worldforge-cli -- --state-backend sqlite --state-db-path .worldforge/worldforge.db list
 cargo run -p worldforge-cli -- --state-file-format msgpack list
+cargo run -p worldforge-cli -- export --world <id> --output snapshots/world.json
+cargo run -p worldforge-cli -- export --world <id> --output snapshots/world.msgpack --format msgpack
+cargo run -p worldforge-cli -- import --input snapshots/world.msgpack --format msgpack --new-id --name kitchen-copy
 cargo run -p worldforge-cli -- history --world <id> --output-json histories/<id>.json
 cargo run -p worldforge-cli -- predict --world <id> --action "move 1 0 0" --provider runway --fallback-provider mock --timeout-ms 500
 cargo run -p worldforge-cli -- plan --world <id> --goal "spawn cube" --planner cem
@@ -318,6 +335,10 @@ Then call the HTTP API directly:
 curl -X POST http://127.0.0.1:8080/v1/worlds \
   -H 'content-type: application/json' \
   -d '{"prompt":"A kitchen with a mug","name":"Kitchen counter","provider":"mock"}'
+
+curl -X POST http://127.0.0.1:8080/v1/worlds/import \
+  -H 'content-type: application/json' \
+  -d @snapshot-import.json
 
 curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/objects \
   -H 'content-type: application/json' \
