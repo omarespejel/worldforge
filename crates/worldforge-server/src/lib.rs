@@ -27,7 +27,8 @@ use worldforge_core::world::World;
 use worldforge_eval::EvalSuite;
 use worldforge_verify::{
     prove_guardrail_plan, prove_inference_transition, prove_latest_inference, prove_provenance,
-    verify_bundle, verify_proof, MockVerifier, VerificationBundle, VerificationResult, ZkProof,
+    verify_bundle, verify_proof, VerificationBackend, VerificationBundle, VerificationResult,
+    ZkProof, ZkVerifier,
 };
 
 /// Server configuration.
@@ -37,12 +38,14 @@ pub struct ServerConfig {
     pub bind_address: String,
     /// State storage directory for file mode and the default SQLite location.
     pub state_dir: String,
-    /// Persistence backend to use: `file` or `sqlite`.
+    /// Persistence backend to use: `file`, `sqlite`, or `redis`.
     pub state_backend: String,
     /// Serialization format for the file-backed state store.
     pub state_file_format: String,
     /// Optional SQLite database path override.
     pub state_db_path: Option<String>,
+    /// Optional Redis connection URL override.
+    pub state_redis_url: Option<String>,
 }
 
 impl Default for ServerConfig {
@@ -53,6 +56,7 @@ impl Default for ServerConfig {
             state_backend: "file".to_string(),
             state_file_format: "json".to_string(),
             state_db_path: None,
+            state_redis_url: None,
         }
     }
 }
@@ -76,8 +80,19 @@ impl ServerConfig {
                     .map(std::path::PathBuf::from)
                     .unwrap_or_else(|| std::path::Path::new(&self.state_dir).join("worldforge.db")),
             )),
+            "redis" => self
+                .state_redis_url
+                .clone()
+                .map(StateStoreKind::Redis)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "--state-redis-url is required when state_backend is set to redis"
+                    )
+                }),
             other => {
-                anyhow::bail!("unknown state backend: {other}. Available backends: file, sqlite")
+                anyhow::bail!(
+                    "unknown state backend: {other}. Available backends: file, sqlite, redis"
+                )
             }
         }
     }
@@ -444,6 +459,9 @@ struct CompareRequest {
 /// JSON request body for ZK verification.
 #[derive(Debug, Deserialize)]
 struct VerifyRequest {
+    /// Verification backend used to generate the proof.
+    #[serde(default = "default_verification_backend")]
+    backend: VerificationBackend,
     /// Proof type: "inference", "guardrail", or "provenance".
     #[serde(default = "default_proof_type")]
     proof_type: String,
@@ -496,6 +514,8 @@ struct VerifyRequest {
 #[derive(Debug, Deserialize)]
 struct VerifyProofRequest {
     #[serde(default)]
+    backend: Option<VerificationBackend>,
+    #[serde(default)]
     proof: Option<ZkProof>,
     #[serde(default)]
     inference_bundle: Option<VerificationBundle<worldforge_verify::InferenceArtifact>>,
@@ -515,8 +535,16 @@ fn default_proof_type() -> String {
     "inference".to_string()
 }
 
+fn default_verification_backend() -> VerificationBackend {
+    VerificationBackend::Mock
+}
+
 fn default_source_label() -> String {
     "worldforge-server".to_string()
+}
+
+fn verifier_for_backend(backend: VerificationBackend) -> Box<dyn ZkVerifier> {
+    backend.verifier()
 }
 
 /// JSON response envelope.
@@ -685,7 +713,6 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
         // POST /v1/verify/proof
         ("POST", "/v1/verify/proof") => match serde_json::from_str::<VerifyProofRequest>(body) {
             Ok(req) => {
-                let verifier = MockVerifier::new();
                 let provided_count = usize::from(req.proof.is_some())
                     + usize::from(req.inference_bundle.is_some())
                     + usize::from(req.guardrail_bundle.is_some())
@@ -700,7 +727,8 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                 }
 
                 if let Some(proof) = req.proof {
-                    let verification = match verify_proof(&verifier, &proof) {
+                    let verifier = verifier_for_backend(req.backend.unwrap_or(proof.backend));
+                    let verification = match verify_proof(verifier.as_ref(), &proof) {
                         Ok(verification) => verification,
                         Err(error) => return (400, error_response(&error.to_string())),
                     };
@@ -714,21 +742,27 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                 }
 
                 if let Some(bundle) = req.inference_bundle {
-                    return match verify_bundle(&verifier, &bundle) {
+                    let verifier =
+                        verifier_for_backend(req.backend.unwrap_or(bundle.proof.backend));
+                    return match verify_bundle(verifier.as_ref(), &bundle) {
                         Ok(report) => (200, ApiResponse::ok(report)),
                         Err(error) => (400, error_response(&error.to_string())),
                     };
                 }
 
                 if let Some(bundle) = req.guardrail_bundle {
-                    return match verify_bundle(&verifier, &bundle) {
+                    let verifier =
+                        verifier_for_backend(req.backend.unwrap_or(bundle.proof.backend));
+                    return match verify_bundle(verifier.as_ref(), &bundle) {
                         Ok(report) => (200, ApiResponse::ok(report)),
                         Err(error) => (400, error_response(&error.to_string())),
                     };
                 }
 
                 if let Some(bundle) = req.provenance_bundle {
-                    return match verify_bundle(&verifier, &bundle) {
+                    let verifier =
+                        verifier_for_backend(req.backend.unwrap_or(bundle.proof.backend));
+                    return match verify_bundle(verifier.as_ref(), &bundle) {
                         Ok(report) => (200, ApiResponse::ok(report)),
                         Err(error) => (400, error_response(&error.to_string())),
                     };
@@ -1570,7 +1604,7 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                             Ok(ws) => ws,
                             Err(e) => return (404, error_response(&e.to_string())),
                         };
-                        let verifier = MockVerifier::new();
+                        let verifier = verifier_for_backend(req.backend);
                         match req.proof_type.as_str() {
                             "inference" => {
                                 let bundle = match (req.input_state.as_ref(), req.output_state.as_ref()) {
@@ -1581,14 +1615,18 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                                             .filter(|name| !name.is_empty())
                                             .unwrap_or(output_state.metadata.created_by.as_str());
                                         prove_inference_transition(
-                                            &verifier,
+                                            verifier.as_ref(),
                                             provider_name,
                                             input_state,
                                             output_state,
                                         )
                                     }
                                     (None, None) => {
-                                        prove_latest_inference(&verifier, &ws, req.provider.as_deref())
+                                        prove_latest_inference(
+                                            verifier.as_ref(),
+                                            &ws,
+                                            req.provider.as_deref(),
+                                        )
                                     }
                                     _ => {
                                         return (
@@ -1656,7 +1694,7 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                                     }
                                 };
 
-                                match prove_guardrail_plan(&verifier, &plan) {
+                                match prove_guardrail_plan(verifier.as_ref(), &plan) {
                                     Ok(bundle) => (200, ApiResponse::ok(bundle)),
                                     Err(e) => (500, error_response(&e.to_string())),
                                 }
@@ -1665,7 +1703,7 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                                 let target_state = req.output_state.as_ref().unwrap_or(&ws);
                                 let timestamp = chrono::Utc::now().timestamp() as u64;
                                 match prove_provenance(
-                                    &verifier,
+                                    verifier.as_ref(),
                                     target_state,
                                     &req.source_label,
                                     timestamp,
@@ -1811,7 +1849,7 @@ mod tests {
     use super::*;
     use worldforge_core::state::FileStateStore;
     use worldforge_providers::MockProvider;
-    use worldforge_verify::ZkVerifier;
+    use worldforge_verify::{MockVerifier, ZkVerifier};
 
     fn test_state() -> Arc<AppState> {
         test_state_with_provider("mock")
@@ -1944,6 +1982,33 @@ mod tests {
             config.resolve_state_store_kind().unwrap(),
             StateStoreKind::Sqlite("/tmp/worldforge/worldforge.db".into())
         );
+    }
+
+    #[test]
+    fn test_server_config_resolves_redis_store() {
+        let config = ServerConfig {
+            state_backend: "redis".to_string(),
+            state_redis_url: Some("redis://127.0.0.1:6379/1".to_string()),
+            ..ServerConfig::default()
+        };
+
+        assert_eq!(
+            config.resolve_state_store_kind().unwrap(),
+            StateStoreKind::Redis("redis://127.0.0.1:6379/1".to_string())
+        );
+    }
+
+    #[test]
+    fn test_server_config_requires_redis_url() {
+        let config = ServerConfig {
+            state_backend: "redis".to_string(),
+            ..ServerConfig::default()
+        };
+
+        let error = config.resolve_state_store_kind().unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("--state-redis-url is required when state_backend is set to redis"));
     }
 
     #[test]

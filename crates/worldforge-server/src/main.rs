@@ -10,14 +10,15 @@ const USAGE: &str = "\
 WorldForge REST API server
 
 Usage:
-  worldforge-server [--bind <addr>] [--state-dir <path>] [--state-backend <file|sqlite>] [--state-file-format <json|msgpack>] [--state-db-path <path>]
+  worldforge-server [--bind <addr>] [--state-dir <path>] [--state-backend <file|sqlite|redis>] [--state-file-format <json|msgpack>] [--state-db-path <path>] [--state-redis-url <url>]
 
 Options:
   --bind <addr>             Address to bind to (default: 127.0.0.1:8080)
   --state-dir <path>        Directory for file-backed state or default SQLite location (default: .worldforge)
-  --state-backend <kind>    Persistence backend: file or sqlite (default: file)
+  --state-backend <kind>    Persistence backend: file, sqlite, or redis (default: file)
   --state-file-format <fmt> File-store serialization format: json or msgpack (default: json)
   --state-db-path <path>    SQLite database path override
+  --state-redis-url <url>   Redis connection URL override
   -h, --help                Show this help text";
 
 fn parse_args<I>(args: I) -> Result<ServerConfig>
@@ -55,6 +56,12 @@ where
                         .ok_or_else(|| anyhow::anyhow!("missing value for --state-db-path"))?,
                 );
             }
+            "--state-redis-url" => {
+                config.state_redis_url = Some(
+                    args.next()
+                        .ok_or_else(|| anyhow::anyhow!("missing value for --state-redis-url"))?,
+                );
+            }
             "-h" | "--help" => {
                 println!("{USAGE}");
                 std::process::exit(0);
@@ -88,6 +95,7 @@ mod tests {
         assert_eq!(config.state_backend, "file");
         assert_eq!(config.state_file_format, "json");
         assert_eq!(config.state_db_path, None);
+        assert_eq!(config.state_redis_url, None);
     }
 
     #[test]
@@ -113,6 +121,24 @@ mod tests {
         assert_eq!(
             config.state_db_path.as_deref(),
             Some("/tmp/worldforge/state.db")
+        );
+        assert_eq!(config.state_redis_url, None);
+    }
+
+    #[test]
+    fn parse_args_supports_redis_url() {
+        let config = parse_args([
+            "--state-backend".to_string(),
+            "redis".to_string(),
+            "--state-redis-url".to_string(),
+            "redis://127.0.0.1:6379/3".to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(config.state_backend, "redis");
+        assert_eq!(
+            config.state_redis_url.as_deref(),
+            Some("redis://127.0.0.1:6379/3")
         );
     }
 

@@ -37,7 +37,8 @@ use worldforge_verify::{
     prove_latest_inference as prove_latest_inference_bundle,
     prove_provenance as prove_provenance_state_bundle, verify_bundle, verify_proof,
     BundleVerificationReport, GuardrailArtifact, InferenceArtifact, ProvenanceArtifact,
-    VerificationBundle, VerificationResult as CoreVerificationResult, ZkVerifier,
+    VerificationBackend, VerificationBundle, VerificationResult as CoreVerificationResult,
+    ZkVerifier,
 };
 
 fn auto_detect_registry() -> Arc<worldforge_core::provider::ProviderRegistry> {
@@ -68,6 +69,7 @@ fn state_store_kind(
     state_dir: &str,
     state_db_path: Option<&str>,
     state_file_format: &str,
+    state_redis_url: Option<&str>,
 ) -> PyResult<StateStoreKind> {
     match state_backend {
         "file" => {
@@ -84,8 +86,15 @@ fn state_store_kind(
                 .map(Into::into)
                 .unwrap_or_else(|| Path::new(state_dir).join("worldforge.db")),
         )),
+        "redis" => state_redis_url
+            .map(|url| StateStoreKind::Redis(url.to_string()))
+            .ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err(
+                    "state_redis_url is required when state_backend='redis'",
+                )
+            }),
         other => Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "unknown state backend: {other}. Available: file, sqlite"
+            "unknown state backend: {other}. Available: file, sqlite, redis"
         ))),
     }
 }
@@ -2509,15 +2518,21 @@ pub struct PyWorldForge {
 impl PyWorldForge {
     /// Create a new WorldForge instance with auto-detected providers.
     #[new]
-    #[pyo3(signature = (state_backend="file", state_dir=".worldforge", state_db_path=None, state_file_format="json"))]
+    #[pyo3(signature = (state_backend="file", state_dir=".worldforge", state_db_path=None, state_file_format="json", state_redis_url=None))]
     fn new(
         state_backend: &str,
         state_dir: &str,
         state_db_path: Option<&str>,
         state_file_format: &str,
+        state_redis_url: Option<&str>,
     ) -> PyResult<Self> {
-        let store_kind =
-            state_store_kind(state_backend, state_dir, state_db_path, state_file_format)?;
+        let store_kind = state_store_kind(
+            state_backend,
+            state_dir,
+            state_db_path,
+            state_file_format,
+            state_redis_url,
+        )?;
         let rt = new_runtime()?;
         let store = rt.block_on(store_kind.open()).map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("failed to open state store: {e}"))
@@ -3868,8 +3883,8 @@ impl PyZkProof {
 
     /// Verify this proof and return (valid, details).
     fn verify(&self) -> PyResult<(bool, String)> {
-        let verifier = worldforge_verify::MockVerifier::new();
-        let result = verify_proof(&verifier, &self.inner).map_err(|e| {
+        let verifier = self.inner.backend.verifier();
+        let result = verify_proof(verifier.as_ref(), &self.inner).map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("verification failed: {e}"))
         })?;
         Ok((result.valid, result.details))
@@ -4410,8 +4425,8 @@ impl PyProvenanceVerificationReport {
 fn verify_inference_bundle_inner(
     bundle: &VerificationBundle<InferenceArtifact>,
 ) -> PyResult<PyInferenceVerificationReport> {
-    let verifier = worldforge_verify::MockVerifier::new();
-    let inner = verify_bundle(&verifier, bundle).map_err(|e| {
+    let verifier = bundle.proof.backend.verifier();
+    let inner = verify_bundle(verifier.as_ref(), bundle).map_err(|e| {
         pyo3::exceptions::PyRuntimeError::new_err(format!("verification failed: {e}"))
     })?;
     Ok(PyInferenceVerificationReport { inner })
@@ -4420,8 +4435,8 @@ fn verify_inference_bundle_inner(
 fn verify_guardrail_bundle_inner(
     bundle: &VerificationBundle<GuardrailArtifact>,
 ) -> PyResult<PyGuardrailVerificationReport> {
-    let verifier = worldforge_verify::MockVerifier::new();
-    let inner = verify_bundle(&verifier, bundle).map_err(|e| {
+    let verifier = bundle.proof.backend.verifier();
+    let inner = verify_bundle(verifier.as_ref(), bundle).map_err(|e| {
         pyo3::exceptions::PyRuntimeError::new_err(format!("verification failed: {e}"))
     })?;
     Ok(PyGuardrailVerificationReport { inner })
@@ -4430,23 +4445,21 @@ fn verify_guardrail_bundle_inner(
 fn verify_provenance_bundle_inner(
     bundle: &VerificationBundle<ProvenanceArtifact>,
 ) -> PyResult<PyProvenanceVerificationReport> {
-    let verifier = worldforge_verify::MockVerifier::new();
-    let inner = verify_bundle(&verifier, bundle).map_err(|e| {
+    let verifier = bundle.proof.backend.verifier();
+    let inner = verify_bundle(verifier.as_ref(), bundle).map_err(|e| {
         pyo3::exceptions::PyRuntimeError::new_err(format!("verification failed: {e}"))
     })?;
     Ok(PyProvenanceVerificationReport { inner })
 }
 
-fn ensure_mock_backend(backend: &str) -> PyResult<()> {
-    match backend.to_ascii_lowercase().as_str() {
-        "mock" => Ok(()),
-        "stark" | "ezkl" => Err(pyo3::exceptions::PyNotImplementedError::new_err(format!(
-            "verification backend '{backend}' is not implemented in the Python bindings yet; use 'mock'"
-        ))),
-        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "unknown verification backend: {other}. Available: mock"
-        ))),
-    }
+fn parse_verification_backend(backend: &str) -> PyResult<VerificationBackend> {
+    backend.parse::<VerificationBackend>().map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!("invalid verification backend: {e}"))
+    })
+}
+
+fn verifier_from_backend_name(backend: &str) -> PyResult<Box<dyn ZkVerifier>> {
+    Ok(parse_verification_backend(backend)?.verifier())
 }
 
 /// Mock-backed verifier facade exposed to Python.
@@ -4461,9 +4474,9 @@ impl PyZkVerifier {
     #[new]
     #[pyo3(signature = (backend="mock"))]
     fn new(backend: &str) -> PyResult<Self> {
-        ensure_mock_backend(backend)?;
+        parse_verification_backend(backend)?;
         Ok(Self {
-            backend: "mock".to_string(),
+            backend: backend.to_ascii_lowercase(),
         })
     }
 
@@ -4478,8 +4491,16 @@ impl PyZkVerifier {
         input_data: &[u8],
         output_data: &[u8],
     ) -> PyResult<PyZkProof> {
-        ensure_mock_backend(&self.backend)?;
-        prove_inference(model_data, input_data, output_data)
+        let verifier = verifier_from_backend_name(&self.backend)?;
+        let model_hash = worldforge_verify::sha256_hash(model_data);
+        let input_hash = worldforge_verify::sha256_hash(input_data);
+        let output_hash = worldforge_verify::sha256_hash(output_data);
+        let proof = verifier
+            .prove_inference(model_hash, input_hash, output_hash)
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("proof generation failed: {e}"))
+            })?;
+        Ok(PyZkProof { inner: proof })
     }
 
     #[pyo3(signature = (input_state_json, output_state_json, provider=None))]
@@ -4489,8 +4510,12 @@ impl PyZkVerifier {
         output_state_json: &str,
         provider: Option<&str>,
     ) -> PyResult<PyZkProof> {
-        ensure_mock_backend(&self.backend)?;
-        prove_inference_transition(input_state_json, output_state_json, provider)
+        Ok(PyZkProof {
+            inner: self
+                .prove_inference_transition_bundle(input_state_json, output_state_json, provider)?
+                .inner
+                .proof,
+        })
     }
 
     #[pyo3(signature = (input_state_json, output_state_json, provider=None))]
@@ -4500,47 +4525,87 @@ impl PyZkVerifier {
         output_state_json: &str,
         provider: Option<&str>,
     ) -> PyResult<PyInferenceBundle> {
-        ensure_mock_backend(&self.backend)?;
-        prove_inference_transition_bundle_py(input_state_json, output_state_json, provider)
+        let verifier = verifier_from_backend_name(&self.backend)?;
+        let input_state: WorldState = serde_json::from_str(input_state_json).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("invalid input state JSON: {e}"))
+        })?;
+        let output_state: WorldState = serde_json::from_str(output_state_json).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("invalid output state JSON: {e}"))
+        })?;
+        let provider_name = provider.unwrap_or(output_state.metadata.created_by.as_str());
+        let bundle = prove_inference_transition_bundle(
+            verifier.as_ref(),
+            provider_name,
+            &input_state,
+            &output_state,
+        )
+        .map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("proof generation failed: {e}"))
+        })?;
+        Ok(PyInferenceBundle { inner: bundle })
     }
 
     fn prove_guardrail_plan(&self, plan: &PyPlan) -> PyResult<PyZkProof> {
-        ensure_mock_backend(&self.backend)?;
-        prove_guardrail_plan(plan)
+        let verifier = verifier_from_backend_name(&self.backend)?;
+        let bundle = prove_guardrail_plan_bundle(verifier.as_ref(), &plan.inner).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("proof generation failed: {e}"))
+        })?;
+        Ok(PyZkProof {
+            inner: bundle.proof,
+        })
     }
 
     fn verify_inference_bundle(
         &self,
         bundle: &PyInferenceBundle,
     ) -> PyResult<PyInferenceVerificationReport> {
-        ensure_mock_backend(&self.backend)?;
-        bundle.verify()
+        let verifier = verifier_from_backend_name(&self.backend)?;
+        let inner = verify_bundle(verifier.as_ref(), &bundle.inner).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("verification failed: {e}"))
+        })?;
+        Ok(PyInferenceVerificationReport { inner })
     }
 
     fn verify_guardrail_bundle(
         &self,
         bundle: &PyGuardrailBundle,
     ) -> PyResult<PyGuardrailVerificationReport> {
-        ensure_mock_backend(&self.backend)?;
-        bundle.verify()
+        let verifier = verifier_from_backend_name(&self.backend)?;
+        let inner = verify_bundle(verifier.as_ref(), &bundle.inner).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("verification failed: {e}"))
+        })?;
+        Ok(PyGuardrailVerificationReport { inner })
     }
 
     fn verify_provenance_bundle(
         &self,
         bundle: &PyProvenanceBundle,
     ) -> PyResult<PyProvenanceVerificationReport> {
-        ensure_mock_backend(&self.backend)?;
-        bundle.verify()
+        let verifier = verifier_from_backend_name(&self.backend)?;
+        let inner = verify_bundle(verifier.as_ref(), &bundle.inner).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("verification failed: {e}"))
+        })?;
+        Ok(PyProvenanceVerificationReport { inner })
     }
 
     fn prove_provenance(&self, data: &[u8], timestamp: u64, source: &[u8]) -> PyResult<PyZkProof> {
-        ensure_mock_backend(&self.backend)?;
-        prove_provenance(data, timestamp, source)
+        let verifier = verifier_from_backend_name(&self.backend)?;
+        let data_hash = worldforge_verify::sha256_hash(data);
+        let source_commitment = worldforge_verify::sha256_hash(source);
+        let proof = verifier
+            .prove_data_provenance(data_hash, timestamp, source_commitment)
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("proof generation failed: {e}"))
+            })?;
+        Ok(PyZkProof { inner: proof })
     }
 
     fn verify(&self, proof: &PyZkProof) -> PyResult<(bool, String)> {
-        ensure_mock_backend(&self.backend)?;
-        proof.verify()
+        let verifier = verifier_from_backend_name(&self.backend)?;
+        let result = verify_proof(verifier.as_ref(), &proof.inner).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("verification failed: {e}"))
+        })?;
+        Ok((result.valid, result.details))
     }
 
     fn __repr__(&self) -> String {
@@ -4733,8 +4798,6 @@ fn verify_proof_json(proof_json: &str) -> PyResult<(bool, String)> {
 /// Re-verify a serialized verification bundle and return a JSON report.
 #[pyfunction]
 fn verify_bundle_json(bundle_json: &str, bundle_type: &str) -> PyResult<String> {
-    let verifier = worldforge_verify::MockVerifier::new();
-
     let report_json = match bundle_type {
         "inference" => {
             let bundle: VerificationBundle<worldforge_verify::InferenceArtifact> =
@@ -4743,9 +4806,10 @@ fn verify_bundle_json(bundle_json: &str, bundle_type: &str) -> PyResult<String> 
                         "invalid inference bundle JSON: {e}"
                     ))
                 })?;
-            serde_json::to_string_pretty(&verify_bundle(&verifier, &bundle).map_err(|e| {
-                pyo3::exceptions::PyRuntimeError::new_err(format!("verification failed: {e}"))
-            })?)
+            let verifier = bundle.proof.backend.verifier();
+            serde_json::to_string_pretty(&verify_bundle(verifier.as_ref(), &bundle).map_err(
+                |e| pyo3::exceptions::PyRuntimeError::new_err(format!("verification failed: {e}")),
+            )?)
         }
         "guardrail" => {
             let bundle: VerificationBundle<worldforge_verify::GuardrailArtifact> =
@@ -4754,9 +4818,10 @@ fn verify_bundle_json(bundle_json: &str, bundle_type: &str) -> PyResult<String> 
                         "invalid guardrail bundle JSON: {e}"
                     ))
                 })?;
-            serde_json::to_string_pretty(&verify_bundle(&verifier, &bundle).map_err(|e| {
-                pyo3::exceptions::PyRuntimeError::new_err(format!("verification failed: {e}"))
-            })?)
+            let verifier = bundle.proof.backend.verifier();
+            serde_json::to_string_pretty(&verify_bundle(verifier.as_ref(), &bundle).map_err(
+                |e| pyo3::exceptions::PyRuntimeError::new_err(format!("verification failed: {e}")),
+            )?)
         }
         "provenance" => {
             let bundle: VerificationBundle<worldforge_verify::ProvenanceArtifact> =
@@ -4765,9 +4830,10 @@ fn verify_bundle_json(bundle_json: &str, bundle_type: &str) -> PyResult<String> 
                         "invalid provenance bundle JSON: {e}"
                     ))
                 })?;
-            serde_json::to_string_pretty(&verify_bundle(&verifier, &bundle).map_err(|e| {
-                pyo3::exceptions::PyRuntimeError::new_err(format!("verification failed: {e}"))
-            })?)
+            let verifier = bundle.proof.backend.verifier();
+            serde_json::to_string_pretty(&verify_bundle(verifier.as_ref(), &bundle).map_err(
+                |e| pyo3::exceptions::PyRuntimeError::new_err(format!("verification failed: {e}")),
+            )?)
         }
         other => {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -4871,7 +4937,7 @@ mod tests {
     use super::*;
 
     fn test_worldforge() -> PyWorldForge {
-        PyWorldForge::new("file", ".worldforge-python-tests", None, "json").unwrap()
+        PyWorldForge::new("file", ".worldforge-python-tests", None, "json", None).unwrap()
     }
 
     #[test]
@@ -5887,7 +5953,8 @@ mod tests {
     fn test_worldforge_file_store_roundtrip() {
         let state_dir =
             std::env::temp_dir().join(format!("wf-python-file-{}", uuid::Uuid::new_v4()));
-        let wf = PyWorldForge::new("file", state_dir.to_str().unwrap(), None, "json").unwrap();
+        let wf =
+            PyWorldForge::new("file", state_dir.to_str().unwrap(), None, "json", None).unwrap();
         let world = wf.create_world("persisted_world", "mock").unwrap();
         let world_id = wf.save_world(&world).unwrap();
 
@@ -5913,6 +5980,7 @@ mod tests {
             state_dir.to_str().unwrap(),
             Some(state_db_path.to_str().unwrap()),
             "json",
+            None,
         )
         .unwrap();
         let world = wf.create_world("sqlite_world", "mock").unwrap();
@@ -5932,7 +6000,8 @@ mod tests {
     fn test_worldforge_msgpack_file_store_roundtrip() {
         let state_dir =
             std::env::temp_dir().join(format!("wf-python-msgpack-{}", uuid::Uuid::new_v4()));
-        let wf = PyWorldForge::new("file", state_dir.to_str().unwrap(), None, "msgpack").unwrap();
+        let wf =
+            PyWorldForge::new("file", state_dir.to_str().unwrap(), None, "msgpack", None).unwrap();
         let world = wf.create_world("msgpack_world", "mock").unwrap();
         let world_id = wf.save_world(&world).unwrap();
 
@@ -5949,10 +6018,34 @@ mod tests {
     }
 
     #[test]
+    fn test_state_store_kind_accepts_redis_backend() {
+        let kind = state_store_kind(
+            "redis",
+            ".worldforge",
+            None,
+            "json",
+            Some("redis://127.0.0.1:6379/0"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            kind,
+            StateStoreKind::Redis("redis://127.0.0.1:6379/0".to_string())
+        );
+    }
+
+    #[test]
+    fn test_state_store_kind_requires_redis_url() {
+        let error = state_store_kind("redis", ".worldforge", None, "json", None).unwrap_err();
+        assert!(error.to_string().contains("state_redis_url is required"));
+    }
+
+    #[test]
     fn test_worldforge_export_import_json_roundtrip() {
         let state_dir =
             std::env::temp_dir().join(format!("wf-python-export-json-{}", uuid::Uuid::new_v4()));
-        let wf = PyWorldForge::new("file", state_dir.to_str().unwrap(), None, "json").unwrap();
+        let wf =
+            PyWorldForge::new("file", state_dir.to_str().unwrap(), None, "json", None).unwrap();
         let mut world = wf.create_world("snapshot_world", "mock").unwrap();
         let position = PyPosition::new(0.0, 0.8, 0.0);
         let bbox = PyBBox::new(
@@ -5987,7 +6080,8 @@ mod tests {
     fn test_worldforge_export_import_msgpack_roundtrip() {
         let state_dir =
             std::env::temp_dir().join(format!("wf-python-export-msgpack-{}", uuid::Uuid::new_v4()));
-        let wf = PyWorldForge::new("file", state_dir.to_str().unwrap(), None, "msgpack").unwrap();
+        let wf =
+            PyWorldForge::new("file", state_dir.to_str().unwrap(), None, "msgpack", None).unwrap();
         let mut world = wf.create_world("msgpack_snapshot_world", "mock").unwrap();
         let position = PyPosition::new(0.0, 0.8, 0.0);
         let bbox = PyBBox::new(

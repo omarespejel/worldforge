@@ -30,8 +30,8 @@ use worldforge_core::types::{BBox, Pose, Position, Rotation, Vec3, Velocity, Vid
 use worldforge_eval::EvalSuite;
 use worldforge_verify::{
     prove_guardrail_plan, prove_inference_transition, prove_latest_inference, prove_provenance,
-    verify_bundle, verify_proof, BundleVerificationReport, MockVerifier, VerificationBundle,
-    VerificationResult, ZkProof,
+    verify_bundle, verify_proof, BundleVerificationReport, VerificationBackend, VerificationBundle,
+    VerificationResult, ZkProof, ZkVerifier,
 };
 
 /// Persistence backend used by the CLI.
@@ -41,6 +41,8 @@ pub enum StateBackend {
     File,
     /// Store world states in a SQLite database file.
     Sqlite,
+    /// Store world states in a Redis database.
+    Redis,
 }
 
 impl StateBackend {
@@ -48,6 +50,7 @@ impl StateBackend {
         match self {
             Self::File => "file",
             Self::Sqlite => "sqlite",
+            Self::Redis => "redis",
         }
     }
 }
@@ -66,6 +69,27 @@ impl StateFileFormat {
         match self {
             Self::Json => CoreStateFileFormat::Json,
             Self::Msgpack => CoreStateFileFormat::MessagePack,
+        }
+    }
+}
+
+/// Verification backend used for proof generation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum VerifyBackend {
+    /// Deterministic local mock backend.
+    Mock,
+    /// Deterministic EZKL compatibility backend.
+    Ezkl,
+    /// Deterministic STARK compatibility backend.
+    Stark,
+}
+
+impl VerifyBackend {
+    fn as_core(self) -> VerificationBackend {
+        match self {
+            Self::Mock => VerificationBackend::Mock,
+            Self::Ezkl => VerificationBackend::Ezkl,
+            Self::Stark => VerificationBackend::Stark,
         }
     }
 }
@@ -102,6 +126,10 @@ pub struct Cli {
     /// Explicit SQLite database path when using the sqlite backend.
     #[arg(long, global = true)]
     pub state_db_path: Option<PathBuf>,
+
+    /// Explicit Redis connection URL when using the redis backend.
+    #[arg(long, global = true)]
+    pub state_redis_url: Option<String>,
 
     /// Log verbosity level.
     #[arg(long, default_value = "info", global = true)]
@@ -487,6 +515,9 @@ pub enum Commands {
         /// World ID for state-backed proofs or plan generation.
         #[arg(long)]
         world: Option<String>,
+        /// Verification backend to use when generating proofs.
+        #[arg(long, value_enum, default_value_t = VerifyBackend::Mock)]
+        backend: VerifyBackend,
         /// Proof type: inference, guardrail, provenance.
         #[arg(long, default_value = "inference")]
         proof_type: String,
@@ -713,6 +744,7 @@ pub async fn run() -> Result<()> {
                 cli.state_backend,
                 cli.state_file_format,
                 cli.state_db_path.as_deref(),
+                cli.state_redis_url.as_deref(),
                 bind,
             )
             .await;
@@ -1119,6 +1151,7 @@ pub async fn run() -> Result<()> {
         }
         Commands::Verify {
             world,
+            backend,
             proof_type,
             input_state_json,
             output_state_json,
@@ -1138,6 +1171,7 @@ pub async fn run() -> Result<()> {
                 store.as_ref(),
                 world.as_deref(),
                 VerifyOptions {
+                    backend,
                     proof_type: &proof_type,
                     input_state_json: input_state_json.as_deref(),
                     output_state_json: output_state_json.as_deref(),
@@ -1186,17 +1220,25 @@ fn state_store_kind(
     state_backend: StateBackend,
     state_file_format: StateFileFormat,
     state_db_path: Option<&Path>,
-) -> StateStoreKind {
+    state_redis_url: Option<&str>,
+) -> Result<StateStoreKind> {
     match state_backend {
-        StateBackend::File => StateStoreKind::FileWithFormat {
+        StateBackend::File => Ok(StateStoreKind::FileWithFormat {
             path: state_dir.to_path_buf(),
             format: state_file_format.as_core(),
-        },
-        StateBackend::Sqlite => StateStoreKind::Sqlite(
+        }),
+        StateBackend::Sqlite => Ok(StateStoreKind::Sqlite(
             state_db_path
                 .map(Path::to_path_buf)
                 .unwrap_or_else(|| state_dir.join("worldforge.db")),
-        ),
+        )),
+        StateBackend::Redis => state_redis_url
+            .map(|url| StateStoreKind::Redis(url.to_string()))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "--state-redis-url is required when --state-backend redis is selected"
+                )
+            }),
     }
 }
 
@@ -1206,7 +1248,8 @@ async fn open_state_store(cli: &Cli) -> Result<DynStateStore> {
         cli.state_backend,
         cli.state_file_format,
         cli.state_db_path.as_deref(),
-    )
+        cli.state_redis_url.as_deref(),
+    )?
     .open()
     .await
     .map_err(|e| anyhow::anyhow!("{e}"))
@@ -1501,6 +1544,7 @@ struct EvalOptions<'a> {
 }
 
 struct VerifyOptions<'a> {
+    backend: VerifyBackend,
     proof_type: &'a str,
     input_state_json: Option<&'a Path>,
     output_state_json: Option<&'a Path>,
@@ -1541,6 +1585,14 @@ fn require_provider<'a>(
             available_provider_names(registry)
         )
     })
+}
+
+fn verifier_for_backend(backend: VerificationBackend) -> Box<dyn ZkVerifier> {
+    backend.verifier()
+}
+
+fn verifier_for_proof(proof: &ZkProof) -> Box<dyn ZkVerifier> {
+    verifier_for_backend(proof.backend)
 }
 
 fn read_json_file<T: DeserializeOwned>(path: &Path) -> Result<T> {
@@ -2685,7 +2737,7 @@ async fn cmd_verify(
     world_id: Option<&str>,
     options: VerifyOptions<'_>,
 ) -> Result<()> {
-    let verifier = MockVerifier::new();
+    let verifier = verifier_for_backend(options.backend.as_core());
     let loaded_state = match world_id {
         Some(world_id) => {
             let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
@@ -2705,7 +2757,7 @@ async fn cmd_verify(
                         .filter(|name| !name.is_empty())
                         .unwrap_or(output_state.metadata.created_by.as_str());
                     prove_inference_transition(
-                        &verifier,
+                        verifier.as_ref(),
                         provider_name,
                         &input_state,
                         &output_state,
@@ -2716,7 +2768,7 @@ async fn cmd_verify(
                     let state = loaded_state.as_ref().context(
                         "inference verification requires either --world with at least two recorded history entries, or both --input-state-json and --output-state-json",
                     )?;
-                    prove_latest_inference(&verifier, state, options.provider)
+                    prove_latest_inference(verifier.as_ref(), state, options.provider)
                         .map_err(|e| anyhow::anyhow!("{e}"))?
                 }
                 _ => anyhow::bail!(
@@ -2763,8 +2815,8 @@ async fn cmd_verify(
                     .map_err(|e| anyhow::anyhow!("{e}"))?
             };
 
-            let bundle =
-                prove_guardrail_plan(&verifier, &plan).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let bundle = prove_guardrail_plan(verifier.as_ref(), &plan)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
             print_verification_bundle("GuardrailCompliance", &bundle)?;
             if let Some(path) = options.output_json {
                 write_json_file(path, &bundle)?;
@@ -2781,8 +2833,9 @@ async fn cmd_verify(
                     .context("provenance verification requires --world or a state JSON input")?,
             };
             let timestamp = chrono::Utc::now().timestamp() as u64;
-            let bundle = prove_provenance(&verifier, &state, options.source_label, timestamp)
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let bundle =
+                prove_provenance(verifier.as_ref(), &state, options.source_label, timestamp)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
             print_verification_bundle("DataProvenance", &bundle)?;
             if let Some(path) = options.output_json {
                 write_json_file(path, &bundle)?;
@@ -2799,12 +2852,12 @@ async fn cmd_verify(
 }
 
 async fn cmd_verify_proof(options: VerifyProofOptions<'_>) -> Result<()> {
-    let verifier = MockVerifier::new();
-
     if let Some(path) = options.proof_json {
         let proof: ZkProof = read_json_file(path)?;
+        let verifier = verifier_for_proof(&proof);
         let report = ProofVerificationReport {
-            verification: verify_proof(&verifier, &proof).map_err(|e| anyhow::anyhow!("{e}"))?,
+            verification: verify_proof(verifier.as_ref(), &proof)
+                .map_err(|e| anyhow::anyhow!("{e}"))?,
             proof,
         };
         print_proof_verification(&report);
@@ -2819,7 +2872,9 @@ async fn cmd_verify_proof(options: VerifyProofOptions<'_>) -> Result<()> {
     if let Some(path) = options.inference_bundle_json {
         let bundle: VerificationBundle<worldforge_verify::InferenceArtifact> =
             read_json_file(path)?;
-        let report = verify_bundle(&verifier, &bundle).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let verifier = verifier_for_backend(bundle.proof.backend);
+        let report =
+            verify_bundle(verifier.as_ref(), &bundle).map_err(|e| anyhow::anyhow!("{e}"))?;
         print_bundle_verification("InferenceVerification", &report)?;
         if let Some(output_path) = options.output_json {
             write_json_file(output_path, &report)?;
@@ -2832,7 +2887,9 @@ async fn cmd_verify_proof(options: VerifyProofOptions<'_>) -> Result<()> {
     if let Some(path) = options.guardrail_bundle_json {
         let bundle: VerificationBundle<worldforge_verify::GuardrailArtifact> =
             read_json_file(path)?;
-        let report = verify_bundle(&verifier, &bundle).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let verifier = verifier_for_backend(bundle.proof.backend);
+        let report =
+            verify_bundle(verifier.as_ref(), &bundle).map_err(|e| anyhow::anyhow!("{e}"))?;
         print_bundle_verification("GuardrailCompliance", &report)?;
         if let Some(output_path) = options.output_json {
             write_json_file(output_path, &report)?;
@@ -2845,7 +2902,9 @@ async fn cmd_verify_proof(options: VerifyProofOptions<'_>) -> Result<()> {
     if let Some(path) = options.provenance_bundle_json {
         let bundle: VerificationBundle<worldforge_verify::ProvenanceArtifact> =
             read_json_file(path)?;
-        let report = verify_bundle(&verifier, &bundle).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let verifier = verifier_for_backend(bundle.proof.backend);
+        let report =
+            verify_bundle(verifier.as_ref(), &bundle).map_err(|e| anyhow::anyhow!("{e}"))?;
         print_bundle_verification("DataProvenance", &report)?;
         if let Some(output_path) = options.output_json {
             write_json_file(output_path, &report)?;
@@ -2950,6 +3009,7 @@ async fn cmd_serve(
     state_backend: StateBackend,
     state_file_format: StateFileFormat,
     state_db_path: Option<&Path>,
+    state_redis_url: Option<&str>,
     bind: &str,
 ) -> Result<()> {
     let registry = Arc::new(auto_detect_registry());
@@ -2959,6 +3019,7 @@ async fn cmd_serve(
         state_backend: state_backend.as_str().to_string(),
         state_file_format: state_file_format.as_core().as_str().to_string(),
         state_db_path: state_db_path.map(|path| path.display().to_string()),
+        state_redis_url: state_redis_url.map(ToOwned::to_owned),
     };
 
     worldforge_server::serve(config, registry)
@@ -3300,7 +3361,7 @@ fn parse_axis_spec(tokens: &[&str]) -> Result<(Vec3, usize)> {
 mod tests {
     use super::*;
     use worldforge_core::scene::SceneObject;
-    use worldforge_verify::ZkVerifier;
+    use worldforge_verify::{MockVerifier, ZkVerifier};
 
     fn world_with_named_object(name: &str) -> (WorldState, uuid::Uuid) {
         let mut state = WorldState::new("cli-action-tests", "mock");
@@ -3665,6 +3726,26 @@ mod tests {
     }
 
     #[test]
+    fn test_cli_parse_redis_backend() {
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "--state-backend",
+            "redis",
+            "--state-redis-url",
+            "redis://127.0.0.1:6379/2",
+            "list",
+        ])
+        .unwrap();
+
+        assert_eq!(cli.state_backend, StateBackend::Redis);
+        assert_eq!(
+            cli.state_redis_url.as_deref(),
+            Some("redis://127.0.0.1:6379/2")
+        );
+        assert!(matches!(cli.command, Commands::List));
+    }
+
+    #[test]
     fn test_cli_parse_history_command() {
         let cli = Cli::try_parse_from([
             "worldforge",
@@ -3777,8 +3858,10 @@ mod tests {
                 Path::new(".wf"),
                 StateBackend::Sqlite,
                 StateFileFormat::Json,
+                None,
                 None
-            ),
+            )
+            .unwrap(),
             StateStoreKind::Sqlite(PathBuf::from(".wf/worldforge.db"))
         );
     }
@@ -3790,13 +3873,46 @@ mod tests {
                 Path::new(".wf"),
                 StateBackend::File,
                 StateFileFormat::Msgpack,
+                None,
                 None
-            ),
+            )
+            .unwrap(),
             StateStoreKind::FileWithFormat {
                 path: PathBuf::from(".wf"),
                 format: CoreStateFileFormat::MessagePack,
             }
         );
+    }
+
+    #[test]
+    fn test_state_store_kind_uses_redis_url() {
+        let store_kind = state_store_kind(
+            Path::new(".wf"),
+            StateBackend::Redis,
+            StateFileFormat::Json,
+            None,
+            Some("redis://127.0.0.1:6379/0"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            store_kind,
+            StateStoreKind::Redis("redis://127.0.0.1:6379/0".to_string())
+        );
+    }
+
+    #[test]
+    fn test_open_state_store_requires_redis_url() {
+        let cli = Cli::try_parse_from(["worldforge", "--state-backend", "redis", "list"]).unwrap();
+        let result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(open_state_store(&cli));
+        match result {
+            Ok(_) => panic!("expected missing Redis URL error"),
+            Err(error) => assert!(error
+                .to_string()
+                .contains("--state-redis-url is required when --state-backend redis is selected")),
+        }
     }
 
     #[test]
@@ -5532,6 +5648,7 @@ mod tests {
             store.as_ref(),
             None,
             VerifyOptions {
+                backend: VerifyBackend::Mock,
                 proof_type: "inference",
                 input_state_json: Some(&input_path),
                 output_state_json: Some(&output_path),
@@ -5591,6 +5708,7 @@ mod tests {
             store.as_ref(),
             None,
             VerifyOptions {
+                backend: VerifyBackend::Mock,
                 proof_type: "guardrail",
                 input_state_json: None,
                 output_state_json: None,

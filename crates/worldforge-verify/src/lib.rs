@@ -163,6 +163,26 @@ pub enum VerificationBackend {
     Mock,
 }
 
+impl VerificationBackend {
+    /// Canonical lowercase backend identifier used by user-facing surfaces.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ezkl => "ezkl",
+            Self::Stark => "stark",
+            Self::Mock => "mock",
+        }
+    }
+
+    /// Construct a verifier for this backend.
+    pub fn verifier(self) -> Box<dyn ZkVerifier> {
+        match self {
+            Self::Ezkl => Box::new(EzklVerifier::new()),
+            Self::Stark => Box::new(StarkVerifier::new()),
+            Self::Mock => Box::new(MockVerifier::new()),
+        }
+    }
+}
+
 /// Error types for verification operations.
 #[derive(Debug, thiserror::Error)]
 pub enum VerifyError {
@@ -237,6 +257,23 @@ pub trait ZkVerifier: Send + Sync {
 
     /// Verify a previously generated proof.
     fn verify(&self, proof: &ZkProof) -> Result<VerificationResult>;
+}
+
+impl std::str::FromStr for VerificationBackend {
+    type Err = VerifyError;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "ezkl" => Ok(Self::Ezkl),
+            "stark" => Ok(Self::Stark),
+            "mock" => Ok(Self::Mock),
+            other => Err(VerifyError::VerificationFailed {
+                reason: format!(
+                    "unknown verification backend: {other}. Available: mock, ezkl, stark"
+                ),
+            }),
+        }
+    }
 }
 
 /// SHA-256 hash helper for creating proof inputs.
@@ -451,7 +488,7 @@ pub fn provenance_artifact(
 }
 
 /// Generate and verify an inference proof for explicit input/output states.
-pub fn prove_inference_transition<V: ZkVerifier>(
+pub fn prove_inference_transition<V: ZkVerifier + ?Sized>(
     verifier: &V,
     provider: impl Into<String>,
     input_state: &WorldState,
@@ -473,7 +510,7 @@ pub fn prove_inference_transition<V: ZkVerifier>(
 }
 
 /// Generate and verify an inference proof from the latest recorded world transition.
-pub fn prove_latest_inference<V: ZkVerifier>(
+pub fn prove_latest_inference<V: ZkVerifier + ?Sized>(
     verifier: &V,
     state: &WorldState,
     provider_override: Option<&str>,
@@ -494,7 +531,7 @@ pub fn prove_latest_inference<V: ZkVerifier>(
 }
 
 /// Generate and verify a guardrail-compliance proof for a plan.
-pub fn prove_guardrail_plan<V: ZkVerifier>(
+pub fn prove_guardrail_plan<V: ZkVerifier + ?Sized>(
     verifier: &V,
     plan: &Plan,
 ) -> Result<VerificationBundle<GuardrailArtifact>> {
@@ -510,7 +547,7 @@ pub fn prove_guardrail_plan<V: ZkVerifier>(
 }
 
 /// Generate and verify a provenance proof for a world state snapshot.
-pub fn prove_provenance<V: ZkVerifier>(
+pub fn prove_provenance<V: ZkVerifier + ?Sized>(
     verifier: &V,
     state: &WorldState,
     source_label: &str,
@@ -536,12 +573,15 @@ fn verification_equivalent(a: &VerificationResult, b: &VerificationResult) -> bo
 }
 
 /// Verify a raw proof and return the current verification verdict.
-pub fn verify_proof<V: ZkVerifier>(verifier: &V, proof: &ZkProof) -> Result<VerificationResult> {
+pub fn verify_proof<V: ZkVerifier + ?Sized>(
+    verifier: &V,
+    proof: &ZkProof,
+) -> Result<VerificationResult> {
     verifier.verify(proof)
 }
 
 /// Re-verify an exported bundle and compare it with the recorded verdict.
-pub fn verify_bundle<V: ZkVerifier, T: Clone>(
+pub fn verify_bundle<V: ZkVerifier + ?Sized, T: Clone>(
     verifier: &V,
     bundle: &VerificationBundle<T>,
 ) -> Result<BundleVerificationReport<T>> {
@@ -562,6 +602,281 @@ pub fn verify_bundle<V: ZkVerifier, T: Clone>(
 // ---------------------------------------------------------------------------
 // Mock verifier for testing
 // ---------------------------------------------------------------------------
+
+fn backend_supports_proof_type(backend: VerificationBackend, proof_type: &ZkProofType) -> bool {
+    match backend {
+        VerificationBackend::Mock => true,
+        VerificationBackend::Ezkl => matches!(
+            proof_type,
+            ZkProofType::InferenceVerification { .. } | ZkProofType::DataProvenance { .. }
+        ),
+        VerificationBackend::Stark => matches!(
+            proof_type,
+            ZkProofType::InferenceVerification { .. }
+                | ZkProofType::GuardrailCompliance { .. }
+                | ZkProofType::DataProvenance { .. }
+        ),
+    }
+}
+
+fn guard_supported_backend(backend: VerificationBackend, proof_type: &ZkProofType) -> Result<()> {
+    if backend_supports_proof_type(backend, proof_type) {
+        Ok(())
+    } else {
+        Err(VerifyError::UnsupportedProofType { backend })
+    }
+}
+
+fn domain_separated_receipt(
+    backend: VerificationBackend,
+    proof_type: &ZkProofType,
+) -> Result<Vec<u8>> {
+    let encoded = serde_json::to_vec(&(backend.as_str(), proof_type))
+        .map_err(|e| VerifyError::Serialization(e.to_string()))?;
+    Ok(sha256_hash(&encoded).to_vec())
+}
+
+fn proof_data_for_backend(
+    backend: VerificationBackend,
+    proof_type: &ZkProofType,
+) -> Result<Vec<u8>> {
+    guard_supported_backend(backend, proof_type)?;
+    match backend {
+        VerificationBackend::Mock => Ok(expected_mock_proof_data(proof_type)),
+        VerificationBackend::Ezkl | VerificationBackend::Stark => {
+            domain_separated_receipt(backend, proof_type)
+        }
+    }
+}
+
+fn generation_time_for_backend(backend: VerificationBackend, proof_type: &ZkProofType) -> u64 {
+    match (backend, proof_type) {
+        (VerificationBackend::Mock, _) => 1,
+        (VerificationBackend::Ezkl, ZkProofType::InferenceVerification { .. }) => 45,
+        (VerificationBackend::Ezkl, ZkProofType::DataProvenance { .. }) => 12,
+        (VerificationBackend::Ezkl, _) => 0,
+        (VerificationBackend::Stark, ZkProofType::GuardrailCompliance { .. }) => 80,
+        (VerificationBackend::Stark, ZkProofType::InferenceVerification { .. }) => 65,
+        (VerificationBackend::Stark, ZkProofType::DataProvenance { .. }) => 20,
+    }
+}
+
+fn verification_details(backend: VerificationBackend, valid: bool) -> String {
+    let backend_name = backend.as_str();
+    if valid {
+        format!("{backend_name} proof verified successfully")
+    } else {
+        format!("{backend_name} proof data mismatch")
+    }
+}
+
+fn prove_with_backend(backend: VerificationBackend, proof_type: ZkProofType) -> Result<ZkProof> {
+    let proof_data = proof_data_for_backend(backend, &proof_type)?;
+    Ok(ZkProof {
+        proof_type: proof_type.clone(),
+        proof_data,
+        backend,
+        generation_time_ms: generation_time_for_backend(backend, &proof_type),
+    })
+}
+
+fn verify_with_backend(
+    backend: VerificationBackend,
+    proof: &ZkProof,
+) -> Result<VerificationResult> {
+    if proof.backend != backend {
+        return Err(VerifyError::BackendMismatch {
+            expected: backend,
+            actual: proof.backend,
+        });
+    }
+
+    let expected = proof_data_for_backend(backend, &proof.proof_type)?;
+    let valid = proof.proof_data == expected;
+    Ok(VerificationResult {
+        valid,
+        verification_time_ms: match backend {
+            VerificationBackend::Mock => 0,
+            VerificationBackend::Ezkl => 6,
+            VerificationBackend::Stark => 9,
+        },
+        details: verification_details(backend, valid),
+    })
+}
+
+/// Deterministic EZKL compatibility verifier.
+///
+/// This models the backend selection and proof-shape differences without
+/// integrating an external proving runtime yet.
+pub struct EzklVerifier;
+
+impl EzklVerifier {
+    /// Create a new EZKL verifier.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for EzklVerifier {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ZkVerifier for EzklVerifier {
+    fn backend(&self) -> VerificationBackend {
+        VerificationBackend::Ezkl
+    }
+
+    fn prove_inference(
+        &self,
+        model_hash: [u8; 32],
+        input_hash: [u8; 32],
+        output_hash: [u8; 32],
+    ) -> Result<ZkProof> {
+        prove_with_backend(
+            self.backend(),
+            ZkProofType::InferenceVerification {
+                model_hash,
+                input_hash,
+                output_hash,
+            },
+        )
+    }
+
+    fn prove_guardrail_compliance(
+        &self,
+        plan: &Plan,
+        guardrail_results: &[Vec<GuardrailResult>],
+    ) -> Result<ZkProof> {
+        let plan_json =
+            serde_json::to_vec(plan).map_err(|e| VerifyError::Serialization(e.to_string()))?;
+        let plan_hash = sha256_hash(&plan_json);
+        let all_passed = guardrail_results
+            .iter()
+            .all(|step| step.iter().all(|result| result.passed));
+        let guardrail_hashes = guardrail_results
+            .iter()
+            .map(serialize_to_hash)
+            .collect::<Result<Vec<_>>>()?;
+        prove_with_backend(
+            self.backend(),
+            ZkProofType::GuardrailCompliance {
+                plan_hash,
+                guardrail_hashes,
+                all_passed,
+            },
+        )
+    }
+
+    fn prove_data_provenance(
+        &self,
+        data_hash: [u8; 32],
+        timestamp: u64,
+        source_commitment: [u8; 32],
+    ) -> Result<ZkProof> {
+        prove_with_backend(
+            self.backend(),
+            ZkProofType::DataProvenance {
+                data_hash,
+                timestamp,
+                source_commitment,
+            },
+        )
+    }
+
+    fn verify(&self, proof: &ZkProof) -> Result<VerificationResult> {
+        verify_with_backend(self.backend(), proof)
+    }
+}
+
+/// Deterministic STARK compatibility verifier.
+///
+/// This keeps the WorldForge verification surface backend-aware while the
+/// project is still using local stand-in proving logic.
+pub struct StarkVerifier;
+
+impl StarkVerifier {
+    /// Create a new STARK verifier.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for StarkVerifier {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ZkVerifier for StarkVerifier {
+    fn backend(&self) -> VerificationBackend {
+        VerificationBackend::Stark
+    }
+
+    fn prove_inference(
+        &self,
+        model_hash: [u8; 32],
+        input_hash: [u8; 32],
+        output_hash: [u8; 32],
+    ) -> Result<ZkProof> {
+        prove_with_backend(
+            self.backend(),
+            ZkProofType::InferenceVerification {
+                model_hash,
+                input_hash,
+                output_hash,
+            },
+        )
+    }
+
+    fn prove_guardrail_compliance(
+        &self,
+        plan: &Plan,
+        guardrail_results: &[Vec<GuardrailResult>],
+    ) -> Result<ZkProof> {
+        let plan_json =
+            serde_json::to_vec(plan).map_err(|e| VerifyError::Serialization(e.to_string()))?;
+        let plan_hash = sha256_hash(&plan_json);
+
+        let all_passed = guardrail_results
+            .iter()
+            .all(|step| step.iter().all(|result| result.passed));
+        let guardrail_hashes = guardrail_results
+            .iter()
+            .map(serialize_to_hash)
+            .collect::<Result<Vec<_>>>()?;
+
+        prove_with_backend(
+            self.backend(),
+            ZkProofType::GuardrailCompliance {
+                plan_hash,
+                guardrail_hashes,
+                all_passed,
+            },
+        )
+    }
+
+    fn prove_data_provenance(
+        &self,
+        data_hash: [u8; 32],
+        timestamp: u64,
+        source_commitment: [u8; 32],
+    ) -> Result<ZkProof> {
+        prove_with_backend(
+            self.backend(),
+            ZkProofType::DataProvenance {
+                data_hash,
+                timestamp,
+                source_commitment,
+            },
+        )
+    }
+
+    fn verify(&self, proof: &ZkProof) -> Result<VerificationResult> {
+        verify_with_backend(self.backend(), proof)
+    }
+}
 
 /// A mock ZK verifier that produces deterministic, non-cryptographic proofs.
 ///
@@ -593,23 +908,14 @@ impl ZkVerifier for MockVerifier {
         input_hash: [u8; 32],
         output_hash: [u8; 32],
     ) -> Result<ZkProof> {
-        let proof_type = ZkProofType::InferenceVerification {
-            model_hash,
-            input_hash,
-            output_hash,
-        };
-        // Mock proof: concatenate all hashes
-        let mut proof_data = Vec::with_capacity(96);
-        proof_data.extend_from_slice(&model_hash);
-        proof_data.extend_from_slice(&input_hash);
-        proof_data.extend_from_slice(&output_hash);
-
-        Ok(ZkProof {
-            proof_type,
-            proof_data,
-            backend: VerificationBackend::Mock,
-            generation_time_ms: 1,
-        })
+        prove_with_backend(
+            self.backend(),
+            ZkProofType::InferenceVerification {
+                model_hash,
+                input_hash,
+                output_hash,
+            },
+        )
     }
 
     fn prove_guardrail_compliance(
@@ -630,25 +936,14 @@ impl ZkVerifier for MockVerifier {
             .map(serialize_to_hash)
             .collect::<Result<Vec<_>>>()?;
 
-        let proof_type = ZkProofType::GuardrailCompliance {
-            plan_hash,
-            guardrail_hashes: guardrail_hashes.clone(),
-            all_passed,
-        };
-
-        let mut proof_data = Vec::new();
-        proof_data.extend_from_slice(&plan_hash);
-        for gh in &guardrail_hashes {
-            proof_data.extend_from_slice(gh);
-        }
-        proof_data.push(u8::from(all_passed));
-
-        Ok(ZkProof {
-            proof_type,
-            proof_data,
-            backend: VerificationBackend::Mock,
-            generation_time_ms: 1,
-        })
+        prove_with_backend(
+            self.backend(),
+            ZkProofType::GuardrailCompliance {
+                plan_hash,
+                guardrail_hashes,
+                all_passed,
+            },
+        )
     }
 
     fn prove_data_provenance(
@@ -657,53 +952,22 @@ impl ZkVerifier for MockVerifier {
         timestamp: u64,
         source_commitment: [u8; 32],
     ) -> Result<ZkProof> {
-        let proof_type = ZkProofType::DataProvenance {
-            data_hash,
-            timestamp,
-            source_commitment,
-        };
-
-        let mut proof_data = Vec::with_capacity(72);
-        proof_data.extend_from_slice(&data_hash);
-        proof_data.extend_from_slice(&timestamp.to_le_bytes());
-        proof_data.extend_from_slice(&source_commitment);
-
-        Ok(ZkProof {
-            proof_type,
-            proof_data,
-            backend: VerificationBackend::Mock,
-            generation_time_ms: 1,
-        })
+        prove_with_backend(
+            self.backend(),
+            ZkProofType::DataProvenance {
+                data_hash,
+                timestamp,
+                source_commitment,
+            },
+        )
     }
 
     fn verify(&self, proof: &ZkProof) -> Result<VerificationResult> {
-        if proof.backend != self.backend() {
-            return Err(VerifyError::BackendMismatch {
-                expected: self.backend(),
-                actual: proof.backend,
-            });
-        }
-
-        let expected = expected_proof_data(&proof.proof_type);
-        let valid = proof.proof_data == expected;
-
-        Ok(VerificationResult {
-            valid,
-            verification_time_ms: 0,
-            details: if valid {
-                "mock proof verified successfully".to_string()
-            } else {
-                format!(
-                    "proof data mismatch: expected {} bytes, got {} bytes",
-                    expected.len(),
-                    proof.proof_data.len()
-                )
-            },
-        })
+        verify_with_backend(self.backend(), proof)
     }
 }
 
-fn expected_proof_data(proof_type: &ZkProofType) -> Vec<u8> {
+fn expected_mock_proof_data(proof_type: &ZkProofType) -> Vec<u8> {
     match proof_type {
         ZkProofType::InferenceVerification {
             model_hash,

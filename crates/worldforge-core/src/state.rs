@@ -4,10 +4,14 @@
 //! implementations for saving and loading world state.
 
 use std::collections::{HashSet, VecDeque};
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpStream;
 
 use crate::action::Action;
 use crate::bootstrap::seed_world_state_from_prompt;
@@ -560,6 +564,8 @@ pub enum StateStoreKind {
         /// Serialization format for the files in this store.
         format: StateFileFormat,
     },
+    /// Persist all world states in a Redis database.
+    Redis(String),
     /// Persist all world states in a SQLite database file.
     #[cfg(feature = "sqlite")]
     Sqlite(PathBuf),
@@ -574,8 +580,459 @@ impl StateStoreKind {
                 path.clone(),
                 *format,
             ))),
+            Self::Redis(url) => Ok(Arc::new(RedisStateStore::new(url.clone()).await?)),
             #[cfg(feature = "sqlite")]
             Self::Sqlite(path) => Ok(Arc::new(SqliteStateStore::from_path(path).await?)),
+        }
+    }
+}
+
+const REDIS_STATE_KEY_PREFIX: &str = "worldforge:state:";
+const REDIS_STATE_INDEX_KEY: &str = "worldforge:state:index";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RedisEndpoint {
+    host: String,
+    port: u16,
+    database: Option<u32>,
+}
+
+impl RedisEndpoint {
+    fn parse(url: &str) -> Result<Self> {
+        let url = url.trim();
+        let Some(rest) = url.strip_prefix("redis://") else {
+            return Err(WorldForgeError::InvalidState(format!(
+                "unsupported Redis URL '{url}': expected redis://host[:port][/db]"
+            )));
+        };
+
+        if rest.is_empty() {
+            return Err(WorldForgeError::InvalidState(
+                "redis URL is missing a host".to_string(),
+            ));
+        }
+        if rest.contains('@') {
+            return Err(WorldForgeError::InvalidState(
+                "redis URLs with credentials are not supported".to_string(),
+            ));
+        }
+        if rest.contains('?') || rest.contains('#') {
+            return Err(WorldForgeError::InvalidState(
+                "redis URLs with query parameters or fragments are not supported".to_string(),
+            ));
+        }
+
+        let (authority, path) = match rest.split_once('/') {
+            Some((authority, path)) => (authority, path),
+            None => (rest, ""),
+        };
+        let (host, port) = parse_redis_authority(authority)?;
+        let database = parse_redis_database(path)?;
+
+        Ok(Self {
+            host,
+            port,
+            database,
+        })
+    }
+
+    fn address(&self) -> String {
+        format!("{}:{}", self.host, self.port)
+    }
+}
+
+fn parse_redis_authority(authority: &str) -> Result<(String, u16)> {
+    if authority.is_empty() {
+        return Err(WorldForgeError::InvalidState(
+            "redis URL is missing a host".to_string(),
+        ));
+    }
+
+    if let Some(stripped) = authority.strip_prefix('[') {
+        let Some((host, remainder)) = stripped.split_once(']') else {
+            return Err(WorldForgeError::InvalidState(
+                "redis IPv6 host must be bracketed".to_string(),
+            ));
+        };
+
+        let port = match remainder {
+            "" => 6379,
+            rest if rest.starts_with(':') => rest[1..].parse::<u16>().map_err(|_| {
+                WorldForgeError::InvalidState(format!("invalid Redis port in URL '{authority}'"))
+            })?,
+            _ => {
+                return Err(WorldForgeError::InvalidState(format!(
+                    "unexpected Redis authority suffix '{remainder}'"
+                )))
+            }
+        };
+
+        if host.is_empty() {
+            return Err(WorldForgeError::InvalidState(
+                "redis IPv6 host is empty".to_string(),
+            ));
+        }
+
+        return Ok((host.to_string(), port));
+    }
+
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port)) if !port.is_empty() && !host.contains(':') => {
+            let port = port.parse::<u16>().map_err(|_| {
+                WorldForgeError::InvalidState(format!("invalid Redis port in URL '{authority}'"))
+            })?;
+            (host, port)
+        }
+        Some((host, _)) if host.contains(':') => {
+            return Err(WorldForgeError::InvalidState(
+                "redis IPv6 hosts must be bracketed".to_string(),
+            ))
+        }
+        _ => (authority, 6379),
+    };
+
+    if host.is_empty() {
+        return Err(WorldForgeError::InvalidState(
+            "redis URL is missing a host".to_string(),
+        ));
+    }
+
+    Ok((host.to_string(), port))
+}
+
+fn parse_redis_database(path: &str) -> Result<Option<u32>> {
+    let path = path.trim();
+    if path.is_empty() {
+        return Ok(None);
+    }
+    if path.contains('/') {
+        return Err(WorldForgeError::InvalidState(
+            "redis URLs support at most one database path segment".to_string(),
+        ));
+    }
+
+    let database = path.parse::<u32>().map_err(|_| {
+        WorldForgeError::InvalidState(format!("invalid Redis database index '{path}' in URL"))
+    })?;
+    Ok(Some(database))
+}
+
+#[derive(Debug)]
+struct RedisConnection {
+    stream: BufReader<TcpStream>,
+}
+
+#[derive(Debug)]
+enum RedisValue {
+    SimpleString(String),
+    Error(String),
+    Integer(i64),
+    BulkString(Vec<u8>),
+    Array(Vec<RedisValue>),
+    Null,
+}
+
+impl RedisConnection {
+    async fn connect(endpoint: &RedisEndpoint) -> Result<Self> {
+        let stream = TcpStream::connect(endpoint.address())
+            .await
+            .map_err(|error| {
+                WorldForgeError::InternalError(format!("failed to connect to Redis: {error}"))
+            })?;
+
+        Ok(Self {
+            stream: BufReader::new(stream),
+        })
+    }
+
+    async fn command(&mut self, args: &[&[u8]]) -> Result<RedisValue> {
+        let payload = encode_redis_command(args);
+        self.stream
+            .get_mut()
+            .write_all(&payload)
+            .await
+            .map_err(|error| {
+                WorldForgeError::InternalError(format!("failed to write Redis command: {error}"))
+            })?;
+        read_redis_value(&mut self.stream).await
+    }
+}
+
+fn encode_redis_command(args: &[&[u8]]) -> Vec<u8> {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(format!("*{}\r\n", args.len()).as_bytes());
+    for arg in args {
+        payload.extend_from_slice(format!("${}\r\n", arg.len()).as_bytes());
+        payload.extend_from_slice(arg);
+        payload.extend_from_slice(b"\r\n");
+    }
+    payload
+}
+
+async fn read_redis_line(reader: &mut BufReader<TcpStream>) -> Result<String> {
+    let mut line = String::new();
+    let bytes = reader.read_line(&mut line).await.map_err(|error| {
+        WorldForgeError::InternalError(format!("failed to read Redis line: {error}"))
+    })?;
+
+    if bytes == 0 {
+        return Err(WorldForgeError::InternalError(
+            "unexpected EOF while reading Redis response".to_string(),
+        ));
+    }
+
+    if line.ends_with('\n') {
+        line.pop();
+    }
+    if line.ends_with('\r') {
+        line.pop();
+    }
+
+    Ok(line)
+}
+
+fn read_redis_value<'a>(
+    reader: &'a mut BufReader<TcpStream>,
+) -> Pin<Box<dyn Future<Output = Result<RedisValue>> + Send + 'a>> {
+    Box::pin(async move {
+        let mut prefix = [0u8; 1];
+        reader.read_exact(&mut prefix).await.map_err(|error| {
+            WorldForgeError::InternalError(format!("failed to read Redis response: {error}"))
+        })?;
+
+        match prefix[0] {
+            b'+' => Ok(RedisValue::SimpleString(read_redis_line(reader).await?)),
+            b'-' => Ok(RedisValue::Error(read_redis_line(reader).await?)),
+            b':' => {
+                let line = read_redis_line(reader).await?;
+                let value = line.parse::<i64>().map_err(|_| {
+                    WorldForgeError::InvalidState(format!(
+                        "invalid Redis integer response '{line}'"
+                    ))
+                })?;
+                Ok(RedisValue::Integer(value))
+            }
+            b'$' => {
+                let line = read_redis_line(reader).await?;
+                let length = line.parse::<isize>().map_err(|_| {
+                    WorldForgeError::InvalidState(format!("invalid Redis bulk length '{line}'"))
+                })?;
+                if length < 0 {
+                    return Ok(RedisValue::Null);
+                }
+                let mut payload = vec![0u8; length as usize];
+                reader.read_exact(&mut payload).await.map_err(|error| {
+                    WorldForgeError::InternalError(format!(
+                        "failed to read Redis bulk payload: {error}"
+                    ))
+                })?;
+                let mut crlf = [0u8; 2];
+                reader.read_exact(&mut crlf).await.map_err(|error| {
+                    WorldForgeError::InternalError(format!(
+                        "failed to read Redis bulk terminator: {error}"
+                    ))
+                })?;
+                if crlf != *b"\r\n" {
+                    return Err(WorldForgeError::InvalidState(
+                        "invalid Redis bulk string terminator".to_string(),
+                    ));
+                }
+                Ok(RedisValue::BulkString(payload))
+            }
+            b'*' => {
+                let line = read_redis_line(reader).await?;
+                let count = line.parse::<isize>().map_err(|_| {
+                    WorldForgeError::InvalidState(format!("invalid Redis array length '{line}'"))
+                })?;
+                if count < 0 {
+                    return Ok(RedisValue::Null);
+                }
+
+                let mut values = Vec::with_capacity(count as usize);
+                for _ in 0..count {
+                    values.push(read_redis_value(reader).await?);
+                }
+                Ok(RedisValue::Array(values))
+            }
+            other => Err(WorldForgeError::InvalidState(format!(
+                "unsupported Redis response prefix '{}'",
+                other as char
+            ))),
+        }
+    })
+}
+
+fn redis_error(message: impl Into<String>) -> WorldForgeError {
+    WorldForgeError::InvalidState(message.into())
+}
+
+fn expect_redis_ok(value: RedisValue) -> Result<()> {
+    match value {
+        RedisValue::SimpleString(message) if message.eq_ignore_ascii_case("OK") => Ok(()),
+        RedisValue::BulkString(bytes) if bytes.eq_ignore_ascii_case(b"OK") => Ok(()),
+        RedisValue::Integer(1) => Ok(()),
+        RedisValue::Error(message) => Err(WorldForgeError::InternalError(message)),
+        other => Err(redis_error(format!("unexpected Redis response: {other:?}"))),
+    }
+}
+
+fn expect_redis_pong(value: RedisValue) -> Result<()> {
+    match value {
+        RedisValue::SimpleString(message) if message.eq_ignore_ascii_case("PONG") => Ok(()),
+        RedisValue::BulkString(bytes) if bytes.eq_ignore_ascii_case(b"PONG") => Ok(()),
+        RedisValue::Error(message) => Err(WorldForgeError::InternalError(message)),
+        other => Err(redis_error(format!("unexpected Redis response: {other:?}"))),
+    }
+}
+
+fn redis_key_for_world(id: &WorldId) -> String {
+    format!("{REDIS_STATE_KEY_PREFIX}{id}")
+}
+
+#[derive(Debug, Clone)]
+pub struct RedisStateStore {
+    /// Redis connection URL used to establish short-lived command connections.
+    pub url: String,
+    endpoint: RedisEndpoint,
+}
+
+impl RedisStateStore {
+    /// Create a new Redis-backed state store from a Redis connection URL.
+    pub async fn new(url: impl Into<String>) -> Result<Self> {
+        let url = url.into();
+        let endpoint = RedisEndpoint::parse(&url)?;
+        let store = Self { url, endpoint };
+        let response = store.command(&[b"PING"]).await?;
+        expect_redis_pong(response)?;
+        Ok(store)
+    }
+
+    async fn with_connection(&self) -> Result<RedisConnection> {
+        let mut connection = RedisConnection::connect(&self.endpoint).await?;
+
+        if let Some(database) = self.endpoint.database {
+            let database = database.to_string();
+            let response = connection
+                .command(&[b"SELECT", database.as_bytes()])
+                .await?;
+            expect_redis_ok(response)?;
+        }
+
+        Ok(connection)
+    }
+
+    async fn command(&self, args: &[&[u8]]) -> Result<RedisValue> {
+        let mut connection = self.with_connection().await?;
+        connection.command(args).await
+    }
+}
+
+#[async_trait::async_trait]
+impl StateStore for RedisStateStore {
+    async fn save(&self, state: &WorldState) -> Result<()> {
+        let mut normalized = state.clone();
+        let provider = normalized.current_state_provider();
+        normalized.ensure_history_initialized(provider)?;
+        normalized.ensure_latest_history_snapshot()?;
+
+        let payload = serde_json::to_vec(&normalized)
+            .map_err(|e| WorldForgeError::SerializationError(e.to_string()))?;
+        let key = redis_key_for_world(&normalized.id);
+        let id = normalized.id.to_string();
+
+        let response = self
+            .command(&[b"SET", key.as_bytes(), payload.as_slice()])
+            .await?;
+        expect_redis_ok(response)?;
+
+        let response = self
+            .command(&[b"SADD", REDIS_STATE_INDEX_KEY.as_bytes(), id.as_bytes()])
+            .await?;
+        match response {
+            RedisValue::Integer(value) if value >= 0 => Ok(()),
+            RedisValue::Error(message) => Err(WorldForgeError::InternalError(message)),
+            other => Err(redis_error(format!(
+                "unexpected Redis response for SADD: {other:?}"
+            ))),
+        }
+    }
+
+    async fn load(&self, id: &WorldId) -> Result<WorldState> {
+        let key = redis_key_for_world(id);
+        let response = self.command(&[b"GET", key.as_bytes()]).await?;
+        match response {
+            RedisValue::BulkString(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|e| WorldForgeError::SerializationError(e.to_string())),
+            RedisValue::Null => Err(WorldForgeError::WorldNotFound(*id)),
+            RedisValue::Error(message) => Err(WorldForgeError::InternalError(message)),
+            other => Err(redis_error(format!(
+                "unexpected Redis response for GET: {other:?}"
+            ))),
+        }
+    }
+
+    async fn list(&self) -> Result<Vec<WorldId>> {
+        let response = self
+            .command(&[b"SMEMBERS", REDIS_STATE_INDEX_KEY.as_bytes()])
+            .await?;
+
+        let mut ids = HashSet::new();
+        let items = match response {
+            RedisValue::Array(items) => items,
+            RedisValue::Null => Vec::new(),
+            RedisValue::Error(message) => return Err(WorldForgeError::InternalError(message)),
+            other => {
+                return Err(redis_error(format!(
+                    "unexpected Redis response for SMEMBERS: {other:?}"
+                )))
+            }
+        };
+
+        for item in items {
+            let key = match item {
+                RedisValue::BulkString(bytes) => String::from_utf8(bytes)
+                    .map_err(|error| WorldForgeError::SerializationError(error.to_string()))?,
+                RedisValue::SimpleString(text) => text,
+                RedisValue::Error(message) => return Err(WorldForgeError::InternalError(message)),
+                other => {
+                    return Err(redis_error(format!(
+                        "unexpected Redis key response: {other:?}"
+                    )))
+                }
+            };
+
+            if let Ok(id) = key.parse::<WorldId>() {
+                ids.insert(id);
+            }
+        }
+
+        let mut ids = ids.into_iter().collect::<Vec<_>>();
+        ids.sort_unstable_by_key(|id| id.as_u128());
+        Ok(ids)
+    }
+
+    async fn delete(&self, id: &WorldId) -> Result<()> {
+        let key = redis_key_for_world(id);
+        let response = self.command(&[b"DEL", key.as_bytes()]).await?;
+        match response {
+            RedisValue::Integer(0) => Err(WorldForgeError::WorldNotFound(*id)),
+            RedisValue::Integer(_) => {
+                let id = id.to_string();
+                let response = self
+                    .command(&[b"SREM", REDIS_STATE_INDEX_KEY.as_bytes(), id.as_bytes()])
+                    .await?;
+                match response {
+                    RedisValue::Integer(value) if value >= 0 => Ok(()),
+                    RedisValue::Error(message) => Err(WorldForgeError::InternalError(message)),
+                    other => Err(redis_error(format!(
+                        "unexpected Redis response for SREM: {other:?}"
+                    ))),
+                }
+            }
+            RedisValue::Error(message) => Err(WorldForgeError::InternalError(message)),
+            other => Err(redis_error(format!(
+                "unexpected Redis response for DEL: {other:?}"
+            ))),
         }
     }
 }
@@ -849,7 +1306,14 @@ impl StateStore for SqliteStateStore {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{HashMap, HashSet};
+    use std::net::SocketAddr;
+    use std::sync::Arc;
+
     use super::*;
+    use tokio::net::TcpListener;
+    use tokio::sync::Mutex;
+    use tokio::task::JoinHandle;
 
     #[test]
     fn test_world_state_new() {
@@ -1325,6 +1789,305 @@ mod tests {
         let _ = tokio::fs::remove_file(&db_path).await;
         if let Some(parent) = db_path.parent() {
             let _ = tokio::fs::remove_dir_all(parent).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_redis_state_store_rejects_invalid_url() {
+        let error = RedisStateStore::new("http://127.0.0.1:6379")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, WorldForgeError::InvalidState(message) if message.contains("redis://"))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_redis_state_store_roundtrip_with_fake_server() {
+        let server = FakeRedisServer::spawn().await;
+        let store = StateStoreKind::Redis(format!("redis://{}/1", server.address))
+            .open()
+            .await
+            .unwrap();
+
+        let first = WorldState::new("redis-a", "mock");
+        let second = WorldState::new("redis-b", "mock");
+
+        store.save(&first).await.unwrap();
+        store.save(&second).await.unwrap();
+
+        let loaded = store.load(&first.id).await.unwrap();
+        assert_eq!(loaded.id, first.id);
+        assert_eq!(loaded.metadata.name, "redis-a");
+
+        let listed = store.list().await.unwrap();
+        let mut expected = vec![first.id, second.id];
+        expected.sort_unstable_by_key(|id| id.as_u128());
+        assert_eq!(listed, expected);
+
+        store.delete(&first.id).await.unwrap();
+        assert!(matches!(
+            store.load(&first.id).await.unwrap_err(),
+            WorldForgeError::WorldNotFound(id) if id == first.id
+        ));
+
+        let commands = server.commands.lock().await;
+        assert!(commands
+            .iter()
+            .any(|command| command == &vec!["SELECT".to_string(), "1".to_string()]));
+        assert!(commands
+            .iter()
+            .any(|command| command.first().map(String::as_str) == Some("PING")));
+        assert!(commands
+            .iter()
+            .any(|command| command.first().map(String::as_str) == Some("SADD")));
+        assert!(commands
+            .iter()
+            .any(|command| command.first().map(String::as_str) == Some("SMEMBERS")));
+        assert!(commands
+            .iter()
+            .any(|command| command.first().map(String::as_str) == Some("DEL")));
+        assert!(commands
+            .iter()
+            .any(|command| command.first().map(String::as_str) == Some("SREM")));
+    }
+
+    struct FakeRedisServer {
+        address: SocketAddr,
+        commands: Arc<Mutex<Vec<Vec<String>>>>,
+        handle: JoinHandle<()>,
+    }
+
+    impl FakeRedisServer {
+        async fn spawn() -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let commands = Arc::new(Mutex::new(Vec::new()));
+            let values = Arc::new(Mutex::new(HashMap::new()));
+            let sets = Arc::new(Mutex::new(HashMap::new()));
+            let commands_for_task = Arc::clone(&commands);
+            let values_for_task = Arc::clone(&values);
+            let sets_for_task = Arc::clone(&sets);
+
+            let handle = tokio::spawn(async move {
+                loop {
+                    let (stream, _) = match listener.accept().await {
+                        Ok(pair) => pair,
+                        Err(_) => break,
+                    };
+                    let commands = Arc::clone(&commands_for_task);
+                    let values = Arc::clone(&values_for_task);
+                    let sets = Arc::clone(&sets_for_task);
+                    tokio::spawn(async move {
+                        let _ = handle_fake_redis_connection(stream, commands, values, sets).await;
+                    });
+                }
+            });
+
+            Self {
+                address,
+                commands,
+                handle,
+            }
+        }
+    }
+
+    impl Drop for FakeRedisServer {
+        fn drop(&mut self) {
+            self.handle.abort();
+        }
+    }
+
+    async fn handle_fake_redis_connection(
+        stream: tokio::net::TcpStream,
+        commands: Arc<Mutex<Vec<Vec<String>>>>,
+        values: Arc<Mutex<HashMap<String, Vec<u8>>>>,
+        sets: Arc<Mutex<HashMap<String, HashSet<String>>>>,
+    ) -> Result<()> {
+        let mut reader = BufReader::new(stream);
+
+        loop {
+            let request = match read_redis_value(&mut reader).await {
+                Ok(request) => request,
+                Err(WorldForgeError::InternalError(message))
+                    if message.contains("unexpected EOF while reading Redis response") =>
+                {
+                    break;
+                }
+                Err(error) => return Err(error),
+            };
+
+            let RedisValue::Array(items) = request else {
+                return Err(WorldForgeError::InvalidState(
+                    "redis request must be an array".to_string(),
+                ));
+            };
+
+            let mut command = Vec::with_capacity(items.len());
+            for item in items {
+                command.push(redis_value_to_string(item)?);
+            }
+            if command.is_empty() {
+                return Err(WorldForgeError::InvalidState(
+                    "redis request is empty".to_string(),
+                ));
+            }
+
+            commands.lock().await.push(command.clone());
+
+            let response = match command[0].as_str() {
+                "PING" => redis_simple_string_response(reader.get_mut(), "PONG").await,
+                "SELECT" => redis_simple_string_response(reader.get_mut(), "OK").await,
+                "SET" => {
+                    if command.len() != 3 {
+                        return Err(WorldForgeError::InvalidState(
+                            "SET requires key and value".to_string(),
+                        ));
+                    }
+                    let key = command[1].clone();
+                    let value = command[2].clone().into_bytes();
+                    values.lock().await.insert(key, value);
+                    redis_simple_string_response(reader.get_mut(), "OK").await
+                }
+                "GET" => {
+                    if command.len() != 2 {
+                        return Err(WorldForgeError::InvalidState(
+                            "GET requires key".to_string(),
+                        ));
+                    }
+                    let key = &command[1];
+                    let value = values.lock().await.get(key).cloned();
+                    redis_bulk_response(reader.get_mut(), value.as_deref()).await
+                }
+                "DEL" => {
+                    if command.len() != 2 {
+                        return Err(WorldForgeError::InvalidState(
+                            "DEL requires key".to_string(),
+                        ));
+                    }
+                    let removed = values.lock().await.remove(&command[1]).is_some();
+                    redis_integer_response(reader.get_mut(), if removed { 1 } else { 0 }).await
+                }
+                "SADD" => {
+                    if command.len() != 3 {
+                        return Err(WorldForgeError::InvalidState(
+                            "SADD requires key and member".to_string(),
+                        ));
+                    }
+                    let mut sets = sets.lock().await;
+                    let members = sets.entry(command[1].clone()).or_default();
+                    let inserted = members.insert(command[2].clone());
+                    redis_integer_response(reader.get_mut(), if inserted { 1 } else { 0 }).await
+                }
+                "SMEMBERS" => {
+                    if command.len() != 2 {
+                        return Err(WorldForgeError::InvalidState(
+                            "SMEMBERS requires key".to_string(),
+                        ));
+                    }
+                    let mut members = sets
+                        .lock()
+                        .await
+                        .get(&command[1])
+                        .cloned()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .collect::<Vec<_>>();
+                    members.sort_unstable();
+                    let members = members
+                        .into_iter()
+                        .map(|member| member.into_bytes())
+                        .collect::<Vec<_>>();
+                    redis_array_response(reader.get_mut(), &members).await
+                }
+                "SREM" => {
+                    if command.len() != 3 {
+                        return Err(WorldForgeError::InvalidState(
+                            "SREM requires key and member".to_string(),
+                        ));
+                    }
+                    let mut sets = sets.lock().await;
+                    let removed = sets
+                        .get_mut(&command[1])
+                        .map(|members| members.remove(&command[2]))
+                        .unwrap_or(false);
+                    redis_integer_response(reader.get_mut(), if removed { 1 } else { 0 }).await
+                }
+                other => {
+                    redis_error_response(reader.get_mut(), &format!("unknown command '{other}'"))
+                        .await
+                }
+            };
+
+            response.map_err(|error| {
+                WorldForgeError::InternalError(format!("fake redis server write failed: {error}"))
+            })?;
+        }
+
+        Ok(())
+    }
+
+    async fn redis_simple_string_response(
+        stream: &mut tokio::net::TcpStream,
+        value: &str,
+    ) -> std::io::Result<()> {
+        stream.write_all(format!("+{value}\r\n").as_bytes()).await
+    }
+
+    async fn redis_error_response(
+        stream: &mut tokio::net::TcpStream,
+        message: &str,
+    ) -> std::io::Result<()> {
+        stream
+            .write_all(format!("-ERR {message}\r\n").as_bytes())
+            .await
+    }
+
+    async fn redis_integer_response(
+        stream: &mut tokio::net::TcpStream,
+        value: i64,
+    ) -> std::io::Result<()> {
+        stream.write_all(format!(":{value}\r\n").as_bytes()).await
+    }
+
+    async fn redis_bulk_response(
+        stream: &mut tokio::net::TcpStream,
+        value: Option<&[u8]>,
+    ) -> std::io::Result<()> {
+        match value {
+            Some(bytes) => {
+                stream
+                    .write_all(format!("${}\r\n", bytes.len()).as_bytes())
+                    .await?;
+                stream.write_all(bytes).await?;
+                stream.write_all(b"\r\n").await
+            }
+            None => stream.write_all(b"$-1\r\n").await,
+        }
+    }
+
+    async fn redis_array_response(
+        stream: &mut tokio::net::TcpStream,
+        values: &[Vec<u8>],
+    ) -> std::io::Result<()> {
+        stream
+            .write_all(format!("*{}\r\n", values.len()).as_bytes())
+            .await?;
+        for value in values {
+            redis_bulk_response(stream, Some(value)).await?;
+        }
+        Ok(())
+    }
+
+    fn redis_value_to_string(value: RedisValue) -> Result<String> {
+        match value {
+            RedisValue::BulkString(bytes) => String::from_utf8(bytes)
+                .map_err(|error| WorldForgeError::SerializationError(error.to_string())),
+            RedisValue::SimpleString(text) => Ok(text),
+            RedisValue::Error(message) => Err(WorldForgeError::InternalError(message)),
+            other => Err(WorldForgeError::InvalidState(format!(
+                "expected Redis string, got {other:?}"
+            ))),
         }
     }
 }

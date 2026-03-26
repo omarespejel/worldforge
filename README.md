@@ -135,6 +135,12 @@ same_world = wf.load_world(world.id)
 wf_msgpack = WorldForge(state_backend="file", state_file_format="msgpack")
 wf_msgpack.save_world(world)
 
+wf_redis = WorldForge(
+    state_backend="redis",
+    state_redis_url="redis://127.0.0.1:6379/0",
+)
+wf_redis.save_world(world)
+
 # Export/import portable snapshots from the configured store
 snapshot_json = wf.export_world(world.id, format="json")
 restored = wf.import_world(snapshot_json, format="json", new_id=True, name="kitchen-copy")
@@ -168,7 +174,7 @@ from worldforge.verify import ZkVerifier
 suite = EvalSuite.from_builtin("physics")
 report = suite.run_report_data("mock")
 
-verifier = ZkVerifier()  # mock backend today
+verifier = ZkVerifier(backend="stark")  # or "mock" / "ezkl"
 guardrail_bundle = plan.prove_guardrail_bundle()
 guardrail_report = verifier.verify_guardrail_bundle(guardrail_bundle)
 assert guardrail_report.current_verification.valid
@@ -289,6 +295,7 @@ cargo run -p worldforge-cli -- providers --health
 cargo run -p worldforge-cli -- estimate --provider cosmos --operation generate --duration-seconds 5 --width 1280 --height 720
 cargo run -p worldforge-cli -- list
 cargo run -p worldforge-cli -- --state-backend sqlite --state-db-path .worldforge/worldforge.db list
+cargo run -p worldforge-cli -- --state-backend redis --state-redis-url redis://127.0.0.1:6379/0 list
 cargo run -p worldforge-cli -- --state-file-format msgpack list
 cargo run -p worldforge-cli -- export --world <id> --output snapshots/world.json
 cargo run -p worldforge-cli -- export --world <id> --output snapshots/world.msgpack --format msgpack
@@ -303,7 +310,7 @@ cargo run -p worldforge-cli -- execute-plan --world <id> --plan-json plans/gener
 cargo run -p worldforge-cli -- generate --provider mock --prompt "A cube rolling across a table" --duration-seconds 5 --output-json clips/generated.json
 cargo run -p worldforge-cli -- transfer --provider mock --source-json clips/generated.json --output-json clips/transferred.json
 cargo run -p worldforge-cli -- reason --world <id> --query "Will the mug fall if pushed?"
-cargo run -p worldforge-cli -- verify --proof-type guardrail --plan-json plans/generated.json --output-json proofs/guardrail.json
+cargo run -p worldforge-cli -- verify --backend stark --proof-type guardrail --plan-json plans/generated.json --output-json proofs/guardrail.json
 cargo run -p worldforge-cli -- verify --proof-type guardrail --world <id> --goal-json goals/object-at.json --output-json proofs/object-at-guardrail.json
 cargo run -p worldforge-cli -- verify --proof-type inference --input-state-json states/before.json --output-state-json states/after.json --provider mock
 cargo run -p worldforge-cli -- verify-proof --guardrail-bundle-json proofs/guardrail.json --output-json proofs/guardrail-report.json
@@ -339,6 +346,7 @@ worldforge serve --bind 127.0.0.1:8080
 worldforge-server --bind 127.0.0.1:8080 --state-dir .worldforge
 worldforge-server --bind 127.0.0.1:8080 --state-dir .worldforge --state-file-format msgpack
 worldforge-server --bind 127.0.0.1:8080 --state-backend sqlite --state-db-path .worldforge/worldforge.db
+worldforge-server --bind 127.0.0.1:8080 --state-backend redis --state-redis-url redis://127.0.0.1:6379/0
 ```
 
 Then call the HTTP API directly:
@@ -384,7 +392,7 @@ curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/execute-plan \
 
 curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/verify \
   -H 'content-type: application/json' \
-  -d '{"proof_type":"guardrail","goal":"spawn cube","guardrails":[{"guardrail":"NoCollisions","blocking":true}]}'
+  -d '{"backend":"stark","proof_type":"guardrail","goal":"spawn cube","guardrails":[{"guardrail":"NoCollisions","blocking":true}]}'
 
 curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/verify \
   -H 'content-type: application/json' \
@@ -449,8 +457,8 @@ each stored world's configured provider instead of hard-coding `mock`. The CLI
 `--world`, which keeps the public evaluation workflow aligned with stored state
 without dropping suite-specific setup. Provider transfer is now exposed end-to-end in
 the core, CLI, REST server, and Python bindings with JSON clip round-tripping
-for reusable workflows. File-backed (JSON or MessagePack) and SQLite-backed world persistence are
-both supported through the shared `StateStore` abstraction across the core,
+for reusable workflows. File-backed (JSON or MessagePack), SQLite-backed, and
+Redis-backed world persistence are all supported through the shared `StateStore` abstraction across the core,
 CLI, REST server, and Python bindings. Cosmos and Runway adapters have API wiring in place,
 and Genie now ships as a deterministic low-resolution surrogate backend for
 interactive world generation, scene-grounded reasoning, controlled transfer,
@@ -461,7 +469,10 @@ real generated plans instead of placeholder proof inputs. The CLI can export
 plan JSON for reuse, and the REST server can generate guardrail proofs directly
 from a goal plus guardrail set. Exported proofs and verification bundles can
 now be re-verified offline across the CLI, REST server, and Python bindings,
-and verification inputs are hashed with real SHA-256 digests. Cross-provider
+and verification inputs are hashed with real SHA-256 digests. Verification
+backend selection is now exposed end to end across the verify crate, CLI, REST
+server, and Python bindings for the deterministic `mock`, `ezkl`, and `stark`
+compatibility paths. Cross-provider
 comparison now reuses the same guardrail and fallback pipeline as single-provider
 prediction, with comparison config exposed in the CLI, REST server, and Python
 bindings. Evaluation now
