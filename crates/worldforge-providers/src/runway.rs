@@ -20,6 +20,7 @@ use worldforge_core::provider::{
 use worldforge_core::state::WorldState;
 use worldforge_core::types::{DType, Device, Frame, SimTime, Tensor, TensorData, VideoClip};
 
+use crate::cosmos::CosmosProvider;
 use crate::native_planning;
 
 /// Runway model variant.
@@ -184,6 +185,8 @@ pub struct RunwayProvider {
     pub endpoint: String,
     /// Provider configuration.
     pub config: RunwayConfig,
+    /// Optional Cosmos fallback used for reasoning.
+    reason_fallback: Option<CosmosProvider>,
     /// HTTP client.
     client: reqwest::Client,
 }
@@ -199,6 +202,7 @@ impl RunwayProvider {
             predict_model,
             generate_model,
             transfer_model,
+            None,
         )
     }
 
@@ -216,6 +220,7 @@ impl RunwayProvider {
             predict_model,
             generate_model,
             transfer_model,
+            None,
         )
     }
 
@@ -237,6 +242,24 @@ impl RunwayProvider {
             Some(RunwayModel::Gwm1Robotics),
             Some(RunwayModel::Gwm1Worlds),
             Some(RunwayModel::Gwm1Worlds),
+            None,
+        )
+    }
+
+    /// Create a full-stack Runway provider with Cosmos-backed reasoning fallback.
+    pub(crate) fn full_stack_with_reason_fallback(
+        api_secret: impl Into<String>,
+        endpoint: impl Into<String>,
+        reason_fallback: CosmosProvider,
+    ) -> Self {
+        Self::from_routes(
+            RunwayModel::Gwm1Worlds,
+            api_secret,
+            endpoint,
+            Some(RunwayModel::Gwm1Robotics),
+            Some(RunwayModel::Gwm1Worlds),
+            Some(RunwayModel::Gwm1Worlds),
+            Some(reason_fallback),
         )
     }
 
@@ -247,6 +270,7 @@ impl RunwayProvider {
         predict_model: Option<RunwayModel>,
         generate_model: Option<RunwayModel>,
         transfer_model: Option<RunwayModel>,
+        reason_fallback: Option<CosmosProvider>,
     ) -> Self {
         Self {
             model,
@@ -256,6 +280,7 @@ impl RunwayProvider {
             api_secret: api_secret.into(),
             endpoint: endpoint.into(),
             config: RunwayConfig::default(),
+            reason_fallback,
             client: reqwest::Client::new(),
         }
     }
@@ -354,7 +379,7 @@ impl RunwayProvider {
         match operation {
             Operation::Predict { .. } => self.supports_predict(),
             Operation::Generate { .. } => self.supports_generate(),
-            Operation::Reason => false,
+            Operation::Reason => self.reason_fallback.is_some(),
             Operation::Transfer { .. } => self.supports_transfer(),
         }
     }
@@ -707,7 +732,7 @@ impl WorldModelProvider for RunwayProvider {
         ProviderCapabilities {
             predict: self.supports_predict(),
             generate: self.supports_generate(),
-            reason: false, // Runway does not support reasoning; use Cosmos as fallback
+            reason: self.reason_fallback.is_some(),
             transfer: self.supports_transfer(),
             embed: false,
             action_conditioned: self.supports_predict(),
@@ -944,11 +969,14 @@ impl WorldModelProvider for RunwayProvider {
         ))
     }
 
-    async fn reason(&self, _input: &ReasoningInput, _query: &str) -> Result<ReasoningOutput> {
-        Err(WorldForgeError::UnsupportedCapability {
-            provider: "runway".to_string(),
-            capability: "reason (use Cosmos Reason as fallback)".to_string(),
-        })
+    async fn reason(&self, input: &ReasoningInput, query: &str) -> Result<ReasoningOutput> {
+        match &self.reason_fallback {
+            Some(reason_fallback) => reason_fallback.reason(input, query).await,
+            None => Err(WorldForgeError::UnsupportedCapability {
+                provider: "runway".to_string(),
+                capability: "reason (use Cosmos Reason as fallback)".to_string(),
+            }),
+        }
     }
 
     /// Adapter-native deterministic planning for Runway.
@@ -1031,6 +1059,48 @@ impl WorldModelProvider for RunwayProvider {
     }
 
     async fn health_check(&self) -> Result<HealthStatus> {
+        let runway_status = self.runway_health_status().await;
+
+        if let Some(reason_fallback) = &self.reason_fallback {
+            let reason_status = match reason_fallback.health_check().await {
+                Ok(status) => status,
+                Err(error) => HealthStatus {
+                    healthy: false,
+                    message: format!("Cosmos reasoning fallback health check failed: {error}"),
+                    latency_ms: 0,
+                },
+            };
+
+            return Ok(HealthStatus {
+                healthy: runway_status.healthy && reason_status.healthy,
+                message: format!(
+                    "Runway: {}; Cosmos reasoning fallback: {}",
+                    runway_status.message, reason_status.message
+                ),
+                latency_ms: runway_status
+                    .latency_ms
+                    .saturating_add(reason_status.latency_ms),
+            });
+        }
+
+        Ok(runway_status)
+    }
+
+    fn estimate_cost(&self, operation: &Operation) -> CostEstimate {
+        match operation {
+            Operation::Reason => self
+                .reason_fallback
+                .as_ref()
+                .map(|provider| provider.estimate_cost(operation))
+                .unwrap_or_default(),
+            _ if self.operation_supported(operation) => Self::cost_for_operation(operation),
+            _ => CostEstimate::default(),
+        }
+    }
+}
+
+impl RunwayProvider {
+    async fn runway_health_status(&self) -> HealthStatus {
         let start = std::time::Instant::now();
 
         let response = self
@@ -1039,23 +1109,21 @@ impl WorldModelProvider for RunwayProvider {
             .header("Authorization", format!("Bearer {}", self.api_secret))
             .timeout(std::time::Duration::from_millis(5000))
             .send()
-            .await
-            .map_err(|e| WorldForgeError::NetworkError(e.to_string()))?;
+            .await;
 
         let latency = start.elapsed().as_millis() as u64;
 
-        Ok(HealthStatus {
-            healthy: response.status().is_success(),
-            message: format!("Runway API responded with HTTP {}", response.status()),
-            latency_ms: latency,
-        })
-    }
-
-    fn estimate_cost(&self, operation: &Operation) -> CostEstimate {
-        if self.operation_supported(operation) {
-            Self::cost_for_operation(operation)
-        } else {
-            CostEstimate::default()
+        match response {
+            Ok(response) => HealthStatus {
+                healthy: response.status().is_success(),
+                message: format!("Runway API responded with HTTP {}", response.status()),
+                latency_ms: latency,
+            },
+            Err(error) => HealthStatus {
+                healthy: false,
+                message: format!("Runway health check failed: {error}"),
+                latency_ms: latency,
+            },
         }
     }
 }
@@ -1216,6 +1284,33 @@ mod tests {
     }
 
     #[test]
+    fn test_runway_full_stack_with_reason_fallback_exposes_reasoning() {
+        let reason_fallback = crate::cosmos::CosmosProvider::new(
+            crate::cosmos::CosmosModel::Reason2,
+            "cosmos-secret",
+            crate::cosmos::CosmosEndpoint::NimApi("https://example.invalid/cosmos".to_string()),
+        );
+        let provider = RunwayProvider::full_stack_with_reason_fallback(
+            "test-secret",
+            "https://example.invalid/runway",
+            reason_fallback,
+        );
+        let caps = provider.capabilities();
+
+        assert!(caps.predict);
+        assert!(caps.generate);
+        assert!(caps.transfer);
+        assert!(caps.reason);
+        assert!(caps.supports_planning);
+        assert!(
+            provider
+                .estimate_cost(&worldforge_core::provider::Operation::Reason)
+                .usd
+                > 0.0
+        );
+    }
+
+    #[test]
     fn test_runway_config_default() {
         let config = RunwayConfig::default();
         assert_eq!(config.timeout_ms, 60_000);
@@ -1361,6 +1456,92 @@ mod tests {
         assert_eq!(transfer_request.path, "/v1/worlds/transfer");
         assert!(transfer_request.body.contains(r#""model":"gwm-1-worlds""#));
         assert_eq!(transfer_clip.resolution, (320, 240));
+    }
+
+    #[test]
+    fn test_full_stack_reason_delegates_to_cosmos_fallback() {
+        let (reason_endpoint, request_rx, handle) = spawn_response_server(
+            serde_json::json!({
+                "request_id": "reason-route",
+                "answer": "The scene is stable.",
+                "confidence": 0.94,
+                "evidence": ["supported by current scene"]
+            })
+            .to_string(),
+        );
+        let reason_fallback = CosmosProvider::new(
+            crate::cosmos::CosmosModel::Reason2,
+            "cosmos-secret",
+            crate::cosmos::CosmosEndpoint::NimApi(reason_endpoint),
+        );
+        let provider = RunwayProvider::full_stack_with_reason_fallback(
+            "runway-secret",
+            "https://example.invalid/runway",
+            reason_fallback,
+        );
+        let input = ReasoningInput {
+            video: None,
+            state: Some(WorldState::new("reason-test", "runway")),
+        };
+
+        let output = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(provider.reason(&input, "Is the scene stable?"))
+            .unwrap();
+        let request = request_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        handle.join().unwrap();
+
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.path, "/v1/reason");
+        assert!(request.body.contains(r#""model":"nvidia/cosmos-reason-2""#));
+        assert_eq!(output.answer, "The scene is stable.");
+        assert!(output.confidence > 0.9);
+        assert_eq!(output.evidence, vec!["supported by current scene"]);
+    }
+
+    #[test]
+    fn test_full_stack_health_check_reports_composite_status() {
+        let (runway_endpoint, runway_rx, runway_handle) = spawn_response_server(
+            serde_json::json!({
+                "status": "ok"
+            })
+            .to_string(),
+        );
+        let (reason_endpoint, reason_rx, reason_handle) = spawn_response_server(
+            serde_json::json!({
+                "status": "ok"
+            })
+            .to_string(),
+        );
+        let reason_fallback = CosmosProvider::new(
+            crate::cosmos::CosmosModel::Reason2,
+            "cosmos-secret",
+            crate::cosmos::CosmosEndpoint::NimApi(reason_endpoint),
+        );
+        let provider = RunwayProvider::full_stack_with_reason_fallback(
+            "runway-secret",
+            runway_endpoint,
+            reason_fallback,
+        );
+
+        let status = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(provider.health_check())
+            .unwrap();
+        let runway_request = runway_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let reason_request = reason_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        runway_handle.join().unwrap();
+        reason_handle.join().unwrap();
+
+        assert_eq!(runway_request.path, "/v1/health");
+        assert_eq!(reason_request.path, "/v1/health");
+        assert!(status.healthy);
+        assert!(status
+            .message
+            .contains("Runway: Runway API responded with HTTP 200 OK"));
+        assert!(status
+            .message
+            .contains("Cosmos reasoning fallback: Cosmos API responded with HTTP 200 OK"));
     }
 
     #[test]

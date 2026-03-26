@@ -196,12 +196,12 @@ let world = wf.create_world("kitchen-counter", "mock")?;
 
 To attach persistence up front, open a `StateStore` and pass it to
 `worldforge_providers::auto_detect_worldforge_with_state_store(...)`.
-When `NVIDIA_API_KEY` or `RUNWAY_API_SECRET` are present, auto-detection now
-registers capability-complete `cosmos` and `runway` providers instead of
-single partial model variants. Cosmos currently covers
-predict/generate/reason/transfer/embed plus adapter-native deterministic
-planning, while Runway covers predict/generate/reason/transfer plus
-adapter-native deterministic planning under the stable vendor names.
+When `NVIDIA_API_KEY` is present, auto-detection registers a capability-complete
+`cosmos` provider covering predict/generate/reason/transfer/embed plus
+adapter-native deterministic planning. When `RUNWAY_API_SECRET` is present,
+auto-detection registers a `runway` provider covering predict/generate/transfer
+plus adapter-native deterministic planning, and that auto-detected `runway`
+alias adds Cosmos-backed reasoning only when `NVIDIA_API_KEY` is also present.
 
 The same embedding surface is exposed over the CLI as `worldforge embed` and
 over the REST API as `POST /v1/providers/{name}/embed`.
