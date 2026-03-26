@@ -23,7 +23,8 @@ use worldforge_core::provider::{
 };
 use worldforge_core::scene::{PhysicsProperties, SceneObject, SceneObjectPatch};
 use worldforge_core::state::{
-    DynStateStore, StateFileFormat as CoreStateFileFormat, StateStore, StateStoreKind, WorldState,
+    deserialize_world_state, infer_state_file_format, serialize_world_state, DynStateStore,
+    StateFileFormat as CoreStateFileFormat, StateStore, StateStoreKind, WorldState,
 };
 use worldforge_core::types::{BBox, Pose, Position, Rotation, Vec3, Velocity, VideoClip};
 use worldforge_eval::EvalSuite;
@@ -277,6 +278,35 @@ pub enum Commands {
     Delete {
         /// World ID.
         world: String,
+    },
+
+    /// Export a persisted world snapshot to JSON or MessagePack.
+    Export {
+        /// World ID.
+        #[arg(long)]
+        world: String,
+        /// Output snapshot path.
+        #[arg(long)]
+        output: PathBuf,
+        /// Snapshot format. If omitted, inferred from the output path extension.
+        #[arg(long, value_parser = parse_snapshot_format)]
+        format: Option<CoreStateFileFormat>,
+    },
+
+    /// Import a world snapshot into the configured state store.
+    Import {
+        /// Snapshot input path.
+        #[arg(long)]
+        input: PathBuf,
+        /// Snapshot format. If omitted, inferred from the input path extension.
+        #[arg(long, value_parser = parse_snapshot_format)]
+        format: Option<CoreStateFileFormat>,
+        /// Assign a fresh world ID before saving.
+        #[arg(long, default_value_t = false)]
+        new_id: bool,
+        /// Optional replacement world name.
+        #[arg(long)]
+        name: Option<String>,
     },
 
     /// Manage scene objects in a persisted world.
@@ -824,6 +854,25 @@ pub async fn run() -> Result<()> {
             cmd_history(store.as_ref(), &world, output_json.as_deref()).await
         }
         Commands::Delete { world } => cmd_delete(store.as_ref(), &world).await,
+        Commands::Export {
+            world,
+            output,
+            format,
+        } => cmd_export(store.as_ref(), &world, output.as_path(), format).await,
+        Commands::Import {
+            input,
+            format,
+            new_id,
+            name,
+        } => cmd_import(
+            store.as_ref(),
+            input.as_path(),
+            format,
+            new_id,
+            name.as_deref(),
+        )
+        .await
+        .map(|_| ()),
         Commands::Objects { command } => match command {
             ObjectCommands::Add {
                 world,
@@ -1484,6 +1533,55 @@ fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     fs::write(path, contents).with_context(|| format!("failed to write {}", path.display()))
 }
 
+fn parse_snapshot_format(value: &str) -> std::result::Result<CoreStateFileFormat, String> {
+    value.parse()
+}
+
+fn infer_snapshot_format(path: &Path) -> Result<CoreStateFileFormat> {
+    infer_state_file_format(path)
+        .map_err(anyhow::Error::new)
+        .with_context(|| {
+            format!(
+                "unable to infer snapshot format from {}. Use --format json|msgpack",
+                path.display()
+            )
+        })
+}
+
+fn resolve_snapshot_format(
+    path: &Path,
+    format: Option<CoreStateFileFormat>,
+) -> Result<CoreStateFileFormat> {
+    match format {
+        Some(format) => Ok(format),
+        None => infer_snapshot_format(path),
+    }
+}
+
+fn read_world_state_snapshot(
+    path: &Path,
+    format: Option<CoreStateFileFormat>,
+) -> Result<WorldState> {
+    let format = resolve_snapshot_format(path, format)?;
+    let bytes = fs::read(path)
+        .with_context(|| format!("failed to read world snapshot from {}", path.display()))?;
+    deserialize_world_state(format, &bytes).map_err(anyhow::Error::new)
+}
+
+fn write_world_state_snapshot(
+    path: &Path,
+    state: &WorldState,
+    format: CoreStateFileFormat,
+) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+
+    let bytes = serialize_world_state(format, state).map_err(anyhow::Error::new)?;
+    fs::write(path, bytes).with_context(|| format!("failed to write {}", path.display()))
+}
+
 fn read_guardrails(path: Option<&Path>) -> Result<Vec<GuardrailConfig>> {
     match path {
         Some(path) => read_json_file(path),
@@ -2044,6 +2142,55 @@ async fn cmd_delete(store: &(impl StateStore + ?Sized), world_id: &str) -> Resul
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     println!("Deleted world: {id}");
     Ok(())
+}
+
+async fn cmd_export(
+    store: &(impl StateStore + ?Sized),
+    world_id: &str,
+    output: &Path,
+    format: Option<CoreStateFileFormat>,
+) -> Result<()> {
+    let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
+    let state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let format = resolve_snapshot_format(output, format)?;
+
+    write_world_state_snapshot(output, &state, format)?;
+
+    println!("Exported world snapshot:");
+    println!("  World: {id}");
+    println!("  Format: {}", format.as_str());
+    println!("  Output: {}", output.display());
+    Ok(())
+}
+
+async fn cmd_import(
+    store: &(impl StateStore + ?Sized),
+    input: &Path,
+    format: Option<CoreStateFileFormat>,
+    new_id: bool,
+    name: Option<&str>,
+) -> Result<WorldState> {
+    let resolved_format = resolve_snapshot_format(input, format)?;
+    let mut state = read_world_state_snapshot(input, Some(resolved_format))?;
+    if new_id {
+        state.id = uuid::Uuid::new_v4();
+    }
+    if let Some(name) = name {
+        state.metadata.name = name.to_string();
+    }
+
+    store
+        .save(&state)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    println!("Imported world snapshot:");
+    println!("  World: {}", state.id);
+    println!("  Name: {}", state.metadata.name);
+    println!("  Format: {}", resolved_format.as_str());
+    println!("  Source: {}", input.display());
+
+    Ok(state)
 }
 
 async fn cmd_objects_add(
@@ -3121,6 +3268,15 @@ mod tests {
         (state, id)
     }
 
+    fn sample_snapshot_state(name: &str) -> WorldState {
+        WorldState::from_prompt(
+            "A kitchen counter with a red mug and a wooden block",
+            "mock",
+            Some(name),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn test_parse_action_move() {
         let state = WorldState::new("parse", "mock");
@@ -3469,6 +3625,63 @@ mod tests {
                 assert_eq!(output_json, Some(PathBuf::from("/tmp/history.json")));
             }
             _ => panic!("expected History"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_export_command_infers_format_from_output_path() {
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "export",
+            "--world",
+            "123e4567-e89b-12d3-a456-426614174000",
+            "--output",
+            "/tmp/world.snapshot.msgpack",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Export {
+                world,
+                output,
+                format,
+            } => {
+                assert_eq!(world, "123e4567-e89b-12d3-a456-426614174000");
+                assert_eq!(output, PathBuf::from("/tmp/world.snapshot.msgpack"));
+                assert!(format.is_none());
+            }
+            _ => panic!("expected Export"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_import_command_with_override_and_new_id() {
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "import",
+            "--input",
+            "/tmp/world.snapshot.json",
+            "--format",
+            "msgpack",
+            "--new-id",
+            "--name",
+            "restored-world",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Import {
+                input,
+                format,
+                new_id,
+                name,
+            } => {
+                assert_eq!(input, PathBuf::from("/tmp/world.snapshot.json"));
+                assert_eq!(format, Some(CoreStateFileFormat::MessagePack));
+                assert!(new_id);
+                assert_eq!(name.as_deref(), Some("restored-world"));
+            }
+            _ => panic!("expected Import"),
         }
     }
 
@@ -5062,6 +5275,114 @@ mod tests {
         assert_eq!(state.metadata.description, "A kitchen with a mug");
         assert!(state.scene.objects.len() >= 2);
         assert_eq!(state.history.len(), 1);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn test_cmd_export_and_import_json_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("wf-cli-export-json-{}", uuid::Uuid::new_v4()));
+        let source_store = StateStoreKind::File(dir.join("source"))
+            .open()
+            .await
+            .unwrap();
+        let import_store = StateStoreKind::File(dir.join("import-json"))
+            .open()
+            .await
+            .unwrap();
+        let state = sample_snapshot_state("json-source");
+        let source_id = state.id;
+        source_store.save(&state).await.unwrap();
+
+        let snapshot_path = dir.join("snapshot.json");
+        cmd_export(
+            source_store.as_ref(),
+            &source_id.to_string(),
+            &snapshot_path,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let exported = read_world_state_snapshot(&snapshot_path, None).unwrap();
+        assert_eq!(exported.id, source_id);
+        assert_eq!(exported.metadata.name, "json-source");
+        assert!(!exported.scene.objects.is_empty());
+
+        let imported = cmd_import(
+            import_store.as_ref(),
+            &snapshot_path,
+            None,
+            true,
+            Some("json-restored"),
+        )
+        .await
+        .unwrap();
+        assert_ne!(imported.id, source_id);
+        assert_eq!(imported.metadata.name, "json-restored");
+        assert_eq!(imported.metadata.created_by, "mock");
+        assert_eq!(imported.history.len(), exported.history.len());
+        assert_eq!(imported.scene.objects.len(), exported.scene.objects.len());
+
+        let persisted = import_store.load(&imported.id).await.unwrap();
+        assert_eq!(persisted.id, imported.id);
+        assert_eq!(persisted.metadata.name, "json-restored");
+        assert_eq!(persisted.scene.objects.len(), exported.scene.objects.len());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn test_cmd_export_and_import_msgpack_roundtrip() {
+        let dir =
+            std::env::temp_dir().join(format!("wf-cli-export-msgpack-{}", uuid::Uuid::new_v4()));
+        let source_store = StateStoreKind::File(dir.join("source"))
+            .open()
+            .await
+            .unwrap();
+        let import_store = StateStoreKind::File(dir.join("import-msgpack"))
+            .open()
+            .await
+            .unwrap();
+        let state = sample_snapshot_state("msgpack-source");
+        let source_id = state.id;
+        source_store.save(&state).await.unwrap();
+
+        let snapshot_path = dir.join("snapshot.bin");
+        cmd_export(
+            source_store.as_ref(),
+            &source_id.to_string(),
+            &snapshot_path,
+            Some(CoreStateFileFormat::MessagePack),
+        )
+        .await
+        .unwrap();
+
+        let exported =
+            read_world_state_snapshot(&snapshot_path, Some(CoreStateFileFormat::MessagePack))
+                .unwrap();
+        assert_eq!(exported.id, source_id);
+        assert_eq!(exported.metadata.name, "msgpack-source");
+        assert!(!exported.scene.objects.is_empty());
+
+        let imported = cmd_import(
+            import_store.as_ref(),
+            &snapshot_path,
+            Some(CoreStateFileFormat::MessagePack),
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(imported.id, source_id);
+        assert_eq!(imported.metadata.name, "msgpack-source");
+        assert_eq!(imported.history.len(), exported.history.len());
+        assert_eq!(imported.scene.objects.len(), exported.scene.objects.len());
+
+        let persisted = import_store.load(&source_id).await.unwrap();
+        assert_eq!(persisted.id, source_id);
+        assert_eq!(persisted.metadata.name, "msgpack-source");
+        assert_eq!(persisted.scene.objects.len(), exported.scene.objects.len());
 
         let _ = fs::remove_dir_all(dir);
     }
