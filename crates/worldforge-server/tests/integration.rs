@@ -182,6 +182,37 @@ async fn create_test_object(
     created["data"]["id"].as_str().unwrap().to_string()
 }
 
+async fn export_world_snapshot(address: SocketAddr, world_id: &str, format: &str) -> Value {
+    let (status, response) = http_request(
+        address,
+        "GET",
+        &format!("/v1/worlds/{world_id}/export?format={format}"),
+        "",
+    )
+    .await;
+    assert_eq!(status, 200);
+    response
+}
+
+async fn import_world_snapshot(
+    address: SocketAddr,
+    snapshot: &str,
+    format: &str,
+    new_id: bool,
+    name: Option<&str>,
+) -> Value {
+    let body = serde_json::json!({
+        "format": format,
+        "snapshot": snapshot,
+        "new_id": new_id,
+        "name": name,
+    });
+    let (status, response) =
+        http_request(address, "POST", "/v1/worlds/import", &body.to_string()).await;
+    assert_eq!(status, 201);
+    response
+}
+
 async fn http_request(address: SocketAddr, method: &str, path: &str, body: &str) -> (u16, Value) {
     let request = format!(
         "{method} {path} HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -308,6 +339,147 @@ async fn test_live_http_create_world_from_prompt_bootstraps_scene() {
         "A kitchen with a mug"
     );
     assert!(world["data"]["scene"]["objects"].as_object().unwrap().len() >= 2);
+}
+
+#[tokio::test]
+async fn test_live_http_snapshot_export_import_json_roundtrip() {
+    let server = spawn_test_server().await;
+
+    let (status, create) = http_request(
+        server.address,
+        "POST",
+        "/v1/worlds",
+        r#"{"name":"json_export_world","prompt":"A kitchen with a mug","provider":"mock"}"#,
+    )
+    .await;
+    assert_eq!(status, 201);
+    let original_id = create["data"]["id"].as_str().unwrap().to_string();
+
+    let predict_body =
+        r#"{"action":{"Move":{"target":{"x":1.0,"y":0.8,"z":0.0},"speed":1.0}},"provider":"mock"}"#;
+    let (status, prediction) = http_request(
+        server.address,
+        "POST",
+        &format!("/v1/worlds/{original_id}/predict"),
+        predict_body,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(prediction["data"]["provider"], "mock");
+
+    let export = export_world_snapshot(server.address, &original_id, "json").await;
+    assert_eq!(export["data"]["id"], original_id);
+    assert_eq!(export["data"]["format"], "json");
+
+    let snapshot = export["data"]["snapshot"].as_str().unwrap();
+    let snapshot_json: Value = serde_json::from_str(snapshot).unwrap();
+    assert_eq!(snapshot_json["metadata"]["name"], "json_export_world");
+    assert_eq!(
+        snapshot_json["metadata"]["description"],
+        "A kitchen with a mug"
+    );
+    assert_eq!(snapshot_json["time"]["step"], 1);
+    assert_eq!(
+        snapshot_json["history"]["states"].as_array().unwrap().len(),
+        2
+    );
+
+    let imported = import_world_snapshot(
+        server.address,
+        snapshot,
+        "json",
+        true,
+        Some("json_snapshot_copy"),
+    )
+    .await;
+    let imported_id = imported["data"]["id"].as_str().unwrap().to_string();
+    assert_ne!(imported_id, original_id);
+    assert_eq!(imported["data"]["metadata"]["name"], "json_snapshot_copy");
+    assert_eq!(
+        imported["data"]["metadata"]["description"],
+        "A kitchen with a mug"
+    );
+    assert_eq!(imported["data"]["time"]["step"], 1);
+    assert_eq!(
+        imported["data"]["history"]["states"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn test_live_http_snapshot_export_import_msgpack_roundtrip() {
+    let server = spawn_test_server().await;
+
+    let (status, create) = http_request(
+        server.address,
+        "POST",
+        "/v1/worlds",
+        r#"{"name":"msgpack_export_world","provider":"mock"}"#,
+    )
+    .await;
+    assert_eq!(status, 201);
+    let original_id = create["data"]["id"].as_str().unwrap().to_string();
+
+    let predict_body =
+        r#"{"action":{"Move":{"target":{"x":0.5,"y":0.8,"z":0.0},"speed":1.0}},"provider":"mock"}"#;
+    let (status, prediction) = http_request(
+        server.address,
+        "POST",
+        &format!("/v1/worlds/{original_id}/predict"),
+        predict_body,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(prediction["data"]["provider"], "mock");
+
+    let export = export_world_snapshot(server.address, &original_id, "msgpack").await;
+    assert_eq!(export["data"]["id"], original_id);
+    assert_eq!(export["data"]["format"], "msgpack");
+
+    let snapshot = export["data"]["snapshot"].as_str().unwrap();
+    assert!(!snapshot.is_empty());
+    assert!(snapshot.len() % 2 == 0);
+    assert!(snapshot.chars().all(|ch| ch.is_ascii_hexdigit()));
+
+    let imported = import_world_snapshot(
+        server.address,
+        snapshot,
+        "msgpack",
+        true,
+        Some("msgpack_snapshot_copy"),
+    )
+    .await;
+    let imported_id = imported["data"]["id"].as_str().unwrap().to_string();
+    assert_ne!(imported_id, original_id);
+    assert_eq!(
+        imported["data"]["metadata"]["name"],
+        "msgpack_snapshot_copy"
+    );
+    assert_eq!(imported["data"]["time"]["step"], 1);
+    assert_eq!(
+        imported["data"]["history"]["states"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+
+    let loaded = http_request(
+        server.address,
+        "GET",
+        &format!("/v1/worlds/{imported_id}"),
+        "",
+    )
+    .await;
+    assert_eq!(loaded.0, 200);
+    assert_eq!(
+        loaded.1["data"]["metadata"]["name"],
+        "msgpack_snapshot_copy"
+    );
+    assert_eq!(loaded.1["data"]["time"]["step"], 1);
 }
 
 #[tokio::test]

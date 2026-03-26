@@ -21,7 +21,10 @@ use worldforge_core::provider::{
     ReasoningInput, SpatialControls, TransferConfig,
 };
 use worldforge_core::scene::{PhysicsProperties, SceneObject, SceneObjectPatch};
-use worldforge_core::state::{DynStateStore, StateFileFormat, StateStoreKind, WorldState};
+use worldforge_core::state::{
+    deserialize_world_state, serialize_world_state, DynStateStore, StateFileFormat, StateStoreKind,
+    WorldState,
+};
 use worldforge_core::types::{BBox, Pose, Position, Rotation, Velocity, VideoClip, WorldId};
 use worldforge_core::world::World;
 use worldforge_eval::{EvalReportFormat, EvalSuite};
@@ -164,7 +167,14 @@ struct CreateWorldRequest {
 #[derive(Debug, Deserialize)]
 struct ImportWorldRequest {
     /// Serialized world snapshot to import.
-    state: WorldState,
+    #[serde(default)]
+    state: Option<WorldState>,
+    /// Snapshot format when importing from an exported payload.
+    #[serde(default)]
+    format: Option<String>,
+    /// Snapshot payload when importing from an exported payload.
+    #[serde(default)]
+    snapshot: Option<String>,
     /// Assign a new world ID before persisting the snapshot.
     #[serde(default)]
     new_id: bool,
@@ -600,6 +610,92 @@ fn error_response(msg: &str) -> String {
     .unwrap_or_else(|_| format!(r#"{{"success":false,"error":"{msg}"}}"#))
 }
 
+fn encode_snapshot_payload(
+    format: StateFileFormat,
+    state: &WorldState,
+) -> std::result::Result<String, String> {
+    let bytes = serialize_world_state(format, state).map_err(|error| error.to_string())?;
+    match format {
+        StateFileFormat::Json => String::from_utf8(bytes)
+            .map_err(|error| format!("invalid JSON snapshot encoding: {error}")),
+        StateFileFormat::MessagePack => Ok(encode_hex(&bytes)),
+    }
+}
+
+fn decode_snapshot_payload(
+    format: StateFileFormat,
+    snapshot: &str,
+) -> std::result::Result<Vec<u8>, String> {
+    match format {
+        StateFileFormat::Json => Ok(snapshot.as_bytes().to_vec()),
+        StateFileFormat::MessagePack => decode_hex(snapshot),
+    }
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
+}
+
+fn decode_hex(value: &str) -> std::result::Result<Vec<u8>, String> {
+    fn hex_value(byte: u8) -> Option<u8> {
+        match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            b'A'..=b'F' => Some(byte - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    let bytes = value.as_bytes();
+    if !bytes.len().is_multiple_of(2) {
+        return Err("msgpack snapshot must contain an even number of hex characters".to_string());
+    }
+
+    let mut decoded = Vec::with_capacity(bytes.len() / 2);
+    for chunk in bytes.chunks_exact(2) {
+        let hi = hex_value(chunk[0]).ok_or_else(|| {
+            format!(
+                "msgpack snapshot contains non-hex character: '{}'",
+                chunk[0] as char
+            )
+        })?;
+        let lo = hex_value(chunk[1]).ok_or_else(|| {
+            format!(
+                "msgpack snapshot contains non-hex character: '{}'",
+                chunk[1] as char
+            )
+        })?;
+        decoded.push((hi << 4) | lo);
+    }
+
+    Ok(decoded)
+}
+
+fn resolve_import_state(request: &ImportWorldRequest) -> std::result::Result<WorldState, String> {
+    if let Some(state) = request.state.clone() {
+        return Ok(state);
+    }
+
+    let format = request
+        .format
+        .as_deref()
+        .ok_or_else(|| "import requires either `state` or `format` + `snapshot`".to_string())?
+        .parse::<StateFileFormat>()
+        .map_err(|error| error.to_string())?;
+    let snapshot = request
+        .snapshot
+        .as_deref()
+        .ok_or_else(|| "import requires either `state` or `format` + `snapshot`".to_string())?;
+    let bytes = decode_snapshot_payload(format, snapshot)?;
+    deserialize_world_state(format, &bytes).map_err(|error| error.to_string())
+}
+
 fn api_error_status(error: &WorldForgeError) -> u16 {
     match error {
         WorldForgeError::ProviderNotFound(_) | WorldForgeError::WorldNotFound(_) => 404,
@@ -947,7 +1043,10 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
         // POST /v1/worlds/import
         ("POST", "/v1/worlds/import") => match serde_json::from_str::<ImportWorldRequest>(body) {
             Ok(req) => {
-                let mut imported = req.state;
+                let mut imported = match resolve_import_state(&req) {
+                    Ok(state) => state,
+                    Err(error) => return (400, error_response(&error)),
+                };
 
                 if req.new_id {
                     imported.id = WorldId::new_v4();
@@ -971,6 +1070,39 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
             }
             Err(e) => (400, error_response(&format!("invalid request: {e}"))),
         },
+
+        // GET /v1/worlds/{id}/export
+        ("GET", p) if p.starts_with("/v1/worlds/") && p.ends_with("/export") => {
+            let id_str = p
+                .strip_prefix("/v1/worlds/")
+                .and_then(|value| value.strip_suffix("/export"))
+                .unwrap_or("");
+            let Some(format) = query_param(query, "format") else {
+                return (
+                    400,
+                    error_response("export requires a `format` query parameter"),
+                );
+            };
+
+            match (id_str.parse::<WorldId>(), format.parse::<StateFileFormat>()) {
+                (Ok(id), Ok(format)) => match state.store.load(&id).await {
+                    Ok(ws) => match encode_snapshot_payload(format, &ws) {
+                        Ok(snapshot) => (
+                            200,
+                            ApiResponse::ok(serde_json::json!({
+                                "id": id.to_string(),
+                                "format": format.as_str(),
+                                "snapshot": snapshot,
+                            })),
+                        ),
+                        Err(error) => (500, error_response(&error)),
+                    },
+                    Err(error) => (404, error_response(&error.to_string())),
+                },
+                (Err(_), _) => (400, error_response("invalid world ID")),
+                (_, Err(_)) => (400, error_response("invalid export format")),
+            }
+        }
 
         // POST /v1/providers/{name}/generate
         ("POST", p) if p.starts_with("/v1/providers/") && p.ends_with("/generate") => {
@@ -1517,7 +1649,8 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                 && !p.contains("/plan")
                 && !p.contains("/objects")
                 && !p.contains("/evaluate")
-                && !p.contains("/verify") =>
+                && !p.contains("/verify")
+                && !p.contains("/export") =>
         {
             let id_str = p.strip_prefix("/v1/worlds/").unwrap_or("");
             match id_str.parse::<WorldId>() {
@@ -2029,6 +2162,28 @@ mod tests {
         })
     }
 
+    fn sample_export_state(name: &str) -> WorldState {
+        let mut state = WorldState::new(name, "mock");
+        state.metadata.description = "portable snapshot".to_string();
+        state.scene.add_object(SceneObject::new(
+            "anchor",
+            Pose::default(),
+            BBox {
+                min: Position {
+                    x: -0.25,
+                    y: 0.0,
+                    z: -0.25,
+                },
+                max: Position {
+                    x: 0.25,
+                    y: 0.5,
+                    z: 0.25,
+                },
+            },
+        ));
+        state
+    }
+
     async fn seed_colliding_world(state: &Arc<AppState>) -> WorldId {
         let mut world = WorldState::new("colliding-world", "mock");
         world.scene.add_object(SceneObject::new(
@@ -2389,6 +2544,116 @@ mod tests {
         let cache = state.worlds.read().await;
         assert!(cache.contains_key(&imported_id));
         assert!(!cache.contains_key(&original_id));
+    }
+
+    #[tokio::test]
+    async fn test_route_export_world_json_roundtrip() {
+        let state = test_state();
+        let source = sample_export_state("export-json-world");
+        let source_id = source.id;
+        state.store.save(&source).await.unwrap();
+
+        let (status, resp) = route(
+            "GET",
+            &format!("/v1/worlds/{source_id}/export?format=json"),
+            "",
+            &state,
+        )
+        .await;
+        assert_eq!(status, 200);
+
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(value["data"]["id"], source_id.to_string());
+        assert_eq!(value["data"]["format"], "json");
+
+        let snapshot = value["data"]["snapshot"].as_str().unwrap();
+        let restored: WorldState = serde_json::from_str(snapshot).unwrap();
+        assert_eq!(restored.metadata.description, "portable snapshot");
+        assert_eq!(restored.scene.objects.len(), source.scene.objects.len());
+
+        let import_body = serde_json::json!({
+            "format": "json",
+            "snapshot": snapshot,
+            "new_id": true,
+            "name": "imported-json-world",
+        });
+
+        let (status, imported_resp) = route(
+            "POST",
+            "/v1/worlds/import",
+            &import_body.to_string(),
+            &state,
+        )
+        .await;
+        assert_eq!(status, 201);
+
+        let imported_value: serde_json::Value = serde_json::from_str(&imported_resp).unwrap();
+        assert_eq!(
+            imported_value["data"]["metadata"]["name"],
+            "imported-json-world"
+        );
+        assert_eq!(
+            imported_value["data"]["metadata"]["description"],
+            "portable snapshot"
+        );
+        assert_ne!(imported_value["data"]["id"], source_id.to_string());
+    }
+
+    #[tokio::test]
+    async fn test_route_export_world_msgpack_roundtrip() {
+        let state = test_state();
+        let source = sample_export_state("export-msgpack-world");
+        let source_id = source.id;
+        state.store.save(&source).await.unwrap();
+
+        let (status, resp) = route(
+            "GET",
+            &format!("/v1/worlds/{source_id}/export?format=msgpack"),
+            "",
+            &state,
+        )
+        .await;
+        assert_eq!(status, 200);
+
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(value["data"]["id"], source_id.to_string());
+        assert_eq!(value["data"]["format"], "msgpack");
+
+        let snapshot = value["data"]["snapshot"].as_str().unwrap();
+        assert!(!snapshot.is_empty());
+        assert!(snapshot.chars().all(|c| c.is_ascii_hexdigit()));
+
+        let import_body = serde_json::json!({
+            "format": "msgpack",
+            "snapshot": snapshot,
+            "name": "imported-msgpack-world",
+        });
+
+        let (status, imported_resp) = route(
+            "POST",
+            "/v1/worlds/import",
+            &import_body.to_string(),
+            &state,
+        )
+        .await;
+        assert_eq!(status, 201);
+
+        let imported_value: serde_json::Value = serde_json::from_str(&imported_resp).unwrap();
+        assert_eq!(
+            imported_value["data"]["metadata"]["name"],
+            "imported-msgpack-world"
+        );
+        assert_eq!(
+            imported_value["data"]["metadata"]["description"],
+            "portable snapshot"
+        );
+        assert_eq!(
+            imported_value["data"]["scene"]["objects"]
+                .as_object()
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]
