@@ -25,7 +25,7 @@ use worldforge_core::scene::{PhysicsProperties, SceneObject, SceneObjectPatch};
 use worldforge_core::state::{
     DynStateStore, StateFileFormat as CoreStateFileFormat, StateStore, StateStoreKind, WorldState,
 };
-use worldforge_core::types::{BBox, Pose, Position, Rotation, Velocity, VideoClip};
+use worldforge_core::types::{BBox, Pose, Position, Rotation, Vec3, Velocity, VideoClip};
 use worldforge_eval::EvalSuite;
 use worldforge_verify::{
     prove_guardrail_plan, prove_inference_transition, prove_latest_inference, prove_provenance,
@@ -1663,9 +1663,8 @@ async fn cmd_predict(
         require_provider(&registry, fallback_provider)
             .context("invalid fallback provider for predict command")?;
     }
+    let action = parse_action(action_str, &state)?;
     let mut world = worldforge_core::world::World::new(state, provider, registry);
-
-    let action = parse_action(action_str)?;
     let mut config = PredictionConfig {
         steps,
         fallback_provider: fallback_provider.map(ToOwned::to_owned),
@@ -2211,8 +2210,8 @@ async fn cmd_compare(
     }
 
     let default_provider = provider_names.first().map(String::as_str).unwrap_or("mock");
+    let action = parse_action(action_str, &state)?;
     let world = worldforge_core::world::World::new(state, default_provider, registry);
-    let action = parse_action(action_str)?;
     let config = PredictionConfig {
         steps: options.steps,
         guardrails: resolve_guardrails(
@@ -2590,25 +2589,114 @@ async fn cmd_serve(
         .context("failed to start server")
 }
 
-/// Parse a simple action string into an Action.
-fn parse_action(s: &str) -> Result<Action> {
-    let parts: Vec<&str> = s.split_whitespace().collect();
-    if parts.is_empty() {
+/// Parse a CLI action string into a standardized Action.
+fn parse_action(s: &str, state: &WorldState) -> Result<Action> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
         anyhow::bail!("empty action string");
     }
 
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        return serde_json::from_str(trimmed)
+            .context("failed to parse typed action JSON; use the core Action serde shape");
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("sequence ") {
+        return Ok(Action::Sequence(parse_compound_actions(rest, state)?));
+    }
+    if let Some(rest) = trimmed.strip_prefix("parallel ") {
+        return Ok(Action::Parallel(parse_compound_actions(rest, state)?));
+    }
+
+    let parts: Vec<&str> = trimmed.split_whitespace().collect();
     match parts[0] {
         "move" => {
-            let x = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0.0);
-            let y = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0.0);
-            let z = parts.get(3).and_then(|s| s.parse().ok()).unwrap_or(0.0);
-            Ok(Action::Move {
-                target: Position { x, y, z },
-                speed: 1.0,
+            if parts.len() < 4 {
+                anyhow::bail!("move expects `move <x> <y> <z> [speed]`");
+            }
+            let target = parse_position_tokens(&parts[1..4])?;
+            let speed = parse_optional_f32(parts.get(4).copied(), 1.0, "speed")?;
+            Ok(Action::Move { target, speed })
+        }
+        "grasp" => Ok(Action::Grasp {
+            object: resolve_object_reference(parts.get(1).copied(), state)?,
+            grip_force: parse_optional_f32(parts.get(2).copied(), 1.0, "grip_force")?,
+        }),
+        "release" => Ok(Action::Release {
+            object: resolve_object_reference(parts.get(1).copied(), state)?,
+        }),
+        "push" => {
+            let object = resolve_object_reference(parts.get(1).copied(), state)?;
+            let (direction, consumed) = parse_direction_spec(&parts[2..])?;
+            let force = parse_optional_f32(parts.get(2 + consumed).copied(), 1.0, "force")?;
+            Ok(Action::Push {
+                object,
+                direction,
+                force,
             })
         }
+        "rotate" => {
+            let object = resolve_object_reference(parts.get(1).copied(), state)?;
+            let (axis, consumed) = parse_axis_spec(&parts[2..])?;
+            let angle = parse_required_f32(
+                parts.get(2 + consumed).copied(),
+                "angle",
+                "rotate expects `rotate <object> <axis|x y z> <angle>`",
+            )?;
+            Ok(Action::Rotate {
+                object,
+                axis,
+                angle,
+            })
+        }
+        "place" => {
+            let object = resolve_object_reference(parts.get(1).copied(), state)?;
+            if parts.len() < 5 {
+                anyhow::bail!("place expects `place <object> <x> <y> <z>`");
+            }
+            Ok(Action::Place {
+                object,
+                target: parse_position_tokens(&parts[2..5])?,
+            })
+        }
+        "camera-move" => Ok(Action::CameraMove {
+            delta: parse_pose_spec(
+                &parts[1..],
+                "camera-move expects `camera-move <x> <y> <z> [w x y z]`",
+            )?,
+        }),
+        "camera-look-at" | "look-at" => {
+            if parts.len() < 4 {
+                anyhow::bail!("camera-look-at expects `camera-look-at <x> <y> <z>`");
+            }
+            Ok(Action::CameraLookAt {
+                target: parse_position_tokens(&parts[1..4])?,
+            })
+        }
+        "navigate" => {
+            if parts.len() < 4 || !(parts.len() - 1).is_multiple_of(3) {
+                anyhow::bail!("navigate expects `navigate <x1> <y1> <z1> [<x2> <y2> <z2> ...]`");
+            }
+            let mut waypoints = Vec::new();
+            for chunk in parts[1..].chunks(3) {
+                waypoints.push(parse_position_tokens(chunk)?);
+            }
+            Ok(Action::Navigate { waypoints })
+        }
+        "teleport" => Ok(Action::Teleport {
+            destination: parse_pose_spec(
+                &parts[1..],
+                "teleport expects `teleport <x> <y> <z> [w x y z]`",
+            )?,
+        }),
         "set-weather" => {
-            let weather = match parts.get(1).copied().unwrap_or("clear") {
+            let weather = match parts
+                .get(1)
+                .copied()
+                .unwrap_or("clear")
+                .to_ascii_lowercase()
+                .as_str()
+            {
                 "clear" => Weather::Clear,
                 "cloudy" => Weather::Cloudy,
                 "rain" => Weather::Rain,
@@ -2619,35 +2707,251 @@ fn parse_action(s: &str) -> Result<Action> {
             };
             Ok(Action::SetWeather { weather })
         }
-        "set-lighting" => {
-            let time = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(12.0);
-            Ok(Action::SetLighting { time_of_day: time })
-        }
+        "set-lighting" => Ok(Action::SetLighting {
+            time_of_day: parse_optional_f32(parts.get(1).copied(), 12.0, "time_of_day")?,
+        }),
         "spawn" => {
-            let template = parts.get(1).unwrap_or(&"object").to_string();
-            Ok(Action::SpawnObject {
-                template,
-                pose: worldforge_core::types::Pose::default(),
-            })
+            let template = parts.get(1).copied().unwrap_or("object").to_string();
+            let pose = if parts.len() > 2 {
+                parse_pose_spec(
+                    &parts[2..],
+                    "spawn expects `spawn <template> [x y z [w x y z]]`",
+                )?
+            } else {
+                Pose::default()
+            };
+            Ok(Action::SpawnObject { template, pose })
         }
-        _ => {
-            // Treat as a raw action
+        "remove" | "remove-object" => Ok(Action::RemoveObject {
+            object: resolve_object_reference(parts.get(1).copied(), state)?,
+        }),
+        "raw" => {
+            let provider = parts
+                .get(1)
+                .copied()
+                .context("raw expects `raw <provider> <json>`")?;
+            let payload = parts
+                .get(2..)
+                .filter(|tokens| !tokens.is_empty())
+                .map(|tokens| tokens.join(" "))
+                .context("raw expects `raw <provider> <json>`")?;
+            let data = serde_json::from_str(&payload).with_context(|| {
+                format!("failed to parse raw JSON payload for provider `{provider}`")
+            })?;
             Ok(Action::Raw {
-                provider: "cli".to_string(),
-                data: serde_json::json!({ "text": s }),
+                provider: provider.to_string(),
+                data,
             })
         }
+        _ => Ok(Action::Raw {
+            provider: "cli".to_string(),
+            data: serde_json::json!({ "text": trimmed }),
+        }),
+    }
+}
+
+fn parse_compound_actions(input: &str, state: &WorldState) -> Result<Vec<Action>> {
+    let actions: Result<Vec<_>> = input
+        .split(';')
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| parse_action(segment, state))
+        .collect();
+    let actions = actions?;
+    if actions.is_empty() {
+        anyhow::bail!("compound actions require at least one sub-action");
+    }
+    Ok(actions)
+}
+
+fn resolve_object_reference(reference: Option<&str>, state: &WorldState) -> Result<uuid::Uuid> {
+    let reference = reference.context("missing object reference")?;
+    if let Ok(id) = reference.parse::<uuid::Uuid>() {
+        return Ok(id);
+    }
+    state
+        .scene
+        .find_object_by_name(reference)
+        .map(|object| object.id)
+        .with_context(|| {
+            format!("unknown object reference `{reference}`; use an object name from the world or a UUID")
+        })
+}
+
+fn parse_optional_f32(token: Option<&str>, default: f32, name: &str) -> Result<f32> {
+    token
+        .map(|value| parse_required_f32(Some(value), name, &format!("invalid {name} value")))
+        .transpose()
+        .map(|value| value.unwrap_or(default))
+}
+
+fn parse_required_f32(token: Option<&str>, name: &str, message: &str) -> Result<f32> {
+    let token = token.ok_or_else(|| anyhow::anyhow!("{message}"))?;
+    token
+        .parse::<f32>()
+        .with_context(|| format!("invalid {name}: {token}"))
+}
+
+fn parse_position_tokens(tokens: &[&str]) -> Result<Position> {
+    if tokens.len() != 3 {
+        anyhow::bail!("expected exactly three coordinates");
+    }
+    Ok(Position {
+        x: parse_required_f32(tokens.first().copied(), "x", "missing x coordinate")?,
+        y: parse_required_f32(tokens.get(1).copied(), "y", "missing y coordinate")?,
+        z: parse_required_f32(tokens.get(2).copied(), "z", "missing z coordinate")?,
+    })
+}
+
+fn parse_vec3_tokens(tokens: &[&str]) -> Result<Vec3> {
+    let position = parse_position_tokens(tokens)?;
+    Ok(Vec3 {
+        x: position.x,
+        y: position.y,
+        z: position.z,
+    })
+}
+
+fn parse_pose_spec(tokens: &[&str], message: &str) -> Result<Pose> {
+    match tokens.len() {
+        3 => Ok(Pose {
+            position: parse_position_tokens(tokens)?,
+            rotation: Rotation::default(),
+        }),
+        7 => Ok(Pose {
+            position: parse_position_tokens(&tokens[..3])?,
+            rotation: Rotation {
+                w: parse_required_f32(tokens.get(3).copied(), "w", message)?,
+                x: parse_required_f32(tokens.get(4).copied(), "x", message)?,
+                y: parse_required_f32(tokens.get(5).copied(), "y", message)?,
+                z: parse_required_f32(tokens.get(6).copied(), "z", message)?,
+            },
+        }),
+        _ => anyhow::bail!("{message}"),
+    }
+}
+
+fn parse_direction_spec(tokens: &[&str]) -> Result<(Vec3, usize)> {
+    match tokens.first().copied() {
+        Some("left") => Ok((
+            Vec3 {
+                x: -1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            1,
+        )),
+        Some("right") => Ok((
+            Vec3 {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            1,
+        )),
+        Some("forward") => Ok((
+            Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 1.0,
+            },
+            1,
+        )),
+        Some("backward") => Ok((
+            Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: -1.0,
+            },
+            1,
+        )),
+        Some("up") => Ok((
+            Vec3 {
+                x: 0.0,
+                y: 1.0,
+                z: 0.0,
+            },
+            1,
+        )),
+        Some("down") => Ok((
+            Vec3 {
+                x: 0.0,
+                y: -1.0,
+                z: 0.0,
+            },
+            1,
+        )),
+        Some(_) if tokens.len() >= 3 => Ok((parse_vec3_tokens(&tokens[..3])?, 3)),
+        _ => anyhow::bail!(
+            "push expects `push <object> <left|right|forward|backward|up|down|x y z> [force]`"
+        ),
+    }
+}
+
+fn parse_axis_spec(tokens: &[&str]) -> Result<(Vec3, usize)> {
+    match tokens.first().copied() {
+        Some("x") => Ok((
+            Vec3 {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            1,
+        )),
+        Some("y") => Ok((
+            Vec3 {
+                x: 0.0,
+                y: 1.0,
+                z: 0.0,
+            },
+            1,
+        )),
+        Some("z") => Ok((
+            Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 1.0,
+            },
+            1,
+        )),
+        Some(_) if tokens.len() >= 3 => Ok((parse_vec3_tokens(&tokens[..3])?, 3)),
+        _ => anyhow::bail!("rotate expects `rotate <object> <x|y|z|ax ay az> <angle>`"),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use worldforge_core::scene::SceneObject;
     use worldforge_verify::ZkVerifier;
+
+    fn world_with_named_object(name: &str) -> (WorldState, uuid::Uuid) {
+        let mut state = WorldState::new("cli-action-tests", "mock");
+        let object = SceneObject::new(
+            name,
+            Pose::default(),
+            BBox {
+                min: Position {
+                    x: -0.05,
+                    y: -0.05,
+                    z: -0.05,
+                },
+                max: Position {
+                    x: 0.05,
+                    y: 0.05,
+                    z: 0.05,
+                },
+            },
+        );
+        let id = object.id;
+        state.scene.add_object(object);
+        (state, id)
+    }
 
     #[test]
     fn test_parse_action_move() {
-        let action = parse_action("move 1 2 3").unwrap();
+        let state = WorldState::new("parse", "mock");
+        let action = parse_action("move 1 2 3", &state).unwrap();
         match action {
             Action::Move { target, .. } => {
                 assert_eq!(target.x, 1.0);
@@ -2660,7 +2964,8 @@ mod tests {
 
     #[test]
     fn test_parse_action_weather() {
-        let action = parse_action("set-weather rain").unwrap();
+        let state = WorldState::new("parse", "mock");
+        let action = parse_action("set-weather rain", &state).unwrap();
         match action {
             Action::SetWeather { weather } => assert_eq!(weather, Weather::Rain),
             _ => panic!("expected SetWeather"),
@@ -2669,7 +2974,8 @@ mod tests {
 
     #[test]
     fn test_parse_action_raw() {
-        let action = parse_action("push mug left").unwrap();
+        let state = WorldState::new("parse", "mock");
+        let action = parse_action("dance mug", &state).unwrap();
         match action {
             Action::Raw { provider, .. } => assert_eq!(provider, "cli"),
             _ => panic!("expected Raw"),
@@ -2678,21 +2984,164 @@ mod tests {
 
     #[test]
     fn test_parse_action_spawn() {
-        let action = parse_action("spawn cube").unwrap();
+        let state = WorldState::new("parse", "mock");
+        let action = parse_action("spawn cube 1 2 3", &state).unwrap();
         match action {
-            Action::SpawnObject { template, .. } => assert_eq!(template, "cube"),
+            Action::SpawnObject { template, pose } => {
+                assert_eq!(template, "cube");
+                assert_eq!(pose.position.x, 1.0);
+                assert_eq!(pose.position.y, 2.0);
+                assert_eq!(pose.position.z, 3.0);
+            }
             _ => panic!("expected SpawnObject"),
         }
     }
 
     #[test]
     fn test_parse_action_set_lighting() {
-        let action = parse_action("set-lighting 18.5").unwrap();
+        let state = WorldState::new("parse", "mock");
+        let action = parse_action("set-lighting 18.5", &state).unwrap();
         match action {
             Action::SetLighting { time_of_day } => {
                 assert!((time_of_day - 18.5).abs() < f32::EPSILON)
             }
             _ => panic!("expected SetLighting"),
+        }
+    }
+
+    #[test]
+    fn test_parse_action_grasp_resolves_object_name() {
+        let (state, object_id) = world_with_named_object("mug");
+        let action = parse_action("grasp mug 0.7", &state).unwrap();
+        match action {
+            Action::Grasp { object, grip_force } => {
+                assert_eq!(object, object_id);
+                assert!((grip_force - 0.7).abs() < f32::EPSILON);
+            }
+            _ => panic!("expected Grasp"),
+        }
+    }
+
+    #[test]
+    fn test_parse_action_push_resolves_object_name_and_direction_keyword() {
+        let (state, object_id) = world_with_named_object("mug");
+        let action = parse_action("push mug left 2.5", &state).unwrap();
+        match action {
+            Action::Push {
+                object,
+                direction,
+                force,
+            } => {
+                assert_eq!(object, object_id);
+                assert_eq!(
+                    direction,
+                    Vec3 {
+                        x: -1.0,
+                        y: 0.0,
+                        z: 0.0
+                    }
+                );
+                assert!((force - 2.5).abs() < f32::EPSILON);
+            }
+            _ => panic!("expected Push"),
+        }
+    }
+
+    #[test]
+    fn test_parse_action_rotate_supports_axis_keyword() {
+        let (state, object_id) = world_with_named_object("cube");
+        let action = parse_action("rotate cube z 90", &state).unwrap();
+        match action {
+            Action::Rotate {
+                object,
+                axis,
+                angle,
+                ..
+            } => {
+                assert_eq!(object, object_id);
+                assert_eq!(
+                    axis,
+                    Vec3 {
+                        x: 0.0,
+                        y: 0.0,
+                        z: 1.0
+                    }
+                );
+                assert!((angle - 90.0).abs() < f32::EPSILON);
+            }
+            _ => panic!("expected Rotate"),
+        }
+    }
+
+    #[test]
+    fn test_parse_action_navigation_and_camera_variants() {
+        let state = WorldState::new("parse", "mock");
+
+        let navigate = parse_action("navigate 0 0 0 1 1 1", &state).unwrap();
+        match navigate {
+            Action::Navigate { waypoints } => assert_eq!(waypoints.len(), 2),
+            _ => panic!("expected Navigate"),
+        }
+
+        let teleport = parse_action("teleport 1 2 3 1 0 0 0", &state).unwrap();
+        match teleport {
+            Action::Teleport { destination } => {
+                assert_eq!(destination.position.x, 1.0);
+                assert_eq!(destination.rotation.w, 1.0);
+            }
+            _ => panic!("expected Teleport"),
+        }
+    }
+
+    #[test]
+    fn test_parse_action_sequence_supports_compound_text() {
+        let (state, object_id) = world_with_named_object("mug");
+        let action = parse_action("sequence grasp mug; place mug 1 2 3", &state).unwrap();
+        match action {
+            Action::Sequence(actions) => {
+                assert_eq!(actions.len(), 2);
+                match &actions[0] {
+                    Action::Grasp { object, .. } => assert_eq!(*object, object_id),
+                    _ => panic!("expected Grasp"),
+                }
+                match &actions[1] {
+                    Action::Place { object, target } => {
+                        assert_eq!(*object, object_id);
+                        assert_eq!(target.x, 1.0);
+                    }
+                    _ => panic!("expected Place"),
+                }
+            }
+            _ => panic!("expected Sequence"),
+        }
+    }
+
+    #[test]
+    fn test_parse_action_supports_typed_json_for_complex_actions() {
+        let (state, object_id) = world_with_named_object("mug");
+        let json = format!(
+            r#"{{"Conditional":{{"condition":{{"ObjectExists":{{"object":"{object_id}"}}}},"then":{{"Release":{{"object":"{object_id}"}}}},"otherwise":{{"RemoveObject":{{"object":"{object_id}"}}}}}}}}"#
+        );
+
+        let action = parse_action(&json, &state).unwrap();
+        match action {
+            Action::Conditional {
+                condition,
+                then,
+                otherwise,
+            } => {
+                assert!(matches!(
+                    condition,
+                    worldforge_core::action::Condition::ObjectExists { object }
+                        if object == object_id
+                ));
+                assert!(matches!(*then, Action::Release { object } if object == object_id));
+                assert!(matches!(
+                    otherwise.map(|action| *action),
+                    Some(Action::RemoveObject { object }) if object == object_id
+                ));
+            }
+            _ => panic!("expected Conditional"),
         }
     }
 
