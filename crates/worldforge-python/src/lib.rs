@@ -207,6 +207,24 @@ fn parse_provider_names(input: &str) -> Vec<String> {
     provider_names
 }
 
+fn parse_provider_names_allow_empty(input: &str) -> Vec<String> {
+    input
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn resolve_eval_provider_names(suite: &worldforge_eval::EvalSuite, providers: &str) -> Vec<String> {
+    let explicit = if providers.trim().is_empty() {
+        parse_provider_names_allow_empty(providers)
+    } else {
+        parse_provider_names(providers)
+    };
+    suite.effective_provider_names(&explicit)
+}
+
 fn format_hash_hex(hash: &[u8; 32]) -> String {
     hash.iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -4210,6 +4228,11 @@ impl PyEvalSuite {
             .collect()
     }
 
+    #[getter]
+    fn providers(&self) -> Vec<String> {
+        self.inner.providers.clone()
+    }
+
     fn scenarios(&self) -> Vec<PyEvalScenario> {
         self.inner
             .scenarios
@@ -4223,7 +4246,7 @@ impl PyEvalSuite {
     ///
     /// When `world` or `world_json` is supplied, each scenario is evaluated
     /// against that world state instead of its baked-in initial state.
-    #[pyo3(signature = (providers="mock", world=None, world_json=None))]
+    #[pyo3(signature = (providers="", world=None, world_json=None))]
     fn run(
         &self,
         providers: &str,
@@ -4244,7 +4267,7 @@ impl PyEvalSuite {
     ///
     /// When `world` or `world_json` is supplied, each scenario is evaluated
     /// against that world state instead of its baked-in initial state.
-    #[pyo3(signature = (providers="mock", world=None, world_json=None))]
+    #[pyo3(signature = (providers="", world=None, world_json=None))]
     fn run_report(
         &self,
         providers: &str,
@@ -4268,7 +4291,7 @@ impl PyEvalSuite {
     ///
     /// When `world` or `world_json` is supplied, each scenario is evaluated
     /// against that world state instead of its baked-in initial state.
-    #[pyo3(signature = (providers="mock", world=None, world_json=None))]
+    #[pyo3(signature = (providers="", world=None, world_json=None))]
     fn run_report_data(
         &self,
         providers: &str,
@@ -4284,7 +4307,7 @@ impl PyEvalSuite {
     }
 
     /// Run the evaluation suite against a supplied world and return provider summaries.
-    #[pyo3(signature = (providers="mock", world=None, world_json=None))]
+    #[pyo3(signature = (providers="", world=None, world_json=None))]
     fn run_with_world(
         &self,
         providers: &str,
@@ -4295,7 +4318,7 @@ impl PyEvalSuite {
     }
 
     /// Run the evaluation suite against a supplied world and return the full report JSON.
-    #[pyo3(signature = (providers="mock", world=None, world_json=None))]
+    #[pyo3(signature = (providers="", world=None, world_json=None))]
     fn run_report_with_world(
         &self,
         providers: &str,
@@ -4306,7 +4329,7 @@ impl PyEvalSuite {
     }
 
     /// Run the evaluation suite against a supplied world and return the structured report.
-    #[pyo3(signature = (providers="mock", world=None, world_json=None))]
+    #[pyo3(signature = (providers="", world=None, world_json=None))]
     fn run_report_data_with_world(
         &self,
         providers: &str,
@@ -4477,7 +4500,7 @@ fn run_eval_suite_report_with_world(
 ) -> PyResult<worldforge_eval::EvalReport> {
     let rt = new_runtime()?;
     let registry = auto_detect_registry();
-    let provider_names = parse_provider_names(providers);
+    let provider_names = resolve_eval_provider_names(suite, providers);
     let mut provider_list: Vec<&dyn worldforge_core::provider::WorldModelProvider> = Vec::new();
     for provider_name in &provider_names {
         let provider = registry.get(provider_name).map_err(|e| {
@@ -4522,7 +4545,7 @@ fn list_eval_suites() -> Vec<String> {
 
 /// Run an evaluation suite and return provider summaries.
 #[pyfunction]
-#[pyo3(signature = (suite_name="physics", providers="mock", suite_json=None))]
+#[pyo3(signature = (suite_name="physics", providers="", suite_json=None))]
 fn run_eval(
     suite_name: &str,
     providers: &str,
@@ -4539,7 +4562,7 @@ fn run_eval(
 
 /// Run an evaluation suite and return the full report JSON.
 #[pyfunction]
-#[pyo3(signature = (suite_name="physics", providers="mock", suite_json=None))]
+#[pyo3(signature = (suite_name="physics", providers="", suite_json=None))]
 fn run_eval_report(
     suite_name: &str,
     providers: &str,
@@ -4555,7 +4578,7 @@ fn run_eval_report(
 
 /// Run an evaluation suite and return the structured report object.
 #[pyfunction]
-#[pyo3(signature = (suite_name="physics", providers="mock", suite_json=None))]
+#[pyo3(signature = (suite_name="physics", providers="", suite_json=None))]
 fn run_eval_report_data(
     suite_name: &str,
     providers: &str,
@@ -7563,6 +7586,13 @@ mod tests {
     }
 
     #[test]
+    fn test_run_eval_uses_suite_default_providers_when_omitted() {
+        let results = run_eval("physics", "", None).unwrap();
+        assert!(!results.is_empty());
+        assert_eq!(results[0].provider(), "mock");
+    }
+
+    #[test]
     fn test_run_eval_invalid_suite() {
         let result = run_eval("nonexistent", "mock", None);
         assert!(result.is_err());
@@ -7643,6 +7673,7 @@ mod tests {
                     ground_truth: None,
                 }],
                 dimensions: vec![worldforge_eval::EvalDimension::ObjectPermanence],
+                providers: vec![],
             },
         };
 
@@ -7691,6 +7722,7 @@ mod tests {
                     ground_truth: None,
                 }],
                 dimensions: vec![worldforge_eval::EvalDimension::ObjectPermanence],
+                providers: vec![],
             },
         };
 

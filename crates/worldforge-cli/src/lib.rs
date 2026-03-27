@@ -410,9 +410,11 @@ pub enum Commands {
         /// Optional world ID whose persisted state seeds each evaluation scenario.
         #[arg(long)]
         world: Option<String>,
-        /// Comma-separated list of providers.
-        #[arg(long, default_value = "mock")]
-        providers: String,
+        /// Optional comma-separated list of providers.
+        ///
+        /// When omitted, the suite's baked-in providers are used.
+        #[arg(long)]
+        providers: Option<String>,
         /// Print the built-in suite names and exit.
         #[arg(long, default_value_t = false)]
         list_suites: bool,
@@ -1086,7 +1088,7 @@ pub async fn run() -> Result<()> {
                     suite_name: suite.as_deref(),
                     suite_json: suite_json.as_deref(),
                     world: world.as_deref(),
-                    providers: &providers,
+                    providers: providers.as_deref(),
                     list_suites,
                     output_json: output_json.as_deref(),
                     output_markdown: output_markdown.as_deref(),
@@ -1299,6 +1301,22 @@ fn parse_provider_names(input: &str) -> Vec<String> {
         provider_names.push("mock".to_string());
     }
     provider_names
+}
+
+fn parse_provider_names_allow_empty(input: &str) -> Vec<String> {
+    input
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn resolve_eval_provider_names(explicit: Option<&str>, suite: &EvalSuite) -> Vec<String> {
+    let explicit = explicit
+        .map(parse_provider_names_allow_empty)
+        .unwrap_or_default();
+    suite.effective_provider_names(&explicit)
 }
 
 fn available_provider_names(registry: &ProviderRegistry) -> String {
@@ -1577,7 +1595,7 @@ struct EvalOptions<'a> {
     suite_name: Option<&'a str>,
     suite_json: Option<&'a Path>,
     world: Option<&'a str>,
-    providers: &'a str,
+    providers: Option<&'a str>,
     list_suites: bool,
     output_json: Option<&'a Path>,
     output_markdown: Option<&'a Path>,
@@ -2645,7 +2663,7 @@ async fn cmd_eval(store: Option<&dyn StateStore>, options: EvalOptions<'_>) -> R
     let suite = load_eval_suite(options.suite_name, options.suite_json)
         .with_context(|| format!("available suites: {}", available_eval_suite_names()))?;
     let registry = auto_detect_registry();
-    let provider_names = parse_provider_names(options.providers);
+    let provider_names = resolve_eval_provider_names(options.providers, &suite);
     let mut provider_list: Vec<&dyn WorldModelProvider> = Vec::new();
     for provider_name in &provider_names {
         provider_list.push(require_provider(&registry, provider_name)?);
@@ -4672,7 +4690,7 @@ mod tests {
                 assert!(suite.is_none());
                 assert_eq!(suite_json, Some(PathBuf::from("/tmp/custom-suite.json")));
                 assert!(world.is_none());
-                assert_eq!(providers, "mock,jepa");
+                assert_eq!(providers.as_deref(), Some("mock,jepa"));
                 assert!(!list_suites);
                 assert_eq!(output_json, Some(PathBuf::from("/tmp/eval-report.json")));
                 assert_eq!(output_markdown, Some(PathBuf::from("/tmp/eval-report.md")));
@@ -4709,7 +4727,7 @@ mod tests {
                     world.as_deref(),
                     Some("123e4567-e89b-12d3-a456-426614174000")
                 );
-                assert_eq!(providers, "mock");
+                assert!(providers.is_none());
                 assert!(!list_suites);
                 assert!(output_markdown.is_none());
                 assert!(output_csv.is_none());
@@ -5031,7 +5049,7 @@ mod tests {
                 suite_name: None,
                 suite_json: Some(&suite_path),
                 world: None,
-                providers: "mock",
+                providers: None,
                 list_suites: false,
                 output_json: Some(&report_path),
                 output_markdown: None,
@@ -5135,6 +5153,7 @@ mod tests {
                 ground_truth: None,
             }],
             dimensions: vec![worldforge_eval::EvalDimension::ObjectPermanence],
+            providers: vec!["mock".to_string()],
         };
         write_json_file(&suite_path, &suite).unwrap();
 
@@ -5144,7 +5163,7 @@ mod tests {
                 suite_name: None,
                 suite_json: Some(&suite_path),
                 world: Some(&world_state.id.to_string()),
-                providers: "mock",
+                providers: None,
                 list_suites: false,
                 output_json: Some(&report_path),
                 output_markdown: None,
@@ -5175,7 +5194,7 @@ mod tests {
                 suite_name: Some("physics"),
                 suite_json: None,
                 world: None,
-                providers: "mock",
+                providers: None,
                 list_suites: false,
                 output_json: None,
                 output_markdown: Some(&markdown_path),

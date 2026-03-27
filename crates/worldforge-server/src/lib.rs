@@ -2071,16 +2071,7 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                                 Err(error) => return (400, error_response(&error)),
                             };
 
-                            let provider_names = if req.providers.is_empty() {
-                                state
-                                    .registry
-                                    .list()
-                                    .into_iter()
-                                    .map(str::to_string)
-                                    .collect::<Vec<_>>()
-                            } else {
-                                req.providers
-                            };
+                            let provider_names = suite.effective_provider_names(&req.providers);
 
                             let mut provider_refs: Vec<
                                 &dyn worldforge_core::provider::WorldModelProvider,
@@ -3504,6 +3495,7 @@ mod tests {
                 ground_truth: None,
             }],
             dimensions: vec![worldforge_eval::EvalDimension::SpatialConsistency],
+            providers: vec![],
         };
 
         let body = serde_json::json!({
@@ -3556,12 +3548,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_route_evaluate_custom_suite_for_selected_provider() {
+    async fn test_route_evaluate_uses_suite_default_providers() {
         let state = test_state_with_providers(&["mock", "alt-mock"]);
-        let suite = EvalSuite::physics_standard();
+        let mut suite = EvalSuite::physics_standard();
+        suite.providers = vec!["alt-mock".to_string()];
         let body = serde_json::json!({
             "suite_definition": suite,
-            "providers": ["alt-mock"],
         })
         .to_string();
         let id = seed_world(&state, "eval-world", "mock").await;

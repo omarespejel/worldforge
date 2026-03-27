@@ -187,7 +187,7 @@ from worldforge.eval import EvalSuite
 from worldforge.verify import ZkVerifier
 
 suite = EvalSuite.from_builtin("physics")
-report = suite.run_report_data("mock")
+report = suite.run_report_data()
 markdown = report.to_markdown()
 csv = report.to_csv()
 assert markdown.startswith("# Evaluation Report:")
@@ -203,6 +203,10 @@ world.predict(Action.move_to(0.35, 0.8, 0.0), steps=2)
 inference_bundle = world.prove_latest_inference_bundle()
 assert inference_bundle.verify().current_verification.valid
 ```
+
+Custom `EvalSuite` JSON can embed its default providers. The Python, CLI, and
+REST evaluation entry points use those suite defaults when you omit an explicit
+provider override, and explicit provider lists still take precedence.
 
 The CLI can export the same evaluation report as multiple artifacts in one run:
 
@@ -223,6 +227,27 @@ use worldforge_providers::auto_detect_worldforge;
 let wf = auto_detect_worldforge();
 let world = wf.create_world("kitchen-counter", "mock")?;
 ```
+
+## Performance Benchmarks
+
+The workspace now includes offline Criterion harnesses for the core, provider,
+evaluation, and verification crates. Run a single suite with `cargo bench -p
+<crate>` or compile it without executing the benchmarks with `cargo bench -p
+<crate> --no-run`.
+
+```bash
+cargo bench -p worldforge-core
+cargo bench -p worldforge-providers
+cargo bench -p worldforge-eval
+cargo bench -p worldforge-verify
+```
+
+Evaluation suites can now declare default `providers` in the suite definition.
+The CLI, REST API, and Python bindings use that list when callers omit an
+explicit provider list, and explicit provider arguments still override the
+suite defaults. For example, `worldforge eval --suite physics` uses the suite's
+providers, while `worldforge eval --suite-json evals/custom.json --providers
+mock,jepa` forces an explicit list.
 
 To attach persistence up front, open a `StateStore` and pass it to
 `worldforge_providers::auto_detect_worldforge_with_state_store(...)`.
@@ -384,6 +409,7 @@ cargo run -p worldforge-cli -- verify-proof --proof-json proofs/raw-proof.json
 cargo run -p worldforge-cli -- eval --list-suites
 cargo run -p worldforge-cli -- eval --suite physics
 cargo run -p worldforge-cli -- eval --suite physics --world <id>
+cargo run -p worldforge-cli -- eval --suite-json evals/custom.json
 cargo run -p worldforge-cli -- eval --suite-json evals/custom.json --providers mock,jepa --output-json reports/custom-eval.json
 cargo run -p worldforge-cli -- serve --bind 127.0.0.1:8080
 
@@ -568,13 +594,14 @@ now be re-verified offline across the CLI, REST server, and Python bindings,
 and verification inputs are hashed with real SHA-256 digests. Verification
 backend selection is now exposed end to end across the verify crate, CLI, REST
 server, and Python bindings for the deterministic `mock`, `ezkl`, and `stark`
-compatibility paths. Cross-provider
-comparison now reuses the same guardrail and fallback pipeline as single-provider
-prediction, with comparison config exposed in the CLI, REST server, and Python
-bindings. Evaluation now
-supports built-in suite discovery, JSON-defined custom suites, provider
-selection, and aggregated leaderboard, provider, scenario, and dimension
-rollups. Custom suites can now assert concrete scene outcomes such as final
+compatibility paths. Cross-provider comparison now reuses the same guardrail
+and fallback pipeline as single-provider prediction, with comparison config
+exposed in the CLI, REST server, and Python bindings. Evaluation now supports
+built-in suite discovery, JSON-defined custom suites, suite-level default
+providers, provider selection, and aggregated leaderboard, provider, scenario,
+and dimension rollups. When a suite declares `providers`, the CLI, REST API,
+and Python bindings use that list by default; explicit provider arguments still
+override it. Custom suites can now assert concrete scene outcomes such as final
 object positions and semantic labels, and can score deterministic clips against
 optional ground-truth video references. They can also assert final-state
 conditions using the core `Condition` semantics for relational checks. Structured

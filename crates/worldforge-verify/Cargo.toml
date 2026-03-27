@@ -10,3 +10,10 @@ worldforge-core = { path = "../worldforge-core" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "proofs"
+harness = false

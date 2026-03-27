@@ -17,5 +17,10 @@ chrono = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+criterion = { workspace = true }
 worldforge-providers = { path = "../worldforge-providers" }
 proptest = { workspace = true }
+
+[[bench]]
+name = "suite"
+harness = false

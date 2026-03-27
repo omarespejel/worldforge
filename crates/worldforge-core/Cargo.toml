@@ -22,7 +22,12 @@ tracing = { workspace = true }
 sqlx = { workspace = true, optional = true }
 
 [dev-dependencies]
+criterion = { workspace = true }
 proptest = { workspace = true }
 serde_json = { workspace = true }
 worldforge-providers = { path = "../worldforge-providers" }
 sqlx = { workspace = true }
+
+[[bench]]
+name = "performance"
+harness = false

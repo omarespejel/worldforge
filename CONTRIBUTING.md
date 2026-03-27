@@ -27,6 +27,14 @@ throwaway virtual environment, performs an editable install, checks the
 installed `worldforge` imports, and then runs the Python smoke tests against
 that environment.
 
+### Benchmarks
+
+The repository includes offline Criterion harnesses for the core, provider,
+evaluation, and verification crates. Run them directly with `cargo bench -p
+worldforge-core`, `cargo bench -p worldforge-providers`, `cargo bench -p
+worldforge-eval`, or `cargo bench -p worldforge-verify`. Use `--no-run` if you
+only want to compile a harness and skip execution.
+
 ## Project Structure
 
 - `crates/worldforge-core/` - Core library (types, traits, state management)

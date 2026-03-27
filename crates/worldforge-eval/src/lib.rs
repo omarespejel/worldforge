@@ -122,6 +122,9 @@ pub struct EvalSuite {
     pub scenarios: Vec<EvalScenario>,
     /// Dimensions to evaluate.
     pub dimensions: Vec<EvalDimension>,
+    /// Default providers to evaluate when callers do not override them.
+    #[serde(default)]
+    pub providers: Vec<String>,
 }
 
 /// Result of evaluating one scenario with one provider.
@@ -624,7 +627,43 @@ impl EvalSuite {
             }
         }
 
+        let mut seen_providers = HashSet::new();
+        for provider in &self.providers {
+            let provider = provider.trim();
+            if provider.is_empty() {
+                return Err(WorldForgeError::InvalidState(format!(
+                    "evaluation suite '{}' contains an empty provider name",
+                    self.name
+                )));
+            }
+            if !seen_providers.insert(provider.to_string()) {
+                return Err(WorldForgeError::InvalidState(format!(
+                    "duplicate evaluation provider name: {provider}"
+                )));
+            }
+        }
+
         Ok(())
+    }
+
+    /// Return the suite's default provider names.
+    pub fn providers(&self) -> &[String] {
+        &self.providers
+    }
+
+    /// Resolve the provider names to use for an evaluation run.
+    pub fn effective_provider_names(&self, requested: &[String]) -> Vec<String> {
+        let requested = normalize_provider_names(requested);
+        if !requested.is_empty() {
+            return requested;
+        }
+
+        let defaults = normalize_provider_names(&self.providers);
+        if !defaults.is_empty() {
+            return defaults;
+        }
+
+        vec!["mock".to_string()]
     }
 
     /// Run the suite against a supplied world state.
@@ -685,6 +724,7 @@ impl EvalSuite {
                 EvalDimension::SpatialConsistency,
                 EvalDimension::TemporalConsistency,
             ],
+            providers: vec!["mock".to_string()],
         }
     }
 
@@ -855,6 +895,7 @@ impl EvalSuite {
                 EvalDimension::SpatialConsistency,
                 EvalDimension::ActionPredictionAccuracy,
             ],
+            providers: vec!["mock".to_string()],
         }
     }
 
@@ -1033,6 +1074,7 @@ impl EvalSuite {
                 EvalDimension::SpatialConsistency,
                 EvalDimension::SpatialReasoning,
             ],
+            providers: vec!["mock".to_string()],
         }
     }
 
@@ -1058,6 +1100,7 @@ impl EvalSuite {
                 EvalDimension::ActionPredictionAccuracy,
                 EvalDimension::SpatialReasoning,
             ],
+            providers: vec!["mock".to_string()],
         }
     }
 
@@ -1201,6 +1244,24 @@ impl EvalSuite {
             total_outcomes,
         })
     }
+}
+
+fn normalize_provider_names(provider_names: &[String]) -> Vec<String> {
+    let mut normalized = Vec::new();
+    let mut seen = HashSet::new();
+
+    for provider in provider_names {
+        let provider = provider.trim();
+        if provider.is_empty() {
+            continue;
+        }
+
+        if seen.insert(provider.to_string()) {
+            normalized.push(provider.to_string());
+        }
+    }
+
+    normalized
 }
 
 fn merge_world_state(base: &WorldState, overlay: &WorldState) -> WorldState {
@@ -2516,6 +2577,7 @@ mod tests {
                 ground_truth: None,
             }],
             dimensions: vec![EvalDimension::SpatialConsistency],
+            providers: vec![],
         };
         let provider = MockProvider::new();
         let providers: Vec<&dyn WorldModelProvider> = vec![&provider];
@@ -2613,6 +2675,26 @@ mod tests {
         let restored = EvalSuite::from_json_str(&json).unwrap();
         assert_eq!(restored.name, suite.name);
         assert_eq!(restored.scenarios.len(), suite.scenarios.len());
+        assert_eq!(restored.providers, vec!["mock".to_string()]);
+    }
+
+    #[test]
+    fn test_effective_provider_names_prefers_explicit_then_suite_defaults() {
+        let mut suite = EvalSuite::physics_standard();
+        suite.providers = vec!["suite-a".to_string(), "suite-b".to_string()];
+
+        assert_eq!(
+            suite.effective_provider_names(&[]),
+            vec!["suite-a".to_string(), "suite-b".to_string()]
+        );
+        assert_eq!(
+            suite.effective_provider_names(&[
+                " explicit ".to_string(),
+                "explicit".to_string(),
+                "".to_string(),
+            ]),
+            vec!["explicit".to_string()]
+        );
     }
 
     #[tokio::test]
@@ -2645,6 +2727,7 @@ mod tests {
                 ground_truth: None,
             }],
             dimensions: vec![EvalDimension::ActionPredictionAccuracy],
+            providers: vec![],
         };
         let provider = MockProvider::new();
         let report = suite
@@ -2707,6 +2790,7 @@ mod tests {
             name: "Average Threshold".to_string(),
             scenarios: vec![scenario],
             dimensions: vec![EvalDimension::GravityCompliance],
+            providers: vec![],
         };
         let provider = SequencedEvalProvider::new(
             "sequenced",
@@ -2795,6 +2879,7 @@ mod tests {
                 ground_truth: None,
             }],
             dimensions: vec![EvalDimension::ActionPredictionAccuracy],
+            providers: vec![],
         };
         let provider = MockProvider::new();
         let report = suite
@@ -2866,6 +2951,7 @@ mod tests {
                 ground_truth: None,
             }],
             dimensions: vec![EvalDimension::ActionPredictionAccuracy],
+            providers: vec![],
         };
 
         let passing_report = passing_suite
@@ -2903,6 +2989,7 @@ mod tests {
                 ground_truth: None,
             }],
             dimensions: vec![EvalDimension::ActionPredictionAccuracy],
+            providers: vec![],
         };
 
         let failing_report = failing_suite
@@ -2961,6 +3048,7 @@ mod tests {
             dimensions: vec![EvalDimension::Custom {
                 name: "video_similarity".to_string(),
             }],
+            providers: vec![],
         };
 
         let report = suite
@@ -3002,6 +3090,7 @@ mod tests {
                 },
             ],
             dimensions: vec![EvalDimension::SpatialConsistency],
+            providers: vec![],
         };
 
         assert!(suite.validate().is_err());
@@ -3020,6 +3109,7 @@ mod tests {
                 ground_truth: None,
             }],
             dimensions: vec![EvalDimension::SpatialConsistency],
+            providers: vec![],
         };
 
         assert!(suite.validate().is_err());
@@ -3063,6 +3153,7 @@ mod tests {
                 ground_truth: Some(ground_truth.clone()),
             }],
             dimensions: vec![EvalDimension::SpatialConsistency],
+            providers: vec![],
         };
         let provider = VisualFixtureProvider::new(
             "visual-fixture",

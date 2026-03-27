@@ -96,6 +96,7 @@ fn sample_scene_suite() -> EvalSuite {
             EvalDimension::GravityCompliance,
             EvalDimension::SpatialConsistency,
         ],
+        providers: vec![],
     }
 }
 
@@ -318,6 +319,7 @@ async fn test_ground_truth_video_similarity_is_reported() {
         dimensions: vec![EvalDimension::Custom {
             name: "video_similarity".to_string(),
         }],
+        providers: vec![],
     };
     let providers: Vec<&dyn WorldModelProvider> = vec![&mock];
 
