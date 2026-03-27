@@ -19,6 +19,7 @@
 //! - [`world`] — World orchestration
 
 pub mod action;
+mod async_utils;
 mod bootstrap;
 pub mod error;
 /// Goal-image rendering and similarity utilities.

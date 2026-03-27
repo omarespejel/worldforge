@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::action::{Action, ActionSpaceType};
+use crate::async_utils::{join_all_ordered, BoxFuture};
 use crate::error::{Result, WorldForgeError};
 use crate::prediction::{Plan, PlanRequest, PredictionConfig};
 use crate::state::WorldState;
@@ -463,7 +464,7 @@ impl ProviderRegistry {
     }
 
     async fn health_check_filtered(&self, capability: Option<&str>) -> Vec<ProviderHealthReport> {
-        let mut reports = Vec::new();
+        let mut futures = Vec::<BoxFuture<'_, ProviderHealthReport>>::new();
 
         for (name, provider) in &self.providers {
             let capabilities = provider.capabilities();
@@ -472,23 +473,10 @@ impl ProviderRegistry {
                 continue;
             }
 
-            let report = match provider.health_check().await {
-                Ok(status) => ProviderHealthReport {
-                    name: name.clone(),
-                    capabilities,
-                    status: Some(status),
-                    error: None,
-                },
-                Err(error) => ProviderHealthReport {
-                    name: name.clone(),
-                    capabilities,
-                    status: None,
-                    error: Some(error.to_string()),
-                },
-            };
-            reports.push(report);
+            futures.push(Box::pin(build_health_report(name, provider.as_ref())));
         }
 
+        let mut reports = join_all_ordered(futures).await;
         reports.sort_by(|left, right| left.name.cmp(&right.name));
         reports
     }
@@ -571,9 +559,33 @@ impl Default for TransferConfig {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
     use super::*;
     use crate::error::WorldForgeError;
     use crate::prediction::{PlanGoal, PlannerType};
+
+    #[derive(Debug, Default)]
+    struct ConcurrencyTracker {
+        active: AtomicUsize,
+        max_active: AtomicUsize,
+    }
+
+    impl ConcurrencyTracker {
+        fn enter(&self) {
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_active.fetch_max(active, Ordering::SeqCst);
+        }
+
+        fn exit(&self) {
+            self.active.fetch_sub(1, Ordering::SeqCst);
+        }
+
+        fn max_active(&self) -> usize {
+            self.max_active.load(Ordering::SeqCst)
+        }
+    }
 
     struct TestProvider {
         name: &'static str,
@@ -584,6 +596,13 @@ mod tests {
     struct FailingHealthProvider {
         name: &'static str,
         capabilities: ProviderCapabilities,
+    }
+
+    struct DelayedHealthProvider {
+        name: &'static str,
+        capabilities: ProviderCapabilities,
+        delay_ms: u64,
+        tracker: Arc<ConcurrencyTracker>,
     }
 
     #[async_trait::async_trait]
@@ -715,6 +734,75 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
+    impl WorldModelProvider for DelayedHealthProvider {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            self.capabilities.clone()
+        }
+
+        async fn predict(
+            &self,
+            _state: &crate::state::WorldState,
+            _action: &crate::action::Action,
+            _config: &crate::prediction::PredictionConfig,
+        ) -> Result<crate::prediction::Prediction> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.to_string(),
+                capability: "predict".to_string(),
+            })
+        }
+
+        async fn generate(
+            &self,
+            _prompt: &GenerationPrompt,
+            _config: &GenerationConfig,
+        ) -> Result<VideoClip> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.to_string(),
+                capability: "generate".to_string(),
+            })
+        }
+
+        async fn reason(&self, _input: &ReasoningInput, _query: &str) -> Result<ReasoningOutput> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.to_string(),
+                capability: "reason".to_string(),
+            })
+        }
+
+        async fn transfer(
+            &self,
+            _source: &VideoClip,
+            _controls: &SpatialControls,
+            _config: &TransferConfig,
+        ) -> Result<VideoClip> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.to_string(),
+                capability: "transfer".to_string(),
+            })
+        }
+
+        async fn health_check(&self) -> Result<HealthStatus> {
+            self.tracker.enter();
+            tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+            self.tracker.exit();
+
+            Ok(HealthStatus {
+                healthy: true,
+                message: "healthy".to_string(),
+                latency_ms: self.delay_ms,
+            })
+        }
+
+        fn estimate_cost(&self, _operation: &Operation) -> CostEstimate {
+            CostEstimate::default()
+        }
+    }
+
     fn test_capabilities() -> ProviderCapabilities {
         ProviderCapabilities {
             predict: true,
@@ -819,6 +907,28 @@ mod tests {
         let names: Vec<_> = reports.iter().map(|report| report.name.as_str()).collect();
         assert_eq!(names, vec!["alpha", "beta"]);
         assert!(reports.iter().all(ProviderHealthReport::is_healthy));
+    }
+
+    #[tokio::test]
+    async fn test_health_check_all_runs_concurrently_and_sorts() {
+        let tracker = Arc::new(ConcurrencyTracker::default());
+        let mut registry = ProviderRegistry::new();
+
+        for name in ["gamma", "alpha", "beta"] {
+            registry.register(Box::new(DelayedHealthProvider {
+                name,
+                capabilities: test_capabilities(),
+                delay_ms: 25,
+                tracker: Arc::clone(&tracker),
+            }));
+        }
+
+        let reports = registry.health_check_all().await;
+        let names: Vec<_> = reports.iter().map(|report| report.name.as_str()).collect();
+
+        assert_eq!(names, vec!["alpha", "beta", "gamma"]);
+        assert!(reports.iter().all(ProviderHealthReport::is_healthy));
+        assert!(tracker.max_active() >= 2);
     }
 
     #[test]

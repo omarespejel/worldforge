@@ -4,6 +4,8 @@
 //! dimensions like physics plausibility, spatial consistency, and
 //! temporal coherence.
 
+mod async_utils;
+
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs;
@@ -12,6 +14,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
+use crate::async_utils::{join_all_ordered, BoxFuture};
 use worldforge_core::action::{evaluate_condition, Action, Condition};
 use worldforge_core::error::{Result, WorldForgeError};
 use worldforge_core::prediction::{PhysicsScores, PredictionConfig};
@@ -1155,121 +1158,20 @@ impl EvalSuite {
         world_state: Option<&WorldState>,
     ) -> Result<EvalReport> {
         self.validate()?;
-        let mut all_results = Vec::new();
+        let mut futures = Vec::<BoxFuture<'_, EvalResult>>::new();
 
-        for provider in providers {
-            if !provider.capabilities().predict {
-                for scenario in &self.scenarios {
-                    all_results.push(EvalResult {
-                        provider: provider.name().to_string(),
-                        scenario: scenario.name.clone(),
-                        scores: HashMap::new(),
-                        latency_ms: 0,
-                        video: None,
-                        video_metrics: None,
-                        outcomes: vec![OutcomeResult {
-                            description: "provider supports prediction".to_string(),
-                            passed: false,
-                            details: Some(
-                                "evaluation requires predict capability for every scenario"
-                                    .to_string(),
-                            ),
-                        }],
-                    });
-                }
-                continue;
-            }
-
+        for &provider in providers {
             for scenario in &self.scenarios {
-                let start = std::time::Instant::now();
-                let config = prediction_config_for_scenario(scenario);
-                let mut score_accumulator = ScenarioAccumulator::default();
-                let mut outcomes = Vec::new();
-                let mut current_state = scenario.initial_state.clone();
-
-                if let Some(world_state) = world_state {
-                    current_state = merge_world_state(&current_state, world_state);
-                }
-
-                // Run prediction for each action.
-                let mut prediction_failed = false;
-                for action in &scenario.actions {
-                    match provider.predict(&current_state, action, &config).await {
-                        Ok(prediction) => {
-                            score_accumulator.record(&prediction);
-                            current_state = prediction.output_state.clone();
-                        }
-                        Err(e) => {
-                            outcomes.push(OutcomeResult {
-                                description: "prediction".to_string(),
-                                passed: false,
-                                details: Some(e.to_string()),
-                            });
-                            prediction_failed = true;
-                            break;
-                        }
-                    }
-                }
-
-                let average_scores = score_accumulator.average_scores();
-                let average_confidence = score_accumulator.average_confidence();
-                let mut scores = HashMap::new();
-                if let Some(average_scores) = average_scores.as_ref() {
-                    record_physics_scores(average_scores, &mut scores);
-                }
-                let predicted_video = if prediction_failed {
-                    None
-                } else {
-                    score_accumulator.final_video.clone()
-                };
-                let video_metrics = if prediction_failed {
-                    None
-                } else {
-                    predicted_video
-                        .as_ref()
-                        .zip(scenario.ground_truth.as_ref())
-                        .map(|(predicted, ground_truth)| {
-                            compare_video_clips(predicted, ground_truth)
-                        })
-                };
-                if let Some(metrics) = video_metrics.as_ref() {
-                    scores.insert("video_similarity".to_string(), metrics.overall_similarity);
-                }
-                ensure_overall_score(&mut scores);
-                if custom_metric_requested(
+                futures.push(Box::pin(evaluate_provider_scenario(
+                    provider,
+                    scenario,
+                    world_state,
                     &self.dimensions,
-                    &scenario.expected_outcomes,
-                    "confidence",
-                ) {
-                    if let Some(confidence) = average_confidence {
-                        scores.insert("confidence".to_string(), confidence);
-                    }
-                }
-
-                if !prediction_failed {
-                    for expected in &scenario.expected_outcomes {
-                        outcomes.push(check_outcome(
-                            expected,
-                            &current_state,
-                            &scores,
-                            average_confidence,
-                            scenario.ground_truth.as_ref(),
-                            video_metrics.as_ref(),
-                        ));
-                    }
-                }
-
-                all_results.push(EvalResult {
-                    provider: provider.name().to_string(),
-                    scenario: scenario.name.clone(),
-                    scores,
-                    latency_ms: start.elapsed().as_millis() as u64,
-                    video: predicted_video,
-                    video_metrics,
-                    outcomes,
-                });
+                )));
             }
         }
+
+        let all_results = join_all_ordered(futures).await;
 
         let provider_summaries = build_provider_summaries(&all_results, self.scenarios.len());
         let leaderboard = build_leaderboard(&provider_summaries);
@@ -1292,6 +1194,114 @@ impl EvalSuite {
             outcomes_passed,
             total_outcomes,
         })
+    }
+}
+
+async fn evaluate_provider_scenario(
+    provider: &dyn WorldModelProvider,
+    scenario: &EvalScenario,
+    world_state: Option<&WorldState>,
+    dimensions: &[EvalDimension],
+) -> EvalResult {
+    if !provider.capabilities().predict {
+        return EvalResult {
+            provider: provider.name().to_string(),
+            scenario: scenario.name.clone(),
+            scores: HashMap::new(),
+            latency_ms: 0,
+            video: None,
+            video_metrics: None,
+            outcomes: vec![OutcomeResult {
+                description: "provider supports prediction".to_string(),
+                passed: false,
+                details: Some(
+                    "evaluation requires predict capability for every scenario".to_string(),
+                ),
+            }],
+        };
+    }
+
+    let start = std::time::Instant::now();
+    let config = prediction_config_for_scenario(scenario);
+    let mut score_accumulator = ScenarioAccumulator::default();
+    let mut outcomes = Vec::new();
+    let mut current_state = scenario.initial_state.clone();
+
+    if let Some(world_state) = world_state {
+        current_state = merge_world_state(&current_state, world_state);
+    }
+
+    let mut prediction_failed = false;
+    for action in &scenario.actions {
+        match provider.predict(&current_state, action, &config).await {
+            Ok(prediction) => {
+                score_accumulator.record(&prediction);
+                current_state = prediction.output_state.clone();
+            }
+            Err(error) => {
+                outcomes.push(OutcomeResult {
+                    description: "prediction".to_string(),
+                    passed: false,
+                    details: Some(error.to_string()),
+                });
+                prediction_failed = true;
+                break;
+            }
+        }
+    }
+
+    let average_scores = score_accumulator.average_scores();
+    let average_confidence = score_accumulator.average_confidence();
+    let mut scores = HashMap::new();
+    if let Some(average_scores) = average_scores.as_ref() {
+        record_physics_scores(average_scores, &mut scores);
+    }
+
+    let predicted_video = if prediction_failed {
+        None
+    } else {
+        score_accumulator.final_video.clone()
+    };
+    let video_metrics = if prediction_failed {
+        None
+    } else {
+        predicted_video
+            .as_ref()
+            .zip(scenario.ground_truth.as_ref())
+            .map(|(predicted, ground_truth)| compare_video_clips(predicted, ground_truth))
+    };
+    if let Some(metrics) = video_metrics.as_ref() {
+        scores.insert("video_similarity".to_string(), metrics.overall_similarity);
+    }
+    ensure_overall_score(&mut scores);
+
+    if custom_metric_requested(dimensions, &scenario.expected_outcomes, "confidence") {
+        if let Some(confidence) = average_confidence {
+            scores.insert("confidence".to_string(), confidence);
+        }
+    }
+
+    if !prediction_failed {
+        for expected in &scenario.expected_outcomes {
+            outcomes.push(check_outcome(
+                expected,
+                &current_state,
+                &scores,
+                average_confidence,
+                scenario.ground_truth.as_ref(),
+                video_metrics.as_ref(),
+            ));
+        }
+    }
+
+    EvalResult {
+        provider: provider.name().to_string(),
+        scenario: scenario.name.clone(),
+        scores,
+        latency_ms: start.elapsed().as_millis() as u64,
+        video: predicted_video,
+        video_metrics,
+        outcomes,
     }
 }
 
@@ -2160,6 +2170,8 @@ fn csv_cell(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
     use std::sync::Mutex;
 
     use async_trait::async_trait;
@@ -2171,6 +2183,27 @@ mod tests {
     };
     use worldforge_core::types::{BBox, DType, Device, Frame, Pose, SimTime, Tensor, TensorData};
     use worldforge_providers::MockProvider;
+
+    #[derive(Debug, Default)]
+    struct ConcurrencyTracker {
+        active: AtomicUsize,
+        max_active: AtomicUsize,
+    }
+
+    impl ConcurrencyTracker {
+        fn enter(&self) {
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_active.fetch_max(active, Ordering::SeqCst);
+        }
+
+        fn exit(&self) {
+            self.active.fetch_sub(1, Ordering::SeqCst);
+        }
+
+        fn max_active(&self) -> usize {
+            self.max_active.load(Ordering::SeqCst)
+        }
+    }
 
     #[derive(Debug)]
     struct SequencedEvalProvider {
@@ -2195,6 +2228,13 @@ mod tests {
         last_config: Mutex<Option<PredictionConfig>>,
     }
 
+    #[derive(Debug)]
+    struct DelayedEvalProvider {
+        name: String,
+        delay_ms: u64,
+        tracker: Arc<ConcurrencyTracker>,
+    }
+
     impl VisualFixtureProvider {
         fn new(name: &str, output_state: WorldState, video: VideoClip) -> Self {
             Self {
@@ -2210,6 +2250,16 @@ mod tests {
                 .lock()
                 .expect("fixture config poisoned")
                 .clone()
+        }
+    }
+
+    impl DelayedEvalProvider {
+        fn new(name: &str, delay_ms: u64, tracker: Arc<ConcurrencyTracker>) -> Self {
+            Self {
+                name: name.to_string(),
+                delay_ms,
+                tracker,
+            }
         }
     }
 
@@ -2484,6 +2534,117 @@ mod tests {
                 healthy: true,
                 message: "healthy".to_string(),
                 latency_ms: 1,
+            })
+        }
+
+        fn estimate_cost(&self, _operation: &Operation) -> CostEstimate {
+            CostEstimate::default()
+        }
+    }
+
+    #[async_trait]
+    impl WorldModelProvider for DelayedEvalProvider {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities {
+                predict: true,
+                generate: false,
+                reason: false,
+                transfer: false,
+                embed: false,
+                action_conditioned: true,
+                multi_view: false,
+                max_video_length_seconds: 0.0,
+                max_resolution: (0, 0),
+                fps_range: (0.0, 0.0),
+                supported_action_spaces: Vec::new(),
+                supports_depth: false,
+                supports_segmentation: false,
+                supports_planning: false,
+                latency_profile: LatencyProfile {
+                    p50_ms: 1,
+                    p95_ms: 1,
+                    p99_ms: 1,
+                    throughput_fps: 1.0,
+                },
+            }
+        }
+
+        async fn predict(
+            &self,
+            state: &WorldState,
+            action: &Action,
+            _config: &PredictionConfig,
+        ) -> Result<Prediction> {
+            self.tracker.enter();
+            tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+            self.tracker.exit();
+
+            let mut output_state = state.clone();
+            output_state.time.step += 1;
+
+            Ok(Prediction {
+                id: uuid::Uuid::new_v4(),
+                provider: self.name.clone(),
+                model: "delayed-eval".to_string(),
+                input_state: state.clone(),
+                action: action.clone(),
+                output_state,
+                video: None,
+                confidence: 0.9,
+                physics_scores: PhysicsScores {
+                    overall: 0.9,
+                    object_permanence: 0.9,
+                    gravity_compliance: 0.9,
+                    collision_accuracy: 0.9,
+                    spatial_consistency: 0.9,
+                    temporal_consistency: 0.9,
+                },
+                latency_ms: self.delay_ms,
+                cost: CostEstimate::default(),
+                guardrail_results: Vec::new(),
+                timestamp: chrono::Utc::now(),
+            })
+        }
+
+        async fn generate(
+            &self,
+            _prompt: &GenerationPrompt,
+            _config: &GenerationConfig,
+        ) -> Result<VideoClip> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.clone(),
+                capability: "generate".to_string(),
+            })
+        }
+
+        async fn reason(&self, _input: &ReasoningInput, _query: &str) -> Result<ReasoningOutput> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.clone(),
+                capability: "reason".to_string(),
+            })
+        }
+
+        async fn transfer(
+            &self,
+            _source: &VideoClip,
+            _controls: &SpatialControls,
+            _config: &TransferConfig,
+        ) -> Result<VideoClip> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.clone(),
+                capability: "transfer".to_string(),
+            })
+        }
+
+        async fn health_check(&self) -> Result<HealthStatus> {
+            Ok(HealthStatus {
+                healthy: true,
+                message: "healthy".to_string(),
+                latency_ms: self.delay_ms,
             })
         }
 
@@ -3131,6 +3292,70 @@ mod tests {
             report.dimension_summaries[0].best_provider.as_deref(),
             Some("mock")
         );
+    }
+
+    #[tokio::test]
+    async fn test_eval_run_executes_provider_scenarios_concurrently_and_preserves_order() {
+        let tracker = Arc::new(ConcurrencyTracker::default());
+        let suite = EvalSuite {
+            name: "Concurrent Eval".to_string(),
+            scenarios: vec![
+                EvalScenario {
+                    name: "first".to_string(),
+                    description: "first scenario".to_string(),
+                    initial_state: WorldState::new("first", "eval"),
+                    actions: vec![Action::SetLighting { time_of_day: 0.25 }],
+                    expected_outcomes: vec![ExpectedOutcome::MinPhysicsScore {
+                        dimension: EvalDimension::ObjectPermanence,
+                        threshold: 0.5,
+                    }],
+                    ground_truth: None,
+                },
+                EvalScenario {
+                    name: "second".to_string(),
+                    description: "second scenario".to_string(),
+                    initial_state: WorldState::new("second", "eval"),
+                    actions: vec![Action::SetLighting { time_of_day: 0.75 }],
+                    expected_outcomes: vec![ExpectedOutcome::MinPhysicsScore {
+                        dimension: EvalDimension::ObjectPermanence,
+                        threshold: 0.5,
+                    }],
+                    ground_truth: None,
+                },
+            ],
+            dimensions: vec![EvalDimension::ObjectPermanence],
+            providers: vec![],
+        };
+        let alpha = DelayedEvalProvider::new("alpha", 25, Arc::clone(&tracker));
+        let beta = DelayedEvalProvider::new("beta", 25, Arc::clone(&tracker));
+
+        let report = suite
+            .run(&[
+                &alpha as &dyn WorldModelProvider,
+                &beta as &dyn WorldModelProvider,
+            ])
+            .await
+            .unwrap();
+        let ordering: Vec<_> = report
+            .results
+            .iter()
+            .map(|result| format!("{}:{}", result.provider, result.scenario))
+            .collect();
+
+        assert_eq!(
+            ordering,
+            vec![
+                "alpha:first".to_string(),
+                "alpha:second".to_string(),
+                "beta:first".to_string(),
+                "beta:second".to_string(),
+            ]
+        );
+        assert!(report
+            .results
+            .iter()
+            .all(|result| result.outcomes.iter().all(|outcome| outcome.passed)));
+        assert!(tracker.max_active() >= 2);
     }
 
     #[tokio::test]

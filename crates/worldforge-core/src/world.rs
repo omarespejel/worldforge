@@ -8,6 +8,7 @@ use std::time::Duration;
 use tracing::instrument;
 
 use crate::action::{Action, Condition, Weather};
+use crate::async_utils::{join_all_ordered, BoxFuture};
 use crate::error::{Result, WorldForgeError};
 use crate::goal_image;
 use crate::guardrail::{evaluate_guardrails, has_blocking_violation};
@@ -192,14 +193,17 @@ impl World {
         provider_names: &[&str],
         config: &PredictionConfig,
     ) -> Result<MultiPrediction> {
-        let mut predictions = Vec::new();
-
-        for &name in provider_names {
-            let pred = self
-                .predict_from_state(&self.state, action, config, name)
-                .await?;
-            predictions.push(pred);
-        }
+        let futures: Vec<BoxFuture<'_, Result<Prediction>>> = provider_names
+            .iter()
+            .map(|provider_name| {
+                Box::pin(self.predict_from_state(&self.state, action, config, provider_name))
+                    as BoxFuture<'_, Result<Prediction>>
+            })
+            .collect();
+        let predictions = join_all_ordered(futures)
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?;
 
         if predictions.is_empty() {
             return Err(WorldForgeError::InternalError(
@@ -2479,6 +2483,9 @@ fn evaluate_goal_score(goal: &crate::prediction::PlanGoal, state: &WorldState) -
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
     use super::*;
     use async_trait::async_trait;
 
@@ -2491,6 +2498,27 @@ mod tests {
         WorldModelProvider,
     };
     use crate::types::VideoClip;
+
+    #[derive(Debug, Default)]
+    struct ConcurrencyTracker {
+        active: AtomicUsize,
+        max_active: AtomicUsize,
+    }
+
+    impl ConcurrencyTracker {
+        fn enter(&self) {
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_active.fetch_max(active, Ordering::SeqCst);
+        }
+
+        fn exit(&self) {
+            self.active.fetch_sub(1, Ordering::SeqCst);
+        }
+
+        fn max_active(&self) -> usize {
+            self.max_active.load(Ordering::SeqCst)
+        }
+    }
 
     #[test]
     fn test_generate_candidate_actions_empty_scene() {
@@ -3367,6 +3395,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_predict_multi_runs_provider_calls_concurrently_and_preserves_order() {
+        let tracker = Arc::new(ConcurrencyTracker::default());
+        let state = WorldState::new("predict-multi-concurrent", "alpha");
+        let registry = std::sync::Arc::new({
+            let mut registry = ProviderRegistry::new();
+            registry.register(Box::new(SlowProvider::with_tracker(
+                "alpha",
+                25,
+                Arc::clone(&tracker),
+            )));
+            registry.register(Box::new(SlowProvider::with_tracker(
+                "beta",
+                25,
+                Arc::clone(&tracker),
+            )));
+            registry
+        });
+        let world = World::new(state, "alpha", registry);
+        let action = Action::Move {
+            target: Position::default(),
+            speed: 1.0,
+        };
+
+        let multi = world
+            .predict_multi(&action, &["beta", "alpha"], &PredictionConfig::default())
+            .await
+            .unwrap();
+        let providers: Vec<_> = multi
+            .predictions
+            .iter()
+            .map(|prediction| prediction.provider.as_str())
+            .collect();
+
+        assert_eq!(providers, vec!["beta", "alpha"]);
+        assert!(tracker.max_active() >= 2);
+    }
+
+    #[tokio::test]
     async fn test_predict_timeout_uses_fallback_provider() {
         let state = WorldState::new("timeout", "slow");
         let registry = std::sync::Arc::new({
@@ -3979,6 +4045,7 @@ mod tests {
     struct SlowProvider {
         name: String,
         delay_ms: u64,
+        tracker: Option<Arc<ConcurrencyTracker>>,
     }
 
     impl SlowProvider {
@@ -3986,6 +4053,15 @@ mod tests {
             Self {
                 name: name.to_string(),
                 delay_ms,
+                tracker: None,
+            }
+        }
+
+        fn with_tracker(name: &str, delay_ms: u64, tracker: Arc<ConcurrencyTracker>) -> Self {
+            Self {
+                name: name.to_string(),
+                delay_ms,
+                tracker: Some(tracker),
             }
         }
     }
@@ -4479,7 +4555,13 @@ mod tests {
             action: &Action,
             _config: &PredictionConfig,
         ) -> Result<Prediction> {
+            if let Some(tracker) = &self.tracker {
+                tracker.enter();
+            }
             tokio::time::sleep(Duration::from_millis(self.delay_ms)).await;
+            if let Some(tracker) = &self.tracker {
+                tracker.exit();
+            }
             Ok(dummy_prediction(&self.name, state, action))
         }
 

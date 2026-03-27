@@ -4,6 +4,8 @@
 
 WorldForge is a developer toolkit that provides a unified interface for building applications on top of world foundation models (WFMs). It abstracts the differences between providers (NVIDIA Cosmos, Runway GWM, Meta JEPA, Google Genie, and experimental Marble local-surrogate support) behind a single, ergonomic API — letting developers focus on what to build rather than how to integrate.
 
+Cross-provider comparison, provider health fanout, and evaluation suite execution run concurrently while preserving deterministic result ordering.
+
 Think LangChain for world models. Or Vercel for physical AI.
 
 ## Why WorldForge Exists
