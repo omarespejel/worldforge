@@ -3,6 +3,7 @@
 //! Tests the full REST API workflow: create world → predict →
 //! list → show → delete, plus evaluation and comparison endpoints.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -387,6 +388,165 @@ async fn test_rest_eval_run_rejects_ambiguous_world_inputs() {
         .contains("provide at most one of world_id or world_state"));
 }
 
+#[tokio::test]
+async fn test_live_http_rejects_malformed_request_line() {
+    let server = spawn_test_server().await;
+    let request = "BROKEN\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+
+    let response = raw_http_response(server.address, request).await;
+    assert_eq!(response.status, 400);
+
+    let payload: Value = serde_json::from_str(&response.body).unwrap();
+    assert_eq!(payload["success"], false);
+    assert!(payload["error"]
+        .as_str()
+        .unwrap()
+        .to_lowercase()
+        .contains("bad request"));
+}
+
+#[tokio::test]
+async fn test_live_http_rejects_invalid_content_length() {
+    let server = spawn_test_server().await;
+    let request = build_http_request(
+        "POST",
+        "/v1/worlds",
+        &[
+            ("Content-Length", "not-a-number"),
+            ("Content-Type", "application/json"),
+        ],
+        r#"{"name":"invalid-length","provider":"mock"}"#,
+    );
+
+    let response = raw_http_response(server.address, &request).await;
+    assert_eq!(response.status, 400);
+
+    let payload: Value = serde_json::from_str(&response.body).unwrap();
+    assert_eq!(payload["success"], false);
+    assert!(payload["error"]
+        .as_str()
+        .unwrap()
+        .to_lowercase()
+        .contains("content-length"));
+}
+
+#[tokio::test]
+async fn test_live_http_rejects_too_many_headers() {
+    let server = spawn_test_server().await;
+    let mut headers = Vec::new();
+    for index in 0..65 {
+        headers.push((format!("X-Header-{index}"), "value".to_string()));
+    }
+    let header_refs: Vec<_> = headers
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.as_str()))
+        .collect();
+    let request = build_http_request("GET", "/v1/worlds", &header_refs, "");
+
+    let response = raw_http_response(server.address, &request).await;
+    assert_eq!(response.status, 400);
+
+    let payload: Value = serde_json::from_str(&response.body).unwrap();
+    assert_eq!(payload["success"], false);
+    assert_eq!(payload["error"], "too many headers");
+}
+
+#[tokio::test]
+async fn test_live_http_reports_405_for_known_path_wrong_method() {
+    let server = spawn_test_server().await;
+    let request = build_http_request("PATCH", "/v1/providers", &[], "");
+
+    let response = raw_http_response(server.address, &request).await;
+    assert_eq!(response.status, 405);
+
+    let allow = response.header("allow").unwrap_or("");
+    assert!(allow.contains("GET"));
+}
+
+#[tokio::test]
+async fn test_live_http_head_on_get_endpoint_suppresses_body() {
+    let server = spawn_test_server().await;
+    let request = build_http_request("HEAD", "/v1/providers", &[], "");
+
+    let response = raw_http_response(server.address, &request).await;
+    assert_eq!(response.status, 200);
+    assert!(response.body.is_empty());
+
+    let content_type = response.header("content-type").unwrap_or("");
+    assert!(
+        content_type.contains("application/json"),
+        "expected JSON response headers for HEAD request, got: {content_type}"
+    );
+}
+
+#[tokio::test]
+async fn test_live_http_decodes_query_parameters_for_provider_filtering() {
+    let server = spawn_test_server().await;
+    let request = build_http_request(
+        "GET",
+        "/v1/providers?capability=action%2Dconditioned",
+        &[],
+        "",
+    );
+
+    let response = raw_http_response(server.address, &request).await;
+    assert_eq!(response.status, 200);
+
+    let payload: Value = serde_json::from_str(&response.body).unwrap();
+    let providers = payload["data"].as_array().unwrap();
+    assert_eq!(providers.len(), 1);
+    assert_eq!(providers[0]["name"], "mock");
+}
+
+#[tokio::test]
+async fn test_live_http_rendered_eval_reports_use_content_type_and_body_semantics() {
+    let server = spawn_test_server().await;
+
+    for format in ["markdown", "csv"] {
+        let body = serde_json::json!({
+            "suite": "physics",
+            "providers": ["mock"],
+            "report_format": format,
+        })
+        .to_string();
+        let request = build_http_request(
+            "POST",
+            "/v1/evals/run",
+            &[("Content-Type", "application/json")],
+            &body,
+        );
+
+        let response = raw_http_response(server.address, &request).await;
+        assert_eq!(response.status, 200);
+
+        let content_type = response.header("content-type").unwrap_or("");
+        if content_type.contains("application/json") || response.body.trim_start().starts_with('{')
+        {
+            let payload: Value = serde_json::from_str(&response.body).unwrap();
+            assert_eq!(payload["success"], true);
+            assert_eq!(payload["data"]["format"], format);
+            assert!(payload["data"]["content"]
+                .as_str()
+                .unwrap()
+                .contains("Physics"));
+        } else {
+            match format {
+                "markdown" => {
+                    assert!(
+                        content_type.contains("markdown") || content_type.contains("text/plain")
+                    );
+                    assert!(response.body.contains("# Evaluation Report"));
+                }
+                "csv" => {
+                    assert!(content_type.contains("csv") || content_type.contains("text/plain"));
+                    assert!(response.body.contains("suite,provider,scenario"));
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     hex_encode(&sha256_hash(bytes))
 }
@@ -437,14 +597,26 @@ async fn import_world_snapshot_with_metadata(
 }
 
 async fn http_request(address: SocketAddr, method: &str, path: &str, body: &str) -> (u16, Value) {
-    let request = format!(
-        "{method} {path} HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    );
+    let request = build_http_request(method, path, &[("Content-Type", "application/json")], body);
     let response = raw_http_request(address, &request).await;
     let (status, response_body) = parse_http_response(&response);
     let json = serde_json::from_str(&response_body).unwrap();
     (status, json)
+}
+
+#[derive(Debug, Clone)]
+struct RawHttpResponse {
+    status: u16,
+    headers: HashMap<String, String>,
+    body: String,
+}
+
+impl RawHttpResponse {
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .get(&name.to_ascii_lowercase())
+            .map(String::as_str)
+    }
 }
 
 async fn raw_http_request(address: SocketAddr, request: &str) -> String {
@@ -453,6 +625,61 @@ async fn raw_http_request(address: SocketAddr, request: &str) -> String {
     let mut response = String::new();
     stream.read_to_string(&mut response).await.unwrap();
     response
+}
+
+async fn raw_http_response(address: SocketAddr, request: &str) -> RawHttpResponse {
+    let response = raw_http_request(address, request).await;
+    parse_raw_http_response(&response)
+}
+
+fn build_http_request(
+    method: &str,
+    path: &str,
+    extra_headers: &[(&str, &str)],
+    body: &str,
+) -> String {
+    let has_content_length = extra_headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("content-length"));
+    let mut request = format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\n");
+
+    for (name, value) in extra_headers {
+        request.push_str(name);
+        request.push_str(": ");
+        request.push_str(value);
+        request.push_str("\r\n");
+    }
+
+    if !has_content_length {
+        request.push_str(&format!("Content-Length: {}\r\n", body.len()));
+    }
+
+    request.push_str("Connection: close\r\n\r\n");
+    request.push_str(body);
+    request
+}
+
+fn parse_raw_http_response(response: &str) -> RawHttpResponse {
+    let (headers, body) = response.split_once("\r\n\r\n").unwrap_or((response, ""));
+    let mut lines = headers.lines();
+    let status = lines
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse().ok())
+        .unwrap_or(0);
+
+    let headers = lines
+        .filter_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            Some((name.trim().to_ascii_lowercase(), value.trim().to_string()))
+        })
+        .collect();
+
+    RawHttpResponse {
+        status,
+        headers,
+        body: body.to_string(),
+    }
 }
 
 fn parse_http_response(response: &str) -> (u16, String) {

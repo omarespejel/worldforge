@@ -490,6 +490,14 @@ worldforge-server --bind 127.0.0.1:8080 --state-backend s3 --state-s3-bucket wor
 
 Then call the HTTP API directly:
 
+The server now enforces a few stricter transport rules that are useful in real
+clients and tests:
+- malformed request lines or invalid `Content-Length` headers return `400`
+- known paths return `405 Method Not Allowed` with an `Allow` header when the method is wrong
+- `HEAD` is supported on the existing `GET` endpoints
+- percent-encoded query parameters are decoded before routing and filtering
+- rendered evaluation reports still return JSON envelopes when requested through the API
+  with the rendered markdown/CSV exposed in the response payload
 ```bash
 curl -X POST http://127.0.0.1:8080/v1/worlds \
   -H 'content-type: application/json' \
