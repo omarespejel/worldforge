@@ -2,7 +2,7 @@
 
 **The orchestration layer for world models.**
 
-WorldForge is a developer toolkit that provides a unified interface for building applications on top of world foundation models (WFMs). It abstracts the differences between providers (NVIDIA Cosmos, Runway GWM, Meta JEPA, Google Genie, and others) behind a single, ergonomic API — letting developers focus on what to build rather than how to integrate.
+WorldForge is a developer toolkit that provides a unified interface for building applications on top of world foundation models (WFMs). It abstracts the differences between providers (NVIDIA Cosmos, Runway GWM, Meta JEPA, Google Genie, and experimental Marble local-surrogate support) behind a single, ergonomic API — letting developers focus on what to build rather than how to integrate.
 
 Think LangChain for world models. Or Vercel for physical AI.
 
@@ -10,7 +10,7 @@ Think LangChain for world models. Or Vercel for physical AI.
 
 The world model ecosystem in 2026 looks like the LLM ecosystem in early 2023:
 
-- **Foundation models exist** (Cosmos Predict/Transfer/Reason, GWM-1 Worlds/Robotics/Avatars, V-JEPA 2, Genie 3, Marble)
+- **Foundation models exist** (Cosmos Predict/Transfer/Reason, GWM-1 Worlds/Robotics/Avatars, V-JEPA 2, Genie 3, and Marble as an experimental local surrogate)
 - **Each has its own SDK** (NVIDIA NIM + NGC, Runway Python/Node SDK, Meta research code, Google research preview)
 - **No unified abstraction** — every developer writes custom integration code for each provider
 - **No orchestration** — composing multi-step workflows (predict → evaluate → plan → verify) requires manual plumbing
@@ -201,8 +201,10 @@ assert world.step == 0
 ```
 
 The Python package also exposes `worldforge.providers`, `worldforge.eval`, and
-`worldforge.verify` as importable submodules. Register providers before you
-create worlds so each `World` captures the intended registry snapshot.
+`worldforge.verify` as importable submodules. `worldforge.providers` includes
+`MarbleProvider` as an experimental local surrogate alongside the other
+provider wrappers. Register providers before you create worlds so each `World`
+captures the intended registry snapshot.
 
 ```python
 from worldforge.eval import EvalSuite
@@ -290,6 +292,10 @@ adapter-native deterministic planning. When `RUNWAY_API_SECRET` is present,
 auto-detection registers a `runway` provider covering predict/generate/transfer
 plus adapter-native deterministic planning, and that auto-detected `runway`
 alias adds Cosmos-backed reasoning only when `NVIDIA_API_KEY` is also present.
+Auto-detection also registers `genie` and `marble` as experimental local
+surrogates so offline workflows can exercise provider orchestration without a
+remote dependency; `MarbleProvider` is distinct from the mock backend and is
+surfaced as experimental support rather than a vendor-faithful API binding.
 
 The same embedding surface is exposed over the CLI as `worldforge embed` and
 over the REST API as `POST /v1/providers/{name}/embed`.

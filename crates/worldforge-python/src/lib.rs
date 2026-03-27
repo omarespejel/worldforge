@@ -32,7 +32,8 @@ use worldforge_core::types::{
 };
 use worldforge_core::world::World as CoreWorld;
 use worldforge_providers::{
-    CosmosProvider, GenieProvider, JepaBackend, JepaProvider, MockProvider, RunwayProvider,
+    CosmosProvider, GenieProvider, JepaBackend, JepaProvider, MarbleProvider, MockProvider,
+    RunwayProvider,
 };
 use worldforge_verify::{
     prove_guardrail_plan as prove_guardrail_plan_bundle,
@@ -2928,6 +2929,55 @@ impl PyMockProvider {
     }
 }
 
+/// Experimental Marble provider exposed to Python.
+///
+/// This is a deterministic local surrogate that follows the same wrapper
+/// pattern as the other provider bindings.
+#[pyclass(name = "MarbleProvider")]
+#[derive(Debug, Clone)]
+pub struct PyMarbleProvider {
+    inner: MarbleProvider,
+}
+
+#[pymethods]
+impl PyMarbleProvider {
+    #[new]
+    #[pyo3(signature = (name="marble"))]
+    fn new(name: &str) -> Self {
+        let inner = if name == "marble" {
+            MarbleProvider::new()
+        } else {
+            MarbleProvider::with_name(name)
+        };
+        Self { inner }
+    }
+
+    #[getter]
+    fn name(&self) -> String {
+        self.inner.name().to_string()
+    }
+
+    #[getter]
+    fn capabilities(&self) -> PyProviderCapabilities {
+        PyProviderCapabilities {
+            inner: self.inner.capabilities(),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "MarbleProvider(name='{}', experimental_surrogate=true)",
+            self.inner.name(),
+        )
+    }
+}
+
+impl PyMarbleProvider {
+    fn boxed_provider(&self) -> Box<dyn WorldModelProvider> {
+        Box::new(self.inner.clone())
+    }
+}
+
 /// NVIDIA Cosmos provider exposed to Python.
 #[pyclass(name = "CosmosProvider")]
 #[derive(Debug, Clone)]
@@ -3137,6 +3187,9 @@ fn boxed_python_provider(provider: &Bound<'_, PyAny>) -> PyResult<Box<dyn WorldM
     if let Ok(provider) = provider.extract::<PyRef<'_, PyMockProvider>>() {
         return Ok(provider.boxed_provider());
     }
+    if let Ok(provider) = provider.extract::<PyRef<'_, PyMarbleProvider>>() {
+        return Ok(provider.boxed_provider());
+    }
     if let Ok(provider) = provider.extract::<PyRef<'_, PyCosmosProvider>>() {
         return Ok(provider.boxed_provider());
     }
@@ -3151,7 +3204,7 @@ fn boxed_python_provider(provider: &Bound<'_, PyAny>) -> PyResult<Box<dyn WorldM
     }
 
     Err(pyo3::exceptions::PyTypeError::new_err(
-        "unsupported provider object. Expected MockProvider, CosmosProvider, RunwayProvider, JepaProvider, or GenieProvider",
+        "unsupported provider object. Expected MockProvider, MarbleProvider, CosmosProvider, RunwayProvider, JepaProvider, or GenieProvider",
     ))
 }
 
@@ -4813,6 +4866,7 @@ fn build_providers_submodule(py: Python<'_>) -> PyResult<Bound<'_, PyModule>> {
     let module = PyModule::new_bound(py, "worldforge.providers")?;
     module.add_class::<PyProviderCapabilities>()?;
     module.add_class::<PyMockProvider>()?;
+    module.add_class::<PyMarbleProvider>()?;
     module.add_class::<PyCosmosProvider>()?;
     module.add_class::<PyRunwayProvider>()?;
     module.add_class::<PyJepaProvider>()?;
@@ -5953,6 +6007,7 @@ fn worldforge(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyAction>()?;
     m.add_class::<PyGuardrail>()?;
     m.add_class::<PyMockProvider>()?;
+    m.add_class::<PyMarbleProvider>()?;
     m.add_class::<PyCosmosProvider>()?;
     m.add_class::<PyRunwayProvider>()?;
     m.add_class::<PyJepaProvider>()?;
@@ -7039,6 +7094,7 @@ mod tests {
             assert!(root.hasattr("eval")?);
             assert!(root.hasattr("verify")?);
             assert!(providers.hasattr("MockProvider")?);
+            assert!(providers.hasattr("MarbleProvider")?);
             assert!(providers.hasattr("CosmosProvider")?);
             assert!(providers.hasattr("RunwayProvider")?);
             assert!(providers.hasattr("JepaProvider")?);
@@ -7050,14 +7106,14 @@ mod tests {
 
             let wf_cls = root.getattr("WorldForge")?;
             let wf = wf_cls.call0()?;
-            let provider_cls = providers.getattr("MockProvider")?;
-            let provider = provider_cls.call1(("manual-mock",))?;
+            let provider_cls = providers.getattr("MarbleProvider")?;
+            let provider = provider_cls.call1(("manual-marble",))?;
             wf.call_method1("register_provider", (provider,))?;
 
             let provider_names: Vec<String> = wf.call_method0("providers")?.extract()?;
-            assert!(provider_names.contains(&"manual-mock".to_string()));
+            assert!(provider_names.contains(&"manual-marble".to_string()));
 
-            let world = wf.call_method1("create_world", ("python-world", "manual-mock"))?;
+            let world = wf.call_method1("create_world", ("python-world", "manual-marble"))?;
             assert!(!world.is_none());
 
             Ok(())

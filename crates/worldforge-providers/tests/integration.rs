@@ -370,6 +370,36 @@ fn sample_genie_reasoning_state() -> WorldState {
     state
 }
 
+fn sample_marble_state() -> WorldState {
+    let mut state = WorldState::new("marble-world", "marble");
+
+    state.scene.add_object(SceneObject::new(
+        "cube",
+        Pose {
+            position: Position {
+                x: 0.0,
+                y: 0.5,
+                z: 0.0,
+            },
+            ..Pose::default()
+        },
+        BBox {
+            min: Position {
+                x: -0.1,
+                y: 0.4,
+                z: -0.1,
+            },
+            max: Position {
+                x: 0.1,
+                y: 0.6,
+                z: 0.1,
+            },
+        },
+    ));
+
+    state
+}
+
 fn sample_genie_transfer_controls() -> SpatialControls {
     SpatialControls {
         camera_trajectory: Some(Trajectory {
@@ -485,6 +515,19 @@ fn test_auto_detect_registry_includes_genie_without_env_vars() {
         .find_by_capability("reason")
         .iter()
         .any(|provider| provider.name() == "genie"));
+}
+
+#[test]
+fn test_auto_detect_registry_registers_marble_when_available() {
+    let registry = auto_detect();
+    let Ok(_) = registry.get("marble") else {
+        return;
+    };
+
+    assert!(registry.list().contains(&"marble"));
+
+    let descriptor = registry.describe("marble").unwrap();
+    assert_eq!(descriptor.name, "marble");
 }
 
 #[test]
@@ -1242,6 +1285,90 @@ async fn test_genie_reason_flow_is_grounded_in_state() {
                 .any(|entry| entry.contains("position:"))
     );
     assert!(reasoning.confidence > 0.5);
+}
+
+#[tokio::test]
+async fn test_marble_provider_registry_world_flow_when_available() {
+    let registry = Arc::new(auto_detect());
+    let Ok(descriptor) = registry.describe("marble") else {
+        return;
+    };
+
+    let mut world = World::new(sample_marble_state(), "marble", Arc::clone(&registry));
+
+    if descriptor.capabilities.predict {
+        let prediction = world
+            .predict_with_provider(
+                &Action::Move {
+                    target: Position {
+                        x: 0.25,
+                        y: 0.75,
+                        z: 0.0,
+                    },
+                    speed: 0.5,
+                },
+                &PredictionConfig::default(),
+                "marble",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(prediction.provider, "marble");
+        assert_eq!(world.state.current_state_provider(), "marble");
+        assert_eq!(world.state.history.latest().unwrap().provider, "marble");
+        return;
+    }
+
+    if descriptor.capabilities.generate {
+        let (provider_name, clip) = world
+            .generate_with_provider_and_fallback(
+                &GenerationPrompt {
+                    text: "A small robot navigating a simple room".to_string(),
+                    reference_image: None,
+                    negative_prompt: None,
+                },
+                &GenerationConfig::default(),
+                "marble",
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(provider_name, "marble");
+        assert!(!clip.frames.is_empty());
+        return;
+    }
+
+    if descriptor.capabilities.reason {
+        let (provider_name, reasoning) = world
+            .reason_with_provider_and_fallback(
+                "Describe the visible objects in the scene.",
+                "marble",
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(provider_name, "marble");
+        assert!(!reasoning.answer.is_empty());
+        return;
+    }
+
+    if descriptor.capabilities.transfer {
+        let (provider_name, clip) = world
+            .transfer_with_provider_and_fallback(
+                &sample_video_clip(),
+                &sample_genie_transfer_controls(),
+                &TransferConfig::default(),
+                "marble",
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(provider_name, "marble");
+        assert!(!clip.frames.is_empty());
+    }
 }
 
 #[tokio::test]
