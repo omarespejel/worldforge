@@ -142,7 +142,7 @@ embedding = wf.embed("mock", text="a mug on a kitchen counter")
 assert embedding.shape == [32]
 assert len(embedding.vector) == 32
 
-# Persist Python-managed worlds with either backend
+# Persist Python-managed worlds with multiple backends
 wf = WorldForge(state_backend="sqlite", state_db_path=".worldforge/worldforge.db")
 wf.save_world(world)
 same_world = wf.load_world(world.id)
@@ -155,6 +155,16 @@ wf_redis = WorldForge(
     state_redis_url="redis://127.0.0.1:6379/0",
 )
 wf_redis.save_world(world)
+
+wf_s3 = WorldForge(
+    state_backend="s3",
+    state_s3_bucket="worldforge-states",
+    state_s3_region="us-east-1",
+    state_s3_access_key_id="test-access",
+    state_s3_secret_access_key="test-secret",
+    state_s3_prefix="states",
+)
+wf_s3.save_world(world)
 
 # Export/import portable snapshots from the configured store
 snapshot_json = wf.export_world(world.id, format="json")
@@ -387,6 +397,7 @@ cargo run -p worldforge-cli -- estimate --provider cosmos --operation generate -
 cargo run -p worldforge-cli -- list
 cargo run -p worldforge-cli -- --state-backend sqlite --state-db-path .worldforge/worldforge.db list
 cargo run -p worldforge-cli -- --state-backend redis --state-redis-url redis://127.0.0.1:6379/0 list
+cargo run -p worldforge-cli -- --state-backend s3 --state-s3-bucket worldforge-states --state-s3-region us-east-1 --state-s3-access-key-id test-access --state-s3-secret-access-key test-secret --state-s3-prefix states list
 cargo run -p worldforge-cli -- --state-file-format msgpack list
 cargo run -p worldforge-cli -- export --world <id> --output snapshots/world.json
 cargo run -p worldforge-cli -- export --world <id> --output snapshots/world.msgpack --format msgpack
@@ -439,6 +450,7 @@ worldforge-server --bind 127.0.0.1:8080 --state-dir .worldforge
 worldforge-server --bind 127.0.0.1:8080 --state-dir .worldforge --state-file-format msgpack
 worldforge-server --bind 127.0.0.1:8080 --state-backend sqlite --state-db-path .worldforge/worldforge.db
 worldforge-server --bind 127.0.0.1:8080 --state-backend redis --state-redis-url redis://127.0.0.1:6379/0
+worldforge-server --bind 127.0.0.1:8080 --state-backend s3 --state-s3-bucket worldforge-states --state-s3-region us-east-1 --state-s3-access-key-id test-access --state-s3-secret-access-key test-secret --state-s3-prefix states
 ```
 
 Then call the HTTP API directly:
@@ -578,9 +590,12 @@ not discovery gates. The CLI
 `--world`, which keeps the public evaluation workflow aligned with stored state
 without dropping suite-specific setup. Provider transfer is now exposed end-to-end in
 the core, CLI, REST server, and Python bindings with JSON clip round-tripping
-for reusable workflows. File-backed (JSON or MessagePack), SQLite-backed, and
-Redis-backed world persistence are all supported through the shared `StateStore` abstraction across the core,
-CLI, REST server, and Python bindings. Cosmos and Runway adapters have API wiring in place,
+for reusable workflows. File-backed (JSON or MessagePack), SQLite-backed, Redis-backed, and
+S3-backed world persistence are all supported through the shared `StateStore`
+abstraction across the core, CLI, REST server, and Python bindings. Use
+`state_s3_bucket` / `--state-s3-bucket`, `state_s3_region` /
+`--state-s3-region`, and the S3 access key fields for deployment. Cosmos and
+Runway adapters have API wiring in place,
 and Genie ships as a deterministic low-resolution surrogate backend for
 interactive world generation, scene-grounded reasoning, controlled transfer,
 and provider-native planning. `GENIE_API_KEY` and `GENIE_API_ENDPOINT` are

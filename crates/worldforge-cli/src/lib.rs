@@ -26,7 +26,7 @@ use worldforge_core::provider::{
 use worldforge_core::scene::{PhysicsProperties, SceneObject, SceneObjectPatch};
 use worldforge_core::state::{
     deserialize_world_state, infer_state_file_format, serialize_world_state, DynStateStore,
-    StateFileFormat as CoreStateFileFormat, StateStore, StateStoreKind, WorldState,
+    S3Config, StateFileFormat as CoreStateFileFormat, StateStore, StateStoreKind, WorldState,
 };
 use worldforge_core::types::{BBox, Pose, Position, Rotation, Vec3, Velocity, VideoClip};
 use worldforge_eval::{EvalReportFormat, EvalSuite};
@@ -45,6 +45,8 @@ pub enum StateBackend {
     Sqlite,
     /// Store world states in a Redis database.
     Redis,
+    /// Store world states in an S3 bucket.
+    S3,
 }
 
 impl StateBackend {
@@ -53,6 +55,7 @@ impl StateBackend {
             Self::File => "file",
             Self::Sqlite => "sqlite",
             Self::Redis => "redis",
+            Self::S3 => "s3",
         }
     }
 }
@@ -71,6 +74,41 @@ impl StateFileFormat {
         match self {
             Self::Json => CoreStateFileFormat::Json,
             Self::Msgpack => CoreStateFileFormat::MessagePack,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct CliStateStoreConfig<'a> {
+    state_dir: &'a Path,
+    state_backend: StateBackend,
+    state_file_format: StateFileFormat,
+    state_db_path: Option<&'a Path>,
+    state_redis_url: Option<&'a str>,
+    state_s3_bucket: Option<&'a str>,
+    state_s3_region: Option<&'a str>,
+    state_s3_access_key_id: Option<&'a str>,
+    state_s3_secret_access_key: Option<&'a str>,
+    state_s3_endpoint: Option<&'a str>,
+    state_s3_session_token: Option<&'a str>,
+    state_s3_prefix: Option<&'a str>,
+}
+
+impl<'a> CliStateStoreConfig<'a> {
+    fn from_cli(cli: &'a Cli) -> Self {
+        Self {
+            state_dir: &cli.state_dir,
+            state_backend: cli.state_backend,
+            state_file_format: cli.state_file_format,
+            state_db_path: cli.state_db_path.as_deref(),
+            state_redis_url: cli.state_redis_url.as_deref(),
+            state_s3_bucket: cli.state_s3_bucket.as_deref(),
+            state_s3_region: cli.state_s3_region.as_deref(),
+            state_s3_access_key_id: cli.state_s3_access_key_id.as_deref(),
+            state_s3_secret_access_key: cli.state_s3_secret_access_key.as_deref(),
+            state_s3_endpoint: cli.state_s3_endpoint.as_deref(),
+            state_s3_session_token: cli.state_s3_session_token.as_deref(),
+            state_s3_prefix: cli.state_s3_prefix.as_deref(),
         }
     }
 }
@@ -132,6 +170,34 @@ pub struct Cli {
     /// Explicit Redis connection URL when using the redis backend.
     #[arg(long, global = true)]
     pub state_redis_url: Option<String>,
+
+    /// Explicit S3 bucket name when using the s3 backend.
+    #[arg(long = "state-s3-bucket", global = true)]
+    pub state_s3_bucket: Option<String>,
+
+    /// Explicit S3 region when using the s3 backend.
+    #[arg(long = "state-s3-region", global = true)]
+    pub state_s3_region: Option<String>,
+
+    /// Explicit S3 access key ID when using the s3 backend.
+    #[arg(long = "state-s3-access-key-id", global = true)]
+    pub state_s3_access_key_id: Option<String>,
+
+    /// Explicit S3 secret access key when using the s3 backend.
+    #[arg(long = "state-s3-secret-access-key", global = true)]
+    pub state_s3_secret_access_key: Option<String>,
+
+    /// Optional custom S3 endpoint when using the s3 backend.
+    #[arg(long = "state-s3-endpoint", global = true)]
+    pub state_s3_endpoint: Option<String>,
+
+    /// Optional S3 session token when using the s3 backend.
+    #[arg(long = "state-s3-session-token", global = true)]
+    pub state_s3_session_token: Option<String>,
+
+    /// Optional S3 object-key prefix when using the s3 backend.
+    #[arg(long = "state-s3-prefix", global = true)]
+    pub state_s3_prefix: Option<String>,
 
     /// Log verbosity level.
     #[arg(long, default_value = "info", global = true)]
@@ -758,15 +824,7 @@ pub async fn run() -> Result<()> {
 
     match &cli.command {
         Commands::Serve { bind } => {
-            return cmd_serve(
-                &cli.state_dir,
-                cli.state_backend,
-                cli.state_file_format,
-                cli.state_db_path.as_deref(),
-                cli.state_redis_url.as_deref(),
-                bind,
-            )
-            .await;
+            return cmd_serve(&cli, bind).await;
         }
         Commands::Providers { capability, health } => {
             return cmd_providers(capability.as_deref(), *health).await;
@@ -787,7 +845,7 @@ pub async fn run() -> Result<()> {
                     duration_seconds: *duration_seconds,
                     resolution: (*width, *height),
                 },
-            )
+            );
         }
         Commands::Embed {
             provider,
@@ -1246,44 +1304,87 @@ pub async fn run() -> Result<()> {
     }
 }
 
-fn state_store_kind(
-    state_dir: &Path,
-    state_backend: StateBackend,
-    state_file_format: StateFileFormat,
-    state_db_path: Option<&Path>,
-    state_redis_url: Option<&str>,
-) -> Result<StateStoreKind> {
-    match state_backend {
+fn state_store_kind(config: &CliStateStoreConfig<'_>) -> Result<StateStoreKind> {
+    match config.state_backend {
         StateBackend::File => Ok(StateStoreKind::FileWithFormat {
-            path: state_dir.to_path_buf(),
-            format: state_file_format.as_core(),
+            path: config.state_dir.to_path_buf(),
+            format: config.state_file_format.as_core(),
         }),
         StateBackend::Sqlite => Ok(StateStoreKind::Sqlite(
-            state_db_path
+            config
+                .state_db_path
                 .map(Path::to_path_buf)
-                .unwrap_or_else(|| state_dir.join("worldforge.db")),
+                .unwrap_or_else(|| config.state_dir.join("worldforge.db")),
         )),
-        StateBackend::Redis => state_redis_url
+        StateBackend::Redis => config
+            .state_redis_url
             .map(|url| StateStoreKind::Redis(url.to_string()))
             .ok_or_else(|| {
                 anyhow::anyhow!(
                     "--state-redis-url is required when --state-backend redis is selected"
                 )
             }),
+        StateBackend::S3 => Ok(StateStoreKind::S3 {
+            config: resolve_s3_config(
+                config.state_s3_bucket,
+                config.state_s3_region,
+                config.state_s3_access_key_id,
+                config.state_s3_secret_access_key,
+                config.state_s3_endpoint,
+                config.state_s3_session_token,
+                config.state_s3_prefix,
+            )?,
+            format: config.state_file_format.as_core(),
+        }),
     }
 }
 
+fn resolve_s3_config(
+    state_s3_bucket: Option<&str>,
+    state_s3_region: Option<&str>,
+    state_s3_access_key_id: Option<&str>,
+    state_s3_secret_access_key: Option<&str>,
+    state_s3_endpoint: Option<&str>,
+    state_s3_session_token: Option<&str>,
+    state_s3_prefix: Option<&str>,
+) -> Result<S3Config> {
+    let bucket = state_s3_bucket.ok_or_else(|| {
+        anyhow::anyhow!("--state-s3-bucket is required when --state-backend s3 is selected")
+    })?;
+    let region = state_s3_region.ok_or_else(|| {
+        anyhow::anyhow!("--state-s3-region is required when --state-backend s3 is selected")
+    })?;
+    let access_key_id = state_s3_access_key_id.ok_or_else(|| {
+        anyhow::anyhow!("--state-s3-access-key-id is required when --state-backend s3 is selected")
+    })?;
+    let secret_access_key = state_s3_secret_access_key.ok_or_else(|| {
+        anyhow::anyhow!(
+            "--state-s3-secret-access-key is required when --state-backend s3 is selected"
+        )
+    })?;
+
+    Ok(S3Config {
+        bucket: bucket.to_string(),
+        region: region.to_string(),
+        endpoint: state_s3_endpoint
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned),
+        access_key_id: access_key_id.to_string(),
+        secret_access_key: secret_access_key.to_string(),
+        session_token: state_s3_session_token
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned),
+        prefix: state_s3_prefix.unwrap_or_default().to_string(),
+    })
+}
+
 async fn open_state_store(cli: &Cli) -> Result<DynStateStore> {
-    state_store_kind(
-        &cli.state_dir,
-        cli.state_backend,
-        cli.state_file_format,
-        cli.state_db_path.as_deref(),
-        cli.state_redis_url.as_deref(),
-    )?
-    .open()
-    .await
-    .map_err(|e| anyhow::anyhow!("{e}"))
+    state_store_kind(&CliStateStoreConfig::from_cli(cli))?
+        .open()
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 fn auto_detect_registry() -> ProviderRegistry {
@@ -3324,25 +3425,30 @@ fn cmd_estimate(provider_name: &str, options: EstimateOptions) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_serve(
-    state_dir: &Path,
-    state_backend: StateBackend,
-    state_file_format: StateFileFormat,
-    state_db_path: Option<&Path>,
-    state_redis_url: Option<&str>,
-    bind: &str,
-) -> Result<()> {
+async fn cmd_serve(cli: &Cli, bind: &str) -> Result<()> {
+    let state_store = CliStateStoreConfig::from_cli(cli);
     let registry = Arc::new(auto_detect_registry());
-    let config = worldforge_server::ServerConfig {
+    let server_config = worldforge_server::ServerConfig {
         bind_address: bind.to_string(),
-        state_dir: state_dir.display().to_string(),
-        state_backend: state_backend.as_str().to_string(),
-        state_file_format: state_file_format.as_core().as_str().to_string(),
-        state_db_path: state_db_path.map(|path| path.display().to_string()),
-        state_redis_url: state_redis_url.map(ToOwned::to_owned),
+        state_dir: state_store.state_dir.display().to_string(),
+        state_backend: state_store.state_backend.as_str().to_string(),
+        state_file_format: state_store.state_file_format.as_core().as_str().to_string(),
+        state_db_path: state_store
+            .state_db_path
+            .map(|path| path.display().to_string()),
+        state_redis_url: state_store.state_redis_url.map(ToOwned::to_owned),
+        state_s3_bucket: state_store.state_s3_bucket.map(ToOwned::to_owned),
+        state_s3_region: state_store.state_s3_region.map(ToOwned::to_owned),
+        state_s3_access_key_id: state_store.state_s3_access_key_id.map(ToOwned::to_owned),
+        state_s3_secret_access_key: state_store
+            .state_s3_secret_access_key
+            .map(ToOwned::to_owned),
+        state_s3_endpoint: state_store.state_s3_endpoint.map(ToOwned::to_owned),
+        state_s3_session_token: state_store.state_s3_session_token.map(ToOwned::to_owned),
+        state_s3_prefix: state_store.state_s3_prefix.map(ToOwned::to_owned),
     };
 
-    worldforge_server::serve(config, registry)
+    worldforge_server::serve(server_config, registry)
         .await
         .context("failed to start server")
 }
@@ -4066,6 +4172,47 @@ mod tests {
     }
 
     #[test]
+    fn test_cli_parse_s3_backend() {
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "--state-backend",
+            "s3",
+            "--state-s3-bucket",
+            "worldforge-states",
+            "--state-s3-region",
+            "us-east-1",
+            "--state-s3-access-key-id",
+            "test-access",
+            "--state-s3-secret-access-key",
+            "test-secret",
+            "--state-s3-endpoint",
+            "http://localhost:9000",
+            "--state-s3-session-token",
+            "test-session",
+            "--state-s3-prefix",
+            "states",
+            "list",
+        ])
+        .unwrap();
+
+        assert_eq!(cli.state_backend, StateBackend::S3);
+        assert_eq!(cli.state_s3_bucket.as_deref(), Some("worldforge-states"));
+        assert_eq!(cli.state_s3_region.as_deref(), Some("us-east-1"));
+        assert_eq!(cli.state_s3_access_key_id.as_deref(), Some("test-access"));
+        assert_eq!(
+            cli.state_s3_secret_access_key.as_deref(),
+            Some("test-secret")
+        );
+        assert_eq!(
+            cli.state_s3_endpoint.as_deref(),
+            Some("http://localhost:9000")
+        );
+        assert_eq!(cli.state_s3_session_token.as_deref(), Some("test-session"));
+        assert_eq!(cli.state_s3_prefix.as_deref(), Some("states"));
+        assert!(matches!(cli.command, Commands::List));
+    }
+
+    #[test]
     fn test_cli_parse_history_command() {
         let cli = Cli::try_parse_from([
             "worldforge",
@@ -4171,32 +4318,45 @@ mod tests {
         }
     }
 
+    fn test_state_store_config() -> CliStateStoreConfig<'static> {
+        CliStateStoreConfig {
+            state_dir: Path::new(".wf"),
+            state_backend: StateBackend::File,
+            state_file_format: StateFileFormat::Json,
+            state_db_path: None,
+            state_redis_url: None,
+            state_s3_bucket: None,
+            state_s3_region: None,
+            state_s3_access_key_id: None,
+            state_s3_secret_access_key: None,
+            state_s3_endpoint: None,
+            state_s3_session_token: None,
+            state_s3_prefix: None,
+        }
+    }
+
     #[test]
     fn test_state_store_kind_defaults_sqlite_path_under_state_dir() {
+        let config = CliStateStoreConfig {
+            state_backend: StateBackend::Sqlite,
+            ..test_state_store_config()
+        };
+
         assert_eq!(
-            state_store_kind(
-                Path::new(".wf"),
-                StateBackend::Sqlite,
-                StateFileFormat::Json,
-                None,
-                None
-            )
-            .unwrap(),
+            state_store_kind(&config).unwrap(),
             StateStoreKind::Sqlite(PathBuf::from(".wf/worldforge.db"))
         );
     }
 
     #[test]
     fn test_state_store_kind_uses_explicit_file_format() {
+        let config = CliStateStoreConfig {
+            state_file_format: StateFileFormat::Msgpack,
+            ..test_state_store_config()
+        };
+
         assert_eq!(
-            state_store_kind(
-                Path::new(".wf"),
-                StateBackend::File,
-                StateFileFormat::Msgpack,
-                None,
-                None
-            )
-            .unwrap(),
+            state_store_kind(&config).unwrap(),
             StateStoreKind::FileWithFormat {
                 path: PathBuf::from(".wf"),
                 format: CoreStateFileFormat::MessagePack,
@@ -4206,19 +4366,63 @@ mod tests {
 
     #[test]
     fn test_state_store_kind_uses_redis_url() {
-        let store_kind = state_store_kind(
-            Path::new(".wf"),
-            StateBackend::Redis,
-            StateFileFormat::Json,
-            None,
-            Some("redis://127.0.0.1:6379/0"),
-        )
-        .unwrap();
+        let config = CliStateStoreConfig {
+            state_backend: StateBackend::Redis,
+            state_redis_url: Some("redis://127.0.0.1:6379/0"),
+            ..test_state_store_config()
+        };
+        let store_kind = state_store_kind(&config).unwrap();
 
         assert_eq!(
             store_kind,
             StateStoreKind::Redis("redis://127.0.0.1:6379/0".to_string())
         );
+    }
+
+    #[test]
+    fn test_state_store_kind_uses_s3_bucket() {
+        let config = CliStateStoreConfig {
+            state_backend: StateBackend::S3,
+            state_s3_bucket: Some("worldforge-states"),
+            state_s3_region: Some("us-east-1"),
+            state_s3_access_key_id: Some("test-access"),
+            state_s3_secret_access_key: Some("test-secret"),
+            state_s3_endpoint: Some("http://localhost:9000"),
+            state_s3_session_token: Some("test-session"),
+            state_s3_prefix: Some("states"),
+            ..test_state_store_config()
+        };
+        let store_kind = state_store_kind(&config).unwrap();
+
+        assert_eq!(
+            store_kind,
+            StateStoreKind::S3 {
+                config: S3Config {
+                    bucket: "worldforge-states".to_string(),
+                    region: "us-east-1".to_string(),
+                    endpoint: Some("http://localhost:9000".to_string()),
+                    access_key_id: "test-access".to_string(),
+                    secret_access_key: "test-secret".to_string(),
+                    session_token: Some("test-session".to_string()),
+                    prefix: "states".to_string(),
+                },
+                format: CoreStateFileFormat::Json,
+            }
+        );
+    }
+
+    #[test]
+    fn test_open_state_store_requires_s3_bucket() {
+        let cli = Cli::try_parse_from(["worldforge", "--state-backend", "s3", "list"]).unwrap();
+        let result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(open_state_store(&cli));
+        match result {
+            Ok(_) => panic!("expected missing S3 bucket error"),
+            Err(error) => assert!(error
+                .to_string()
+                .contains("--state-s3-bucket is required when --state-backend s3 is selected")),
+        }
     }
 
     #[test]
@@ -4229,9 +4433,11 @@ mod tests {
             .block_on(open_state_store(&cli));
         match result {
             Ok(_) => panic!("expected missing Redis URL error"),
-            Err(error) => assert!(error
-                .to_string()
-                .contains("--state-redis-url is required when --state-backend redis is selected")),
+            Err(error) => {
+                assert!(error.to_string().contains(
+                    "--state-redis-url is required when --state-backend redis is selected"
+                ))
+            }
         }
     }
 

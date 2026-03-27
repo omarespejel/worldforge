@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
+use reqwest::{Method, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
@@ -566,6 +567,13 @@ pub enum StateStoreKind {
     },
     /// Persist all world states in a Redis database.
     Redis(String),
+    /// Persist world states as objects in an S3-compatible bucket.
+    S3 {
+        /// S3 connection and authentication settings.
+        config: S3Config,
+        /// Serialization format used for object payloads.
+        format: StateFileFormat,
+    },
     /// Persist all world states in a SQLite database file.
     #[cfg(feature = "sqlite")]
     Sqlite(PathBuf),
@@ -581,14 +589,582 @@ impl StateStoreKind {
                 *format,
             ))),
             Self::Redis(url) => Ok(Arc::new(RedisStateStore::new(url.clone()).await?)),
+            Self::S3 { config, format } => {
+                Ok(Arc::new(S3StateStore::new(config.clone(), *format)?))
+            }
             #[cfg(feature = "sqlite")]
             Self::Sqlite(path) => Ok(Arc::new(SqliteStateStore::from_path(path).await?)),
         }
     }
 }
 
+const S3_SIGNING_ALGORITHM: &str = "AWS4-HMAC-SHA256";
+const S3_SERVICE: &str = "s3";
+const HMAC_SHA256_BLOCK_SIZE: usize = 64;
 const REDIS_STATE_KEY_PREFIX: &str = "worldforge:state:";
 const REDIS_STATE_INDEX_KEY: &str = "worldforge:state:index";
+
+/// Configuration for an S3-compatible state store.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct S3Config {
+    /// Bucket that stores world snapshots.
+    pub bucket: String,
+    /// AWS region or S3-compatible region label used for request signing.
+    pub region: String,
+    /// Optional custom endpoint for S3-compatible services such as MinIO.
+    pub endpoint: Option<String>,
+    /// Access key used for SigV4 request signing.
+    pub access_key_id: String,
+    /// Secret key used for SigV4 request signing.
+    pub secret_access_key: String,
+    /// Optional session token for temporary credentials.
+    pub session_token: Option<String>,
+    /// Object-key prefix under which world snapshots are stored.
+    pub prefix: String,
+}
+
+impl S3Config {
+    fn validate(&self) -> Result<()> {
+        if self.bucket.trim().is_empty() {
+            return Err(WorldForgeError::InvalidState(
+                "s3 bucket cannot be empty".to_string(),
+            ));
+        }
+        if self.region.trim().is_empty() {
+            return Err(WorldForgeError::InvalidState(
+                "s3 region cannot be empty".to_string(),
+            ));
+        }
+        if self.access_key_id.trim().is_empty() {
+            return Err(WorldForgeError::InvalidState(
+                "s3 access key id cannot be empty".to_string(),
+            ));
+        }
+        if self.secret_access_key.trim().is_empty() {
+            return Err(WorldForgeError::InvalidState(
+                "s3 secret access key cannot be empty".to_string(),
+            ));
+        }
+
+        self.endpoint_url()?;
+        Ok(())
+    }
+
+    fn normalized_prefix(&self) -> String {
+        let trimmed = self.prefix.trim().trim_matches('/');
+        if trimmed.is_empty() {
+            String::new()
+        } else {
+            format!("{trimmed}/")
+        }
+    }
+
+    fn endpoint_url(&self) -> Result<Url> {
+        let raw = self
+            .endpoint
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| format!("https://s3.{}.amazonaws.com", self.region.trim()));
+        Url::parse(&raw).map_err(|error| {
+            WorldForgeError::InvalidState(format!("invalid s3 endpoint '{raw}': {error}"))
+        })
+    }
+
+    fn object_key(&self, id: &WorldId, format: StateFileFormat) -> String {
+        format!("{}{}.{}", self.normalized_prefix(), id, format.extension())
+    }
+}
+
+/// S3-compatible state store using SigV4-signed HTTP requests.
+#[derive(Debug, Clone)]
+pub struct S3StateStore {
+    /// S3 connection and authentication settings.
+    pub config: S3Config,
+    /// Serialization format used for persisted object payloads.
+    pub format: StateFileFormat,
+    client: reqwest::Client,
+}
+
+impl S3StateStore {
+    /// Create a new S3-backed state store.
+    pub fn new(config: S3Config, format: StateFileFormat) -> Result<Self> {
+        config.validate()?;
+        let client = reqwest::Client::builder().build().map_err(|error| {
+            WorldForgeError::NetworkError(format!("failed to build s3 client: {error}"))
+        })?;
+        Ok(Self {
+            config,
+            format,
+            client,
+        })
+    }
+
+    fn candidate_formats(&self) -> [StateFileFormat; 2] {
+        [self.format, self.format.alternate()]
+    }
+
+    fn bucket_path(&self) -> Result<String> {
+        let base = self.config.endpoint_url()?;
+        Ok(s3_canonical_path(base.path(), &self.config.bucket, None))
+    }
+
+    fn object_path(&self, key: &str) -> Result<String> {
+        let base = self.config.endpoint_url()?;
+        Ok(s3_canonical_path(
+            base.path(),
+            &self.config.bucket,
+            Some(key),
+        ))
+    }
+
+    fn request_url(&self, canonical_path: &str, canonical_query: &str) -> Result<Url> {
+        let mut url = self.config.endpoint_url()?;
+        url.set_path(canonical_path);
+        if canonical_query.is_empty() {
+            url.set_query(None);
+        } else {
+            url.set_query(Some(canonical_query));
+        }
+        Ok(url)
+    }
+
+    async fn send_request(
+        &self,
+        method: Method,
+        canonical_path: &str,
+        query_pairs: &[(String, String)],
+        body: Vec<u8>,
+        content_type: Option<&str>,
+    ) -> Result<reqwest::Response> {
+        let canonical_query = canonical_query_string(query_pairs);
+        let url = self.request_url(canonical_path, &canonical_query)?;
+        let host = url_authority(&url)?;
+        let amz_date = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+        let date_stamp = &amz_date[..8];
+        let payload_hash = hex_sha256(&body);
+
+        let mut headers = vec![
+            ("host".to_string(), host.clone()),
+            ("x-amz-content-sha256".to_string(), payload_hash.clone()),
+            ("x-amz-date".to_string(), amz_date.clone()),
+        ];
+        if let Some(token) = self
+            .config
+            .session_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            headers.push(("x-amz-security-token".to_string(), token.to_string()));
+        }
+        headers.sort_by(|left, right| left.0.cmp(&right.0));
+
+        let canonical_headers = headers
+            .iter()
+            .map(|(name, value)| format!("{name}:{value}\n"))
+            .collect::<String>();
+        let signed_headers = headers
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>()
+            .join(";");
+
+        let canonical_request = format!(
+            "{}\n{}\n{}\n{}\n{}\n{}",
+            method.as_str(),
+            canonical_path,
+            canonical_query,
+            canonical_headers,
+            signed_headers,
+            payload_hash
+        );
+        let credential_scope = format!(
+            "{date_stamp}/{}/{S3_SERVICE}/aws4_request",
+            self.config.region.trim()
+        );
+        let string_to_sign = format!(
+            "{S3_SIGNING_ALGORITHM}\n{amz_date}\n{credential_scope}\n{}",
+            hex_sha256(canonical_request.as_bytes())
+        );
+        let signing_key = derive_s3_signing_key(
+            self.config.secret_access_key.as_bytes(),
+            date_stamp.as_bytes(),
+            self.config.region.trim().as_bytes(),
+        );
+        let signature = hex_encode(&hmac_sha256(&signing_key, string_to_sign.as_bytes()));
+        let authorization = format!(
+            "{S3_SIGNING_ALGORITHM} Credential={}/{credential_scope}, SignedHeaders={}, Signature={signature}",
+            self.config.access_key_id.trim(),
+            signed_headers
+        );
+
+        let mut request = self
+            .client
+            .request(method, url)
+            .header("host", host)
+            .header("x-amz-content-sha256", payload_hash)
+            .header("x-amz-date", amz_date)
+            .header("authorization", authorization);
+        if let Some(token) = self
+            .config
+            .session_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            request = request.header("x-amz-security-token", token);
+        }
+        if let Some(content_type) = content_type {
+            request = request.header("content-type", content_type);
+        }
+        if !body.is_empty() {
+            request = request.body(body);
+        }
+
+        request
+            .send()
+            .await
+            .map_err(|error| WorldForgeError::NetworkError(format!("s3 request failed: {error}")))
+    }
+
+    async fn put_object(&self, key: &str, body: Vec<u8>) -> Result<()> {
+        let path = self.object_path(key)?;
+        let response = self
+            .send_request(
+                Method::PUT,
+                &path,
+                &[],
+                body,
+                Some(match self.format {
+                    StateFileFormat::Json => "application/json",
+                    StateFileFormat::MessagePack => "application/msgpack",
+                }),
+            )
+            .await?;
+        s3_expect_success(&self.config, response, "PUT object").await
+    }
+
+    async fn get_object(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        let path = self.object_path(key)?;
+        let response = self
+            .send_request(Method::GET, &path, &[], Vec::new(), None)
+            .await?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        let response = s3_expect_success_response(&self.config, response, "GET object").await?;
+        let bytes = response.bytes().await.map_err(|error| {
+            WorldForgeError::NetworkError(format!("failed to read s3 response body: {error}"))
+        })?;
+        Ok(Some(bytes.to_vec()))
+    }
+
+    async fn object_exists(&self, key: &str) -> Result<bool> {
+        let path = self.object_path(key)?;
+        let response = self
+            .send_request(Method::HEAD, &path, &[], Vec::new(), None)
+            .await?;
+        match response.status() {
+            StatusCode::OK => Ok(true),
+            StatusCode::NOT_FOUND => Ok(false),
+            _ => {
+                s3_expect_success(&self.config, response, "HEAD object").await?;
+                Ok(true)
+            }
+        }
+    }
+
+    async fn delete_object(&self, key: &str) -> Result<()> {
+        let path = self.object_path(key)?;
+        let response = self
+            .send_request(Method::DELETE, &path, &[], Vec::new(), None)
+            .await?;
+        s3_expect_success(&self.config, response, "DELETE object").await
+    }
+
+    async fn list_keys(&self) -> Result<Vec<String>> {
+        let mut keys = Vec::new();
+        let mut continuation_token = None;
+
+        loop {
+            let mut query_pairs = vec![
+                ("list-type".to_string(), "2".to_string()),
+                ("prefix".to_string(), self.config.normalized_prefix()),
+            ];
+            if let Some(token) = continuation_token.clone() {
+                query_pairs.push(("continuation-token".to_string(), token));
+            }
+
+            let path = self.bucket_path()?;
+            let response = self
+                .send_request(Method::GET, &path, &query_pairs, Vec::new(), None)
+                .await?;
+            let response =
+                s3_expect_success_response(&self.config, response, "ListObjectsV2").await?;
+            let body = response.text().await.map_err(|error| {
+                WorldForgeError::NetworkError(format!("failed to read s3 list response: {error}"))
+            })?;
+            keys.extend(xml_tag_values(&body, "Key"));
+
+            if xml_tag_value(&body, "IsTruncated").as_deref() == Some("true") {
+                continuation_token = xml_tag_value(&body, "NextContinuationToken");
+                if continuation_token.is_none() {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        Ok(keys)
+    }
+}
+
+#[async_trait::async_trait]
+impl StateStore for S3StateStore {
+    async fn save(&self, state: &WorldState) -> Result<()> {
+        let mut normalized = state.clone();
+        let provider = normalized.current_state_provider();
+        normalized.ensure_history_initialized(provider)?;
+        normalized.ensure_latest_history_snapshot()?;
+        let payload = serialize_world_state(self.format, &normalized)?;
+        self.put_object(
+            &self.config.object_key(&normalized.id, self.format),
+            payload,
+        )
+        .await
+    }
+
+    async fn load(&self, id: &WorldId) -> Result<WorldState> {
+        for format in self.candidate_formats() {
+            let key = self.config.object_key(id, format);
+            if let Some(payload) = self.get_object(&key).await? {
+                return deserialize_world_state(format, &payload);
+            }
+        }
+
+        Err(WorldForgeError::WorldNotFound(*id))
+    }
+
+    async fn list(&self) -> Result<Vec<WorldId>> {
+        let mut ids = HashSet::new();
+        for key in self.list_keys().await? {
+            let Some(name) = Path::new(&key).file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if infer_state_file_format(name).is_err() {
+                continue;
+            }
+            let Some(id_str) = name
+                .strip_suffix(".json")
+                .or_else(|| name.strip_suffix(".msgpack"))
+                .or_else(|| name.strip_suffix(".messagepack"))
+            else {
+                continue;
+            };
+            if let Ok(id) = id_str.parse::<WorldId>() {
+                ids.insert(id);
+            }
+        }
+
+        let mut ids = ids.into_iter().collect::<Vec<_>>();
+        ids.sort_unstable_by_key(|id| id.as_u128());
+        Ok(ids)
+    }
+
+    async fn delete(&self, id: &WorldId) -> Result<()> {
+        let mut deleted_any = false;
+        for format in self.candidate_formats() {
+            let key = self.config.object_key(id, format);
+            if self.object_exists(&key).await? {
+                self.delete_object(&key).await?;
+                deleted_any = true;
+            }
+        }
+
+        if deleted_any {
+            Ok(())
+        } else {
+            Err(WorldForgeError::WorldNotFound(*id))
+        }
+    }
+}
+
+fn s3_canonical_path(base_path: &str, bucket: &str, key: Option<&str>) -> String {
+    let mut segments = base_path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| aws_uri_encode(segment, true))
+        .collect::<Vec<_>>();
+    segments.push(aws_uri_encode(bucket.trim(), true));
+    if let Some(key) = key {
+        let encoded = aws_uri_encode(key, false);
+        if !encoded.is_empty() {
+            segments.push(encoded);
+        }
+    }
+    format!("/{}", segments.join("/"))
+}
+
+fn canonical_query_string(pairs: &[(String, String)]) -> String {
+    let mut pairs = pairs
+        .iter()
+        .map(|(key, value)| (aws_uri_encode(key, true), aws_uri_encode(value, true)))
+        .collect::<Vec<_>>();
+    pairs.sort();
+    pairs
+        .into_iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+fn url_authority(url: &Url) -> Result<String> {
+    let host = url.host_str().ok_or_else(|| {
+        WorldForgeError::InvalidState("s3 endpoint is missing a host".to_string())
+    })?;
+    Ok(match url.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host.to_string(),
+    })
+}
+
+fn aws_uri_encode(value: &str, encode_slash: bool) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        let is_unreserved = matches!(
+            byte,
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~'
+        );
+        if is_unreserved || (!encode_slash && byte == b'/') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push('%');
+            encoded.push(nibble_to_hex(byte >> 4));
+            encoded.push(nibble_to_hex(byte & 0x0f));
+        }
+    }
+    encoded
+}
+
+fn derive_s3_signing_key(secret: &[u8], date: &[u8], region: &[u8]) -> [u8; 32] {
+    let mut prefixed = Vec::with_capacity(4 + secret.len());
+    prefixed.extend_from_slice(b"AWS4");
+    prefixed.extend_from_slice(secret);
+    let date_key = hmac_sha256(&prefixed, date);
+    let region_key = hmac_sha256(&date_key, region);
+    let service_key = hmac_sha256(&region_key, S3_SERVICE.as_bytes());
+    hmac_sha256(&service_key, b"aws4_request")
+}
+
+fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
+    let mut normalized_key = [0u8; HMAC_SHA256_BLOCK_SIZE];
+    if key.len() > HMAC_SHA256_BLOCK_SIZE {
+        normalized_key[..32].copy_from_slice(&sha256_hash(key));
+    } else {
+        normalized_key[..key.len()].copy_from_slice(key);
+    }
+
+    let mut inner = Vec::with_capacity(HMAC_SHA256_BLOCK_SIZE + data.len());
+    let mut outer = Vec::with_capacity(HMAC_SHA256_BLOCK_SIZE + 32);
+    for byte in normalized_key {
+        inner.push(byte ^ 0x36);
+        outer.push(byte ^ 0x5c);
+    }
+    inner.extend_from_slice(data);
+    outer.extend_from_slice(&sha256_hash(&inner));
+    sha256_hash(&outer)
+}
+
+fn hex_sha256(data: &[u8]) -> String {
+    hex_encode(&sha256_hash(data))
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        encoded.push(nibble_to_hex(byte >> 4));
+        encoded.push(nibble_to_hex(byte & 0x0f));
+    }
+    encoded
+}
+
+fn nibble_to_hex(nibble: u8) -> char {
+    match nibble {
+        0..=9 => (b'0' + nibble) as char,
+        10..=15 => (b'a' + (nibble - 10)) as char,
+        _ => unreachable!("nibble must be less than 16"),
+    }
+}
+
+async fn s3_expect_success(
+    config: &S3Config,
+    response: reqwest::Response,
+    action: &str,
+) -> Result<()> {
+    s3_expect_success_response(config, response, action).await?;
+    Ok(())
+}
+
+async fn s3_expect_success_response(
+    config: &S3Config,
+    response: reqwest::Response,
+    action: &str,
+) -> Result<reqwest::Response> {
+    if response.status().is_success() {
+        return Ok(response);
+    }
+
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .unwrap_or_else(|_| "<unreadable body>".to_string());
+    let detail = body.trim();
+    let detail = if detail.is_empty() {
+        "no response body"
+    } else {
+        detail
+    };
+    Err(WorldForgeError::NetworkError(format!(
+        "s3 {action} failed for bucket '{}' with status {}: {detail}",
+        config.bucket, status
+    )))
+}
+
+fn xml_tag_value(xml: &str, tag: &str) -> Option<String> {
+    xml_tag_values(xml, tag).into_iter().next()
+}
+
+fn xml_tag_values(xml: &str, tag: &str) -> Vec<String> {
+    let start_tag = format!("<{tag}>");
+    let end_tag = format!("</{tag}>");
+    let mut cursor = 0usize;
+    let mut values = Vec::new();
+
+    while let Some(start) = xml[cursor..].find(&start_tag) {
+        let value_start = cursor + start + start_tag.len();
+        let Some(end) = xml[value_start..].find(&end_tag) else {
+            break;
+        };
+        let value_end = value_start + end;
+        values.push(xml_unescape(&xml[value_start..value_end]));
+        cursor = value_end + end_tag.len();
+    }
+
+    values
+}
+
+fn xml_unescape(value: &str) -> String {
+    value
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RedisEndpoint {
@@ -1850,6 +2426,402 @@ mod tests {
         assert!(commands
             .iter()
             .any(|command| command.first().map(String::as_str) == Some("SREM")));
+    }
+
+    #[tokio::test]
+    async fn test_s3_state_store_roundtrip_with_fake_server() {
+        let server = FakeS3Server::spawn().await;
+        let config = test_s3_config(server.endpoint());
+        let store = StateStoreKind::S3 {
+            config,
+            format: StateFileFormat::Json,
+        }
+        .open()
+        .await
+        .unwrap();
+
+        let state = WorldState::new("s3-world", "mock");
+        let id = state.id;
+
+        store.save(&state).await.unwrap();
+
+        let loaded = store.load(&id).await.unwrap();
+        assert_eq!(loaded.id, id);
+        assert_eq!(loaded.metadata.name, "s3-world");
+        assert_eq!(loaded.history.len(), 1);
+
+        let ids = store.list().await.unwrap();
+        assert_eq!(ids, vec![id]);
+
+        store.delete(&id).await.unwrap();
+        assert!(matches!(
+            store.load(&id).await.unwrap_err(),
+            WorldForgeError::WorldNotFound(found) if found == id
+        ));
+
+        let requests = server.requests.lock().await;
+        assert!(requests.iter().any(|request| request.method == "PUT"));
+        assert!(requests.iter().any(|request| {
+            request
+                .path
+                .ends_with(&format!("/worldforge-tests/states/{id}.json"))
+        }));
+        assert!(requests
+            .iter()
+            .any(|request| request.query.contains("list-type=2")));
+        assert!(requests
+            .iter()
+            .all(|request| request.headers.get("authorization").is_some_and(
+                |value| value.starts_with("AWS4-HMAC-SHA256 Credential=test-access/")
+            )));
+        assert!(requests
+            .iter()
+            .all(|request| request.headers.contains_key("x-amz-date")));
+        assert!(requests
+            .iter()
+            .all(|request| request.headers.contains_key("x-amz-content-sha256")));
+    }
+
+    #[tokio::test]
+    async fn test_s3_state_store_loads_alternate_format_and_deduplicates_listing() {
+        let server = FakeS3Server::spawn().await;
+        let json_store =
+            S3StateStore::new(test_s3_config(server.endpoint()), StateFileFormat::Json).unwrap();
+        let msgpack_store = S3StateStore::new(
+            test_s3_config(server.endpoint()),
+            StateFileFormat::MessagePack,
+        )
+        .unwrap();
+
+        let state = WorldState::new("s3-alt", "mock");
+        let id = state.id;
+
+        json_store.save(&state).await.unwrap();
+        let loaded = msgpack_store.load(&id).await.unwrap();
+        assert_eq!(loaded.id, id);
+
+        msgpack_store.save(&state).await.unwrap();
+        assert_eq!(json_store.list().await.unwrap(), vec![id]);
+
+        json_store.delete(&id).await.unwrap();
+        assert!(matches!(
+            json_store.load(&id).await.unwrap_err(),
+            WorldForgeError::WorldNotFound(found) if found == id
+        ));
+    }
+
+    fn test_s3_config(endpoint: &str) -> S3Config {
+        S3Config {
+            bucket: "worldforge-tests".to_string(),
+            region: "us-east-1".to_string(),
+            endpoint: Some(endpoint.to_string()),
+            access_key_id: "test-access".to_string(),
+            secret_access_key: "test-secret".to_string(),
+            session_token: Some("test-session".to_string()),
+            prefix: "states".to_string(),
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct RecordedS3Request {
+        method: String,
+        path: String,
+        query: String,
+        headers: HashMap<String, String>,
+    }
+
+    struct FakeS3Server {
+        endpoint: String,
+        requests: Arc<Mutex<Vec<RecordedS3Request>>>,
+        handle: JoinHandle<()>,
+    }
+
+    impl FakeS3Server {
+        async fn spawn() -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let endpoint = format!("http://{address}");
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let objects = Arc::new(Mutex::new(HashMap::new()));
+            let requests_for_task = Arc::clone(&requests);
+            let objects_for_task = Arc::clone(&objects);
+
+            let handle = tokio::spawn(async move {
+                loop {
+                    let (stream, _) = match listener.accept().await {
+                        Ok(pair) => pair,
+                        Err(_) => break,
+                    };
+                    let requests = Arc::clone(&requests_for_task);
+                    let objects = Arc::clone(&objects_for_task);
+                    tokio::spawn(async move {
+                        let _ = handle_fake_s3_connection(stream, requests, objects).await;
+                    });
+                }
+            });
+
+            Self {
+                endpoint,
+                requests,
+                handle,
+            }
+        }
+
+        fn endpoint(&self) -> &str {
+            &self.endpoint
+        }
+    }
+
+    impl Drop for FakeS3Server {
+        fn drop(&mut self) {
+            self.handle.abort();
+        }
+    }
+
+    async fn handle_fake_s3_connection(
+        stream: tokio::net::TcpStream,
+        requests: Arc<Mutex<Vec<RecordedS3Request>>>,
+        objects: Arc<Mutex<HashMap<String, Vec<u8>>>>,
+    ) -> Result<()> {
+        let mut reader = BufReader::new(stream);
+        let mut request_line = String::new();
+        if reader
+            .read_line(&mut request_line)
+            .await
+            .map_err(|error| WorldForgeError::InternalError(error.to_string()))?
+            == 0
+        {
+            return Ok(());
+        }
+
+        let mut parts = request_line.split_whitespace();
+        let method = parts
+            .next()
+            .ok_or_else(|| WorldForgeError::InvalidState("missing fake s3 method".to_string()))?
+            .to_string();
+        let target = parts
+            .next()
+            .ok_or_else(|| WorldForgeError::InvalidState("missing fake s3 target".to_string()))?
+            .to_string();
+
+        let mut headers = HashMap::new();
+        let mut content_length = 0usize;
+        loop {
+            let mut line = String::new();
+            let read = reader
+                .read_line(&mut line)
+                .await
+                .map_err(|error| WorldForgeError::InternalError(error.to_string()))?;
+            if read == 0 || line == "\r\n" {
+                break;
+            }
+
+            let trimmed = line.trim_end();
+            if let Some((name, value)) = trimmed.split_once(':') {
+                let key = name.trim().to_ascii_lowercase();
+                let value = value.trim().to_string();
+                if key == "content-length" {
+                    content_length = value.parse::<usize>().map_err(|error| {
+                        WorldForgeError::InvalidState(format!(
+                            "invalid fake s3 content length '{value}': {error}"
+                        ))
+                    })?;
+                }
+                headers.insert(key, value);
+            }
+        }
+
+        let mut body = vec![0u8; content_length];
+        if content_length > 0 {
+            reader
+                .read_exact(&mut body)
+                .await
+                .map_err(|error| WorldForgeError::InternalError(error.to_string()))?;
+        }
+
+        let (path, query) = match target.split_once('?') {
+            Some((path, query)) => (path.to_string(), query.to_string()),
+            None => (target, String::new()),
+        };
+
+        requests.lock().await.push(RecordedS3Request {
+            method: method.clone(),
+            path: path.clone(),
+            query: query.clone(),
+            headers: headers.clone(),
+        });
+
+        let mut stream = reader.into_inner();
+        let query_params = parse_fake_query(&query);
+        if query_params.get("list-type").map(String::as_str) == Some("2") {
+            let prefix = query_params.get("prefix").cloned().unwrap_or_default();
+            let objects = objects.lock().await;
+            let body = build_fake_s3_list_response(&objects, &prefix);
+            write_fake_http_response(
+                &mut stream,
+                200,
+                "OK",
+                body.as_bytes(),
+                Some("application/xml"),
+            )
+            .await?;
+            return Ok(());
+        }
+
+        let key = fake_s3_object_key(&path);
+        match method.as_str() {
+            "PUT" => {
+                objects.lock().await.insert(key, body);
+                write_fake_http_response(&mut stream, 200, "OK", b"", None).await?;
+            }
+            "GET" => {
+                if let Some(payload) = objects.lock().await.get(&key).cloned() {
+                    write_fake_http_response(
+                        &mut stream,
+                        200,
+                        "OK",
+                        &payload,
+                        Some("application/octet-stream"),
+                    )
+                    .await?;
+                } else {
+                    write_fake_http_response(&mut stream, 404, "Not Found", b"", None).await?;
+                }
+            }
+            "HEAD" => {
+                let status = if objects.lock().await.contains_key(&key) {
+                    200
+                } else {
+                    404
+                };
+                let reason = if status == 200 { "OK" } else { "Not Found" };
+                write_fake_http_response(&mut stream, status, reason, b"", None).await?;
+            }
+            "DELETE" => {
+                objects.lock().await.remove(&key);
+                write_fake_http_response(&mut stream, 204, "No Content", b"", None).await?;
+            }
+            other => {
+                let body = format!("unsupported method: {other}");
+                write_fake_http_response(
+                    &mut stream,
+                    405,
+                    "Method Not Allowed",
+                    body.as_bytes(),
+                    Some("text/plain"),
+                )
+                .await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn fake_s3_object_key(path: &str) -> String {
+        path.trim_start_matches('/')
+            .split_once('/')
+            .map(|(_, key)| percent_decode(key))
+            .unwrap_or_default()
+    }
+
+    fn parse_fake_query(query: &str) -> HashMap<String, String> {
+        query
+            .split('&')
+            .filter(|pair| !pair.is_empty())
+            .map(|pair| match pair.split_once('=') {
+                Some((key, value)) => (percent_decode(key), percent_decode(value)),
+                None => (percent_decode(pair), String::new()),
+            })
+            .collect()
+    }
+
+    fn build_fake_s3_list_response(objects: &HashMap<String, Vec<u8>>, prefix: &str) -> String {
+        let mut keys = objects
+            .keys()
+            .filter(|key| key.starts_with(prefix))
+            .cloned()
+            .collect::<Vec<_>>();
+        keys.sort();
+
+        let contents = keys
+            .iter()
+            .map(|key| format!("<Contents><Key>{key}</Key></Contents>"))
+            .collect::<String>();
+
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><ListBucketResult><Name>worldforge-tests</Name><Prefix>{prefix}</Prefix><KeyCount>{}</KeyCount><MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>{contents}</ListBucketResult>",
+            keys.len()
+        )
+    }
+
+    fn percent_decode(value: &str) -> String {
+        let bytes = value.as_bytes();
+        let mut index = 0usize;
+        let mut decoded = Vec::with_capacity(bytes.len());
+        while index < bytes.len() {
+            match bytes[index] {
+                b'%' if index + 2 < bytes.len() => {
+                    if let (Some(high), Some(low)) =
+                        (hex_value(bytes[index + 1]), hex_value(bytes[index + 2]))
+                    {
+                        decoded.push((high << 4) | low);
+                        index += 3;
+                        continue;
+                    }
+                    decoded.push(bytes[index]);
+                    index += 1;
+                }
+                b'+' => {
+                    decoded.push(b' ');
+                    index += 1;
+                }
+                other => {
+                    decoded.push(other);
+                    index += 1;
+                }
+            }
+        }
+
+        String::from_utf8(decoded).unwrap_or_default()
+    }
+
+    fn hex_value(byte: u8) -> Option<u8> {
+        match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            b'A'..=b'F' => Some(byte - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    async fn write_fake_http_response(
+        stream: &mut tokio::net::TcpStream,
+        status: u16,
+        reason: &str,
+        body: &[u8],
+        content_type: Option<&str>,
+    ) -> Result<()> {
+        let mut response = format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n",
+            body.len()
+        );
+        if let Some(content_type) = content_type {
+            response.push_str(&format!("Content-Type: {content_type}\r\n"));
+        }
+        response.push_str("\r\n");
+        stream
+            .write_all(response.as_bytes())
+            .await
+            .map_err(|error| WorldForgeError::InternalError(error.to_string()))?;
+        stream
+            .write_all(body)
+            .await
+            .map_err(|error| WorldForgeError::InternalError(error.to_string()))?;
+        stream
+            .flush()
+            .await
+            .map_err(|error| WorldForgeError::InternalError(error.to_string()))?;
+        Ok(())
     }
 
     struct FakeRedisServer {

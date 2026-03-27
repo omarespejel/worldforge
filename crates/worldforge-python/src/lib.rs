@@ -24,7 +24,7 @@ use worldforge_core::provider::{
 };
 use worldforge_core::scene::{SceneObject, SceneObjectPatch};
 use worldforge_core::state::{
-    deserialize_world_state, serialize_world_state, HistoryEntry,
+    deserialize_world_state, serialize_world_state, HistoryEntry, S3Config,
     StateFileFormat as CoreStateFileFormat, StateStoreKind, WorldState,
 };
 use worldforge_core::types::{BBox, Position, Rotation, TensorData, Velocity, VideoClip};
@@ -73,39 +73,114 @@ fn parse_object_id(object_id: &str) -> PyResult<uuid::Uuid> {
     parse_uuid(object_id, "object")
 }
 
-fn state_store_kind(
-    state_backend: &str,
-    state_dir: &str,
-    state_db_path: Option<&str>,
-    state_file_format: &str,
-    state_redis_url: Option<&str>,
-) -> PyResult<StateStoreKind> {
-    match state_backend {
+#[derive(Clone, Copy)]
+struct PyStateStoreOptions<'a> {
+    state_backend: &'a str,
+    state_dir: &'a str,
+    state_db_path: Option<&'a str>,
+    state_file_format: &'a str,
+    state_redis_url: Option<&'a str>,
+    state_s3_bucket: Option<&'a str>,
+    state_s3_region: Option<&'a str>,
+    state_s3_access_key_id: Option<&'a str>,
+    state_s3_secret_access_key: Option<&'a str>,
+    state_s3_endpoint: Option<&'a str>,
+    state_s3_session_token: Option<&'a str>,
+    state_s3_prefix: Option<&'a str>,
+}
+
+fn state_store_kind(options: &PyStateStoreOptions<'_>) -> PyResult<StateStoreKind> {
+    match options.state_backend {
         "file" => {
-            let format = state_file_format
+            let format = options
+                .state_file_format
                 .parse::<CoreStateFileFormat>()
                 .map_err(pyo3::exceptions::PyValueError::new_err)?;
             Ok(StateStoreKind::FileWithFormat {
-                path: state_dir.into(),
+                path: options.state_dir.into(),
                 format,
             })
         }
         "sqlite" => Ok(StateStoreKind::Sqlite(
-            state_db_path
+            options
+                .state_db_path
                 .map(Into::into)
-                .unwrap_or_else(|| Path::new(state_dir).join("worldforge.db")),
+                .unwrap_or_else(|| Path::new(options.state_dir).join("worldforge.db")),
         )),
-        "redis" => state_redis_url
+        "redis" => options
+            .state_redis_url
             .map(|url| StateStoreKind::Redis(url.to_string()))
             .ok_or_else(|| {
                 pyo3::exceptions::PyValueError::new_err(
                     "state_redis_url is required when state_backend='redis'",
                 )
             }),
+        "s3" => Ok(StateStoreKind::S3 {
+            config: resolve_s3_config(
+                options.state_s3_bucket,
+                options.state_s3_region,
+                options.state_s3_access_key_id,
+                options.state_s3_secret_access_key,
+                options.state_s3_endpoint,
+                options.state_s3_session_token,
+                options.state_s3_prefix,
+            )?,
+            format: options
+                .state_file_format
+                .parse::<CoreStateFileFormat>()
+                .map_err(pyo3::exceptions::PyValueError::new_err)?,
+        }),
         other => Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "unknown state backend: {other}. Available: file, sqlite, redis"
+            "unknown state backend: {other}. Available: file, sqlite, redis, s3"
         ))),
     }
+}
+
+fn resolve_s3_config(
+    state_s3_bucket: Option<&str>,
+    state_s3_region: Option<&str>,
+    state_s3_access_key_id: Option<&str>,
+    state_s3_secret_access_key: Option<&str>,
+    state_s3_endpoint: Option<&str>,
+    state_s3_session_token: Option<&str>,
+    state_s3_prefix: Option<&str>,
+) -> PyResult<S3Config> {
+    let bucket = state_s3_bucket.ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(
+            "state_s3_bucket is required when state_backend='s3'",
+        )
+    })?;
+    let region = state_s3_region.ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(
+            "state_s3_region is required when state_backend='s3'",
+        )
+    })?;
+    let access_key_id = state_s3_access_key_id.ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(
+            "state_s3_access_key_id is required when state_backend='s3'",
+        )
+    })?;
+    let secret_access_key = state_s3_secret_access_key.ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(
+            "state_s3_secret_access_key is required when state_backend='s3'",
+        )
+    })?;
+
+    Ok(S3Config {
+        bucket: bucket.to_string(),
+        region: region.to_string(),
+        endpoint: state_s3_endpoint
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned),
+        access_key_id: access_key_id.to_string(),
+        secret_access_key: secret_access_key.to_string(),
+        session_token: state_s3_session_token
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned),
+        prefix: state_s3_prefix.unwrap_or_default().to_string(),
+    })
 }
 
 fn parse_snapshot_format(format: &str) -> PyResult<CoreStateFileFormat> {
@@ -2555,7 +2630,7 @@ impl PyAction {
             other => {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
                     "unknown weather: {other}"
-                )))
+                )));
             }
         };
         Ok(Self {
@@ -3230,21 +3305,39 @@ pub struct PyWorldForge {
 impl PyWorldForge {
     /// Create a new WorldForge instance with auto-detected providers.
     #[new]
-    #[pyo3(signature = (state_backend="file", state_dir=".worldforge", state_db_path=None, state_file_format="json", state_redis_url=None))]
+    #[pyo3(signature = (state_backend="file", state_dir=".worldforge", state_db_path=None, state_file_format="json", state_redis_url=None, state_s3_bucket=None, state_s3_region=None, state_s3_access_key_id=None, state_s3_secret_access_key=None, state_s3_endpoint=None, state_s3_session_token=None, state_s3_prefix=None))]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "PyO3 constructor mirrors the public keyword configuration surface"
+    )]
     fn new(
         state_backend: &str,
         state_dir: &str,
         state_db_path: Option<&str>,
         state_file_format: &str,
         state_redis_url: Option<&str>,
+        state_s3_bucket: Option<&str>,
+        state_s3_region: Option<&str>,
+        state_s3_access_key_id: Option<&str>,
+        state_s3_secret_access_key: Option<&str>,
+        state_s3_endpoint: Option<&str>,
+        state_s3_session_token: Option<&str>,
+        state_s3_prefix: Option<&str>,
     ) -> PyResult<Self> {
-        let store_kind = state_store_kind(
+        let store_kind = state_store_kind(&PyStateStoreOptions {
             state_backend,
             state_dir,
             state_db_path,
             state_file_format,
             state_redis_url,
-        )?;
+            state_s3_bucket,
+            state_s3_region,
+            state_s3_access_key_id,
+            state_s3_secret_access_key,
+            state_s3_endpoint,
+            state_s3_session_token,
+            state_s3_prefix,
+        })?;
         let rt = new_runtime()?;
         let store = rt.block_on(store_kind.open()).map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("failed to open state store: {e}"))
@@ -5760,7 +5853,21 @@ mod tests {
     use super::*;
 
     fn test_worldforge() -> PyWorldForge {
-        PyWorldForge::new("file", ".worldforge-python-tests", None, "json", None).unwrap()
+        PyWorldForge::new(
+            "file",
+            ".worldforge-python-tests",
+            None,
+            "json",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -7029,8 +7136,21 @@ mod tests {
     fn test_worldforge_file_store_roundtrip() {
         let state_dir =
             std::env::temp_dir().join(format!("wf-python-file-{}", uuid::Uuid::new_v4()));
-        let wf =
-            PyWorldForge::new("file", state_dir.to_str().unwrap(), None, "json", None).unwrap();
+        let wf = PyWorldForge::new(
+            "file",
+            state_dir.to_str().unwrap(),
+            None,
+            "json",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         let world = wf.create_world("persisted_world", "mock").unwrap();
         let world_id = wf.save_world(&world).unwrap();
 
@@ -7057,6 +7177,13 @@ mod tests {
             Some(state_db_path.to_str().unwrap()),
             "json",
             None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .unwrap();
         let world = wf.create_world("sqlite_world", "mock").unwrap();
@@ -7076,8 +7203,21 @@ mod tests {
     fn test_worldforge_msgpack_file_store_roundtrip() {
         let state_dir =
             std::env::temp_dir().join(format!("wf-python-msgpack-{}", uuid::Uuid::new_v4()));
-        let wf =
-            PyWorldForge::new("file", state_dir.to_str().unwrap(), None, "msgpack", None).unwrap();
+        let wf = PyWorldForge::new(
+            "file",
+            state_dir.to_str().unwrap(),
+            None,
+            "msgpack",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         let world = wf.create_world("msgpack_world", "mock").unwrap();
         let world_id = wf.save_world(&world).unwrap();
 
@@ -7093,15 +7233,30 @@ mod tests {
         let _ = std::fs::remove_dir_all(&state_dir);
     }
 
+    fn test_state_store_options() -> PyStateStoreOptions<'static> {
+        PyStateStoreOptions {
+            state_backend: "file",
+            state_dir: ".worldforge",
+            state_db_path: None,
+            state_file_format: "json",
+            state_redis_url: None,
+            state_s3_bucket: None,
+            state_s3_region: None,
+            state_s3_access_key_id: None,
+            state_s3_secret_access_key: None,
+            state_s3_endpoint: None,
+            state_s3_session_token: None,
+            state_s3_prefix: None,
+        }
+    }
+
     #[test]
     fn test_state_store_kind_accepts_redis_backend() {
-        let kind = state_store_kind(
-            "redis",
-            ".worldforge",
-            None,
-            "json",
-            Some("redis://127.0.0.1:6379/0"),
-        )
+        let kind = state_store_kind(&PyStateStoreOptions {
+            state_backend: "redis",
+            state_redis_url: Some("redis://127.0.0.1:6379/0"),
+            ..test_state_store_options()
+        })
         .unwrap();
 
         assert_eq!(
@@ -7112,16 +7267,75 @@ mod tests {
 
     #[test]
     fn test_state_store_kind_requires_redis_url() {
-        let error = state_store_kind("redis", ".worldforge", None, "json", None).unwrap_err();
+        let error = state_store_kind(&PyStateStoreOptions {
+            state_backend: "redis",
+            ..test_state_store_options()
+        })
+        .unwrap_err();
         assert!(error.to_string().contains("state_redis_url is required"));
+    }
+
+    #[test]
+    fn test_state_store_kind_accepts_s3_backend() {
+        let kind = state_store_kind(&PyStateStoreOptions {
+            state_backend: "s3",
+            state_s3_bucket: Some("worldforge-states"),
+            state_s3_region: Some("us-east-1"),
+            state_s3_access_key_id: Some("test-access"),
+            state_s3_secret_access_key: Some("test-secret"),
+            state_s3_endpoint: Some("http://localhost:9000"),
+            state_s3_session_token: Some("test-session"),
+            state_s3_prefix: Some("states"),
+            ..test_state_store_options()
+        })
+        .unwrap();
+
+        assert_eq!(
+            kind,
+            StateStoreKind::S3 {
+                config: S3Config {
+                    bucket: "worldforge-states".to_string(),
+                    region: "us-east-1".to_string(),
+                    endpoint: Some("http://localhost:9000".to_string()),
+                    access_key_id: "test-access".to_string(),
+                    secret_access_key: "test-secret".to_string(),
+                    session_token: Some("test-session".to_string()),
+                    prefix: "states".to_string(),
+                },
+                format: CoreStateFileFormat::Json,
+            }
+        );
+    }
+
+    #[test]
+    fn test_state_store_kind_requires_s3_bucket() {
+        let error = state_store_kind(&PyStateStoreOptions {
+            state_backend: "s3",
+            ..test_state_store_options()
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("state_s3_bucket is required"));
     }
 
     #[test]
     fn test_worldforge_export_import_json_roundtrip() {
         let state_dir =
             std::env::temp_dir().join(format!("wf-python-export-json-{}", uuid::Uuid::new_v4()));
-        let wf =
-            PyWorldForge::new("file", state_dir.to_str().unwrap(), None, "json", None).unwrap();
+        let wf = PyWorldForge::new(
+            "file",
+            state_dir.to_str().unwrap(),
+            None,
+            "json",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         let mut world = wf.create_world("snapshot_world", "mock").unwrap();
         let position = PyPosition::new(0.0, 0.8, 0.0);
         let bbox = PyBBox::new(
@@ -7156,8 +7370,21 @@ mod tests {
     fn test_worldforge_export_import_msgpack_roundtrip() {
         let state_dir =
             std::env::temp_dir().join(format!("wf-python-export-msgpack-{}", uuid::Uuid::new_v4()));
-        let wf =
-            PyWorldForge::new("file", state_dir.to_str().unwrap(), None, "msgpack", None).unwrap();
+        let wf = PyWorldForge::new(
+            "file",
+            state_dir.to_str().unwrap(),
+            None,
+            "msgpack",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         let mut world = wf.create_world("msgpack_snapshot_world", "mock").unwrap();
         let position = PyPosition::new(0.0, 0.8, 0.0);
         let bbox = PyBBox::new(

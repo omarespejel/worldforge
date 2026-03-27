@@ -22,8 +22,8 @@ use worldforge_core::provider::{
 };
 use worldforge_core::scene::{PhysicsProperties, SceneObject, SceneObjectPatch};
 use worldforge_core::state::{
-    deserialize_world_state, serialize_world_state, DynStateStore, StateFileFormat, StateStoreKind,
-    WorldState,
+    deserialize_world_state, serialize_world_state, DynStateStore, S3Config, StateFileFormat,
+    StateStoreKind, WorldState,
 };
 use worldforge_core::types::{BBox, Pose, Position, Rotation, Velocity, VideoClip, WorldId};
 use worldforge_core::world::World;
@@ -41,7 +41,7 @@ pub struct ServerConfig {
     pub bind_address: String,
     /// State storage directory for file mode and the default SQLite location.
     pub state_dir: String,
-    /// Persistence backend to use: `file`, `sqlite`, or `redis`.
+    /// Persistence backend to use: `file`, `sqlite`, `redis`, or `s3`.
     pub state_backend: String,
     /// Serialization format for the file-backed state store.
     pub state_file_format: String,
@@ -49,6 +49,20 @@ pub struct ServerConfig {
     pub state_db_path: Option<String>,
     /// Optional Redis connection URL override.
     pub state_redis_url: Option<String>,
+    /// Optional S3 bucket name override.
+    pub state_s3_bucket: Option<String>,
+    /// Optional S3 region override.
+    pub state_s3_region: Option<String>,
+    /// Optional S3 access key ID override.
+    pub state_s3_access_key_id: Option<String>,
+    /// Optional S3 secret access key override.
+    pub state_s3_secret_access_key: Option<String>,
+    /// Optional S3 endpoint override.
+    pub state_s3_endpoint: Option<String>,
+    /// Optional S3 session token override.
+    pub state_s3_session_token: Option<String>,
+    /// Optional S3 object-key prefix override.
+    pub state_s3_prefix: Option<String>,
 }
 
 impl Default for ServerConfig {
@@ -60,6 +74,13 @@ impl Default for ServerConfig {
             state_file_format: "json".to_string(),
             state_db_path: None,
             state_redis_url: None,
+            state_s3_bucket: None,
+            state_s3_region: None,
+            state_s3_access_key_id: None,
+            state_s3_secret_access_key: None,
+            state_s3_endpoint: None,
+            state_s3_session_token: None,
+            state_s3_prefix: None,
         }
     }
 }
@@ -92,13 +113,50 @@ impl ServerConfig {
                         "--state-redis-url is required when state_backend is set to redis"
                     )
                 }),
+            "s3" => Ok(StateStoreKind::S3 {
+                config: resolve_s3_config(self)?,
+                format: self
+                    .state_file_format
+                    .parse::<StateFileFormat>()
+                    .map_err(anyhow::Error::msg)?,
+            }),
             other => {
                 anyhow::bail!(
-                    "unknown state backend: {other}. Available backends: file, sqlite, redis"
+                    "unknown state backend: {other}. Available backends: file, sqlite, redis, s3"
                 )
             }
         }
     }
+}
+
+fn resolve_s3_config(config: &ServerConfig) -> anyhow::Result<S3Config> {
+    let bucket = config.state_s3_bucket.as_deref().ok_or_else(|| {
+        anyhow::anyhow!("--state-s3-bucket is required when state_backend is set to s3")
+    })?;
+    let region = config.state_s3_region.as_deref().ok_or_else(|| {
+        anyhow::anyhow!("--state-s3-region is required when state_backend is set to s3")
+    })?;
+    let access_key_id = config.state_s3_access_key_id.as_deref().ok_or_else(|| {
+        anyhow::anyhow!("--state-s3-access-key-id is required when state_backend is set to s3")
+    })?;
+    let secret_access_key = config
+        .state_s3_secret_access_key
+        .as_deref()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "--state-s3-secret-access-key is required when state_backend is set to s3"
+            )
+        })?;
+
+    Ok(S3Config {
+        bucket: bucket.to_string(),
+        region: region.to_string(),
+        endpoint: config.state_s3_endpoint.clone(),
+        access_key_id: access_key_id.to_string(),
+        secret_access_key: secret_access_key.to_string(),
+        session_token: config.state_s3_session_token.clone(),
+        prefix: config.state_s3_prefix.clone().unwrap_or_default(),
+    })
 }
 
 /// A bound WorldForge REST server ready to accept connections.
@@ -1074,7 +1132,7 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                         return (
                             400,
                             error_response("create world requires at least one of name or prompt"),
-                        )
+                        );
                     }
                 };
                 let id = ws.id;
@@ -1937,7 +1995,10 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                         let verifier = verifier_for_backend(req.backend);
                         match req.proof_type.as_str() {
                             "inference" => {
-                                let bundle = match (req.input_state.as_ref(), req.output_state.as_ref()) {
+                                let bundle = match (
+                                    req.input_state.as_ref(),
+                                    req.output_state.as_ref(),
+                                ) {
                                     (Some(input_state), Some(output_state)) => {
                                         let provider_name = req
                                             .provider
@@ -1951,20 +2012,18 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                                             output_state,
                                         )
                                     }
-                                    (None, None) => {
-                                        prove_latest_inference(
-                                            verifier.as_ref(),
-                                            &ws,
-                                            req.provider.as_deref(),
-                                        )
-                                    }
+                                    (None, None) => prove_latest_inference(
+                                        verifier.as_ref(),
+                                        &ws,
+                                        req.provider.as_deref(),
+                                    ),
                                     _ => {
                                         return (
                                             400,
                                             error_response(
                                                 "inference verification requires both input_state and output_state when either is provided",
                                             ),
-                                        )
+                                        );
                                     }
                                 };
                                 match bundle {
@@ -1984,7 +2043,7 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                                                 error_response(
                                                     "guardrail verification requires either a plan or a goal",
                                                 ),
-                                            )
+                                            );
                                         }
                                     };
                                     let provider_name =
@@ -2019,7 +2078,7 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                                             return (
                                                 api_error_status(&error),
                                                 error_response(&error.to_string()),
-                                            )
+                                            );
                                         }
                                     }
                                 };
@@ -2359,6 +2418,37 @@ mod tests {
     }
 
     #[test]
+    fn test_server_config_resolves_s3_store() {
+        let config = ServerConfig {
+            state_backend: "s3".to_string(),
+            state_s3_bucket: Some("worldforge-states".to_string()),
+            state_s3_region: Some("us-east-1".to_string()),
+            state_s3_access_key_id: Some("test-access".to_string()),
+            state_s3_secret_access_key: Some("test-secret".to_string()),
+            state_s3_endpoint: Some("http://localhost:9000".to_string()),
+            state_s3_session_token: Some("test-session".to_string()),
+            state_s3_prefix: Some("states".to_string()),
+            ..ServerConfig::default()
+        };
+
+        assert_eq!(
+            config.resolve_state_store_kind().unwrap(),
+            StateStoreKind::S3 {
+                config: S3Config {
+                    bucket: "worldforge-states".to_string(),
+                    region: "us-east-1".to_string(),
+                    endpoint: Some("http://localhost:9000".to_string()),
+                    access_key_id: "test-access".to_string(),
+                    secret_access_key: "test-secret".to_string(),
+                    session_token: Some("test-session".to_string()),
+                    prefix: "states".to_string(),
+                },
+                format: StateFileFormat::Json,
+            }
+        );
+    }
+
+    #[test]
     fn test_server_config_requires_redis_url() {
         let config = ServerConfig {
             state_backend: "redis".to_string(),
@@ -2369,6 +2459,19 @@ mod tests {
         assert!(error
             .to_string()
             .contains("--state-redis-url is required when state_backend is set to redis"));
+    }
+
+    #[test]
+    fn test_server_config_requires_s3_bucket() {
+        let config = ServerConfig {
+            state_backend: "s3".to_string(),
+            ..ServerConfig::default()
+        };
+
+        let error = config.resolve_state_store_kind().unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("--state-s3-bucket is required when state_backend is set to s3"));
     }
 
     #[test]

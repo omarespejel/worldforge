@@ -3522,6 +3522,7 @@ dependencies = [
  "chrono",
  "criterion",
  "proptest",
+ "reqwest",
  "rmp-serde",
  "serde",
  "serde_json",
