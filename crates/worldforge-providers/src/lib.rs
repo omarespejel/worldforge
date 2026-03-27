@@ -10,11 +10,13 @@
 //! - [`runway`] — Runway GWM (Worlds, Robotics, Avatars)
 //! - [`jepa`] — Meta JEPA (local deterministic inference, ZK-compatible)
 //! - [`genie`] — Google Genie (deterministic local surrogate for prediction, reasoning, transfer, and native planning)
+//! - [`marble`] — Experimental deterministic local surrogate for Marble
 //! - [`native_planning`] — shared deterministic adapter-native planning helper
 
 pub mod cosmos;
 pub mod genie;
 pub mod jepa;
+pub mod marble;
 pub mod mock;
 mod native_planning;
 pub mod runway;
@@ -22,6 +24,7 @@ pub mod runway;
 pub use cosmos::CosmosProvider;
 pub use genie::GenieProvider;
 pub use jepa::{JepaBackend, JepaModelManifest, JepaProvider};
+pub use marble::MarbleProvider;
 pub use mock::MockProvider;
 pub use runway::RunwayProvider;
 
@@ -40,6 +43,7 @@ use worldforge_core::WorldForge;
 /// - `JEPA_BACKEND` → optional backend override (`burn`, `pytorch`, `onnx`, `safetensors`)
 /// - `GENIE_API_KEY` → optional credential hint for `GenieProvider`
 /// - `GENIE_API_ENDPOINT` → optional endpoint override for `GenieProvider`
+/// - `MarbleProvider` → always registered as an experimental local surrogate
 ///
 /// A `MockProvider` is always registered for testing.
 /// The auto-detected Cosmos entry is capability-complete for its documented
@@ -51,6 +55,9 @@ use worldforge_core::WorldForge;
 /// The Genie surrogate currently supports `predict`, `generate`, `reason`,
 /// `transfer`, and provider-native planning through the local deterministic
 /// backend.
+/// Marble is an experimental deterministic local surrogate that registers by
+/// default and exposes prediction, generation, reasoning, transfer, and
+/// embedding capabilities without a remote transport.
 ///
 /// # Examples
 ///
@@ -118,6 +125,8 @@ pub fn auto_detect() -> ProviderRegistry {
         Err(_) => GenieProvider::new(genie::GenieModel::Genie3, genie_api_key),
     };
     registry.register(Box::new(genie));
+
+    registry.register(Box::new(MarbleProvider::new()));
 
     registry
 }
@@ -279,10 +288,31 @@ mod tests {
         let registry = auto_detect();
         assert!(registry.get("mock").is_ok());
         assert!(registry.get("genie").is_ok());
+        assert!(registry.get("marble").is_ok());
         assert!(registry
             .find_by_capability("reason")
             .iter()
             .any(|provider| provider.name() == "genie"));
+    }
+
+    #[test]
+    fn test_auto_detect_registers_marble_local_surrogate() {
+        let registry = auto_detect();
+        let capabilities = registry.get("marble").unwrap().capabilities();
+
+        assert!(capabilities.predict);
+        assert!(capabilities.generate);
+        assert!(capabilities.reason);
+        assert!(capabilities.transfer);
+        assert!(capabilities.embed);
+        assert!(capabilities.action_conditioned);
+        assert!(capabilities.supports_depth);
+        assert!(capabilities.supports_segmentation);
+        assert!(!capabilities.supports_planning);
+        assert!(registry
+            .find_by_capability("embed")
+            .iter()
+            .any(|provider| provider.name() == "marble"));
     }
 
     #[test]
