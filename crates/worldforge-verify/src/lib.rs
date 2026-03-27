@@ -20,64 +20,9 @@ use serde::{Deserialize, Serialize};
 
 use worldforge_core::guardrail::GuardrailResult;
 use worldforge_core::prediction::Plan;
+pub use worldforge_core::proof::{VerificationBackend, VerificationResult, ZkProof, ZkProofType};
 use worldforge_core::state::WorldState;
 use worldforge_core::types::WorldId;
-
-/// ZK proof type describing what is being proved.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ZkProofType {
-    /// Verify that inference was computed correctly.
-    InferenceVerification {
-        /// Hash of the model weights.
-        model_hash: [u8; 32],
-        /// Hash of the input state.
-        input_hash: [u8; 32],
-        /// Hash of the output state.
-        output_hash: [u8; 32],
-    },
-    /// Verify guardrail compliance for a plan.
-    GuardrailCompliance {
-        /// Hash of the plan.
-        plan_hash: [u8; 32],
-        /// Hashes of individual guardrails checked.
-        guardrail_hashes: Vec<[u8; 32]>,
-        /// Whether all guardrails passed.
-        all_passed: bool,
-    },
-    /// Verify data provenance.
-    DataProvenance {
-        /// Hash of the data.
-        data_hash: [u8; 32],
-        /// Timestamp of the data.
-        timestamp: u64,
-        /// Commitment to the data source.
-        source_commitment: [u8; 32],
-    },
-}
-
-/// A ZK proof with its type and serialized proof data.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ZkProof {
-    /// Type of proof.
-    pub proof_type: ZkProofType,
-    /// Serialized proof data (backend-specific format).
-    pub proof_data: Vec<u8>,
-    /// Backend that generated this proof.
-    pub backend: VerificationBackend,
-    /// Time taken to generate the proof in milliseconds.
-    pub generation_time_ms: u64,
-}
-
-/// Verification result.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VerificationResult {
-    /// Whether the proof is valid.
-    pub valid: bool,
-    /// Time taken to verify in milliseconds.
-    pub verification_time_ms: u64,
-    /// Human-readable details.
-    pub details: String,
-}
 
 /// A proof, its verification result, and the concrete artifact that was hashed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -150,37 +95,6 @@ pub struct ProvenanceArtifact {
     pub timestamp: u64,
     /// Commitment to the source system or process.
     pub source_commitment: [u8; 32],
-}
-
-/// Backend used for proof generation and verification.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum VerificationBackend {
-    /// EZKL for ML model inference proofs.
-    Ezkl,
-    /// Cairo/STARK for guardrail and general computation proofs.
-    Stark,
-    /// Mock backend for testing.
-    Mock,
-}
-
-impl VerificationBackend {
-    /// Canonical lowercase backend identifier used by user-facing surfaces.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Ezkl => "ezkl",
-            Self::Stark => "stark",
-            Self::Mock => "mock",
-        }
-    }
-
-    /// Construct a verifier for this backend.
-    pub fn verifier(self) -> Box<dyn ZkVerifier> {
-        match self {
-            Self::Ezkl => Box::new(EzklVerifier::new()),
-            Self::Stark => Box::new(StarkVerifier::new()),
-            Self::Mock => Box::new(MockVerifier::new()),
-        }
-    }
 }
 
 /// Error types for verification operations.
@@ -259,21 +173,18 @@ pub trait ZkVerifier: Send + Sync {
     fn verify(&self, proof: &ZkProof) -> Result<VerificationResult>;
 }
 
-impl std::str::FromStr for VerificationBackend {
-    type Err = VerifyError;
-
-    fn from_str(value: &str) -> Result<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "ezkl" => Ok(Self::Ezkl),
-            "stark" => Ok(Self::Stark),
-            "mock" => Ok(Self::Mock),
-            other => Err(VerifyError::VerificationFailed {
-                reason: format!(
-                    "unknown verification backend: {other}. Available: mock, ezkl, stark"
-                ),
-            }),
-        }
+/// Construct a verifier for a specific backend.
+pub fn verifier_for_backend(backend: VerificationBackend) -> Box<dyn ZkVerifier> {
+    match backend {
+        VerificationBackend::Ezkl => Box::new(EzklVerifier::new()),
+        VerificationBackend::Stark => Box::new(StarkVerifier::new()),
+        VerificationBackend::Mock => Box::new(MockVerifier::new()),
     }
+}
+
+/// Construct a verifier matching the backend recorded on a proof.
+pub fn verifier_for_proof(proof: &ZkProof) -> Box<dyn ZkVerifier> {
+    verifier_for_backend(proof.backend)
 }
 
 /// SHA-256 hash helper for creating proof inputs.
@@ -386,7 +297,9 @@ pub fn state_hash(state: &WorldState) -> Result<[u8; 32]> {
 
 /// Compute the hash of a plan as used by the verification helpers.
 pub fn plan_hash(plan: &Plan) -> Result<[u8; 32]> {
-    serialize_to_hash(plan)
+    let mut sanitized = plan.clone();
+    sanitized.verification_proof = None;
+    serialize_to_hash(&sanitized)
 }
 
 /// Build an inference artifact from explicit input/output states.
@@ -544,6 +457,16 @@ pub fn prove_guardrail_plan<V: ZkVerifier + ?Sized>(
         proof,
         verification,
     })
+}
+
+/// Attach a freshly generated guardrail-compliance proof to an existing plan.
+///
+/// The attached proof is stored on `Plan::verification_proof`, while plan hashing
+/// continues to ignore attached proofs so proof generation remains stable.
+pub fn attach_guardrail_proof<V: ZkVerifier + ?Sized>(verifier: &V, plan: &mut Plan) -> Result<()> {
+    let proof = verifier.prove_guardrail_compliance(plan, &plan.guardrail_compliance)?;
+    plan.verification_proof = Some(proof);
+    Ok(())
 }
 
 /// Generate and verify a provenance proof for a world state snapshot.
@@ -749,9 +672,7 @@ impl ZkVerifier for EzklVerifier {
         plan: &Plan,
         guardrail_results: &[Vec<GuardrailResult>],
     ) -> Result<ZkProof> {
-        let plan_json =
-            serde_json::to_vec(plan).map_err(|e| VerifyError::Serialization(e.to_string()))?;
-        let plan_hash = sha256_hash(&plan_json);
+        let plan_hash = plan_hash(plan)?;
         let all_passed = guardrail_results
             .iter()
             .all(|step| step.iter().all(|result| result.passed));
@@ -835,9 +756,7 @@ impl ZkVerifier for StarkVerifier {
         plan: &Plan,
         guardrail_results: &[Vec<GuardrailResult>],
     ) -> Result<ZkProof> {
-        let plan_json =
-            serde_json::to_vec(plan).map_err(|e| VerifyError::Serialization(e.to_string()))?;
-        let plan_hash = sha256_hash(&plan_json);
+        let plan_hash = plan_hash(plan)?;
 
         let all_passed = guardrail_results
             .iter()
@@ -923,9 +842,7 @@ impl ZkVerifier for MockVerifier {
         plan: &Plan,
         guardrail_results: &[Vec<GuardrailResult>],
     ) -> Result<ZkProof> {
-        let plan_json =
-            serde_json::to_vec(plan).map_err(|e| VerifyError::Serialization(e.to_string()))?;
-        let plan_hash = sha256_hash(&plan_json);
+        let plan_hash = plan_hash(plan)?;
 
         let all_passed = guardrail_results
             .iter()
@@ -1066,6 +983,7 @@ mod tests {
             guardrail_compliance: vec![vec![sample_guardrail_result(true)]],
             planning_time_ms: 4,
             iterations_used: 2,
+            verification_proof: None,
         }
     }
 
@@ -1219,6 +1137,18 @@ mod tests {
     }
 
     #[test]
+    fn test_plan_hash_ignores_attached_verification_proof() {
+        let verifier = MockVerifier::new();
+        let mut plan = sample_plan();
+        let baseline = plan_hash(&plan).unwrap();
+
+        attach_guardrail_proof(&verifier, &mut plan).unwrap();
+
+        assert!(plan.verification_proof.is_some());
+        assert_eq!(plan_hash(&plan).unwrap(), baseline);
+    }
+
+    #[test]
     fn test_verify_error_display() {
         let err = VerifyError::GenerationFailed {
             reason: "no circuit".to_string(),
@@ -1361,6 +1291,21 @@ mod tests {
         assert!(bundle.verification.valid);
         assert_eq!(bundle.artifact.action_count, 1);
         assert_eq!(bundle.proof.backend, VerificationBackend::Mock);
+    }
+
+    #[test]
+    fn test_attach_guardrail_proof_populates_plan_proof() {
+        let verifier = MockVerifier::new();
+        let mut plan = sample_plan();
+
+        attach_guardrail_proof(&verifier, &mut plan).unwrap();
+
+        let proof = plan.verification_proof.expect("proof should be attached");
+        assert_eq!(proof.backend, VerificationBackend::Mock);
+        match proof.proof_type {
+            ZkProofType::GuardrailCompliance { all_passed, .. } => assert!(all_passed),
+            other => panic!("unexpected proof type: {other:?}"),
+        }
     }
 
     #[test]

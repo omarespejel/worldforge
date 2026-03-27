@@ -90,6 +90,15 @@ plan = world.plan(
     planner="cem",
 )
 
+# Or attach a guardrail-compliance proof while planning
+verified_plan = world.plan(
+    goal="spawn cube next to the red mug",
+    max_steps=8,
+    planner="cem",
+    verify_backend="mock",  # or "stark" / "ezkl"
+)
+assert verified_plan.verification_proof is not None
+
 # Or send a structured goal JSON payload for condition or goal-image planning
 goal_json = """
 {
@@ -227,7 +236,18 @@ worldforge eval \
   --output-json /tmp/eval-report.json \
   --output-markdown /tmp/eval-report.md \
   --output-csv /tmp/eval-report.csv
+
+worldforge plan \
+  --world <world-id> \
+  --goal "spawn cube next to the red mug" \
+  --provider mock \
+  --verify-backend mock \
+  --output-json /tmp/verified-plan.json
 ```
+
+REST planning accepts the same opt-in switch with a `verification_backend`
+field on `POST /v1/worlds/{id}/plan`; when supplied, the returned `Plan`
+includes `verification_proof`.
 
 ## Rust Quickstart
 

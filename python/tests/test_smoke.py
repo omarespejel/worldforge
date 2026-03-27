@@ -117,7 +117,25 @@ class WorldForgePythonPackageSmokeTests(unittest.TestCase):
         detached_bundle = prove_inference_transition_bundle(before, world.to_json(), provider="mock")
         self.assertEqual(detached_bundle.provider, "mock")
 
-        plan = world.plan(goal="spawn cube", max_steps=4, provider="mock")
+        plan = world.plan(
+            goal="spawn cube",
+            max_steps=4,
+            provider="mock",
+            verify_backend="mock",
+        )
+        self.assertIsNotNone(plan.verification_proof)
+        self.assertEqual(plan.verification_proof.backend, "Mock")
+        self.assertIn("GuardrailCompliance", plan.verification_proof_json())
+
+        module_plan = worldforge.plan(
+            world,
+            goal="spawn cube",
+            max_steps=4,
+            provider="mock",
+            verify_backend="mock",
+        )
+        self.assertIsNotNone(module_plan.verification_proof)
+        self.assertEqual(module_plan.verification_proof.backend, "Mock")
         guardrail_bundle = plan.prove_guardrail_bundle()
         self.assertGreaterEqual(guardrail_bundle.action_count, 1)
 

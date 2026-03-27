@@ -72,6 +72,10 @@ class WorldForgeSubmoduleImportTests(unittest.TestCase):
             prediction = world.predict(worldforge.Action.move_to(0.2, 0.8, 0.0), steps=2)
             self.assertEqual(prediction.provider, "manual-mock")
 
+            plan = world.plan(goal="spawn cube", max_steps=3, verify_backend="mock")
+            self.assertIsNotNone(plan.verification_proof)
+            self.assertEqual(plan.verification_proof.backend, "Mock")
+
 
 if __name__ == "__main__":
     unittest.main()

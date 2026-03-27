@@ -32,8 +32,9 @@ use worldforge_core::types::{BBox, Pose, Position, Rotation, Vec3, Velocity, Vid
 use worldforge_eval::{EvalReportFormat, EvalSuite};
 use worldforge_verify::{
     prove_guardrail_plan, prove_inference_transition, prove_latest_inference, prove_provenance,
-    verify_bundle, verify_proof, BundleVerificationReport, VerificationBackend, VerificationBundle,
-    VerificationResult, ZkProof, ZkVerifier,
+    verifier_for_backend as verify_backend_resolver, verify_bundle, verify_proof,
+    BundleVerificationReport, VerificationBackend, VerificationBundle, VerificationResult, ZkProof,
+    ZkVerifier,
 };
 
 /// Persistence backend used by the CLI.
@@ -550,6 +551,9 @@ pub enum Commands {
         /// Provider to use.
         #[arg(long, default_value = "mock")]
         provider: String,
+        /// Attach a guardrail-compliance proof to the generated plan.
+        #[arg(long, value_enum)]
+        verify_backend: Option<VerifyBackend>,
         /// Optional JSON file containing `Vec<GuardrailConfig>`.
         #[arg(long)]
         guardrails_json: Option<PathBuf>,
@@ -1188,6 +1192,7 @@ pub async fn run() -> Result<()> {
             planner,
             timeout,
             provider,
+            verify_backend,
             guardrails_json,
             disable_guardrails,
             output_json,
@@ -1201,6 +1206,7 @@ pub async fn run() -> Result<()> {
                     planner_name: &planner,
                     timeout,
                     provider: &provider,
+                    verify_backend: verify_backend.map(VerifyBackend::as_core),
                     goal_json: goal_json.as_deref(),
                     guardrails_json: guardrails_json.as_deref(),
                     disable_guardrails,
@@ -1666,6 +1672,7 @@ struct PlanOptions<'a> {
     planner_name: &'a str,
     timeout: f64,
     provider: &'a str,
+    verify_backend: Option<VerificationBackend>,
     goal_json: Option<&'a Path>,
     guardrails_json: Option<&'a Path>,
     disable_guardrails: bool,
@@ -1754,11 +1761,28 @@ fn require_provider<'a>(
 }
 
 fn verifier_for_backend(backend: VerificationBackend) -> Box<dyn ZkVerifier> {
-    backend.verifier()
+    verify_backend_resolver(backend)
 }
 
 fn verifier_for_proof(proof: &ZkProof) -> Box<dyn ZkVerifier> {
     verifier_for_backend(proof.backend)
+}
+
+fn core_proof_from_verify_proof(proof: &ZkProof) -> Result<worldforge_core::proof::ZkProof> {
+    let bytes = serde_json::to_vec(proof).context("failed to serialize verification proof")?;
+    serde_json::from_slice(&bytes).context("failed to convert verification proof into core shape")
+}
+
+fn attach_plan_verification(plan: &mut Plan, backend: Option<VerificationBackend>) -> Result<bool> {
+    let Some(backend) = backend else {
+        return Ok(false);
+    };
+
+    let verifier = verifier_for_backend(backend);
+    let bundle = prove_guardrail_plan(verifier.as_ref(), plan)
+        .map_err(|e| anyhow::anyhow!("failed to attach plan verification proof: {e}"))?;
+    plan.verification_proof = Some(core_proof_from_verify_proof(&bundle.proof)?);
+    Ok(true)
 }
 
 fn read_json_file<T: DeserializeOwned>(path: &Path) -> Result<T> {
@@ -3057,16 +3081,25 @@ async fn cmd_plan(
         timeout_seconds: options.timeout,
     };
 
-    let plan = world
+    let mut plan = world
         .plan(&request)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let proof_attached = attach_plan_verification(&mut plan, options.verify_backend)?;
 
     println!("Plan generated:");
     println!("  Actions: {}", plan.actions.len());
     println!("  Success probability: {:.2}", plan.success_probability);
     println!("  Planning time: {}ms", plan.planning_time_ms);
     println!("  Iterations: {}", plan.iterations_used);
+    if proof_attached {
+        let backend = plan
+            .verification_proof
+            .as_ref()
+            .map(|proof| proof.backend.as_str())
+            .unwrap_or("unknown");
+        println!("  Verification proof: attached via {backend}");
+    }
     println!();
     for (i, action) in plan.actions.iter().enumerate() {
         println!("  Step {}: {:?}", i + 1, action);
@@ -5008,6 +5041,8 @@ mod tests {
             "123e4567-e89b-12d3-a456-426614174000",
             "--goal",
             "spawn cube",
+            "--verify-backend",
+            "stark",
             "--guardrails-json",
             "/tmp/guardrails.json",
             "--output-json",
@@ -5017,11 +5052,13 @@ mod tests {
 
         match cli.command {
             Commands::Plan {
+                verify_backend,
                 guardrails_json,
                 disable_guardrails,
                 output_json,
                 ..
             } => {
+                assert_eq!(verify_backend, Some(VerifyBackend::Stark));
                 assert_eq!(guardrails_json, Some(PathBuf::from("/tmp/guardrails.json")));
                 assert!(!disable_guardrails);
                 assert_eq!(output_json, Some(PathBuf::from("/tmp/plan.json")));
@@ -5604,6 +5641,7 @@ mod tests {
                 planner_name: "sampling",
                 timeout: 10.0,
                 provider: "mock",
+                verify_backend: Some(VerificationBackend::Mock),
                 goal_json: None,
                 guardrails_json: Some(&guardrails_path),
                 disable_guardrails: false,
@@ -5615,6 +5653,12 @@ mod tests {
 
         let plan: worldforge_core::prediction::Plan = read_json_file(&plan_path).unwrap();
         assert!(!plan.actions.is_empty());
+        assert_eq!(
+            plan.verification_proof
+                .as_ref()
+                .map(|proof| proof.backend.as_str()),
+            Some("mock")
+        );
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -5680,6 +5724,7 @@ mod tests {
                 planner_name: "sampling",
                 timeout: 10.0,
                 provider: "mock",
+                verify_backend: None,
                 goal_json: Some(&goal_path),
                 guardrails_json: None,
                 disable_guardrails: false,
@@ -5771,6 +5816,7 @@ mod tests {
                 planner_name: "sampling",
                 timeout: 10.0,
                 provider: "mock",
+                verify_backend: None,
                 goal_json: Some(&goal_path),
                 guardrails_json: None,
                 disable_guardrails: false,
@@ -5815,6 +5861,7 @@ mod tests {
                 planner_name: "provider-native",
                 timeout: 10.0,
                 provider: "mock",
+                verify_backend: None,
                 goal_json: None,
                 guardrails_json: None,
                 disable_guardrails: false,
@@ -5877,6 +5924,7 @@ mod tests {
             guardrail_compliance: Vec::new(),
             planning_time_ms: 0,
             iterations_used: 1,
+            verification_proof: None,
         };
         let plan_path = dir.join("plan.json");
         let execution_path = dir.join("execution.json");
@@ -6406,6 +6454,7 @@ mod tests {
                 planner_name: "sampling",
                 timeout: 10.0,
                 provider: "mock",
+                verify_backend: None,
                 goal_json: None,
                 guardrails_json: None,
                 disable_guardrails: false,

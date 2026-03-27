@@ -30,8 +30,8 @@ use worldforge_core::world::World;
 use worldforge_eval::{EvalReportFormat, EvalSuite};
 use worldforge_verify::{
     prove_guardrail_plan, prove_inference_transition, prove_latest_inference, prove_provenance,
-    sha256_hash, verify_bundle, verify_proof, VerificationBackend, VerificationBundle,
-    VerificationResult, ZkProof, ZkVerifier,
+    sha256_hash, verifier_for_backend as verify_backend_resolver, verify_bundle, verify_proof,
+    VerificationBackend, VerificationBundle, VerificationResult, ZkProof, ZkVerifier,
 };
 
 /// Server configuration.
@@ -293,6 +293,8 @@ struct PlanRequest {
     max_steps: u32,
     #[serde(default)]
     provider: Option<String>,
+    #[serde(default)]
+    verification_backend: Option<String>,
     #[serde(default = "default_timeout_seconds")]
     timeout_seconds: f64,
     #[serde(default = "default_planner_name")]
@@ -643,7 +645,41 @@ fn default_source_label() -> String {
 }
 
 fn verifier_for_backend(backend: VerificationBackend) -> Box<dyn ZkVerifier> {
-    backend.verifier()
+    verify_backend_resolver(backend)
+}
+
+fn parse_requested_verification_backend(
+    backend: Option<&str>,
+) -> std::result::Result<Option<VerificationBackend>, String> {
+    backend
+        .map(|value| {
+            value
+                .parse::<VerificationBackend>()
+                .map_err(|e| e.to_string())
+        })
+        .transpose()
+}
+
+fn core_proof_from_verify_proof(
+    proof: &ZkProof,
+) -> std::result::Result<worldforge_core::proof::ZkProof, String> {
+    let bytes = serde_json::to_vec(proof).map_err(|error| error.to_string())?;
+    serde_json::from_slice(&bytes).map_err(|error| error.to_string())
+}
+
+fn attach_plan_verification(
+    plan: &mut Plan,
+    backend: Option<VerificationBackend>,
+) -> std::result::Result<bool, String> {
+    let Some(backend) = backend else {
+        return Ok(false);
+    };
+
+    let verifier = verifier_for_backend(backend);
+    let bundle =
+        prove_guardrail_plan(verifier.as_ref(), plan).map_err(|error| error.to_string())?;
+    plan.verification_proof = Some(core_proof_from_verify_proof(&bundle.proof)?);
+    Ok(true)
 }
 
 /// JSON response envelope.
@@ -1917,7 +1953,19 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                             req.timeout_seconds,
                         );
                         match world.plan(&plan_req).await {
-                            Ok(plan) => (200, ApiResponse::ok(plan)),
+                            Ok(mut plan) => {
+                                let verification_backend =
+                                    match parse_requested_verification_backend(
+                                        req.verification_backend.as_deref(),
+                                    ) {
+                                        Ok(backend) => backend,
+                                        Err(error) => return (400, error_response(&error)),
+                                    };
+                                match attach_plan_verification(&mut plan, verification_backend) {
+                                    Ok(_) => (200, ApiResponse::ok(plan)),
+                                    Err(error) => (500, error_response(&error)),
+                                }
+                            }
                             Err(error) => {
                                 (api_error_status(&error), error_response(&error.to_string()))
                             }
@@ -3365,6 +3413,28 @@ mod tests {
                 weather: worldforge_core::action::Weather::Rain
             })
         ));
+    }
+
+    #[tokio::test]
+    async fn test_route_plan_attaches_verification_proof_when_requested() {
+        let state = test_state();
+        let id = seed_world(&state, "plan-verified", "mock").await;
+        let body = serde_json::json!({
+            "goal": "spawn cube",
+            "provider": "mock",
+            "verification_backend": "mock"
+        })
+        .to_string();
+
+        let (status, resp) = route("POST", &format!("/v1/worlds/{id}/plan"), &body, &state).await;
+        assert_eq!(status, 200);
+
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(value["data"]["verification_proof"]["backend"], "Mock");
+        assert_eq!(
+            value["data"]["verification_proof"]["proof_type"]["GuardrailCompliance"]["all_passed"],
+            true
+        );
     }
 
     #[tokio::test]

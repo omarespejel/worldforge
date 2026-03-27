@@ -36,7 +36,8 @@ use worldforge_verify::{
     prove_guardrail_plan as prove_guardrail_plan_bundle,
     prove_inference_transition as prove_inference_transition_bundle,
     prove_latest_inference as prove_latest_inference_bundle,
-    prove_provenance as prove_provenance_state_bundle, verify_bundle, verify_proof,
+    prove_provenance as prove_provenance_state_bundle,
+    verifier_for_backend as verify_backend_resolver, verify_bundle, verify_proof,
     BundleVerificationReport, GuardrailArtifact, InferenceArtifact, ProvenanceArtifact,
     VerificationBackend, VerificationBundle, VerificationResult as CoreVerificationResult,
     ZkVerifier,
@@ -1438,7 +1439,7 @@ impl PyWorld {
     }
 
     /// Plan a sequence of actions to achieve either a natural-language or structured goal.
-    #[pyo3(signature = (goal=None, goal_json=None, max_steps=10, timeout_seconds=30.0, provider=None, planner="sampling", num_samples=None, top_k=None, population_size=None, elite_fraction=None, num_iterations=None, learning_rate=None, horizon=None, replanning_interval=None, guardrails_json=None, disable_guardrails=false))]
+    #[pyo3(signature = (goal=None, goal_json=None, max_steps=10, timeout_seconds=30.0, provider=None, planner="sampling", num_samples=None, top_k=None, population_size=None, elite_fraction=None, num_iterations=None, learning_rate=None, horizon=None, replanning_interval=None, guardrails_json=None, disable_guardrails=false, verify_backend=None))]
     #[allow(clippy::too_many_arguments)]
     fn plan(
         &self,
@@ -1458,6 +1459,7 @@ impl PyWorld {
         replanning_interval: Option<u32>,
         guardrails_json: Option<&str>,
         disable_guardrails: bool,
+        verify_backend: Option<&str>,
     ) -> PyResult<PyPlan> {
         let rt = tokio::runtime::Runtime::new().map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("failed to create runtime: {e}"))
@@ -1494,9 +1496,10 @@ impl PyWorld {
             request = request.disable_guardrails();
         }
 
-        let plan = rt.block_on(world.plan(&request)).map_err(|e| {
+        let mut plan = rt.block_on(world.plan(&request)).map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("planning failed: {e}"))
         })?;
+        attach_plan_verification(&mut plan, verify_backend)?;
         Ok(PyPlan { inner: plan })
     }
 
@@ -3816,6 +3819,29 @@ impl PyPlan {
         })
     }
 
+    /// Attached verification proof, if this plan was generated with verification enabled.
+    #[getter]
+    fn verification_proof(&self) -> PyResult<Option<PyZkProof>> {
+        self.inner
+            .verification_proof
+            .as_ref()
+            .map(|proof| verify_proof_from_core_proof(proof).map(|inner| PyZkProof { inner }))
+            .transpose()
+    }
+
+    /// Serialize the attached verification proof to JSON, if present.
+    fn verification_proof_json(&self) -> PyResult<Option<String>> {
+        self.inner
+            .verification_proof
+            .as_ref()
+            .map(|proof| {
+                serde_json::to_string(proof).map_err(|e| {
+                    pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+                })
+            })
+            .transpose()
+    }
+
     /// Generate a typed guardrail-compliance verification bundle for this plan.
     fn prove_guardrail_bundle(&self) -> PyResult<PyGuardrailBundle> {
         let verifier = worldforge_verify::MockVerifier::new();
@@ -3922,7 +3948,7 @@ impl PyPlanExecution {
 ///
 /// Supports sampling, CEM, MPC, gradient, and provider-native planning.
 #[pyfunction]
-#[pyo3(signature = (world, goal=None, goal_json=None, max_steps=10, timeout_seconds=30.0, provider="mock", planner="sampling", num_samples=None, top_k=None, population_size=None, elite_fraction=None, num_iterations=None, learning_rate=None, horizon=None, replanning_interval=None, guardrails_json=None, disable_guardrails=false))]
+#[pyo3(signature = (world, goal=None, goal_json=None, max_steps=10, timeout_seconds=30.0, provider="mock", planner="sampling", num_samples=None, top_k=None, population_size=None, elite_fraction=None, num_iterations=None, learning_rate=None, horizon=None, replanning_interval=None, guardrails_json=None, disable_guardrails=false, verify_backend=None))]
 #[allow(clippy::too_many_arguments)]
 fn plan(
     world: &PyWorld,
@@ -3942,6 +3968,7 @@ fn plan(
     replanning_interval: Option<u32>,
     guardrails_json: Option<&str>,
     disable_guardrails: bool,
+    verify_backend: Option<&str>,
 ) -> PyResult<PyPlan> {
     world.plan(
         goal,
@@ -3960,6 +3987,7 @@ fn plan(
         replanning_interval,
         guardrails_json,
         disable_guardrails,
+        verify_backend,
     )
 }
 
@@ -4792,7 +4820,7 @@ impl PyZkProof {
 
     /// Verify this proof and return (valid, details).
     fn verify(&self) -> PyResult<(bool, String)> {
-        let verifier = self.inner.backend.verifier();
+        let verifier = verify_backend_resolver(self.inner.backend);
         let result = verify_proof(verifier.as_ref(), &self.inner).map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("verification failed: {e}"))
         })?;
@@ -5334,7 +5362,7 @@ impl PyProvenanceVerificationReport {
 fn verify_inference_bundle_inner(
     bundle: &VerificationBundle<InferenceArtifact>,
 ) -> PyResult<PyInferenceVerificationReport> {
-    let verifier = bundle.proof.backend.verifier();
+    let verifier = verify_backend_resolver(bundle.proof.backend);
     let inner = verify_bundle(verifier.as_ref(), bundle).map_err(|e| {
         pyo3::exceptions::PyRuntimeError::new_err(format!("verification failed: {e}"))
     })?;
@@ -5344,7 +5372,7 @@ fn verify_inference_bundle_inner(
 fn verify_guardrail_bundle_inner(
     bundle: &VerificationBundle<GuardrailArtifact>,
 ) -> PyResult<PyGuardrailVerificationReport> {
-    let verifier = bundle.proof.backend.verifier();
+    let verifier = verify_backend_resolver(bundle.proof.backend);
     let inner = verify_bundle(verifier.as_ref(), bundle).map_err(|e| {
         pyo3::exceptions::PyRuntimeError::new_err(format!("verification failed: {e}"))
     })?;
@@ -5354,7 +5382,7 @@ fn verify_guardrail_bundle_inner(
 fn verify_provenance_bundle_inner(
     bundle: &VerificationBundle<ProvenanceArtifact>,
 ) -> PyResult<PyProvenanceVerificationReport> {
-    let verifier = bundle.proof.backend.verifier();
+    let verifier = verify_backend_resolver(bundle.proof.backend);
     let inner = verify_bundle(verifier.as_ref(), bundle).map_err(|e| {
         pyo3::exceptions::PyRuntimeError::new_err(format!("verification failed: {e}"))
     })?;
@@ -5367,8 +5395,52 @@ fn parse_verification_backend(backend: &str) -> PyResult<VerificationBackend> {
     })
 }
 
+fn core_proof_from_verify_proof(
+    proof: &worldforge_verify::ZkProof,
+) -> PyResult<worldforge_core::proof::ZkProof> {
+    let bytes = serde_json::to_vec(proof).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!("failed to serialize proof: {e}"))
+    })?;
+    serde_json::from_slice(&bytes).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "failed to convert proof into core representation: {e}"
+        ))
+    })
+}
+
+fn verify_proof_from_core_proof(
+    proof: &worldforge_core::proof::ZkProof,
+) -> PyResult<worldforge_verify::ZkProof> {
+    let bytes = serde_json::to_vec(proof).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!("failed to serialize proof: {e}"))
+    })?;
+    serde_json::from_slice(&bytes).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "failed to convert proof into verifier representation: {e}"
+        ))
+    })
+}
+
+fn attach_plan_verification(
+    plan: &mut worldforge_core::prediction::Plan,
+    backend: Option<&str>,
+) -> PyResult<()> {
+    let Some(backend) = backend else {
+        return Ok(());
+    };
+
+    let verifier = verify_backend_resolver(parse_verification_backend(backend)?);
+    let bundle = prove_guardrail_plan_bundle(verifier.as_ref(), plan).map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("proof generation failed: {e}"))
+    })?;
+    plan.verification_proof = Some(core_proof_from_verify_proof(&bundle.proof)?);
+    Ok(())
+}
+
 fn verifier_from_backend_name(backend: &str) -> PyResult<Box<dyn ZkVerifier>> {
-    Ok(parse_verification_backend(backend)?.verifier())
+    Ok(verify_backend_resolver(parse_verification_backend(
+        backend,
+    )?))
 }
 
 /// Mock-backed verifier facade exposed to Python.
@@ -5715,7 +5787,7 @@ fn verify_bundle_json(bundle_json: &str, bundle_type: &str) -> PyResult<String> 
                         "invalid inference bundle JSON: {e}"
                     ))
                 })?;
-            let verifier = bundle.proof.backend.verifier();
+            let verifier = verify_backend_resolver(bundle.proof.backend);
             serde_json::to_string_pretty(&verify_bundle(verifier.as_ref(), &bundle).map_err(
                 |e| pyo3::exceptions::PyRuntimeError::new_err(format!("verification failed: {e}")),
             )?)
@@ -5727,7 +5799,7 @@ fn verify_bundle_json(bundle_json: &str, bundle_type: &str) -> PyResult<String> 
                         "invalid guardrail bundle JSON: {e}"
                     ))
                 })?;
-            let verifier = bundle.proof.backend.verifier();
+            let verifier = verify_backend_resolver(bundle.proof.backend);
             serde_json::to_string_pretty(&verify_bundle(verifier.as_ref(), &bundle).map_err(
                 |e| pyo3::exceptions::PyRuntimeError::new_err(format!("verification failed: {e}")),
             )?)
@@ -5739,7 +5811,7 @@ fn verify_bundle_json(bundle_json: &str, bundle_type: &str) -> PyResult<String> 
                         "invalid provenance bundle JSON: {e}"
                     ))
                 })?;
-            let verifier = bundle.proof.backend.verifier();
+            let verifier = verify_backend_resolver(bundle.proof.backend);
             serde_json::to_string_pretty(&verify_bundle(verifier.as_ref(), &bundle).map_err(
                 |e| pyo3::exceptions::PyRuntimeError::new_err(format!("verification failed: {e}")),
             )?)
@@ -7435,6 +7507,7 @@ mod tests {
                 None,
                 None,
                 false,
+                None,
             )
             .unwrap();
         assert!(plan.action_count() > 0);
@@ -7463,11 +7536,53 @@ mod tests {
             None,
             None,
             false,
+            Some("mock"),
         )
         .unwrap();
         let json = p.to_json().unwrap();
         let p2 = PyPlan::from_json(&json).unwrap();
         assert_eq!(p2.action_count(), p.action_count());
+        assert_eq!(
+            p2.verification_proof()
+                .unwrap()
+                .as_ref()
+                .map(|proof| proof.backend()),
+            Some("Mock".to_string())
+        );
+    }
+
+    #[test]
+    fn test_plan_world_attaches_verification_proof() {
+        let world = PyWorld::new("plan_verified", "mock");
+        let plan = world
+            .plan(
+                Some("spawn cube"),
+                None,
+                4,
+                10.0,
+                Some("mock"),
+                "sampling",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                false,
+                Some("mock"),
+            )
+            .unwrap();
+
+        let proof = plan.verification_proof().unwrap().unwrap();
+        assert_eq!(proof.backend(), "Mock");
+        assert!(plan
+            .verification_proof_json()
+            .unwrap()
+            .unwrap()
+            .contains("GuardrailCompliance"));
     }
 
     #[test]
@@ -7491,6 +7606,7 @@ mod tests {
             None,
             None,
             false,
+            None,
         )
         .unwrap();
         let repr = p.__repr__();
@@ -7518,6 +7634,7 @@ mod tests {
                 None,
                 None,
                 false,
+                None,
             )
             .unwrap();
 
@@ -7551,6 +7668,7 @@ mod tests {
             None,
             None,
             false,
+            None,
         );
 
         if supports_native {
@@ -7587,6 +7705,7 @@ mod tests {
                 None,
                 Some(guardrails_json),
                 false,
+                None,
             )
             .unwrap();
 
@@ -7635,6 +7754,7 @@ mod tests {
                 None,
                 None,
                 false,
+                None,
             )
             .unwrap();
 
@@ -7729,6 +7849,7 @@ mod tests {
                 None,
                 None,
                 false,
+                None,
             )
             .unwrap();
 
@@ -7777,6 +7898,7 @@ mod tests {
                 None,
                 None,
                 false,
+                None,
             )
             .unwrap();
         let execution = world
@@ -8043,6 +8165,7 @@ mod tests {
                 None,
                 Some(r#"[{"guardrail":"NoCollisions","blocking":true}]"#),
                 false,
+                None,
             )
             .unwrap();
 
@@ -8072,6 +8195,7 @@ mod tests {
                 None,
                 Some(r#"[{"guardrail":"NoCollisions","blocking":true}]"#),
                 false,
+                None,
             )
             .unwrap();
 
@@ -8137,6 +8261,7 @@ mod tests {
                 None,
                 Some(r#"[{"guardrail":"NoCollisions","blocking":true}]"#),
                 false,
+                None,
             )
             .unwrap();
         let verifier = worldforge_verify::MockVerifier::new();

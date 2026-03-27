@@ -14,6 +14,7 @@
 //! - [`action`] — Action type system
 //! - [`provider`] — Provider abstraction and registry
 //! - [`prediction`] — Prediction engine and planning
+//! - [`proof`] — Shared proof metadata types
 //! - [`guardrail`] — Safety constraints
 //! - [`world`] — World orchestration
 
@@ -24,6 +25,7 @@ pub mod error;
 pub mod goal_image;
 pub mod guardrail;
 pub mod prediction;
+pub mod proof;
 pub mod provider;
 pub mod scene;
 pub mod state;

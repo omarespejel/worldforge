@@ -1120,6 +1120,7 @@ async fn mpc_search(
             guardrail_compliance,
             planning_time_ms: context.start.elapsed().as_millis() as u64,
             iterations_used: iterations.max(1),
+            verification_proof: None,
         },
     }))
 }
@@ -1206,6 +1207,7 @@ async fn evaluate_candidate_sequence(
             guardrail_compliance,
             planning_time_ms: context.start.elapsed().as_millis() as u64,
             iterations_used: 1,
+            verification_proof: None,
         },
     }))
 }
@@ -2854,6 +2856,7 @@ mod tests {
             guardrail_compliance: Vec::new(),
             planning_time_ms: 0,
             iterations_used: 1,
+            verification_proof: None,
         };
         let config = PredictionConfig {
             guardrails: vec![crate::guardrail::GuardrailConfig {
@@ -2918,6 +2921,7 @@ mod tests {
             guardrail_compliance: Vec::new(),
             planning_time_ms: 0,
             iterations_used: 1,
+            verification_proof: None,
         };
         let config = PredictionConfig {
             fallback_provider: Some("fallback".to_string()),
@@ -4067,6 +4071,7 @@ mod tests {
             guardrail_compliance: Vec::new(),
             planning_time_ms: 0,
             iterations_used,
+            verification_proof: None,
         }
     }
 
@@ -4424,6 +4429,7 @@ mod tests {
                 guardrail_compliance: Vec::new(),
                 planning_time_ms: 0,
                 iterations_used: 1,
+                verification_proof: None,
             })
         }
 

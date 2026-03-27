@@ -282,6 +282,7 @@ impl WorldModelProvider for MockProvider {
             guardrail_compliance,
             planning_time_ms: started.elapsed().as_millis() as u64,
             iterations_used,
+            verification_proof: None,
         })
     }
 

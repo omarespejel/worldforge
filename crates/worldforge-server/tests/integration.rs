@@ -1902,6 +1902,7 @@ async fn test_e2e_zk_proof_types_serialization() {
         guardrail_compliance: Vec::new(),
         planning_time_ms: 100,
         iterations_used: 5,
+        verification_proof: None,
     };
     let guardrail_proof = verifier.prove_guardrail_compliance(&plan, &[]).unwrap();
     let json = serde_json::to_string(&guardrail_proof).unwrap();

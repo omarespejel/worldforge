@@ -1064,6 +1064,9 @@ pub struct Plan {
     pub planning_time_ms: u64,
     /// Number of iterations used.
     pub iterations_used: u32,
+    /// Attached verification proof when planning was augmented with proof generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_proof: Option<crate::proof::ZkProof>,
 }
 
 /// Result of executing a materialized plan against a live world.
@@ -1451,6 +1454,53 @@ mod tests {
             PlanGoal::GoalImage(image) => assert_eq!(image.shape, vec![8, 12]),
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn test_plan_serialization_defaults_missing_verification_proof() {
+        let plan_json = serde_json::json!({
+            "actions": [],
+            "predicted_states": [],
+            "predicted_videos": null,
+            "total_cost": 0.0,
+            "success_probability": 0.0,
+            "guardrail_compliance": [],
+            "planning_time_ms": 0,
+            "iterations_used": 0
+        });
+
+        let plan: Plan = serde_json::from_value(plan_json).unwrap();
+        assert!(plan.verification_proof.is_none());
+    }
+
+    #[test]
+    fn test_plan_serialization_roundtrip_preserves_verification_proof() {
+        let proof = crate::proof::ZkProof {
+            proof_type: crate::proof::ZkProofType::GuardrailCompliance {
+                plan_hash: [1; 32],
+                guardrail_hashes: vec![[2; 32]],
+                all_passed: true,
+            },
+            proof_data: vec![1, 2, 3],
+            backend: crate::proof::VerificationBackend::Mock,
+            generation_time_ms: 5,
+        };
+        let plan = Plan {
+            actions: Vec::new(),
+            predicted_states: Vec::new(),
+            predicted_videos: None,
+            total_cost: 0.0,
+            success_probability: 1.0,
+            guardrail_compliance: Vec::new(),
+            planning_time_ms: 1,
+            iterations_used: 1,
+            verification_proof: Some(proof.clone()),
+        };
+
+        let json = serde_json::to_string(&plan).unwrap();
+        let restored: Plan = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.verification_proof, Some(proof));
     }
 
     #[test]
