@@ -3,7 +3,8 @@
 //! This is an experimental deterministic local surrogate for the Marble
 //! family named in the project spec. It does not implement a real remote
 //! API; instead it provides stable prediction, generation, reasoning,
-//! transfer, embedding, and health-check behavior for development and tests.
+//! planning, transfer, embedding, and health-check behavior for development
+//! and tests.
 
 use std::collections::hash_map::DefaultHasher;
 use std::fmt::Write as _;
@@ -13,9 +14,10 @@ use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::native_planning;
 use worldforge_core::action::{evaluate_condition, Action, ActionSpaceType, Condition};
 use worldforge_core::error::{Result, WorldForgeError};
-use worldforge_core::prediction::{PhysicsScores, Prediction, PredictionConfig};
+use worldforge_core::prediction::{PhysicsScores, Plan, PlanRequest, Prediction, PredictionConfig};
 use worldforge_core::provider::{
     CostEstimate, EmbeddingInput, EmbeddingOutput, GenerationConfig, GenerationPrompt,
     HealthStatus, LatencyProfile, Operation, ProviderCapabilities, ReasoningInput, ReasoningOutput,
@@ -85,7 +87,7 @@ impl WorldModelProvider for MarbleProvider {
             ],
             supports_depth: true,
             supports_segmentation: true,
-            supports_planning: false,
+            supports_planning: true,
             latency_profile: LatencyProfile {
                 p50_ms: 22,
                 p95_ms: 40,
@@ -205,6 +207,14 @@ impl WorldModelProvider for MarbleProvider {
             true,
             true,
         ))
+    }
+
+    async fn plan(&self, request: &PlanRequest) -> Result<Plan> {
+        let step_cost = self.estimate_cost(&Operation::Predict {
+            steps: 1,
+            resolution: (320, 180),
+        });
+        native_planning::plan_native(self.name.as_str(), request, step_cost)
     }
 
     async fn health_check(&self) -> Result<HealthStatus> {
@@ -1233,6 +1243,7 @@ fn canonical_json(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use worldforge_core::prediction::{PlanGoal, PlanRequest, PlannerType};
 
     use worldforge_core::action::{Action, Condition, Weather};
     use worldforge_core::provider::{EmbeddingInput, GenerationConfig, GenerationPrompt};
@@ -1279,7 +1290,7 @@ mod tests {
         assert!(caps.embed);
         assert!(caps.supports_depth);
         assert!(caps.supports_segmentation);
-        assert!(!caps.supports_planning);
+        assert!(caps.supports_planning);
         assert_eq!(provider.name(), "marble");
     }
 
@@ -1414,5 +1425,76 @@ mod tests {
         let health = provider.health_check().await.unwrap();
         assert!(health.healthy);
         assert!(health.message.contains("marble"));
+    }
+
+    #[tokio::test]
+    async fn marble_native_planning_is_deterministic() {
+        let provider = MarbleProvider::new();
+        let (world, object_id) = sample_world();
+        let mut target = world.clone();
+        {
+            let object = target.scene.get_object_mut(&object_id).unwrap();
+            object.set_position(Position {
+                x: 0.4,
+                y: 0.8,
+                z: 0.0,
+            });
+        }
+
+        let request = PlanRequest {
+            current_state: world.clone(),
+            goal: PlanGoal::TargetState(Box::new(target)),
+            max_steps: 4,
+            guardrails: Vec::new(),
+            planner: PlannerType::Sampling {
+                num_samples: 8,
+                top_k: 2,
+            },
+            timeout_seconds: 2.0,
+            fallback_provider: None,
+        };
+
+        let first = provider.plan(&request).await.unwrap();
+        let second = provider.plan(&request).await.unwrap();
+
+        assert_eq!(
+            serde_json::to_string(&first.actions).unwrap(),
+            serde_json::to_string(&second.actions).unwrap()
+        );
+        assert!(!first.actions.is_empty());
+        assert_eq!(first.predicted_states.len(), first.actions.len());
+        assert!(matches!(
+            first.actions.first(),
+            Some(Action::Place { object, .. }) if *object == object_id
+        ));
+        assert!(first.success_probability >= 0.95);
+    }
+
+    #[tokio::test]
+    async fn marble_native_planning_rejects_impossible_conditions() {
+        let provider = MarbleProvider::new();
+        let (world, _) = sample_world();
+        let missing = uuid::Uuid::new_v4();
+        let request = PlanRequest {
+            current_state: world,
+            goal: PlanGoal::Condition(Condition::ObjectExists { object: missing }),
+            max_steps: 2,
+            guardrails: Vec::new(),
+            planner: PlannerType::Sampling {
+                num_samples: 4,
+                top_k: 1,
+            },
+            timeout_seconds: 2.0,
+            fallback_provider: None,
+        };
+
+        let error = provider.plan(&request).await.unwrap_err();
+        match error {
+            WorldForgeError::NoFeasiblePlan { goal, reason } => {
+                assert!(goal.contains("ObjectExists"));
+                assert!(reason.contains("immutable"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 }

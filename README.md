@@ -298,6 +298,8 @@ Auto-detection also registers `genie` and `marble` as experimental local
 surrogates so offline workflows can exercise provider orchestration without a
 remote dependency; `MarbleProvider` is distinct from the mock backend and is
 surfaced as experimental support rather than a vendor-faithful API binding.
+Unlike the mock backend, Marble now exposes deterministic native planning in
+addition to prediction, generation, reasoning, transfer, and embedding.
 
 The same embedding surface is exposed over the CLI as `worldforge embed` and
 over the REST API as `POST /v1/providers/{name}/embed`.

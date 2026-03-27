@@ -10,7 +10,7 @@
 //! - [`runway`] — Runway GWM (Worlds, Robotics, Avatars)
 //! - [`jepa`] — Meta JEPA (local deterministic inference, ZK-compatible)
 //! - [`genie`] — Google Genie (deterministic local surrogate for prediction, reasoning, transfer, and native planning)
-//! - [`marble`] — Experimental deterministic local surrogate for Marble
+//! - [`marble`] — Experimental deterministic local surrogate for Marble with native planning
 //! - [`native_planning`] — shared deterministic adapter-native planning helper
 
 pub mod cosmos;
@@ -43,7 +43,7 @@ use worldforge_core::WorldForge;
 /// - `JEPA_BACKEND` → optional backend override (`burn`, `pytorch`, `onnx`, `safetensors`)
 /// - `GENIE_API_KEY` → optional credential hint for `GenieProvider`
 /// - `GENIE_API_ENDPOINT` → optional endpoint override for `GenieProvider`
-/// - `MarbleProvider` → always registered as an experimental local surrogate
+/// - `MarbleProvider` → always registered as an experimental local surrogate with native planning
 ///
 /// A `MockProvider` is always registered for testing.
 /// The auto-detected Cosmos entry is capability-complete for its documented
@@ -56,8 +56,8 @@ use worldforge_core::WorldForge;
 /// `transfer`, and provider-native planning through the local deterministic
 /// backend.
 /// Marble is an experimental deterministic local surrogate that registers by
-/// default and exposes prediction, generation, reasoning, transfer, and
-/// embedding capabilities without a remote transport.
+/// default and exposes prediction, generation, reasoning, planning, transfer,
+/// and embedding capabilities without a remote transport.
 ///
 /// # Examples
 ///
@@ -308,7 +308,7 @@ mod tests {
         assert!(capabilities.action_conditioned);
         assert!(capabilities.supports_depth);
         assert!(capabilities.supports_segmentation);
-        assert!(!capabilities.supports_planning);
+        assert!(capabilities.supports_planning);
         assert!(registry
             .find_by_capability("embed")
             .iter()
