@@ -300,6 +300,8 @@ struct PlanRequest {
     #[serde(default)]
     provider: Option<String>,
     #[serde(default)]
+    fallback_provider: Option<String>,
+    #[serde(default)]
     verification_backend: Option<String>,
     #[serde(default = "default_timeout_seconds")]
     timeout_seconds: f64,
@@ -491,6 +493,7 @@ fn build_plan_request(
     guardrails: Vec<GuardrailConfig>,
     planner: PlannerType,
     timeout_seconds: f64,
+    fallback_provider: Option<String>,
 ) -> worldforge_core::prediction::PlanRequest {
     worldforge_core::prediction::PlanRequest {
         current_state,
@@ -499,6 +502,7 @@ fn build_plan_request(
         guardrails,
         planner,
         timeout_seconds,
+        fallback_provider,
     }
 }
 
@@ -575,6 +579,9 @@ struct VerifyRequest {
     /// Optional provider override for planning or history-backed inference proofs.
     #[serde(default)]
     provider: Option<String>,
+    /// Optional fallback provider when planning is generated for verification.
+    #[serde(default)]
+    fallback_provider: Option<String>,
     /// Explicit input state for inference verification.
     #[serde(default)]
     input_state: Option<WorldState>,
@@ -1939,8 +1946,15 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                             Err(e) => return (404, error_response(&e.to_string())),
                         };
                         let provider_name = resolve_world_provider(&ws, req.provider.as_deref());
-                        if let Err(e) = state.registry.get(&provider_name) {
-                            return (404, error_response(&e.to_string()));
+                        if req.fallback_provider.is_none() {
+                            if let Err(e) = state.registry.get(&provider_name) {
+                                return (404, error_response(&e.to_string()));
+                            }
+                        }
+                        if let Some(fallback_provider) = req.fallback_provider.as_deref() {
+                            if let Err(e) = state.registry.get(fallback_provider) {
+                                return (404, error_response(&e.to_string()));
+                            }
                         }
                         let planner = match planner_from_request(&req) {
                             Ok(planner) => planner,
@@ -1959,6 +1973,7 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                             resolve_guardrails(req.guardrails, req.disable_guardrails),
                             planner,
                             req.timeout_seconds,
+                            req.fallback_provider,
                         );
                         match world.plan(&plan_req).await {
                             Ok(mut plan) => {
@@ -2104,8 +2119,17 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                                     };
                                     let provider_name =
                                         resolve_world_provider(&ws, req.provider.as_deref());
-                                    if let Err(e) = state.registry.get(&provider_name) {
-                                        return (404, error_response(&e.to_string()));
+                                    if req.fallback_provider.is_none() {
+                                        if let Err(e) = state.registry.get(&provider_name) {
+                                            return (404, error_response(&e.to_string()));
+                                        }
+                                    }
+                                    if let Some(fallback_provider) =
+                                        req.fallback_provider.as_deref()
+                                    {
+                                        if let Err(e) = state.registry.get(fallback_provider) {
+                                            return (404, error_response(&e.to_string()));
+                                        }
                                     }
                                     let planner = match planner_from_verify_request(&req) {
                                         Ok(planner) => planner,
@@ -2127,6 +2151,7 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                                         ),
                                         planner,
                                         req.timeout_seconds,
+                                        req.fallback_provider.clone(),
                                     );
                                     match world.plan(&plan_req).await {
                                         Ok(plan) => plan,
@@ -3519,7 +3544,8 @@ mod tests {
         let id = seed_world(&state, "plan-verified", "mock").await;
         let body = serde_json::json!({
             "goal": "spawn cube",
-            "provider": "mock",
+            "provider": "missing",
+            "fallback_provider": "mock",
             "verification_backend": "mock"
         })
         .to_string();
@@ -4091,6 +4117,8 @@ mod tests {
         let verify_body = serde_json::json!({
             "proof_type": "guardrail",
             "goal": "spawn cube",
+            "provider": "missing",
+            "fallback_provider": "mock",
             "guardrails": [
                 {
                     "guardrail": "NoCollisions",
@@ -4140,6 +4168,8 @@ mod tests {
 
         let verify_body = serde_json::json!({
             "proof_type": "guardrail",
+            "provider": "missing",
+            "fallback_provider": "mock",
             "goal": {
                 "type": "condition",
                 "condition": {

@@ -560,6 +560,7 @@ async fn test_cosmos_full_stack_native_planning_surface() {
         guardrails: Vec::new(),
         planner: PlannerType::ProviderNative,
         timeout_seconds: 5.0,
+        fallback_provider: None,
     };
 
     let plan = provider.plan(&request).await.unwrap();
@@ -636,6 +637,7 @@ async fn test_runway_full_stack_native_planning_surface() {
         guardrails: Vec::new(),
         planner: PlannerType::ProviderNative,
         timeout_seconds: 5.0,
+        fallback_provider: None,
     };
 
     let plan = provider.plan(&request).await.unwrap();
@@ -862,6 +864,7 @@ async fn test_genie_provider_native_plan_spawn_goal() {
         guardrails: Vec::new(),
         planner: PlannerType::ProviderNative,
         timeout_seconds: 5.0,
+        fallback_provider: None,
     };
 
     let caps = provider.capabilities();
@@ -1049,6 +1052,7 @@ async fn test_mock_provider_native_plan_spawn_goal() {
         guardrails: Vec::new(),
         planner: PlannerType::ProviderNative,
         timeout_seconds: 5.0,
+        fallback_provider: None,
     };
 
     if mock_supports_native_planning() {
@@ -1097,6 +1101,7 @@ async fn test_mock_provider_native_plan_respects_blocking_guardrail() {
         }],
         planner: PlannerType::ProviderNative,
         timeout_seconds: 5.0,
+        fallback_provider: None,
     };
 
     if mock_supports_native_planning() {
@@ -1484,6 +1489,7 @@ async fn test_genie_native_plan_supports_goal_image() {
             guardrails: Vec::new(),
             planner: PlannerType::ProviderNative,
             timeout_seconds: 5.0,
+            fallback_provider: None,
         })
         .await
         .unwrap();

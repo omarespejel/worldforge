@@ -2780,6 +2780,7 @@ mod tests {
                 planner: worldforge_core::prediction::PlannerType::ProviderNative,
                 guardrails: Vec::new(),
                 timeout_seconds: 10.0,
+                fallback_provider: None,
             })
             .await
             .unwrap();

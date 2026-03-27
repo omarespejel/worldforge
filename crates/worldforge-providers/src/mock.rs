@@ -2174,6 +2174,7 @@ mod tests {
             guardrails: Vec::new(),
             planner: PlannerType::ProviderNative,
             timeout_seconds: 5.0,
+            fallback_provider: None,
         }
     }
 

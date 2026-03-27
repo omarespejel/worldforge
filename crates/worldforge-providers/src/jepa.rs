@@ -1982,6 +1982,7 @@ mod tests {
             guardrails: Vec::new(),
             planner: worldforge_core::prediction::PlannerType::ProviderNative,
             timeout_seconds: 5.0,
+            fallback_provider: None,
         };
 
         let plan = provider.plan(&request).await.unwrap();
@@ -2028,6 +2029,7 @@ mod tests {
             guardrails: Vec::new(),
             planner: worldforge_core::prediction::PlannerType::ProviderNative,
             timeout_seconds: 5.0,
+            fallback_provider: None,
         };
 
         let plan = provider.plan(&request).await.unwrap();

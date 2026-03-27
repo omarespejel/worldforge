@@ -246,13 +246,15 @@ worldforge plan \
   --world <world-id> \
   --goal "spawn cube next to the red mug" \
   --provider mock \
+  --fallback-provider mock \
   --verify-backend mock \
   --output-json /tmp/verified-plan.json
 ```
 
 REST planning accepts the same opt-in switch with a `verification_backend`
 field on `POST /v1/worlds/{id}/plan`; when supplied, the returned `Plan`
-includes `verification_proof`.
+includes `verification_proof`. Planning also supports a `fallback_provider`
+for resilient provider selection across the CLI, REST API, and Python bindings.
 
 ## Rust Quickstart
 
@@ -608,6 +610,8 @@ deterministic adapter-native plans on top of WorldForge-managed surrogate
 dynamics rather than vendor planning endpoints. Heuristic planners now parse
 relational natural-language goals like spawning an object next to a named
 anchor instead of collapsing those requests into plain anchor existence checks.
+Planning requests can also set `fallback_provider` so the core retries against
+another registered provider when the primary planner or prediction path fails.
 Direct provider generation and world-state reasoning are now exposed across the
 CLI, REST server, and Python bindings as well, with REST requests defaulting to
 each stored world's configured provider instead of hard-coding `mock`. Stateless

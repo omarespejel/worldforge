@@ -551,6 +551,9 @@ pub enum Commands {
         /// Provider to use.
         #[arg(long, default_value = "mock")]
         provider: String,
+        /// Optional fallback provider if the primary provider fails.
+        #[arg(long)]
+        fallback_provider: Option<String>,
         /// Attach a guardrail-compliance proof to the generated plan.
         #[arg(long, value_enum)]
         verify_backend: Option<VerifyBackend>,
@@ -637,6 +640,9 @@ pub enum Commands {
         /// Optional provider override for generated plans or history-backed inference proofs.
         #[arg(long)]
         provider: Option<String>,
+        /// Optional fallback provider when a plan must be generated for verification.
+        #[arg(long)]
+        fallback_provider: Option<String>,
         /// Optional JSON file containing `Vec<GuardrailConfig>` for generated plans.
         #[arg(long)]
         guardrails_json: Option<PathBuf>,
@@ -1212,6 +1218,7 @@ pub async fn run() -> Result<()> {
             planner,
             timeout,
             provider,
+            fallback_provider,
             verify_backend,
             guardrails_json,
             disable_guardrails,
@@ -1226,6 +1233,7 @@ pub async fn run() -> Result<()> {
                     planner_name: &planner,
                     timeout,
                     provider: &provider,
+                    fallback_provider: fallback_provider.as_deref(),
                     verify_backend: verify_backend.map(VerifyBackend::as_core),
                     goal_json: goal_json.as_deref(),
                     guardrails_json: guardrails_json.as_deref(),
@@ -1277,6 +1285,7 @@ pub async fn run() -> Result<()> {
             planner,
             timeout,
             provider,
+            fallback_provider,
             guardrails_json,
             disable_guardrails,
             source_label,
@@ -1297,6 +1306,7 @@ pub async fn run() -> Result<()> {
                     planner_name: &planner,
                     timeout,
                     provider: provider.as_deref(),
+                    fallback_provider: fallback_provider.as_deref(),
                     guardrails_json: guardrails_json.as_deref(),
                     disable_guardrails,
                     source_label: &source_label,
@@ -1721,6 +1731,7 @@ struct PlanOptions<'a> {
     planner_name: &'a str,
     timeout: f64,
     provider: &'a str,
+    fallback_provider: Option<&'a str>,
     verify_backend: Option<VerificationBackend>,
     goal_json: Option<&'a Path>,
     guardrails_json: Option<&'a Path>,
@@ -1771,6 +1782,7 @@ struct VerifyOptions<'a> {
     planner_name: &'a str,
     timeout: f64,
     provider: Option<&'a str>,
+    fallback_provider: Option<&'a str>,
     guardrails_json: Option<&'a Path>,
     disable_guardrails: bool,
     source_label: &'a str,
@@ -3116,7 +3128,12 @@ async fn cmd_plan(
     let state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let registry = Arc::new(auto_detect_registry());
-    require_provider(&registry, options.provider)?;
+    if options.fallback_provider.is_none() {
+        require_provider(&registry, options.provider)?;
+    }
+    if let Some(fallback_provider) = options.fallback_provider {
+        require_provider(&registry, fallback_provider)?;
+    }
     let world = worldforge_core::world::World::new(state.clone(), options.provider, registry);
     let planner = planner_from_name(options.planner_name, options.max_steps)?;
     let guardrails = resolve_guardrails(
@@ -3132,6 +3149,7 @@ async fn cmd_plan(
         guardrails,
         planner,
         timeout_seconds: options.timeout,
+        fallback_provider: options.fallback_provider.map(ToOwned::to_owned),
     };
 
     let mut plan = world
@@ -3302,7 +3320,12 @@ async fn cmd_verify(
                 )?;
                 let provider_name = resolve_provider_name(state, options.provider).to_string();
                 let registry = Arc::new(auto_detect_registry());
-                require_provider(&registry, &provider_name)?;
+                if options.fallback_provider.is_none() {
+                    require_provider(&registry, &provider_name)?;
+                }
+                if let Some(fallback_provider) = options.fallback_provider {
+                    require_provider(&registry, fallback_provider)?;
+                }
                 let world =
                     worldforge_core::world::World::new(state.clone(), &provider_name, registry);
                 let request = PlanRequest {
@@ -3315,6 +3338,7 @@ async fn cmd_verify(
                     ),
                     planner: planner_from_name(options.planner_name, options.max_steps)?,
                     timeout_seconds: options.timeout,
+                    fallback_provider: options.fallback_provider.map(ToOwned::to_owned),
                 };
                 world
                     .plan(&request)
@@ -5717,6 +5741,7 @@ mod tests {
                 planner_name: "sampling",
                 timeout: 10.0,
                 provider: "mock",
+                fallback_provider: None,
                 verify_backend: Some(VerificationBackend::Mock),
                 goal_json: None,
                 guardrails_json: Some(&guardrails_path),
@@ -5800,6 +5825,7 @@ mod tests {
                 planner_name: "sampling",
                 timeout: 10.0,
                 provider: "mock",
+                fallback_provider: None,
                 verify_backend: None,
                 goal_json: Some(&goal_path),
                 guardrails_json: None,
@@ -5892,6 +5918,7 @@ mod tests {
                 planner_name: "sampling",
                 timeout: 10.0,
                 provider: "mock",
+                fallback_provider: None,
                 verify_backend: None,
                 goal_json: Some(&goal_path),
                 guardrails_json: None,
@@ -5912,7 +5939,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_cmd_plan_provider_native_with_mock() {
+    async fn test_cmd_plan_provider_native_uses_fallback_provider() {
         let dir = std::env::temp_dir().join(format!("wf-cli-plan-native-{}", uuid::Uuid::new_v4()));
         let store = StateStoreKind::File(dir.join("state"))
             .open()
@@ -5936,7 +5963,8 @@ mod tests {
                 max_steps: 4,
                 planner_name: "provider-native",
                 timeout: 10.0,
-                provider: "mock",
+                provider: "missing",
+                fallback_provider: Some("mock"),
                 verify_backend: None,
                 goal_json: None,
                 guardrails_json: None,
@@ -6606,6 +6634,7 @@ mod tests {
                 planner_name: "sampling",
                 timeout: 10.0,
                 provider: Some("mock"),
+                fallback_provider: None,
                 guardrails_json: None,
                 disable_guardrails: false,
                 source_label: "worldforge-cli",
@@ -6641,6 +6670,7 @@ mod tests {
                 planner_name: "sampling",
                 timeout: 10.0,
                 provider: "mock",
+                fallback_provider: None,
                 verify_backend: None,
                 goal_json: None,
                 guardrails_json: None,
@@ -6667,7 +6697,62 @@ mod tests {
                 planner_name: "sampling",
                 timeout: 10.0,
                 provider: None,
+                fallback_provider: None,
                 guardrails_json: None,
+                disable_guardrails: false,
+                source_label: "worldforge-cli",
+                output_json: Some(&bundle_path),
+            },
+        )
+        .await
+        .unwrap();
+
+        let bundle: serde_json::Value = read_json_file(&bundle_path).unwrap();
+        assert_eq!(bundle["verification"]["valid"], true);
+        assert!(bundle["artifact"]["plan_hash"].is_array());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn test_cmd_verify_guardrail_from_goal_uses_fallback_provider() {
+        let dir =
+            std::env::temp_dir().join(format!("wf-cli-verify-fallback-{}", uuid::Uuid::new_v4()));
+        let store = StateStoreKind::File(dir.join("state"))
+            .open()
+            .await
+            .unwrap();
+        let state = WorldState::new("verify-fallback", "mock");
+        store.save(&state).await.unwrap();
+        let world_id = state.id.to_string();
+
+        let guardrails_path = dir.join("guardrails.json");
+        write_json_file(
+            &guardrails_path,
+            &serde_json::json!([{
+                "guardrail": "NoCollisions",
+                "blocking": true
+            }]),
+        )
+        .unwrap();
+        let bundle_path = dir.join("bundle.json");
+        cmd_verify(
+            store.as_ref(),
+            Some(&world_id),
+            VerifyOptions {
+                backend: VerifyBackend::Mock,
+                proof_type: "guardrail",
+                input_state_json: None,
+                output_state_json: None,
+                plan_json: None,
+                goal: Some("spawn cube"),
+                goal_json: None,
+                max_steps: 4,
+                planner_name: "sampling",
+                timeout: 10.0,
+                provider: Some("missing"),
+                fallback_provider: Some("mock"),
+                guardrails_json: Some(&guardrails_path),
                 disable_guardrails: false,
                 source_label: "worldforge-cli",
                 output_json: Some(&bundle_path),

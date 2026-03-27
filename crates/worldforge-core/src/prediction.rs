@@ -919,6 +919,9 @@ pub struct PlanRequest {
     pub planner: PlannerType,
     /// Maximum planning time in seconds.
     pub timeout_seconds: f64,
+    /// Optional fallback provider used if the primary planning provider fails.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_provider: Option<String>,
 }
 
 /// Goal specification for planning.

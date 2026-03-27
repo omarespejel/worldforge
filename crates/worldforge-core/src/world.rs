@@ -411,11 +411,16 @@ impl World {
         let start = std::time::Instant::now();
         let timeout = std::time::Duration::from_secs_f64(request.timeout_seconds);
         let provider_name = &self.default_provider;
-        let provider = self.registry.get(provider_name)?;
+        let fallback_provider = request
+            .fallback_provider
+            .as_deref()
+            .filter(|fallback| !fallback.is_empty() && *fallback != provider_name);
         let goal_hints = derive_goal_hints(&request.goal, &request.current_state);
         let seed = planning_seed(&request.current_state, &request.goal);
         let context = PlanningContext {
-            provider,
+            registry: self.registry.as_ref(),
+            provider_name,
+            fallback_provider,
             request,
             goal_hints: &goal_hints,
             start,
@@ -450,19 +455,15 @@ impl World {
                 num_iterations,
             } => gradient_search(&context, *learning_rate, *num_iterations, seed).await?,
             PlannerType::ProviderNative => {
-                if !provider.capabilities().supports_planning {
-                    return Err(WorldForgeError::UnsupportedCapability {
-                        provider: provider_name.to_string(),
-                        capability: "native planning".to_string(),
-                    });
-                }
-
-                let plan = tokio::time::timeout(timeout, provider.plan(request))
-                    .await
-                    .map_err(|_| WorldForgeError::PlanningTimeout {
-                        elapsed_ms: timeout.as_millis() as u64,
-                    })??;
-                return finalize_provider_plan(provider_name, request, plan, start.elapsed());
+                return self
+                    .plan_with_provider_fallback(
+                        request,
+                        provider_name,
+                        fallback_provider,
+                        start,
+                        timeout,
+                    )
+                    .await;
             }
         };
 
@@ -475,6 +476,72 @@ impl World {
 
         candidate.plan.planning_time_ms = start.elapsed().as_millis() as u64;
         Ok(candidate.plan)
+    }
+
+    async fn plan_with_provider_fallback(
+        &self,
+        request: &PlanRequest,
+        provider_name: &str,
+        fallback_provider: Option<&str>,
+        start: std::time::Instant,
+        timeout: Duration,
+    ) -> Result<Plan> {
+        match self
+            .run_provider_native_plan(request, provider_name, start, timeout)
+            .await
+        {
+            Ok(plan) => Ok(plan),
+            Err(primary_error) => {
+                let Some(fallback_provider) =
+                    fallback_provider.filter(|fallback| *fallback != provider_name)
+                else {
+                    return Err(primary_error);
+                };
+
+                tracing::warn!(
+                    provider = provider_name,
+                    fallback = fallback_provider,
+                    error = %primary_error,
+                    "native planning failed on primary provider, attempting fallback"
+                );
+
+                match self
+                    .run_provider_native_plan(request, fallback_provider, start, timeout)
+                    .await
+                {
+                    Ok(plan) => Ok(plan),
+                    Err(fallback_error) => Err(combine_fallback_errors(
+                        provider_name,
+                        fallback_provider,
+                        primary_error,
+                        fallback_error,
+                    )),
+                }
+            }
+        }
+    }
+
+    async fn run_provider_native_plan(
+        &self,
+        request: &PlanRequest,
+        provider_name: &str,
+        start: std::time::Instant,
+        timeout: Duration,
+    ) -> Result<Plan> {
+        let provider = self.registry.get(provider_name)?;
+        if !provider.capabilities().supports_planning {
+            return Err(WorldForgeError::UnsupportedCapability {
+                provider: provider_name.to_string(),
+                capability: "native planning".to_string(),
+            });
+        }
+
+        let plan = tokio::time::timeout(timeout, provider.plan(request))
+            .await
+            .map_err(|_| WorldForgeError::PlanningTimeout {
+                elapsed_ms: timeout.as_millis() as u64,
+            })??;
+        finalize_provider_plan(provider_name, request, plan, start.elapsed())
     }
 
     /// Execute a materialized plan against the world's default provider.
@@ -860,7 +927,9 @@ impl PlannerRng {
 }
 
 struct PlanningContext<'a> {
-    provider: &'a dyn WorldModelProvider,
+    registry: &'a ProviderRegistry,
+    provider_name: &'a str,
+    fallback_provider: Option<&'a str>,
     request: &'a PlanRequest,
     goal_hints: &'a [GoalHint],
     start: std::time::Instant,
@@ -1061,9 +1130,12 @@ async fn mpc_search(
                 top_k: 1,
             },
             timeout_seconds: context.request.timeout_seconds,
+            fallback_provider: context.request.fallback_provider.clone(),
         };
         let local_context = PlanningContext {
-            provider: context.provider,
+            registry: context.registry,
+            provider_name: context.provider_name,
+            fallback_provider: context.fallback_provider,
             request: &local_request,
             goal_hints: &local_hints,
             start: context.start,
@@ -1162,13 +1234,20 @@ async fn evaluate_candidate_sequence(
     let mut guardrail_compliance = Vec::new();
     let mut total_physics = 0.0f32;
     let mut total_cost = 0.0f32;
+    let mut last_provider_name = context.provider_name.to_string();
 
     for action in actions {
         ensure_planning_budget(context.start, context.timeout)?;
-        let prediction = context
-            .provider
-            .predict(&simulated_state, action, &config)
-            .await?;
+        let prediction = run_planning_prediction_with_fallback(
+            context.registry,
+            &simulated_state,
+            action,
+            &config,
+            context.provider_name,
+            context.fallback_provider,
+            context.timeout,
+        )
+        .await?;
         let gr_results = evaluate_guardrails(&context.request.guardrails, &prediction.output_state);
         if has_blocking_violation(&gr_results) {
             return Ok(None);
@@ -1176,6 +1255,7 @@ async fn evaluate_candidate_sequence(
 
         total_physics += prediction.physics_scores.overall;
         total_cost += prediction.cost.usd as f32;
+        last_provider_name = prediction.provider.clone();
         simulated_state = prediction.output_state;
         predicted_states.push(simulated_state.clone());
         guardrail_compliance.push(gr_results);
@@ -1199,7 +1279,11 @@ async fn evaluate_candidate_sequence(
             predicted_states,
             predicted_videos: None,
             total_cost: if total_cost == 0.0 {
-                estimate_plan_cost(context.provider, actions.len() as u32, &config)
+                estimate_plan_cost(
+                    context.registry.get(&last_provider_name)?,
+                    actions.len() as u32,
+                    &config,
+                )
             } else {
                 total_cost
             },
@@ -1210,6 +1294,70 @@ async fn evaluate_candidate_sequence(
             verification_proof: None,
         },
     }))
+}
+
+async fn run_planning_prediction_with_fallback(
+    registry: &ProviderRegistry,
+    state: &WorldState,
+    action: &Action,
+    config: &PredictionConfig,
+    provider_name: &str,
+    fallback_provider: Option<&str>,
+    timeout: Duration,
+) -> Result<Prediction> {
+    match run_planning_prediction(registry, state, action, config, provider_name, timeout).await {
+        Ok(prediction) => Ok(prediction),
+        Err(primary_error) => {
+            let Some(fallback_provider) = fallback_provider
+                .filter(|fallback| !fallback.is_empty() && *fallback != provider_name)
+            else {
+                return Err(primary_error);
+            };
+
+            tracing::warn!(
+                provider = provider_name,
+                fallback = fallback_provider,
+                error = %primary_error,
+                "planning prediction failed on primary provider, attempting fallback"
+            );
+
+            match run_planning_prediction(
+                registry,
+                state,
+                action,
+                config,
+                fallback_provider,
+                timeout,
+            )
+            .await
+            {
+                Ok(prediction) => Ok(prediction),
+                Err(fallback_error) => Err(combine_fallback_errors(
+                    provider_name,
+                    fallback_provider,
+                    primary_error,
+                    fallback_error,
+                )),
+            }
+        }
+    }
+}
+
+async fn run_planning_prediction(
+    registry: &ProviderRegistry,
+    state: &WorldState,
+    action: &Action,
+    config: &PredictionConfig,
+    provider_name: &str,
+    timeout: Duration,
+) -> Result<Prediction> {
+    let provider = registry.get(provider_name)?;
+    tokio::time::timeout(timeout, provider.predict(state, action, config))
+        .await
+        .map_err(|_| WorldForgeError::ProviderTimeout {
+            provider: provider_name.to_string(),
+            timeout_ms: timeout.as_millis() as u64,
+        })?
 }
 
 fn ensure_planning_budget(start: std::time::Instant, timeout: Duration) -> Result<()> {
@@ -2556,6 +2704,7 @@ mod tests {
                 top_k: 4,
             },
             timeout_seconds: 5.0,
+            fallback_provider: None,
         };
 
         let plan = world.plan(&request).await.unwrap();
@@ -2591,6 +2740,7 @@ mod tests {
                 top_k: 4,
             },
             timeout_seconds: 5.0,
+            fallback_provider: None,
         };
 
         let plan = world.plan(&request).await.unwrap();
@@ -2635,6 +2785,7 @@ mod tests {
                 num_iterations: 3,
             },
             timeout_seconds: 5.0,
+            fallback_provider: None,
         };
 
         let plan = world.plan(&request).await.unwrap();
@@ -2664,6 +2815,7 @@ mod tests {
                 top_k: 4,
             },
             timeout_seconds: 5.0,
+            fallback_provider: None,
         };
 
         let plan = world.plan(&request).await.unwrap();
@@ -2722,6 +2874,7 @@ mod tests {
             guardrails: Vec::new(),
             planner: PlannerType::ProviderNative,
             timeout_seconds: 5.0,
+            fallback_provider: None,
         };
 
         let plan = world.plan(&request).await.unwrap();
@@ -2752,6 +2905,7 @@ mod tests {
             guardrails: Vec::new(),
             planner: PlannerType::ProviderNative,
             timeout_seconds: 5.0,
+            fallback_provider: None,
         };
 
         let error = world.plan(&request).await.unwrap_err();
@@ -2778,6 +2932,7 @@ mod tests {
             guardrails: Vec::new(),
             planner: PlannerType::ProviderNative,
             timeout_seconds: 5.0,
+            fallback_provider: None,
         };
 
         let error = world.plan(&request).await.unwrap_err();
@@ -2786,6 +2941,148 @@ mod tests {
             WorldForgeError::PlanningFailed { reason }
                 if reason.contains("predicted states")
         ));
+    }
+
+    #[tokio::test]
+    async fn test_sampling_plan_uses_fallback_provider_on_prediction_failure() {
+        let (state, object_id) = sample_planning_state();
+        let registry = std::sync::Arc::new({
+            let mut registry = ProviderRegistry::new();
+            registry.register(Box::new(FailingProvider::new("primary")));
+            registry.register(Box::new(PlanningProvider::new("fallback", 1.0, false)));
+            registry
+        });
+        let world = World::new(state.clone(), "primary", registry);
+        let request = PlanRequest {
+            current_state: state,
+            goal: PlanGoal::Description("move ball to position (2.0, 0.0, 0.0)".to_string()),
+            max_steps: 3,
+            guardrails: Vec::new(),
+            planner: PlannerType::Sampling {
+                num_samples: 16,
+                top_k: 4,
+            },
+            timeout_seconds: 5.0,
+            fallback_provider: Some("fallback".to_string()),
+        };
+
+        let plan = world.plan(&request).await.unwrap();
+        let final_position = plan
+            .predicted_states
+            .last()
+            .unwrap()
+            .scene
+            .get_object(&object_id)
+            .unwrap()
+            .pose
+            .position;
+
+        assert!(!plan.actions.is_empty());
+        assert!(final_position.x > 1.5);
+    }
+
+    #[tokio::test]
+    async fn test_provider_native_uses_fallback_provider_on_timeout() {
+        let (state, object_id) = sample_planning_state();
+        let registry = std::sync::Arc::new({
+            let mut registry = ProviderRegistry::new();
+            registry.register(Box::new(DelayedPlanningProvider::new(
+                "primary", 1.0, true, 25,
+            )));
+            registry.register(Box::new(PlanningProvider::new("fallback", 1.0, true)));
+            registry
+        });
+        let world = World::new(state.clone(), "primary", registry);
+        let request = PlanRequest {
+            current_state: state,
+            goal: PlanGoal::Description("move ball to position (2.0, 0.0, 0.0)".to_string()),
+            max_steps: 4,
+            guardrails: Vec::new(),
+            planner: PlannerType::ProviderNative,
+            timeout_seconds: 0.01,
+            fallback_provider: Some("fallback".to_string()),
+        };
+
+        let plan = world.plan(&request).await.unwrap();
+        let final_position = plan
+            .predicted_states
+            .last()
+            .unwrap()
+            .scene
+            .get_object(&object_id)
+            .unwrap()
+            .pose
+            .position;
+
+        assert_eq!(plan.iterations_used, 97);
+        assert!(final_position.x > 1.5);
+    }
+
+    #[tokio::test]
+    async fn test_provider_native_uses_fallback_provider_when_primary_lacks_support() {
+        let (state, object_id) = sample_planning_state();
+        let registry = std::sync::Arc::new({
+            let mut registry = ProviderRegistry::new();
+            registry.register(Box::new(PlanningProvider::new("primary", 1.0, false)));
+            registry.register(Box::new(PlanningProvider::new("fallback", 1.0, true)));
+            registry
+        });
+        let world = World::new(state.clone(), "primary", registry);
+        let request = PlanRequest {
+            current_state: state,
+            goal: PlanGoal::Description("move ball to position (2.0, 0.0, 0.0)".to_string()),
+            max_steps: 4,
+            guardrails: Vec::new(),
+            planner: PlannerType::ProviderNative,
+            timeout_seconds: 5.0,
+            fallback_provider: Some("fallback".to_string()),
+        };
+
+        let plan = world.plan(&request).await.unwrap();
+        let final_position = plan
+            .predicted_states
+            .last()
+            .unwrap()
+            .scene
+            .get_object(&object_id)
+            .unwrap()
+            .pose
+            .position;
+
+        assert_eq!(plan.iterations_used, 97);
+        assert!(final_position.x > 1.5);
+    }
+
+    #[tokio::test]
+    async fn test_provider_native_combines_primary_and_fallback_failures() {
+        let state = WorldState::new("planning", "primary");
+        let registry = std::sync::Arc::new({
+            let mut registry = ProviderRegistry::new();
+            registry.register(Box::new(MalformedPlanProvider::new("primary")));
+            registry.register(Box::new(PlanningProvider::new("fallback", 1.0, false)));
+            registry
+        });
+        let world = World::new(state.clone(), "primary", registry);
+        let request = PlanRequest {
+            current_state: state,
+            goal: PlanGoal::Description("set weather fog".to_string()),
+            max_steps: 1,
+            guardrails: Vec::new(),
+            planner: PlannerType::ProviderNative,
+            timeout_seconds: 5.0,
+            fallback_provider: Some("fallback".to_string()),
+        };
+
+        let error = world.plan(&request).await.unwrap_err();
+        match error {
+            WorldForgeError::ProviderUnavailable { provider, reason } => {
+                assert_eq!(provider, "primary");
+                assert!(reason.contains("primary provider error"));
+                assert!(reason.contains("fallback provider 'fallback' error"));
+                assert!(reason.contains("predicted states"));
+            }
+            other => panic!("expected ProviderUnavailable, got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -2807,6 +3104,7 @@ mod tests {
                 top_k: 4,
             },
             timeout_seconds: 5.0,
+            fallback_provider: None,
         };
         let plan = planner_world.plan(&request).await.unwrap();
 
@@ -3712,6 +4010,14 @@ mod tests {
     }
 
     #[derive(Debug, Clone)]
+    struct DelayedPlanningProvider {
+        name: String,
+        movement_scale: f32,
+        supports_planning: bool,
+        native_plan_delay_ms: u64,
+    }
+
+    #[derive(Debug, Clone)]
     struct MalformedPlanProvider {
         name: String,
     }
@@ -3727,6 +4033,22 @@ mod tests {
                 name: name.to_string(),
                 movement_scale,
                 supports_planning,
+            }
+        }
+    }
+
+    impl DelayedPlanningProvider {
+        fn new(
+            name: &str,
+            movement_scale: f32,
+            supports_planning: bool,
+            native_plan_delay_ms: u64,
+        ) -> Self {
+            Self {
+                name: name.to_string(),
+                movement_scale,
+                supports_planning,
+                native_plan_delay_ms,
             }
         }
     }
@@ -4352,6 +4674,103 @@ mod tests {
                     capability: "native planning".to_string(),
                 });
             }
+            Ok(build_native_plan(request, self.movement_scale, 97))
+        }
+
+        fn estimate_cost(&self, _operation: &Operation) -> CostEstimate {
+            CostEstimate::default()
+        }
+    }
+
+    #[async_trait]
+    impl WorldModelProvider for DelayedPlanningProvider {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            test_capabilities(self.supports_planning)
+        }
+
+        async fn predict(
+            &self,
+            state: &WorldState,
+            action: &Action,
+            _config: &PredictionConfig,
+        ) -> Result<Prediction> {
+            let mut output_state = state.clone();
+            apply_planning_action(&mut output_state, action, self.movement_scale);
+            Ok(Prediction {
+                id: uuid::Uuid::new_v4(),
+                provider: self.name.clone(),
+                model: format!("{}-planner", self.name),
+                input_state: state.clone(),
+                action: action.clone(),
+                output_state,
+                video: None,
+                confidence: 0.9,
+                physics_scores: PhysicsScores {
+                    overall: 0.95,
+                    object_permanence: 0.95,
+                    gravity_compliance: 0.9,
+                    collision_accuracy: 0.9,
+                    spatial_consistency: 0.95,
+                    temporal_consistency: 0.95,
+                },
+                latency_ms: 1,
+                cost: CostEstimate::default(),
+                guardrail_results: Vec::new(),
+                timestamp: chrono::Utc::now(),
+            })
+        }
+
+        async fn generate(
+            &self,
+            _prompt: &GenerationPrompt,
+            _config: &GenerationConfig,
+        ) -> Result<VideoClip> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.clone(),
+                capability: "generate".to_string(),
+            })
+        }
+
+        async fn reason(&self, _input: &ReasoningInput, _query: &str) -> Result<ReasoningOutput> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.clone(),
+                capability: "reason".to_string(),
+            })
+        }
+
+        async fn transfer(
+            &self,
+            _source: &VideoClip,
+            _controls: &SpatialControls,
+            _config: &TransferConfig,
+        ) -> Result<VideoClip> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.clone(),
+                capability: "transfer".to_string(),
+            })
+        }
+
+        async fn health_check(&self) -> Result<HealthStatus> {
+            Ok(HealthStatus {
+                healthy: true,
+                message: "delayed planning provider".to_string(),
+                latency_ms: self.native_plan_delay_ms,
+            })
+        }
+
+        async fn plan(&self, request: &PlanRequest) -> Result<Plan> {
+            if !self.supports_planning {
+                return Err(WorldForgeError::UnsupportedCapability {
+                    provider: self.name.clone(),
+                    capability: "native planning".to_string(),
+                });
+            }
+
+            tokio::time::sleep(Duration::from_millis(self.native_plan_delay_ms)).await;
             Ok(build_native_plan(request, self.movement_scale, 97))
         }
 

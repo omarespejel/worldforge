@@ -1721,6 +1721,7 @@ async fn test_e2e_plan_and_verify_pipeline() {
             top_k: 3,
         },
         timeout_seconds: 10.0,
+        fallback_provider: None,
     };
 
     let plan = world.plan(&plan_request).await.unwrap();

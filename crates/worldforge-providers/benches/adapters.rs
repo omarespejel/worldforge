@@ -415,6 +415,7 @@ fn sample_plan_request(state: &WorldState) -> PlanRequest {
             top_k: 3,
         },
         timeout_seconds: 5.0,
+        fallback_provider: None,
     }
 }
 

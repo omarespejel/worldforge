@@ -921,6 +921,7 @@ mod tests {
             guardrails: Vec::new(),
             planner: PlannerType::ProviderNative,
             timeout_seconds: 1.0,
+            fallback_provider: None,
         };
 
         let error = provider.plan(&request).await.unwrap_err();
