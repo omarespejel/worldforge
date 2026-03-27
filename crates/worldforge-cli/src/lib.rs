@@ -2596,9 +2596,14 @@ async fn cmd_history(
             .prediction
             .as_ref()
             .map(|prediction| {
+                let model = prediction
+                    .model
+                    .as_deref()
+                    .map(|model| format!(", model {model}"))
+                    .unwrap_or_default();
                 format!(
-                    "confidence {:.2}, physics {:.2}, latency {}ms",
-                    prediction.confidence, prediction.physics_score, prediction.latency_ms
+                    "confidence {:.2}, physics {:.2}, latency {}ms{}",
+                    prediction.confidence, prediction.physics_score, prediction.latency_ms, model
                 )
             })
             .unwrap_or_else(|| "no prediction summary".to_string());

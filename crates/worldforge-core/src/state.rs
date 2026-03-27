@@ -103,6 +103,9 @@ pub struct PredictionSummary {
     pub physics_score: f32,
     /// Latency in milliseconds.
     pub latency_ms: u64,
+    /// Provider model identifier, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 /// Recoverable world checkpoint stored alongside a history entry.

@@ -174,6 +174,7 @@ impl World {
                 confidence: prediction.confidence,
                 physics_score: prediction.physics_scores.overall,
                 latency_ms: prediction.latency_ms,
+                model: Some(prediction.model.clone()),
             }),
             prediction.provider.clone(),
         )?;

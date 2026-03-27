@@ -1736,6 +1736,15 @@ impl PyHistoryEntry {
             .map(|prediction| prediction.latency_ms)
     }
 
+    /// Provider model identifier recorded for this checkpoint, if present.
+    #[getter]
+    fn model(&self) -> Option<String> {
+        self.inner
+            .prediction
+            .as_ref()
+            .and_then(|prediction| prediction.model.clone())
+    }
+
     /// Serialize this history entry to JSON.
     fn to_json(&self) -> PyResult<String> {
         serde_json::to_string(&self.inner).map_err(|e| {
@@ -5064,6 +5073,11 @@ impl PyInferenceBundle {
     }
 
     #[getter]
+    fn model(&self) -> Option<String> {
+        self.inner.artifact.model.clone()
+    }
+
+    #[getter]
     fn model_hash_hex(&self) -> String {
         format_hash_hex(&self.inner.artifact.model_hash)
     }
@@ -5290,6 +5304,11 @@ impl PyInferenceVerificationReport {
     #[getter]
     fn provider(&self) -> &str {
         &self.inner.artifact.provider
+    }
+
+    #[getter]
+    fn model(&self) -> Option<String> {
+        self.inner.artifact.model.clone()
     }
 
     #[getter]
@@ -6645,6 +6664,7 @@ mod tests {
         assert_eq!(history[0].step(), 0);
         assert!(history[0].action_json().unwrap().is_none());
         assert_eq!(history[1].provider(), "mock");
+        assert_eq!(history[1].model().as_deref(), Some("mock-v2"));
         assert!(history[1].action_json().unwrap().is_some());
         assert!(history[1].confidence().is_some());
     }
@@ -8590,6 +8610,7 @@ mod tests {
 
         let inference_bundle = world.prove_latest_inference_bundle(None).unwrap();
         assert_eq!(inference_bundle.provider(), "mock");
+        assert_eq!(inference_bundle.model().as_deref(), Some("mock-v2"));
         let inference_report = inference_bundle.verify().unwrap();
         assert!(inference_report.current_verification().valid());
 

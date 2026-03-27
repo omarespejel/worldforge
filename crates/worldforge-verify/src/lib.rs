@@ -55,6 +55,9 @@ pub struct BundleVerificationReport<T> {
 pub struct InferenceArtifact {
     /// Provider associated with the verified transition.
     pub provider: String,
+    /// Concrete model identifier used for the inference, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     /// Hash identifying the model or provider version.
     pub model_hash: [u8; 32],
     /// Hash of the input state.
@@ -309,9 +312,11 @@ pub fn inference_artifact_from_states(
     output_state: &WorldState,
 ) -> Result<InferenceArtifact> {
     let provider = provider.into();
+    let model_hash = source_commitment(&provider);
     Ok(InferenceArtifact {
-        model_hash: source_commitment(&provider),
         provider,
+        model: None,
+        model_hash,
         input_hash: state_hash(input_state)?,
         output_hash: state_hash(output_state)?,
     })
@@ -349,10 +354,18 @@ pub fn latest_inference_artifact(
         .map(ToOwned::to_owned)
         .or_else(|| state.history.latest().map(|entry| entry.provider.clone()))
         .unwrap_or_else(|| state.metadata.created_by.clone());
+    let model = state
+        .history
+        .latest()
+        .and_then(|entry| entry.prediction.as_ref())
+        .and_then(|prediction| prediction.model.clone())
+        .filter(|model| !model.is_empty());
+    let model_hash = source_commitment(model.as_deref().unwrap_or(&provider));
 
     Ok(InferenceArtifact {
-        model_hash: source_commitment(&provider),
         provider,
+        model,
+        model_hash,
         input_hash,
         output_hash: state.history.latest().map(|entry| entry.state_hash).ok_or(
             VerifyError::InsufficientHistory {
@@ -1193,6 +1206,7 @@ mod tests {
         let artifact = inference_artifact_from_states("mock", &input, &output).unwrap();
 
         assert_eq!(artifact.provider, "mock");
+        assert_eq!(artifact.model, None);
         assert_eq!(artifact.model_hash, source_commitment("mock"));
         assert_eq!(artifact.input_hash, state_hash(&input).unwrap());
         assert_eq!(artifact.output_hash, state_hash(&output).unwrap());
@@ -1244,6 +1258,7 @@ mod tests {
                 confidence: 0.8,
                 physics_score: 0.9,
                 latency_ms: 12,
+                model: Some("mock-v2".to_string()),
             }),
             provider: "mock".to_string(),
             snapshot: None,
@@ -1251,8 +1266,55 @@ mod tests {
 
         let artifact = latest_inference_artifact(&world, None).unwrap();
         assert_eq!(artifact.provider, "mock");
+        assert_eq!(artifact.model.as_deref(), Some("mock-v2"));
+        assert_eq!(artifact.model_hash, source_commitment("mock-v2"));
         assert_eq!(artifact.input_hash, previous_hash);
         assert_eq!(artifact.output_hash, current_hash);
+    }
+
+    #[test]
+    fn test_latest_inference_artifact_falls_back_to_provider_when_model_missing() {
+        let mut world = sample_state("world", "mock", 2.0);
+        let previous = sample_state("previous", "mock", 1.0);
+        let previous_hash = state_hash(&previous).unwrap();
+        let current_hash = state_hash(&world).unwrap();
+
+        world.history.push(HistoryEntry {
+            time: SimTime {
+                step: 1,
+                seconds: 0.5,
+                dt: 0.5,
+            },
+            state_hash: previous_hash,
+            action: None,
+            prediction: None,
+            provider: "mock".to_string(),
+            snapshot: None,
+        });
+        world.history.push(HistoryEntry {
+            time: SimTime {
+                step: 2,
+                seconds: 1.0,
+                dt: 0.5,
+            },
+            state_hash: current_hash,
+            action: Some(Action::SetWeather {
+                weather: worldforge_core::action::Weather::Clear,
+            }),
+            prediction: Some(PredictionSummary {
+                confidence: 0.8,
+                physics_score: 0.9,
+                latency_ms: 12,
+                model: None,
+            }),
+            provider: "mock".to_string(),
+            snapshot: None,
+        });
+
+        let artifact = latest_inference_artifact(&world, None).unwrap();
+        assert_eq!(artifact.provider, "mock");
+        assert_eq!(artifact.model, None);
+        assert_eq!(artifact.model_hash, source_commitment("mock"));
     }
 
     #[test]
