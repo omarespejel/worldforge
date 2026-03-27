@@ -523,14 +523,24 @@ fn resolve_guardrails(
 /// JSON request body for evaluation.
 #[derive(Debug, Deserialize)]
 struct EvaluateRequest {
+    /// Optional built-in evaluation suite name.
     #[serde(default)]
     suite: Option<String>,
+    /// Optional inline evaluation suite definition.
     #[serde(default)]
     suite_definition: Option<EvalSuite>,
+    /// Optional explicit provider override; otherwise suite defaults are used.
     #[serde(default)]
     providers: Vec<String>,
+    /// Optional rendered report format. Defaults to full JSON report data.
     #[serde(default)]
     report_format: Option<EvalReportFormat>,
+    /// Optional persisted world ID whose state overlays each scenario fixture.
+    #[serde(default)]
+    world_id: Option<String>,
+    /// Optional inline world state whose data overlays each scenario fixture.
+    #[serde(default)]
+    world_state: Option<WorldState>,
 }
 
 /// Rendered evaluation report artifact returned for non-JSON exports.
@@ -552,6 +562,88 @@ fn resolve_eval_suite(request: &EvaluateRequest) -> std::result::Result<EvalSuit
             .map_err(|e| e.to_string()),
         None => EvalSuite::from_builtin(request.suite.as_deref().unwrap_or("physics"))
             .map_err(|e| e.to_string()),
+    }
+}
+
+fn render_eval_report_response(
+    report: worldforge_eval::EvalReport,
+    format: EvalReportFormat,
+) -> (u16, String) {
+    match format {
+        EvalReportFormat::Json => (200, ApiResponse::ok(report)),
+        other => match report.render(other) {
+            Ok(content) => (
+                200,
+                ApiResponse::ok(RenderedEvalReport {
+                    suite: report.suite.clone(),
+                    format: other,
+                    content,
+                }),
+            ),
+            Err(error) => (500, error_response(&error.to_string())),
+        },
+    }
+}
+
+async fn resolve_eval_world_state(
+    request: &EvaluateRequest,
+    state: &AppState,
+) -> std::result::Result<Option<WorldState>, (u16, String)> {
+    match (&request.world_id, &request.world_state) {
+        (Some(_), Some(_)) => Err((
+            400,
+            error_response("provide at most one of world_id or world_state"),
+        )),
+        (Some(world_id), None) => {
+            let id = world_id
+                .parse::<WorldId>()
+                .map_err(|_| (400, error_response("invalid world ID")))?;
+            state
+                .store
+                .load(&id)
+                .await
+                .map(Some)
+                .map_err(|error| (404, error_response(&error.to_string())))
+        }
+        (None, Some(world_state)) => Ok(Some(world_state.clone())),
+        (None, None) => Ok(None),
+    }
+}
+
+async fn run_evaluation_request(
+    request: &EvaluateRequest,
+    state: &AppState,
+    world_state: Option<&WorldState>,
+) -> (u16, String) {
+    let suite = match resolve_eval_suite(request) {
+        Ok(suite) => suite,
+        Err(error) => return (400, error_response(&error)),
+    };
+
+    let provider_names = suite.effective_provider_names(&request.providers);
+    let mut provider_refs = Vec::with_capacity(provider_names.len());
+    for provider_name in &provider_names {
+        match state.registry.get(provider_name) {
+            Ok(provider) => provider_refs.push(provider),
+            Err(error) => return (404, error_response(&error.to_string())),
+        }
+    }
+
+    let report = match world_state {
+        Some(world_state) => {
+            suite
+                .run_with_world_state(&provider_refs, world_state)
+                .await
+        }
+        None => suite.run(&provider_refs).await,
+    };
+
+    match report {
+        Ok(report) => render_eval_report_response(
+            report,
+            request.report_format.unwrap_or(EvalReportFormat::Json),
+        ),
+        Err(error) => (500, error_response(&error.to_string())),
     }
 }
 
@@ -1098,6 +1190,15 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                 .collect();
             (200, ApiResponse::ok(suites))
         }
+
+        // POST /v1/evals/run
+        ("POST", "/v1/evals/run") => match serde_json::from_str::<EvaluateRequest>(body) {
+            Ok(req) => match resolve_eval_world_state(&req, state).await {
+                Ok(world_state) => run_evaluation_request(&req, state, world_state.as_ref()).await,
+                Err(response) => response,
+            },
+            Err(error) => (400, error_response(&format!("invalid request: {error}"))),
+        },
 
         // GET /v1/providers/{name}/health
         ("GET", p) if p.starts_with("/v1/providers/") && p.ends_with("/health") => {
@@ -2206,44 +2307,16 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                 Ok(id) => match state.store.load(&id).await {
                     Ok(ws) => match serde_json::from_str::<EvaluateRequest>(body) {
                         Ok(req) => {
-                            let suite = match resolve_eval_suite(&req) {
-                                Ok(suite) => suite,
-                                Err(error) => return (400, error_response(&error)),
-                            };
-
-                            let provider_names = suite.effective_provider_names(&req.providers);
-
-                            let mut provider_refs: Vec<
-                                &dyn worldforge_core::provider::WorldModelProvider,
-                            > = Vec::new();
-                            for provider_name in &provider_names {
-                                match state.registry.get(provider_name) {
-                                    Ok(provider) => provider_refs.push(provider),
-                                    Err(error) => return (404, error_response(&error.to_string())),
-                                }
+                            if req.world_id.is_some() || req.world_state.is_some() {
+                                return (
+                                    400,
+                                    error_response(
+                                        "world-scoped evaluation uses the path world ID; omit world_id/world_state or use /v1/evals/run",
+                                    ),
+                                );
                             }
 
-                            match suite.run_with_world_state(&provider_refs, &ws).await {
-                                Ok(report) => {
-                                    let format =
-                                        req.report_format.unwrap_or(EvalReportFormat::Json);
-                                    match format {
-                                        EvalReportFormat::Json => (200, ApiResponse::ok(report)),
-                                        other => match report.render(other) {
-                                            Ok(content) => (
-                                                200,
-                                                ApiResponse::ok(RenderedEvalReport {
-                                                    suite: report.suite.clone(),
-                                                    format: other,
-                                                    content,
-                                                }),
-                                            ),
-                                            Err(error) => (500, error_response(&error.to_string())),
-                                        },
-                                    }
-                                }
-                                Err(e) => (500, error_response(&e.to_string())),
-                            }
+                            run_evaluation_request(&req, state, Some(&ws)).await
                         }
                         Err(e) => (400, error_response(&format!("invalid request: {e}"))),
                     },

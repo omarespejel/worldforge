@@ -183,6 +183,53 @@ async fn create_test_object(
     created["data"]["id"].as_str().unwrap().to_string()
 }
 
+fn eval_world_state_with_named_object(
+    world_name: &str,
+    object_name: &str,
+    position: worldforge_core::types::Position,
+) -> worldforge_core::state::WorldState {
+    let mut state = worldforge_core::state::WorldState::new(world_name, "mock");
+    let object = worldforge_core::scene::SceneObject::new(
+        object_name,
+        worldforge_core::types::Pose {
+            position,
+            ..worldforge_core::types::Pose::default()
+        },
+        worldforge_core::types::BBox {
+            min: worldforge_core::types::Position {
+                x: position.x - 0.1,
+                y: position.y - 0.1,
+                z: position.z - 0.1,
+            },
+            max: worldforge_core::types::Position {
+                x: position.x + 0.1,
+                y: position.y + 0.1,
+                z: position.z + 0.1,
+            },
+        },
+    );
+    state.scene.add_object(object);
+    state
+}
+
+fn object_exists_eval_suite(object_name: &str) -> worldforge_eval::EvalSuite {
+    worldforge_eval::EvalSuite {
+        name: format!("{object_name} overlay"),
+        scenarios: vec![worldforge_eval::EvalScenario {
+            name: "object_exists".to_string(),
+            description: format!("Checks that {object_name} is present in the overlaid world"),
+            initial_state: worldforge_core::state::WorldState::new("fixture", "eval"),
+            actions: Vec::new(),
+            expected_outcomes: vec![worldforge_eval::ExpectedOutcome::ObjectExists {
+                name: object_name.to_string(),
+            }],
+            ground_truth: None,
+        }],
+        dimensions: vec![worldforge_eval::EvalDimension::ObjectPermanence],
+        providers: vec!["mock".to_string()],
+    }
+}
+
 async fn export_world_snapshot(address: SocketAddr, world_id: &str, format: &str) -> Value {
     let (status, response) = http_request(
         address,
@@ -226,6 +273,118 @@ fn hex_decode(value: &str) -> Vec<u8> {
     }
 
     decoded
+}
+
+#[tokio::test]
+async fn test_rest_eval_run_supports_standalone_suite() {
+    let server = spawn_test_server().await;
+    let body = serde_json::json!({
+        "suite": "physics",
+        "providers": ["mock"],
+    })
+    .to_string();
+
+    let (status, response) = http_request(server.address, "POST", "/v1/evals/run", &body).await;
+    assert_eq!(status, 200);
+    assert_eq!(response["data"]["suite"], "Physics Standard");
+    assert_eq!(
+        response["data"]["provider_summaries"][0]["provider"],
+        "mock"
+    );
+}
+
+#[tokio::test]
+async fn test_rest_eval_run_supports_world_id_overlay() {
+    let server = spawn_test_server().await;
+    let world_id = create_test_world(server.address, "eval-overlay").await;
+    create_test_object(
+        server.address,
+        &world_id,
+        serde_json::json!({
+            "name": "cube",
+            "position": {"x": 0.0, "y": 0.0, "z": 0.0},
+            "bbox": {
+                "min": {"x": -0.1, "y": -0.1, "z": -0.1},
+                "max": {"x": 0.1, "y": 0.1, "z": 0.1}
+            }
+        }),
+    )
+    .await;
+
+    let suite = object_exists_eval_suite("cube");
+    let body = serde_json::json!({
+        "suite_definition": suite,
+        "providers": ["mock"],
+        "world_id": world_id,
+    })
+    .to_string();
+
+    let (status, response) = http_request(server.address, "POST", "/v1/evals/run", &body).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        response["data"]["results"][0]["outcomes"][0]["passed"],
+        true
+    );
+}
+
+#[tokio::test]
+async fn test_rest_eval_run_supports_inline_world_state_overlay() {
+    let server = spawn_test_server().await;
+    let suite = object_exists_eval_suite("sphere");
+    let world_state = eval_world_state_with_named_object(
+        "inline-eval",
+        "sphere",
+        worldforge_core::types::Position {
+            x: 0.2,
+            y: 0.4,
+            z: -0.1,
+        },
+    );
+    let body = serde_json::json!({
+        "suite_definition": suite,
+        "providers": ["mock"],
+        "world_state": world_state,
+        "report_format": "markdown",
+    })
+    .to_string();
+
+    let (status, response) = http_request(server.address, "POST", "/v1/evals/run", &body).await;
+    assert_eq!(status, 200);
+    assert_eq!(response["data"]["format"], "markdown");
+    assert_eq!(response["data"]["suite"], "sphere overlay");
+    assert!(response["data"]["content"]
+        .as_str()
+        .unwrap()
+        .contains("sphere overlay"));
+}
+
+#[tokio::test]
+async fn test_rest_eval_run_rejects_ambiguous_world_inputs() {
+    let server = spawn_test_server().await;
+    let world_id = create_test_world(server.address, "eval-ambiguous").await;
+    let world_state = eval_world_state_with_named_object(
+        "inline-eval",
+        "cube",
+        worldforge_core::types::Position {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+    );
+    let body = serde_json::json!({
+        "suite": "physics",
+        "providers": ["mock"],
+        "world_id": world_id,
+        "world_state": world_state,
+    })
+    .to_string();
+
+    let (status, response) = http_request(server.address, "POST", "/v1/evals/run", &body).await;
+    assert_eq!(status, 400);
+    assert!(response["error"]
+        .as_str()
+        .unwrap()
+        .contains("provide at most one of world_id or world_state"));
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {

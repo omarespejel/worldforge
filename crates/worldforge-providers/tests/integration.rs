@@ -35,7 +35,7 @@ use worldforge_providers::genie::{GenieModel, GenieProvider};
 use worldforge_providers::runway::RunwayModel;
 use worldforge_providers::{
     auto_detect, auto_detect_worldforge, auto_detect_worldforge_with_state_store, CosmosProvider,
-    JepaBackend, JepaProvider, MockProvider, RunwayProvider,
+    JepaBackend, JepaProvider, MarbleProvider, MockProvider, RunwayProvider,
 };
 
 struct TestModelDir {
@@ -1374,6 +1374,55 @@ async fn test_marble_provider_registry_world_flow_when_available() {
         assert_eq!(provider_name, "marble");
         assert!(!clip.frames.is_empty());
     }
+}
+
+#[tokio::test]
+async fn test_marble_native_planning_plans_target_state() {
+    let provider = MarbleProvider::new();
+    let state = sample_marble_state();
+    let object_id = *state.scene.objects.keys().next().unwrap();
+    let mut target = state.clone();
+    target
+        .scene
+        .get_object_mut(&object_id)
+        .unwrap()
+        .set_position(Position {
+            x: 0.4,
+            y: 0.8,
+            z: 0.0,
+        });
+
+    let request = PlanRequest {
+        current_state: state,
+        goal: PlanGoal::TargetState(Box::new(target)),
+        max_steps: 4,
+        guardrails: Vec::new(),
+        planner: PlannerType::ProviderNative,
+        timeout_seconds: 5.0,
+        fallback_provider: None,
+    };
+
+    let plan = provider.plan(&request).await.unwrap();
+
+    assert!(provider.capabilities().supports_planning);
+    assert_eq!(plan.actions.len(), plan.predicted_states.len());
+    assert!(!plan.actions.is_empty());
+    assert!(matches!(
+        plan.actions.first(),
+        Some(Action::Place { object, .. }) if *object == object_id
+    ));
+    assert!(plan.success_probability >= 0.95);
+
+    let final_state = plan.predicted_states.last().unwrap();
+    let final_object = final_state.scene.get_object(&object_id).unwrap();
+    assert_eq!(
+        final_object.pose.position,
+        Position {
+            x: 0.4,
+            y: 0.8,
+            z: 0.0,
+        }
+    );
 }
 
 #[tokio::test]

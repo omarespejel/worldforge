@@ -230,7 +230,9 @@ assert inference_bundle.verify().current_verification.valid
 
 Custom `EvalSuite` JSON can embed its default providers. The Python, CLI, and
 REST evaluation entry points use those suite defaults when you omit an explicit
-provider override, and explicit provider lists still take precedence.
+provider override, and explicit provider lists still take precedence. REST can
+run suites directly via `POST /v1/evals/run`, optionally overlaying either a
+persisted `world_id` or an inline `world_state` onto every scenario fixture.
 
 The CLI can export the same evaluation report as multiple artifacts in one run:
 
@@ -573,6 +575,14 @@ curl -X POST http://127.0.0.1:8080/v1/providers/mock/transfer \
   -d '{"source":{"frames":[],"fps":12.0,"resolution":[640,360],"duration":5.0},"controls":{},"config":{"resolution":[1280,720],"fps":24.0,"control_strength":0.8}}'
 
 curl http://127.0.0.1:8080/v1/evals/suites
+
+curl -X POST http://127.0.0.1:8080/v1/evals/run \
+  -H 'content-type: application/json' \
+  -d '{"suite":"physics","providers":["mock"]}'
+
+curl -X POST http://127.0.0.1:8080/v1/evals/run \
+  -H 'content-type: application/json' \
+  -d '{"suite":"physics","providers":["mock"],"world_id":"<world-id>","report_format":"markdown"}'
 
 curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/evaluate \
   -H 'content-type: application/json' \
