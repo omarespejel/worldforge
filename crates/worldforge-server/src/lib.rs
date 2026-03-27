@@ -554,6 +554,55 @@ struct RenderedEvalReport {
     content: String,
 }
 
+#[derive(Debug)]
+struct ParsedRequest {
+    method: String,
+    path: String,
+    body: String,
+}
+
+#[derive(Debug)]
+struct WireResponse {
+    status: u16,
+    content_type: String,
+    body: String,
+    headers: Vec<(&'static str, String)>,
+    content_length: Option<usize>,
+}
+
+impl WireResponse {
+    fn json(status: u16, body: String) -> Self {
+        Self {
+            status,
+            content_type: "application/json; charset=utf-8".to_string(),
+            body,
+            headers: Vec::new(),
+            content_length: None,
+        }
+    }
+
+    fn text(status: u16, content_type: impl Into<String>, body: impl Into<String>) -> Self {
+        Self {
+            status,
+            content_type: content_type.into(),
+            body: body.into(),
+            headers: Vec::new(),
+            content_length: None,
+        }
+    }
+
+    fn with_header(mut self, name: &'static str, value: impl Into<String>) -> Self {
+        self.headers.push((name, value.into()));
+        self
+    }
+
+    fn without_body(mut self) -> Self {
+        self.content_length = Some(self.body.len());
+        self.body.clear();
+        self
+    }
+}
+
 fn resolve_eval_suite(request: &EvaluateRequest) -> std::result::Result<EvalSuite, String> {
     match &request.suite_definition {
         Some(suite) => suite
@@ -1006,58 +1055,107 @@ async fn handle_connection(
 ) -> anyhow::Result<()> {
     let (reader, mut writer) = stream.split();
     let mut buf_reader = BufReader::new(reader);
+    let request = match read_request(&mut buf_reader).await {
+        Ok(request) => request,
+        Err(response) => {
+            send_response(&mut writer, response).await?;
+            return Ok(());
+        }
+    };
 
-    // Read request line
-    let mut request_line = String::new();
-    buf_reader.read_line(&mut request_line).await?;
-    let parts: Vec<&str> = request_line.split_whitespace().collect();
-    if parts.len() < 2 {
-        send_response(&mut writer, 400, &error_response("bad request")).await?;
-        return Ok(());
-    }
-    let method = parts[0];
-    let path = parts[1];
+    let response = dispatch_request(&request, &state).await;
+    send_response(&mut writer, response).await?;
+    Ok(())
+}
 
-    // Read headers
+async fn read_request(
+    reader: &mut (impl AsyncBufReadExt + AsyncReadExt + Unpin),
+) -> std::result::Result<ParsedRequest, WireResponse> {
     const MAX_BODY_SIZE: usize = 4 * 1024 * 1024; // 4 MiB
     const MAX_HEADER_COUNT: usize = 64;
-    let mut content_length: usize = 0;
-    let mut header_count = 0;
+
+    let mut request_line = String::new();
+    reader
+        .read_line(&mut request_line)
+        .await
+        .map_err(|_| WireResponse::json(400, error_response("bad request")))?;
+
+    let (method, path) = parse_request_line(&request_line)?;
+
+    let mut content_length = 0usize;
+    let mut header_count = 0usize;
     loop {
         let mut line = String::new();
-        buf_reader.read_line(&mut line).await?;
+        reader
+            .read_line(&mut line)
+            .await
+            .map_err(|_| WireResponse::json(400, error_response("bad request")))?;
         if line.trim().is_empty() {
             break;
         }
+
         header_count += 1;
         if header_count > MAX_HEADER_COUNT {
-            send_response(&mut writer, 400, &error_response("too many headers")).await?;
-            return Ok(());
+            return Err(WireResponse::json(400, error_response("too many headers")));
         }
-        // Case-insensitive header matching
-        let lower = line.to_ascii_lowercase();
-        if let Some(val) = lower.strip_prefix("content-length:") {
-            content_length = val.trim().parse().unwrap_or(0);
+
+        let Some((name, value)) = line.split_once(':') else {
+            return Err(WireResponse::json(400, error_response("malformed header")));
+        };
+
+        if name.trim().eq_ignore_ascii_case("content-length") {
+            content_length = value.trim().parse::<usize>().map_err(|_| {
+                WireResponse::json(400, error_response("invalid content-length header"))
+            })?;
         }
     }
 
-    // Enforce body size limit
     if content_length > MAX_BODY_SIZE {
-        send_response(&mut writer, 413, &error_response("request body too large")).await?;
-        return Ok(());
+        return Err(WireResponse::json(
+            413,
+            error_response("request body too large"),
+        ));
     }
 
-    // Read body
     let mut body = vec![0u8; content_length];
     if content_length > 0 {
-        buf_reader.read_exact(&mut body).await?;
+        reader
+            .read_exact(&mut body)
+            .await
+            .map_err(|_| WireResponse::json(400, error_response("bad request")))?;
     }
-    let body_str = String::from_utf8_lossy(&body);
 
-    // Route request
-    let (status, response_body) = route(method, path, &body_str, &state).await;
-    send_response(&mut writer, status, &response_body).await?;
-    Ok(())
+    Ok(ParsedRequest {
+        method,
+        path,
+        body: String::from_utf8_lossy(&body).into_owned(),
+    })
+}
+
+fn parse_request_line(line: &str) -> std::result::Result<(String, String), WireResponse> {
+    let line = line.trim_end_matches(['\r', '\n']);
+    let mut parts = line.split(' ');
+    let Some(method) = parts.next() else {
+        return Err(WireResponse::json(400, error_response("bad request")));
+    };
+    let Some(path) = parts.next() else {
+        return Err(WireResponse::json(400, error_response("bad request")));
+    };
+    let Some(version) = parts.next() else {
+        return Err(WireResponse::json(400, error_response("bad request")));
+    };
+
+    if method.is_empty()
+        || path.is_empty()
+        || version.is_empty()
+        || parts.next().is_some()
+        || !path.starts_with('/')
+        || !matches!(version, "HTTP/1.0" | "HTTP/1.1")
+    {
+        return Err(WireResponse::json(400, error_response("bad request")));
+    }
+
+    Ok((method.to_string(), path.to_string()))
 }
 
 fn split_path_and_query(path: &str) -> (&str, Option<&str>) {
@@ -1067,19 +1165,226 @@ fn split_path_and_query(path: &str) -> (&str, Option<&str>) {
     }
 }
 
-fn query_param<'a>(query: Option<&'a str>, key: &str) -> Option<&'a str> {
+fn query_param(query: Option<&str>, key: &str) -> Option<String> {
     query.and_then(|query| {
         query.split('&').find_map(|pair| {
             let (candidate_key, candidate_value) = pair.split_once('=').unwrap_or((pair, ""));
-            (candidate_key == key).then_some(candidate_value)
-        })
+            let decoded_key = percent_decode_component(candidate_key)?;
+            (decoded_key == key).then(|| percent_decode_component(candidate_value))
+        })?
     })
 }
 
 fn query_flag(query: Option<&str>, key: &str) -> bool {
     query_param(query, key).is_some_and(|value| {
-        value.is_empty() || matches!(value, "1" | "true" | "TRUE" | "yes" | "on")
+        value.is_empty() || matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on")
     })
+}
+
+fn percent_decode_component(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+
+    while index < bytes.len() {
+        match bytes[index] {
+            b'+' => {
+                decoded.push(b' ');
+                index += 1;
+            }
+            b'%' if index + 2 < bytes.len() => {
+                let hi = hex_value(bytes[index + 1])?;
+                let lo = hex_value(bytes[index + 2])?;
+                decoded.push((hi << 4) | lo);
+                index += 3;
+            }
+            b'%' => return None,
+            byte => {
+                decoded.push(byte);
+                index += 1;
+            }
+        }
+    }
+
+    String::from_utf8(decoded).ok()
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RouteKind {
+    VerifyProof,
+    ProvidersCollection,
+    ProviderDescriptor,
+    ProviderHealth,
+    ProviderEstimate,
+    EvalsSuites,
+    EvalsRun,
+    WorldsCollection,
+    WorldsImport,
+    WorldExport,
+    ProviderGenerate,
+    ProviderEmbed,
+    ProviderReason,
+    ProviderTransfer,
+    WorldHistory,
+    WorldRestore,
+    WorldObjects,
+    WorldObject,
+    WorldItem,
+    WorldPredict,
+    WorldReason,
+    WorldPlan,
+    WorldExecutePlan,
+    WorldVerify,
+    WorldEvaluate,
+    Compare,
+    Unknown,
+}
+
+impl RouteKind {
+    fn allowed_methods(self) -> &'static [&'static str] {
+        match self {
+            Self::VerifyProof => &["POST"],
+            Self::ProvidersCollection => &["GET", "HEAD"],
+            Self::ProviderDescriptor => &["GET", "HEAD"],
+            Self::ProviderHealth => &["GET", "HEAD"],
+            Self::ProviderEstimate => &["POST"],
+            Self::EvalsSuites => &["GET", "HEAD"],
+            Self::EvalsRun => &["POST"],
+            Self::WorldsCollection => &["GET", "HEAD", "POST"],
+            Self::WorldsImport => &["POST"],
+            Self::WorldExport => &["GET", "HEAD"],
+            Self::ProviderGenerate => &["POST"],
+            Self::ProviderEmbed => &["POST"],
+            Self::ProviderReason => &["POST"],
+            Self::ProviderTransfer => &["POST"],
+            Self::WorldHistory => &["GET", "HEAD"],
+            Self::WorldRestore => &["POST"],
+            Self::WorldObjects => &["GET", "HEAD", "POST"],
+            Self::WorldObject => &["GET", "HEAD", "PATCH", "DELETE"],
+            Self::WorldItem => &["GET", "HEAD", "DELETE"],
+            Self::WorldPredict => &["POST"],
+            Self::WorldReason => &["POST"],
+            Self::WorldPlan => &["POST"],
+            Self::WorldExecutePlan => &["POST"],
+            Self::WorldVerify => &["POST"],
+            Self::WorldEvaluate => &["POST"],
+            Self::Compare => &["POST"],
+            Self::Unknown => &[],
+        }
+    }
+
+    fn allows(self, method: &str) -> bool {
+        self.allowed_methods().contains(&method)
+    }
+}
+
+fn classify_route_kind(path: &str) -> RouteKind {
+    let segments: Vec<&str> = path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+
+    match segments.as_slice() {
+        ["v1", "verify", "proof"] => RouteKind::VerifyProof,
+        ["v1", "providers"] => RouteKind::ProvidersCollection,
+        ["v1", "providers", _, "health"] => RouteKind::ProviderHealth,
+        ["v1", "providers", _, "estimate"] => RouteKind::ProviderEstimate,
+        ["v1", "providers", _, "generate"] => RouteKind::ProviderGenerate,
+        ["v1", "providers", _, "embed"] => RouteKind::ProviderEmbed,
+        ["v1", "providers", _, "reason"] => RouteKind::ProviderReason,
+        ["v1", "providers", _, "transfer"] => RouteKind::ProviderTransfer,
+        ["v1", "providers", _] => RouteKind::ProviderDescriptor,
+        ["v1", "evals", "suites"] => RouteKind::EvalsSuites,
+        ["v1", "evals", "run"] => RouteKind::EvalsRun,
+        ["v1", "worlds"] => RouteKind::WorldsCollection,
+        ["v1", "worlds", "import"] => RouteKind::WorldsImport,
+        ["v1", "worlds", _, "export"] => RouteKind::WorldExport,
+        ["v1", "worlds", _, "history"] => RouteKind::WorldHistory,
+        ["v1", "worlds", _, "restore"] => RouteKind::WorldRestore,
+        ["v1", "worlds", _, "objects", _] => RouteKind::WorldObject,
+        ["v1", "worlds", _, "objects"] => RouteKind::WorldObjects,
+        ["v1", "worlds", _, "predict"] => RouteKind::WorldPredict,
+        ["v1", "worlds", _, "reason"] => RouteKind::WorldReason,
+        ["v1", "worlds", _, "plan"] => RouteKind::WorldPlan,
+        ["v1", "worlds", _, "execute-plan"] => RouteKind::WorldExecutePlan,
+        ["v1", "worlds", _, "verify"] => RouteKind::WorldVerify,
+        ["v1", "worlds", _, "evaluate"] => RouteKind::WorldEvaluate,
+        ["v1", "worlds", _] => RouteKind::WorldItem,
+        ["v1", "compare"] => RouteKind::Compare,
+        _ => RouteKind::Unknown,
+    }
+}
+
+async fn dispatch_request(request: &ParsedRequest, state: &AppState) -> WireResponse {
+    let head_request = request.method.eq_ignore_ascii_case("HEAD");
+    let effective_method = if head_request {
+        "GET"
+    } else {
+        request.method.as_str()
+    };
+
+    let (path_only, _) = split_path_and_query(&request.path);
+    let normalized_path = path_only.trim_end_matches('/');
+    let route_kind = classify_route_kind(normalized_path);
+    if route_kind != RouteKind::Unknown && !route_kind.allows(&request.method) {
+        let response = WireResponse::json(405, error_response("method not allowed"))
+            .with_header("Allow", route_kind.allowed_methods().join(", "));
+        return if head_request {
+            response.without_body()
+        } else {
+            response
+        };
+    }
+
+    let (status, body) = route(effective_method, &request.path, &request.body, state).await;
+    let response = if matches!(route_kind, RouteKind::WorldEvaluate) {
+        rendered_eval_response(status, body)
+    } else {
+        WireResponse::json(status, body)
+    };
+    if head_request {
+        response.without_body()
+    } else {
+        response
+    }
+}
+
+fn rendered_eval_response(status: u16, body: String) -> WireResponse {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) else {
+        return WireResponse::json(status, body);
+    };
+    let Some(data) = value.get("data").and_then(serde_json::Value::as_object) else {
+        return WireResponse::json(status, body);
+    };
+    let Some(format) = data.get("format").and_then(serde_json::Value::as_str) else {
+        return WireResponse::json(status, body);
+    };
+    let Some(content) = data.get("content").and_then(serde_json::Value::as_str) else {
+        return WireResponse::json(status, body);
+    };
+
+    if format.eq_ignore_ascii_case("json") {
+        return WireResponse::json(status, body);
+    }
+
+    WireResponse::text(status, rendered_eval_content_type(format), content)
+}
+
+fn rendered_eval_content_type(format: &str) -> &'static str {
+    match format.to_ascii_lowercase().as_str() {
+        "markdown" | "md" => "text/markdown; charset=utf-8",
+        "csv" => "text/csv; charset=utf-8",
+        _ => "text/plain; charset=utf-8",
+    }
 }
 
 async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, String) {
@@ -1155,14 +1460,16 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
         ("GET", "/v1/providers") => {
             if query_flag(query, "health") {
                 let providers = match query_param(query, "capability") {
-                    Some(capability) => state.registry.health_check_by_capability(capability).await,
+                    Some(capability) => {
+                        state.registry.health_check_by_capability(&capability).await
+                    }
                     None => state.registry.health_check_all().await,
                 };
                 (200, ApiResponse::ok(providers))
             } else {
                 match query_param(query, "capability") {
                     Some(capability) => {
-                        let providers = state.registry.describe_by_capability(capability);
+                        let providers = state.registry.describe_by_capability(&capability);
                         (200, ApiResponse::ok(providers))
                     }
                     None => {
@@ -2371,13 +2678,13 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
 
 async fn send_response(
     writer: &mut (impl AsyncWriteExt + Unpin),
-    status: u16,
-    body: &str,
+    response: WireResponse,
 ) -> anyhow::Result<()> {
-    let status_text = match status {
+    let status_text = match response.status {
         200 => "OK",
         201 => "Created",
         400 => "Bad Request",
+        405 => "Method Not Allowed",
         409 => "Conflict",
         413 => "Payload Too Large",
         404 => "Not Found",
@@ -2386,11 +2693,20 @@ async fn send_response(
         504 => "Gateway Timeout",
         _ => "Unknown",
     };
-    let response = format!(
-        "HTTP/1.1 {status} {status_text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
+    let content_length = response.content_length.unwrap_or(response.body.len());
+    let mut raw = format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n",
+        response.status, status_text, response.content_type, content_length
     );
-    writer.write_all(response.as_bytes()).await?;
+    for (name, value) in response.headers {
+        raw.push_str(name);
+        raw.push_str(": ");
+        raw.push_str(&value);
+        raw.push_str("\r\n");
+    }
+    raw.push_str("\r\n");
+    raw.push_str(&response.body);
+    writer.write_all(raw.as_bytes()).await?;
     writer.flush().await?;
     Ok(())
 }
@@ -3209,6 +3525,7 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert!(entries[0]["action"].is_null());
         assert_eq!(entries[1]["provider"], "mock");
+        assert_eq!(entries[1]["prediction"]["model"], "mock-v2");
     }
 
     #[tokio::test]
