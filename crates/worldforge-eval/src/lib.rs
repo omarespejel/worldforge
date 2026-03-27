@@ -20,6 +20,16 @@ use worldforge_core::state::{WorldMetadata, WorldState};
 use worldforge_core::types::{Position, Tensor, TensorData, VideoClip};
 
 const BUILTIN_SUITE_NAMES: [&str; 4] = ["physics", "manipulation", "spatial", "comprehensive"];
+const SUPPORTED_CUSTOM_DIMENSION_NAMES: [&str; 8] = [
+    "overall",
+    "object_permanence",
+    "gravity_compliance",
+    "collision_accuracy",
+    "spatial_consistency",
+    "temporal_consistency",
+    "confidence",
+    "video_similarity",
+];
 
 /// Dimension along which a provider is evaluated.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -627,6 +637,36 @@ impl EvalSuite {
             }
         }
 
+        for dimension in &self.dimensions {
+            let EvalDimension::Custom { name } = dimension else {
+                continue;
+            };
+            let normalized = name.trim();
+            if normalized.is_empty() {
+                return Err(WorldForgeError::InvalidState(format!(
+                    "evaluation suite '{}' declares an empty custom dimension name",
+                    self.name
+                )));
+            }
+            if !is_supported_custom_dimension(normalized) {
+                return Err(WorldForgeError::InvalidState(format!(
+                    "unsupported custom evaluation dimension '{normalized}'. Supported names: {}",
+                    SUPPORTED_CUSTOM_DIMENSION_NAMES.join(", ")
+                )));
+            }
+            if normalized.eq_ignore_ascii_case("video_similarity")
+                && self
+                    .scenarios
+                    .iter()
+                    .any(|scenario| scenario.ground_truth.is_none())
+            {
+                return Err(WorldForgeError::InvalidState(format!(
+                    "custom dimension 'video_similarity' requires ground truth video for every scenario in suite '{}'",
+                    self.name
+                )));
+            }
+        }
+
         let mut seen_providers = HashSet::new();
         for provider in &self.providers {
             let provider = provider.trim();
@@ -1196,13 +1236,22 @@ impl EvalSuite {
                     scores.insert("video_similarity".to_string(), metrics.overall_similarity);
                 }
                 ensure_overall_score(&mut scores);
+                if custom_metric_requested(
+                    &self.dimensions,
+                    &scenario.expected_outcomes,
+                    "confidence",
+                ) {
+                    if let Some(confidence) = average_confidence {
+                        scores.insert("confidence".to_string(), confidence);
+                    }
+                }
 
                 if !prediction_failed {
                     for expected in &scenario.expected_outcomes {
                         outcomes.push(check_outcome(
                             expected,
                             &current_state,
-                            average_scores.as_ref(),
+                            &scores,
                             average_confidence,
                             scenario.ground_truth.as_ref(),
                             video_metrics.as_ref(),
@@ -1423,6 +1472,33 @@ fn scenario_requires_video_artifacts(scenario: &EvalScenario) -> bool {
             .any(|expected| matches!(expected, ExpectedOutcome::MinVideoSimilarity { .. }))
 }
 
+fn is_supported_custom_dimension(name: &str) -> bool {
+    SUPPORTED_CUSTOM_DIMENSION_NAMES
+        .iter()
+        .any(|supported| supported.eq_ignore_ascii_case(name))
+}
+
+fn custom_metric_requested(
+    dimensions: &[EvalDimension],
+    expected_outcomes: &[ExpectedOutcome],
+    key: &str,
+) -> bool {
+    dimensions.iter().any(|dimension| {
+        matches!(
+            dimension,
+            EvalDimension::Custom { name } if name.eq_ignore_ascii_case(key)
+        )
+    }) || expected_outcomes.iter().any(|expected| {
+        matches!(
+            expected,
+            ExpectedOutcome::MinPhysicsScore {
+                dimension: EvalDimension::Custom { name },
+                ..
+            } if name.eq_ignore_ascii_case(key)
+        )
+    })
+}
+
 fn video_has_depth_maps(video: &VideoClip) -> bool {
     video.frames.iter().any(|frame| frame.depth.is_some())
 }
@@ -1437,7 +1513,7 @@ fn video_has_segmentation_maps(video: &VideoClip) -> bool {
 fn check_outcome(
     expected: &ExpectedOutcome,
     state: &WorldState,
-    average_scores: Option<&PhysicsScores>,
+    scores: &HashMap<String, f32>,
     average_confidence: Option<f32>,
     ground_truth: Option<&VideoClip>,
     video_metrics: Option<&VideoMetrics>,
@@ -1446,26 +1522,16 @@ fn check_outcome(
         ExpectedOutcome::MinPhysicsScore {
             dimension,
             threshold,
-        } => match average_scores {
-            Some(scores) => {
-                let score = match dimension {
-                    EvalDimension::ObjectPermanence => scores.object_permanence,
-                    EvalDimension::GravityCompliance => scores.gravity_compliance,
-                    EvalDimension::CollisionAccuracy => scores.collision_accuracy,
-                    EvalDimension::SpatialConsistency => scores.spatial_consistency,
-                    EvalDimension::TemporalConsistency => scores.temporal_consistency,
-                    _ => scores.overall,
-                };
-                OutcomeResult {
-                    description: format!("{} >= {threshold}", dimension.key()),
-                    passed: score >= *threshold,
-                    details: Some(format!("score: {score:.3}")),
-                }
-            }
+        } => match scores.get(&dimension.key()) {
+            Some(score) => OutcomeResult {
+                description: format!("{} >= {threshold}", dimension.key()),
+                passed: *score >= *threshold,
+                details: Some(format!("score: {score:.3}")),
+            },
             None => OutcomeResult {
                 description: format!("{} >= {threshold}", dimension.key()),
                 passed: false,
-                details: Some("requires at least one prediction step".to_string()),
+                details: Some("score unavailable for this scenario".to_string()),
             },
         },
         ExpectedOutcome::MinConfidence { threshold } => match average_confidence {
@@ -3067,6 +3133,58 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_custom_confidence_dimension_is_reported_and_drives_threshold_outcomes() {
+        let suite = EvalSuite {
+            name: "Custom Confidence".to_string(),
+            scenarios: vec![EvalScenario {
+                name: "confidence_threshold".to_string(),
+                description: "Confidence should be exposed as a named custom metric".to_string(),
+                initial_state: WorldState::new("confidence_threshold", "eval"),
+                actions: vec![Action::SetLighting { time_of_day: 0.5 }],
+                expected_outcomes: vec![ExpectedOutcome::MinPhysicsScore {
+                    dimension: EvalDimension::Custom {
+                        name: "confidence".to_string(),
+                    },
+                    threshold: 0.8,
+                }],
+                ground_truth: None,
+            }],
+            dimensions: vec![EvalDimension::Custom {
+                name: "confidence".to_string(),
+            }],
+            providers: vec![],
+        };
+        let provider = SequencedEvalProvider::new(
+            "sequenced",
+            vec![(
+                PhysicsScores {
+                    overall: 0.5,
+                    object_permanence: 0.5,
+                    gravity_compliance: 0.5,
+                    collision_accuracy: 0.5,
+                    spatial_consistency: 0.5,
+                    temporal_consistency: 0.5,
+                },
+                0.85,
+            )],
+        );
+
+        let report = suite
+            .run(&[&provider as &dyn WorldModelProvider])
+            .await
+            .unwrap();
+        let result = &report.results[0];
+
+        assert_eq!(result.scores["confidence"], 0.85);
+        assert!(result.outcomes.iter().all(|outcome| outcome.passed));
+        assert_eq!(report.dimension_summaries[0].dimension, "confidence");
+        assert_eq!(
+            report.dimension_summaries[0].best_provider.as_deref(),
+            Some("sequenced")
+        );
+    }
+
     #[test]
     fn test_validate_rejects_duplicate_scenario_names() {
         let suite = EvalSuite {
@@ -3113,6 +3231,50 @@ mod tests {
         };
 
         assert!(suite.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_rejects_unknown_custom_dimension() {
+        let suite = EvalSuite {
+            name: "custom-bad".to_string(),
+            scenarios: vec![EvalScenario {
+                name: "unsupported".to_string(),
+                description: "Reject unsupported custom metrics".to_string(),
+                initial_state: WorldState::new("unsupported", "eval"),
+                actions: vec![Action::SetLighting { time_of_day: 0.5 }],
+                expected_outcomes: vec![],
+                ground_truth: None,
+            }],
+            dimensions: vec![EvalDimension::Custom {
+                name: "latency".to_string(),
+            }],
+            providers: vec![],
+        };
+
+        let error = suite.validate().unwrap_err().to_string();
+        assert!(error.contains("unsupported custom evaluation dimension 'latency'"));
+    }
+
+    #[test]
+    fn test_validate_rejects_custom_video_similarity_dimension_without_ground_truth() {
+        let suite = EvalSuite {
+            name: "video-dimension-bad".to_string(),
+            scenarios: vec![EvalScenario {
+                name: "needs_video".to_string(),
+                description: "Custom video similarity dimensions require references".to_string(),
+                initial_state: WorldState::new("needs_video", "eval"),
+                actions: vec![Action::SetLighting { time_of_day: 0.5 }],
+                expected_outcomes: vec![],
+                ground_truth: None,
+            }],
+            dimensions: vec![EvalDimension::Custom {
+                name: "video_similarity".to_string(),
+            }],
+            providers: vec![],
+        };
+
+        let error = suite.validate().unwrap_err().to_string();
+        assert!(error.contains("custom dimension 'video_similarity' requires ground truth video"));
     }
 
     #[tokio::test]

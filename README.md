@@ -672,7 +672,10 @@ and Python bindings use that list by default; explicit provider arguments still
 override it. Custom suites can now assert concrete scene outcomes such as final
 object positions and semantic labels, and can score deterministic clips against
 optional ground-truth video references. They can also assert final-state
-conditions using the core `Condition` semantics for relational checks. Structured
+conditions using the core `Condition` semantics for relational checks. Named
+custom dimensions now resolve to real metrics instead of placeholder labels:
+`overall`, the built-in physics score keys, `confidence`, and
+`video_similarity`. Structured
 `condition` and `goal_image` planning payloads are exercised end to end across
 the CLI, REST server, and Python bindings, and serialized plans can now be
 executed against persisted worlds through each surface with atomic state

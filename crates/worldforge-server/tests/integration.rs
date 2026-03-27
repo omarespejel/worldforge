@@ -499,7 +499,7 @@ async fn test_live_http_decodes_query_parameters_for_provider_filtering() {
 }
 
 #[tokio::test]
-async fn test_live_http_rendered_eval_reports_use_content_type_and_body_semantics() {
+async fn test_live_http_rendered_eval_reports_keep_json_envelopes_on_global_endpoint() {
     let server = spawn_test_server().await;
 
     for format in ["markdown", "csv"] {
@@ -518,32 +518,69 @@ async fn test_live_http_rendered_eval_reports_use_content_type_and_body_semantic
 
         let response = raw_http_response(server.address, &request).await;
         assert_eq!(response.status, 200);
+        assert!(response
+            .header("content-type")
+            .unwrap_or("")
+            .contains("application/json"));
 
-        let content_type = response.header("content-type").unwrap_or("");
-        if content_type.contains("application/json") || response.body.trim_start().starts_with('{')
-        {
-            let payload: Value = serde_json::from_str(&response.body).unwrap();
-            assert_eq!(payload["success"], true);
-            assert_eq!(payload["data"]["format"], format);
-            assert!(payload["data"]["content"]
-                .as_str()
-                .unwrap()
-                .contains("Physics"));
-        } else {
-            match format {
-                "markdown" => {
-                    assert!(
-                        content_type.contains("markdown") || content_type.contains("text/plain")
-                    );
-                    assert!(response.body.contains("# Evaluation Report"));
-                }
-                "csv" => {
-                    assert!(content_type.contains("csv") || content_type.contains("text/plain"));
-                    assert!(response.body.contains("suite,provider,scenario"));
-                }
-                _ => unreachable!(),
-            }
-        }
+        let payload: Value = serde_json::from_str(&response.body).unwrap();
+        assert_eq!(payload["success"], true);
+        assert_eq!(payload["data"]["format"], format);
+        assert!(payload["data"]["content"]
+            .as_str()
+            .unwrap()
+            .contains(if format == "markdown" {
+                "# Evaluation Report"
+            } else {
+                "suite,provider,scenario"
+            }));
+    }
+}
+
+#[tokio::test]
+async fn test_live_http_rendered_eval_reports_keep_json_envelopes_on_world_endpoint() {
+    let server = spawn_test_server().await;
+    let (status, created) = http_request(
+        server.address,
+        "POST",
+        "/v1/worlds",
+        r#"{"name":"eval-http-world","provider":"mock"}"#,
+    )
+    .await;
+    assert_eq!(status, 201);
+    let world_id = created["data"]["id"].as_str().unwrap();
+
+    for format in ["markdown", "csv"] {
+        let body = serde_json::json!({
+            "suite": "physics",
+            "report_format": format,
+        })
+        .to_string();
+        let request = build_http_request(
+            "POST",
+            &format!("/v1/worlds/{world_id}/evaluate"),
+            &[("Content-Type", "application/json")],
+            &body,
+        );
+
+        let response = raw_http_response(server.address, &request).await;
+        assert_eq!(response.status, 200);
+        assert!(response
+            .header("content-type")
+            .unwrap_or("")
+            .contains("application/json"));
+
+        let payload: Value = serde_json::from_str(&response.body).unwrap();
+        assert_eq!(payload["success"], true);
+        assert_eq!(payload["data"]["format"], format);
+        assert!(payload["data"]["content"]
+            .as_str()
+            .unwrap()
+            .contains(if format == "markdown" {
+                "# Evaluation Report"
+            } else {
+                "suite,provider,scenario"
+            }));
     }
 }
 

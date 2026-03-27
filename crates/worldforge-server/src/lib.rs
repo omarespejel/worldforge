@@ -581,16 +581,6 @@ impl WireResponse {
         }
     }
 
-    fn text(status: u16, content_type: impl Into<String>, body: impl Into<String>) -> Self {
-        Self {
-            status,
-            content_type: content_type.into(),
-            body: body.into(),
-            headers: Vec::new(),
-            content_length: None,
-        }
-    }
-
     fn with_header(mut self, name: &'static str, value: impl Into<String>) -> Self {
         self.headers.push((name, value.into()));
         self
@@ -1346,44 +1336,11 @@ async fn dispatch_request(request: &ParsedRequest, state: &AppState) -> WireResp
     }
 
     let (status, body) = route(effective_method, &request.path, &request.body, state).await;
-    let response = if matches!(route_kind, RouteKind::WorldEvaluate) {
-        rendered_eval_response(status, body)
-    } else {
-        WireResponse::json(status, body)
-    };
+    let response = WireResponse::json(status, body);
     if head_request {
         response.without_body()
     } else {
         response
-    }
-}
-
-fn rendered_eval_response(status: u16, body: String) -> WireResponse {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) else {
-        return WireResponse::json(status, body);
-    };
-    let Some(data) = value.get("data").and_then(serde_json::Value::as_object) else {
-        return WireResponse::json(status, body);
-    };
-    let Some(format) = data.get("format").and_then(serde_json::Value::as_str) else {
-        return WireResponse::json(status, body);
-    };
-    let Some(content) = data.get("content").and_then(serde_json::Value::as_str) else {
-        return WireResponse::json(status, body);
-    };
-
-    if format.eq_ignore_ascii_case("json") {
-        return WireResponse::json(status, body);
-    }
-
-    WireResponse::text(status, rendered_eval_content_type(format), content)
-}
-
-fn rendered_eval_content_type(format: &str) -> &'static str {
-    match format.to_ascii_lowercase().as_str() {
-        "markdown" | "md" => "text/markdown; charset=utf-8",
-        "csv" => "text/csv; charset=utf-8",
-        _ => "text/plain; charset=utf-8",
     }
 }
 
