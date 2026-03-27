@@ -711,6 +711,12 @@ pub enum ObjectCommands {
         /// Optional semantic label.
         #[arg(long)]
         semantic_label: Option<String>,
+        /// Optional path to a JSON-serialized `Mesh`.
+        #[arg(long)]
+        mesh_json: Option<PathBuf>,
+        /// Optional path to a JSON-serialized `Tensor` for the visual embedding.
+        #[arg(long)]
+        visual_embedding_json: Option<PathBuf>,
         /// Optional mass in kilograms.
         #[arg(long)]
         mass: Option<f32>,
@@ -786,6 +792,12 @@ pub enum ObjectCommands {
         /// Optional replacement semantic label.
         #[arg(long)]
         semantic_label: Option<String>,
+        /// Optional path to a JSON-serialized `Mesh`.
+        #[arg(long)]
+        mesh_json: Option<PathBuf>,
+        /// Optional path to a JSON-serialized `Tensor` for the visual embedding.
+        #[arg(long)]
+        visual_embedding_json: Option<PathBuf>,
         /// Optional replacement mass in kilograms.
         #[arg(long)]
         mass: Option<f32>,
@@ -1029,6 +1041,8 @@ pub async fn run() -> Result<()> {
                 bbox_max,
                 velocity,
                 semantic_label,
+                mesh_json,
+                visual_embedding_json,
                 mass,
                 friction,
                 restitution,
@@ -1047,6 +1061,8 @@ pub async fn run() -> Result<()> {
                         bbox_max: &bbox_max,
                         velocity: velocity.as_deref(),
                         semantic_label: semantic_label.as_deref(),
+                        mesh_json: mesh_json.as_deref(),
+                        visual_embedding_json: visual_embedding_json.as_deref(),
                         mass,
                         friction,
                         restitution,
@@ -1093,6 +1109,8 @@ pub async fn run() -> Result<()> {
                 bbox_max,
                 velocity,
                 semantic_label,
+                mesh_json,
+                visual_embedding_json,
                 mass,
                 friction,
                 restitution,
@@ -1113,6 +1131,8 @@ pub async fn run() -> Result<()> {
                         bbox_max: bbox_max.as_deref(),
                         velocity: velocity.as_deref(),
                         semantic_label: semantic_label.as_deref(),
+                        mesh_json: mesh_json.as_deref(),
+                        visual_embedding_json: visual_embedding_json.as_deref(),
                         mass,
                         friction,
                         restitution,
@@ -1498,6 +1518,8 @@ fn build_scene_object(name: &str, options: &ObjectAddOptions<'_>) -> Result<Scen
         };
     }
     object.semantic_label = options.semantic_label.map(ToOwned::to_owned);
+    object.mesh = load_optional_json(options.mesh_json)?;
+    object.visual_embedding = load_optional_json(options.visual_embedding_json)?;
     object.physics = PhysicsProperties {
         mass: options.mass,
         friction: options.friction,
@@ -1543,6 +1565,8 @@ fn build_scene_object_patch(options: &ObjectUpdateOptions<'_>) -> Result<SceneOb
             })
             .transpose()?,
         semantic_label: options.semantic_label.map(ToOwned::to_owned),
+        mesh: load_optional_json(options.mesh_json)?,
+        visual_embedding: load_optional_json(options.visual_embedding_json)?,
         mass: options.mass,
         friction: options.friction,
         restitution: options.restitution,
@@ -1575,6 +1599,27 @@ fn print_scene_object(object: &SceneObject) {
     if let Some(label) = &object.semantic_label {
         println!("  Semantic label: {label}");
     }
+    match &object.mesh {
+        Some(mesh) => {
+            println!(
+                "  Mesh: vertices={} faces={} normals={} uvs={}",
+                mesh.vertices.len(),
+                mesh.faces.len(),
+                mesh.normals.as_ref().map_or(0, Vec::len),
+                mesh.uvs.as_ref().map_or(0, Vec::len)
+            );
+        }
+        None => println!("  Mesh: none"),
+    }
+    match &object.visual_embedding {
+        Some(embedding) => {
+            println!(
+                "  Visual embedding: shape={:?} dtype={:?} device={:?}",
+                embedding.shape, embedding.dtype, embedding.device
+            );
+        }
+        None => println!("  Visual embedding: none"),
+    }
     println!(
         "  Physics: static={} graspable={} mass={:?} friction={:?} restitution={:?} material={:?}",
         object.physics.is_static,
@@ -1603,6 +1648,8 @@ struct ObjectAddOptions<'a> {
     bbox_max: &'a [f32],
     velocity: Option<&'a [f32]>,
     semantic_label: Option<&'a str>,
+    mesh_json: Option<&'a Path>,
+    visual_embedding_json: Option<&'a Path>,
     mass: Option<f32>,
     friction: Option<f32>,
     restitution: Option<f32>,
@@ -1620,6 +1667,8 @@ struct ObjectUpdateOptions<'a> {
     bbox_max: Option<&'a [f32]>,
     velocity: Option<&'a [f32]>,
     semantic_label: Option<&'a str>,
+    mesh_json: Option<&'a Path>,
+    visual_embedding_json: Option<&'a Path>,
     mass: Option<f32>,
     friction: Option<f32>,
     restitution: Option<f32>,
@@ -1790,6 +1839,10 @@ fn read_json_file<T: DeserializeOwned>(path: &Path) -> Result<T> {
         .with_context(|| format!("failed to read JSON from {}", path.display()))?;
     serde_json::from_str(&contents)
         .with_context(|| format!("failed to parse JSON from {}", path.display()))
+}
+
+fn load_optional_json<T: DeserializeOwned>(path: Option<&Path>) -> Result<Option<T>> {
+    path.map(read_json_file).transpose()
 }
 
 fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<()> {
@@ -3820,6 +3873,7 @@ fn parse_axis_spec(tokens: &[&str]) -> Result<(Vec3, usize)> {
 mod tests {
     use super::*;
     use worldforge_core::scene::SceneObject;
+    use worldforge_core::types::{DType, Device, Mesh, Tensor, TensorData};
     use worldforge_verify::{MockVerifier, ZkVerifier};
 
     fn world_with_named_object(name: &str) -> (WorldState, uuid::Uuid) {
@@ -4804,6 +4858,10 @@ mod tests {
             "0.0",
             "--semantic-label",
             "storage",
+            "--mesh-json",
+            "/tmp/mesh.json",
+            "--visual-embedding-json",
+            "/tmp/embedding.json",
             "--static",
             "--graspable",
             "--output-json",
@@ -4821,6 +4879,8 @@ mod tests {
                     bbox_max,
                     velocity,
                     semantic_label,
+                    mesh_json,
+                    visual_embedding_json,
                     is_static,
                     graspable,
                     output_json,
@@ -4833,6 +4893,11 @@ mod tests {
                     assert_eq!(bbox_max, vec![0.5, 0.5, 0.5]);
                     assert_eq!(velocity, Some(vec![0.1, 0.0, 0.0]));
                     assert_eq!(semantic_label.as_deref(), Some("storage"));
+                    assert_eq!(mesh_json, Some(PathBuf::from("/tmp/mesh.json")));
+                    assert_eq!(
+                        visual_embedding_json,
+                        Some(PathBuf::from("/tmp/embedding.json"))
+                    );
                     assert!(is_static);
                     assert!(graspable);
                     assert_eq!(output_json, Some(PathBuf::from("/tmp/object.json")));
@@ -4864,6 +4929,10 @@ mod tests {
             "0.0",
             "--semantic-label",
             "container",
+            "--mesh-json",
+            "/tmp/mesh.json",
+            "--visual-embedding-json",
+            "/tmp/embedding.json",
             "--static",
             "true",
             "--output-json",
@@ -4879,6 +4948,8 @@ mod tests {
                     position,
                     rotation,
                     semantic_label,
+                    mesh_json,
+                    visual_embedding_json,
                     is_static,
                     output_json,
                     ..
@@ -4888,6 +4959,11 @@ mod tests {
                     assert_eq!(position, Some(vec![1.0, 2.0, 3.0]));
                     assert_eq!(rotation, Some(vec![0.0, 1.0, 0.0, 0.0]));
                     assert_eq!(semantic_label.as_deref(), Some("container"));
+                    assert_eq!(mesh_json, Some(PathBuf::from("/tmp/mesh.json")));
+                    assert_eq!(
+                        visual_embedding_json,
+                        Some(PathBuf::from("/tmp/embedding.json"))
+                    );
                     assert_eq!(is_static, Some(true));
                     assert_eq!(output_json, Some(PathBuf::from("/tmp/object.json")));
                 }
@@ -6152,6 +6228,87 @@ mod tests {
         let updated_path = dir.join("updated.json");
         let list_path = dir.join("objects.json");
         let shown_path = dir.join("shown.json");
+        let mesh_path = dir.join("mesh.json");
+        let embedding_path = dir.join("embedding.json");
+        let updated_mesh_path = dir.join("mesh-updated.json");
+        let updated_embedding_path = dir.join("embedding-updated.json");
+
+        let mesh = Mesh {
+            vertices: vec![
+                Position {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                Position {
+                    x: 1.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                Position {
+                    x: 0.0,
+                    y: 1.0,
+                    z: 0.0,
+                },
+            ],
+            faces: vec![[0, 1, 2]],
+            normals: Some(vec![
+                Position {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 1.0,
+                },
+                Position {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 1.0,
+                },
+                Position {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 1.0,
+                },
+            ]),
+            uvs: Some(vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
+        };
+        let embedding = Tensor {
+            data: TensorData::Float32(vec![0.1, 0.2, 0.3, 0.4]),
+            shape: vec![4],
+            dtype: DType::Float32,
+            device: Device::Cpu,
+        };
+        let updated_mesh = Mesh {
+            vertices: vec![
+                Position {
+                    x: -1.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                Position {
+                    x: 0.0,
+                    y: 1.0,
+                    z: 0.0,
+                },
+                Position {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 1.0,
+                },
+            ],
+            faces: vec![[0, 1, 2]],
+            normals: None,
+            uvs: None,
+        };
+        let updated_embedding = Tensor {
+            data: TensorData::Float32(vec![1.0, 2.0]),
+            shape: vec![2],
+            dtype: DType::Float32,
+            device: Device::Cpu,
+        };
+        write_json_file(&mesh_path, &mesh).unwrap();
+        write_json_file(&embedding_path, &embedding).unwrap();
+        write_json_file(&updated_mesh_path, &updated_mesh).unwrap();
+        write_json_file(&updated_embedding_path, &updated_embedding).unwrap();
 
         cmd_objects_add(
             store.as_ref(),
@@ -6163,6 +6320,8 @@ mod tests {
                 bbox_max: &[0.5, 0.5, 0.5],
                 velocity: Some(&[0.1, 0.0, 0.0]),
                 semantic_label: Some("storage"),
+                mesh_json: Some(&mesh_path),
+                visual_embedding_json: Some(&embedding_path),
                 mass: Some(5.0),
                 friction: Some(0.3),
                 restitution: Some(0.1),
@@ -6178,6 +6337,17 @@ mod tests {
         let created: SceneObject = read_json_file(&created_path).unwrap();
         assert_eq!(created.name, "crate");
         assert_eq!(created.semantic_label.as_deref(), Some("storage"));
+        assert_eq!(
+            created.mesh.as_ref().map(|mesh| mesh.vertices.len()),
+            Some(3)
+        );
+        assert_eq!(
+            created
+                .visual_embedding
+                .as_ref()
+                .map(|tensor| tensor.shape.clone()),
+            Some(vec![4])
+        );
         assert!(created.physics.is_static);
 
         cmd_objects_update(
@@ -6192,6 +6362,8 @@ mod tests {
                 bbox_max: None,
                 velocity: Some(&[0.2, 0.0, 0.0]),
                 semantic_label: Some("updated-storage"),
+                mesh_json: Some(&updated_mesh_path),
+                visual_embedding_json: Some(&updated_embedding_path),
                 mass: Some(7.5),
                 friction: Some(0.4),
                 restitution: Some(0.2),
@@ -6211,6 +6383,17 @@ mod tests {
         assert_eq!(updated.pose.rotation.x, 1.0);
         assert_eq!(updated.bbox.center().x, 2.0);
         assert_eq!(updated.semantic_label.as_deref(), Some("updated-storage"));
+        assert_eq!(
+            updated.mesh.as_ref().map(|mesh| mesh.vertices.len()),
+            Some(3)
+        );
+        assert_eq!(
+            updated
+                .visual_embedding
+                .as_ref()
+                .map(|tensor| tensor.shape.clone()),
+            Some(vec![2])
+        );
         assert_eq!(updated.physics.mass, Some(7.5));
 
         cmd_objects_list(
@@ -6226,6 +6409,8 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, created.id);
         assert_eq!(listed[0].name, "crate-updated");
+        assert!(listed[0].mesh.is_some());
+        assert!(listed[0].visual_embedding.is_some());
 
         cmd_objects_show(
             store.as_ref(),
@@ -6240,6 +6425,8 @@ mod tests {
         let shown: SceneObject = read_json_file(&shown_path).unwrap();
         assert_eq!(shown.id, created.id);
         assert_eq!(shown.name, "crate-updated");
+        assert!(shown.mesh.is_some());
+        assert!(shown.visual_embedding.is_some());
 
         cmd_objects_remove(store.as_ref(), &world_id, &created.id.to_string())
             .await

@@ -25,7 +25,9 @@ use worldforge_core::state::{
     deserialize_world_state, serialize_world_state, DynStateStore, S3Config, StateFileFormat,
     StateStoreKind, WorldState,
 };
-use worldforge_core::types::{BBox, Pose, Position, Rotation, Velocity, VideoClip, WorldId};
+use worldforge_core::types::{
+    BBox, Mesh, Pose, Position, Rotation, Tensor, Velocity, VideoClip, WorldId,
+};
 use worldforge_core::world::World;
 use worldforge_eval::{EvalReportFormat, EvalSuite};
 use worldforge_verify::{
@@ -266,11 +268,15 @@ struct CreateObjectRequest {
     position: Position,
     bbox: BBox,
     #[serde(default)]
+    mesh: Option<Mesh>,
+    #[serde(default)]
     rotation: Rotation,
     #[serde(default)]
     velocity: Velocity,
     #[serde(default)]
     semantic_label: Option<String>,
+    #[serde(default)]
+    visual_embedding: Option<Tensor>,
     #[serde(default)]
     mass: Option<f32>,
     #[serde(default)]
@@ -875,8 +881,10 @@ fn build_scene_object(request: CreateObjectRequest) -> SceneObject {
         },
         request.bbox,
     );
+    object.mesh = request.mesh;
     object.velocity = request.velocity;
     object.semantic_label = request.semantic_label;
+    object.visual_embedding = request.visual_embedding;
     object.physics = PhysicsProperties {
         mass: request.mass,
         friction: request.friction,
@@ -2293,6 +2301,7 @@ async fn send_response(
 mod tests {
     use super::*;
     use worldforge_core::state::FileStateStore;
+    use worldforge_core::types::{DType, Device, TensorData};
     use worldforge_providers::MockProvider;
     use worldforge_verify::{MockVerifier, ZkVerifier};
 
@@ -2316,6 +2325,65 @@ mod tests {
             )),
             worlds: RwLock::new(HashMap::new()),
         })
+    }
+
+    fn sample_mesh() -> Mesh {
+        Mesh {
+            vertices: vec![
+                Position {
+                    x: -0.5,
+                    y: 0.0,
+                    z: -0.5,
+                },
+                Position {
+                    x: 0.5,
+                    y: 0.0,
+                    z: -0.5,
+                },
+                Position {
+                    x: 0.0,
+                    y: 0.5,
+                    z: 0.5,
+                },
+            ],
+            faces: vec![[0, 1, 2]],
+            normals: Some(vec![
+                Position {
+                    x: 0.0,
+                    y: 1.0,
+                    z: 0.0,
+                },
+                Position {
+                    x: 0.0,
+                    y: 1.0,
+                    z: 0.0,
+                },
+                Position {
+                    x: 0.0,
+                    y: 1.0,
+                    z: 0.0,
+                },
+            ]),
+            uvs: Some(vec![[0.0, 0.0], [1.0, 0.0], [0.5, 1.0]]),
+        }
+    }
+
+    fn sample_visual_embedding() -> serde_json::Value {
+        serde_json::json!({
+            "data": { "Float32": [0.1, 0.2, 0.3, 0.4] },
+            "shape": [4],
+            "dtype": "Float32",
+            "device": "Cpu"
+        })
+    }
+
+    fn sample_visual_embedding_tensor() -> Tensor {
+        Tensor {
+            data: TensorData::Float32(vec![0.1, 0.2, 0.3, 0.4]),
+            shape: vec![4],
+            dtype: DType::Float32,
+            device: Device::Cpu,
+        }
     }
 
     fn sample_export_state(name: &str) -> WorldState {
@@ -3135,6 +3203,8 @@ mod tests {
         assert_eq!(status, 201);
         let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
         let id = value["data"]["id"].as_str().unwrap();
+        let expected_mesh = serde_json::to_value(sample_mesh()).unwrap();
+        let expected_embedding = serde_json::to_value(sample_visual_embedding()).unwrap();
 
         let object_body = serde_json::json!({
             "name": "crate",
@@ -3143,6 +3213,8 @@ mod tests {
                 "min": { "x": -0.5, "y": -0.5, "z": -0.5 },
                 "max": { "x": 0.5, "y": 0.5, "z": 0.5 }
             },
+            "mesh": sample_mesh(),
+            "visual_embedding": sample_visual_embedding(),
             "velocity": { "x": 0.1, "y": 0.0, "z": 0.0 },
             "semantic_label": "storage",
             "mass": 5.0,
@@ -3162,6 +3234,8 @@ mod tests {
         assert_eq!(status, 201);
         let created: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert_eq!(created["data"]["name"], "crate");
+        assert_eq!(created["data"]["mesh"], expected_mesh);
+        assert_eq!(created["data"]["visual_embedding"], expected_embedding);
 
         let (status, resp) = route("GET", &format!("/v1/worlds/{id}/objects"), "", &state).await;
         assert_eq!(status, 200);
@@ -3169,6 +3243,8 @@ mod tests {
         let objects = listed["data"].as_array().unwrap();
         assert_eq!(objects.len(), 1);
         assert_eq!(objects[0]["semantic_label"], "storage");
+        assert_eq!(objects[0]["mesh"], expected_mesh);
+        assert_eq!(objects[0]["visual_embedding"], expected_embedding);
     }
 
     #[tokio::test]
@@ -3186,7 +3262,9 @@ mod tests {
             "bbox": {
                 "min": { "x": -0.5, "y": -0.5, "z": -0.5 },
                 "max": { "x": 0.5, "y": 0.5, "z": 0.5 }
-            }
+            },
+            "mesh": sample_mesh(),
+            "visual_embedding": sample_visual_embedding()
         })
         .to_string();
 
@@ -3211,6 +3289,10 @@ mod tests {
         assert_eq!(status, 200);
         let shown: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert_eq!(shown["data"]["id"], object_id);
+        let expected_mesh = serde_json::to_value(sample_mesh()).unwrap();
+        let expected_embedding = serde_json::to_value(sample_visual_embedding()).unwrap();
+        assert_eq!(shown["data"]["mesh"], expected_mesh);
+        assert_eq!(shown["data"]["visual_embedding"], expected_embedding);
 
         let (status, _) = route(
             "DELETE",
@@ -3242,7 +3324,9 @@ mod tests {
             "bbox": {
                 "min": { "x": -0.5, "y": -0.5, "z": -0.5 },
                 "max": { "x": 0.5, "y": 0.5, "z": 0.5 }
-            }
+            },
+            "mesh": sample_mesh(),
+            "visual_embedding": sample_visual_embedding()
         })
         .to_string();
 
@@ -3275,6 +3359,12 @@ mod tests {
         assert_eq!(patched["data"]["pose"]["position"]["x"], 2.0);
         assert_eq!(patched["data"]["bbox"]["min"]["x"], 1.5);
         assert_eq!(patched["data"]["bbox"]["max"]["z"], 2.5);
+        let expected_mesh = serde_json::to_value(sample_mesh()).unwrap();
+        let expected_embedding = serde_json::to_value(sample_visual_embedding()).unwrap();
+        let expected_embedding_tensor =
+            serde_json::to_value(sample_visual_embedding_tensor()).unwrap();
+        assert_eq!(patched["data"]["mesh"], expected_mesh);
+        assert_eq!(patched["data"]["visual_embedding"], expected_embedding);
 
         let world_id = id.parse::<WorldId>().unwrap();
         let persisted = state.store.load(&world_id).await.unwrap();
@@ -3284,6 +3374,14 @@ mod tests {
         assert_eq!(object.pose.position.x, 2.0);
         assert_eq!(object.bbox.min.x, 1.5);
         assert_eq!(object.bbox.max.z, 2.5);
+        assert_eq!(
+            serde_json::to_value(object.mesh.as_ref().unwrap()).unwrap(),
+            serde_json::to_value(sample_mesh()).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(object.visual_embedding.as_ref().unwrap()).unwrap(),
+            expected_embedding_tensor
+        );
     }
 
     #[tokio::test]

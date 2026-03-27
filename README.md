@@ -77,6 +77,9 @@ patch.set_graspable(True)
 world.update_object_patch(mug.id, patch)
 assert world.get_object_by_id(mug.id).is_graspable
 
+# Scene-object JSON payloads also preserve optional mesh geometry and
+# visual embeddings across Python, CLI, and REST object workflows.
+
 # Predict the next state
 prediction = world.predict(Action.move_to(0.25, 0.8, 0.0), steps=10)
 

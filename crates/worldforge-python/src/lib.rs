@@ -27,7 +27,9 @@ use worldforge_core::state::{
     deserialize_world_state, serialize_world_state, HistoryEntry, S3Config,
     StateFileFormat as CoreStateFileFormat, StateStoreKind, WorldState,
 };
-use worldforge_core::types::{BBox, Position, Rotation, TensorData, Velocity, VideoClip};
+use worldforge_core::types::{
+    BBox, Mesh, Position, Rotation, Tensor, TensorData, Velocity, VideoClip,
+};
 use worldforge_core::world::World as CoreWorld;
 use worldforge_providers::{
     CosmosProvider, GenieProvider, JepaBackend, JepaProvider, MockProvider, RunwayProvider,
@@ -325,6 +327,45 @@ fn tensor_data_to_f32_vec(data: &TensorData) -> Vec<f32> {
         TensorData::Int32(values) => values.iter().map(|value| *value as f32).collect(),
         TensorData::Int64(values) => values.iter().map(|value| *value as f32).collect(),
     }
+}
+
+fn optional_mesh_to_json(mesh: Option<&Mesh>) -> PyResult<Option<String>> {
+    mesh.map(|mesh| {
+        serde_json::to_string(mesh).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    })
+    .transpose()
+}
+
+fn optional_mesh_from_json(mesh_json: Option<String>) -> PyResult<Option<Mesh>> {
+    mesh_json
+        .map(|json| {
+            serde_json::from_str(&json).map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!("deserialization error: {e}"))
+            })
+        })
+        .transpose()
+}
+
+fn optional_tensor_to_json(tensor: Option<&Tensor>) -> PyResult<Option<String>> {
+    tensor
+        .map(|tensor| {
+            serde_json::to_string(tensor).map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+            })
+        })
+        .transpose()
+}
+
+fn optional_tensor_from_json(tensor_json: Option<String>) -> PyResult<Option<Tensor>> {
+    tensor_json
+        .map(|json| {
+            serde_json::from_str(&json).map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!("deserialization error: {e}"))
+            })
+        })
+        .transpose()
 }
 
 fn half_bits_to_f32(bits: u16) -> f32 {
@@ -813,6 +854,32 @@ impl PySceneObject {
         self.inner.velocity = vel.inner;
     }
 
+    /// Get the object's optional mesh as JSON.
+    #[getter]
+    fn mesh(&self) -> PyResult<Option<String>> {
+        optional_mesh_to_json(self.inner.mesh.as_ref())
+    }
+
+    /// Set the object's mesh from JSON.
+    #[pyo3(signature = (mesh=None))]
+    fn set_mesh(&mut self, mesh: Option<String>) -> PyResult<()> {
+        self.inner.mesh = optional_mesh_from_json(mesh)?;
+        Ok(())
+    }
+
+    /// Get the object's optional visual embedding as JSON.
+    #[getter]
+    fn visual_embedding(&self) -> PyResult<Option<String>> {
+        optional_tensor_to_json(self.inner.visual_embedding.as_ref())
+    }
+
+    /// Set the object's visual embedding from JSON.
+    #[pyo3(signature = (visual_embedding=None))]
+    fn set_visual_embedding(&mut self, visual_embedding: Option<String>) -> PyResult<()> {
+        self.inner.visual_embedding = optional_tensor_from_json(visual_embedding)?;
+        Ok(())
+    }
+
     /// Get the object's semantic label.
     #[getter]
     fn semantic_label(&self) -> Option<&str> {
@@ -966,6 +1033,20 @@ impl PySceneObjectPatch {
         self.inner.velocity = velocity.map(|velocity| velocity.inner);
     }
 
+    /// Set or clear the replacement mesh.
+    #[pyo3(signature = (mesh=None))]
+    fn set_mesh(&mut self, mesh: Option<String>) -> PyResult<()> {
+        self.inner.mesh = optional_mesh_from_json(mesh)?;
+        Ok(())
+    }
+
+    /// Set or clear the replacement visual embedding.
+    #[pyo3(signature = (visual_embedding=None))]
+    fn set_visual_embedding(&mut self, visual_embedding: Option<String>) -> PyResult<()> {
+        self.inner.visual_embedding = optional_tensor_from_json(visual_embedding)?;
+        Ok(())
+    }
+
     /// Set or clear the replacement semantic label.
     #[pyo3(signature = (semantic_label=None))]
     fn set_semantic_label(&mut self, semantic_label: Option<String>) {
@@ -1040,6 +1121,12 @@ impl PySceneObjectPatch {
         }
         if self.inner.velocity.is_some() {
             fields.push("velocity");
+        }
+        if self.inner.mesh.is_some() {
+            fields.push("mesh");
+        }
+        if self.inner.visual_embedding.is_some() {
+            fields.push("visual_embedding");
         }
         if self.inner.semantic_label.is_some() {
             fields.push("semantic_label");
@@ -6044,6 +6131,30 @@ mod tests {
         let mut obj = PySceneObject::new("crate", &pos, &bbox);
         obj.set_semantic_label(Some("storage".to_string()));
         obj.set_mass(5.0);
+        obj.set_mesh(Some(
+            serde_json::json!({
+                "vertices": [
+                    {"x": -0.5, "y": 0.5, "z": -0.5},
+                    {"x": 0.5, "y": 0.5, "z": -0.5},
+                    {"x": 0.0, "y": 1.5, "z": 0.0}
+                ],
+                "faces": [[0, 1, 2]],
+                "normals": null,
+                "uvs": null
+            })
+            .to_string(),
+        ))
+        .unwrap();
+        obj.set_visual_embedding(Some(
+            serde_json::json!({
+                "data": {"Float32": [0.25, 0.5, 0.75, 1.0]},
+                "shape": [2, 2],
+                "dtype": "Float32",
+                "device": "Cpu"
+            })
+            .to_string(),
+        ))
+        .unwrap();
 
         let json = obj.to_json().unwrap();
         let restored = PySceneObject::from_json(&json).unwrap();
@@ -6051,6 +6162,37 @@ mod tests {
         assert_eq!(restored.name(), "crate");
         assert_eq!(restored.semantic_label(), Some("storage"));
         assert_eq!(restored.position().y(), 1.0);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(
+                &restored.mesh().unwrap().expect("mesh should be present")
+            )
+            .unwrap(),
+            serde_json::json!({
+                "vertices": [
+                    {"x": -0.5, "y": 0.5, "z": -0.5},
+                    {"x": 0.5, "y": 0.5, "z": -0.5},
+                    {"x": 0.0, "y": 1.5, "z": 0.0}
+                ],
+                "faces": [[0, 1, 2]],
+                "normals": null,
+                "uvs": null
+            })
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(
+                &restored
+                    .visual_embedding()
+                    .unwrap()
+                    .expect("visual embedding should be present")
+            )
+            .unwrap(),
+            serde_json::json!({
+                "data": {"Float32": [0.25, 0.5, 0.75, 1.0]},
+                "shape": [2, 2],
+                "dtype": "Float32",
+                "device": "Cpu"
+            })
+        );
     }
 
     #[test]
@@ -6060,6 +6202,32 @@ mod tests {
         patch.set_position(Some(&PyPosition::new(2.0, 3.0, 4.0)));
         patch.set_mass(Some(2.5));
         patch.set_static(Some(true));
+        patch
+            .set_mesh(Some(
+                serde_json::json!({
+                    "vertices": [
+                        {"x": 0.0, "y": 0.0, "z": 0.0},
+                        {"x": 1.0, "y": 0.0, "z": 0.0},
+                        {"x": 0.0, "y": 1.0, "z": 0.0}
+                    ],
+                    "faces": [[0, 1, 2]],
+                    "normals": null,
+                    "uvs": null
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        patch
+            .set_visual_embedding(Some(
+                serde_json::json!({
+                    "data": {"Float32": [0.0, 1.0]},
+                    "shape": [2],
+                    "dtype": "Float32",
+                    "device": "Cpu"
+                })
+                .to_string(),
+            ))
+            .unwrap();
 
         let json = patch.to_json().unwrap();
         let restored = PySceneObjectPatch::from_json(&json).unwrap();
@@ -6081,6 +6249,37 @@ mod tests {
         assert_eq!(updated.position().z(), 4.0);
         assert_eq!(updated.mass(), Some(2.5));
         assert!(updated.is_static());
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(
+                &updated.mesh().unwrap().expect("mesh should be present")
+            )
+            .unwrap(),
+            serde_json::json!({
+                "vertices": [
+                    {"x": 0.0, "y": 0.0, "z": 0.0},
+                    {"x": 1.0, "y": 0.0, "z": 0.0},
+                    {"x": 0.0, "y": 1.0, "z": 0.0}
+                ],
+                "faces": [[0, 1, 2]],
+                "normals": null,
+                "uvs": null
+            })
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(
+                &updated
+                    .visual_embedding()
+                    .unwrap()
+                    .expect("visual embedding should be present")
+            )
+            .unwrap(),
+            serde_json::json!({
+                "data": {"Float32": [0.0, 1.0]},
+                "shape": [2],
+                "dtype": "Float32",
+                "device": "Cpu"
+            })
+        );
     }
 
     #[test]

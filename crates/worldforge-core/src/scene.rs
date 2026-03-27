@@ -70,8 +70,12 @@ pub struct SceneObjectPatch {
     pub rotation: Option<Rotation>,
     /// Replacement velocity vector.
     pub velocity: Option<Velocity>,
+    /// Replacement 3D mesh geometry.
+    pub mesh: Option<Mesh>,
     /// Replacement semantic label.
     pub semantic_label: Option<String>,
+    /// Replacement provider-specific visual embedding.
+    pub visual_embedding: Option<Tensor>,
     /// Replacement mass in kilograms.
     pub mass: Option<f32>,
     /// Replacement friction coefficient.
@@ -365,8 +369,14 @@ impl SceneObject {
         if let Some(velocity) = patch.velocity {
             self.velocity = velocity;
         }
+        if let Some(mesh) = &patch.mesh {
+            self.mesh = Some(mesh.clone());
+        }
         if let Some(label) = &patch.semantic_label {
             self.semantic_label = Some(label.clone());
+        }
+        if let Some(visual_embedding) = &patch.visual_embedding {
+            self.visual_embedding = Some(visual_embedding.clone());
         }
         if let Some(mass) = patch.mass {
             self.physics.mass = Some(mass);
@@ -729,6 +739,98 @@ mod tests {
         assert_eq!(updated.pose.position.z, 5.0);
         assert_eq!(updated.bbox.min.x, 1.0);
         assert_eq!(updated.bbox.max.z, 7.0);
+    }
+
+    #[test]
+    fn test_scene_graph_update_object_applies_mesh_and_visual_embedding() {
+        let mut sg = SceneGraph::new();
+        let object = sample_object("cube");
+        let id = object.id;
+        let original_bbox = object.bbox;
+        let original_pose = object.pose;
+        sg.add_object(object);
+
+        let mesh = Mesh {
+            vertices: vec![
+                Position {
+                    x: -0.5,
+                    y: 0.0,
+                    z: -0.5,
+                },
+                Position {
+                    x: 0.5,
+                    y: 0.0,
+                    z: -0.5,
+                },
+                Position {
+                    x: 0.0,
+                    y: 0.5,
+                    z: 0.5,
+                },
+            ],
+            faces: vec![[0, 1, 2]],
+            normals: Some(vec![
+                Position {
+                    x: 0.0,
+                    y: 1.0,
+                    z: 0.0,
+                },
+                Position {
+                    x: 0.0,
+                    y: 1.0,
+                    z: 0.0,
+                },
+                Position {
+                    x: 0.0,
+                    y: 1.0,
+                    z: 0.0,
+                },
+            ]),
+            uvs: Some(vec![[0.0, 0.0], [1.0, 0.0], [0.5, 1.0]]),
+        };
+        let visual_embedding = Tensor {
+            data: crate::types::TensorData::Float32(vec![0.1, 0.2, 0.3, 0.4]),
+            shape: vec![4],
+            dtype: crate::types::DType::Float32,
+            device: crate::types::Device::Cpu,
+        };
+
+        let updated = sg
+            .update_object(
+                &id,
+                SceneObjectPatch {
+                    mesh: Some(mesh.clone()),
+                    visual_embedding: Some(visual_embedding.clone()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(updated.pose, original_pose);
+        assert_eq!(updated.bbox, original_bbox);
+        let updated_mesh = updated.mesh.as_ref().expect("mesh should be set");
+        assert_eq!(updated_mesh.vertices, mesh.vertices);
+        assert_eq!(updated_mesh.faces, mesh.faces);
+        assert_eq!(updated_mesh.normals, mesh.normals);
+        assert_eq!(updated_mesh.uvs, mesh.uvs);
+
+        let updated_embedding = updated
+            .visual_embedding
+            .as_ref()
+            .expect("visual embedding should be set");
+        assert_eq!(updated_embedding.shape, visual_embedding.shape);
+        assert_eq!(updated_embedding.dtype, visual_embedding.dtype);
+        assert_eq!(updated_embedding.device, visual_embedding.device);
+        match (&updated_embedding.data, &visual_embedding.data) {
+            (crate::types::TensorData::Float32(lhs), crate::types::TensorData::Float32(rhs)) => {
+                assert_eq!(lhs, rhs)
+            }
+            other => panic!("unexpected tensor data variants: {other:?}"),
+        }
+
+        let stored = sg.get_object(&id).unwrap();
+        assert_eq!(stored.mesh.as_ref().unwrap().faces, mesh.faces);
+        assert_eq!(stored.visual_embedding.as_ref().unwrap().shape, vec![4]);
     }
 
     #[test]
