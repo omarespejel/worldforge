@@ -3522,6 +3522,16 @@ mod tests {
         test_state_with_provider("mock")
     }
 
+    fn test_state_with_registry(registry: Arc<ProviderRegistry>) -> Arc<AppState> {
+        Arc::new(AppState {
+            registry,
+            store: Arc::new(FileStateStore::new(
+                std::env::temp_dir().join(format!("wf-server-test-{}", uuid::Uuid::new_v4())),
+            )),
+            worlds: RwLock::new(HashMap::new()),
+        })
+    }
+
     fn test_state_with_provider(provider_name: &str) -> Arc<AppState> {
         test_state_with_providers(&[provider_name])
     }
@@ -3538,6 +3548,51 @@ mod tests {
             )),
             worlds: RwLock::new(HashMap::new()),
         })
+    }
+
+    struct TestJepaModelDir {
+        path: std::path::PathBuf,
+    }
+
+    impl TestJepaModelDir {
+        fn new(label: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "wf-server-jepa-{label}-{}-{}",
+                std::process::id(),
+                uuid::Uuid::new_v4()
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+
+        fn write_assets(&self, representation_dim: u32) {
+            std::fs::write(
+                self.path.join("model.safetensors"),
+                b"server-jepa-latent-weights",
+            )
+            .unwrap();
+            std::fs::write(
+                self.path.join("worldforge-jepa.json"),
+                format!(
+                    r#"{{
+                        "model_name": "vjepa2-local",
+                        "representation_dim": {representation_dim},
+                        "action_gain": 1.1,
+                        "temporal_smoothness": 0.87,
+                        "gravity_bias": 0.9,
+                        "collision_bias": 0.88,
+                        "confidence_bias": 0.04
+                    }}"#
+                ),
+            )
+            .unwrap();
+        }
+    }
+
+    impl Drop for TestJepaModelDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
     }
 
     fn sample_prediction(provider: &str, output_x: f32, latency_ms: u64) -> Prediction {
@@ -5775,6 +5830,101 @@ mod tests {
 
         let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert!(value["data"]["answer"].as_str().unwrap().contains("empty"));
+    }
+
+    #[test]
+    fn test_route_provider_jepa_reason_and_embed_via_auto_detect() {
+        let model_dir = TestJepaModelDir::new("auto-detect");
+        model_dir.write_assets(1536);
+        let model_dir_string = model_dir.path.to_string_lossy().to_string();
+
+        with_env_vars(
+            &[
+                ("JEPA_MODEL_PATH", Some(model_dir_string.as_str())),
+                ("JEPA_BACKEND", Some("burn")),
+            ],
+            || {
+                let registry = Arc::new(worldforge_providers::auto_detect());
+                let state = test_state_with_registry(registry);
+                let runtime = tokio::runtime::Runtime::new().unwrap();
+                runtime.block_on(async {
+                    let embed_body = serde_json::json!({
+                        "text": "a crate on a table",
+                    });
+                    let (status, resp) = route(
+                        "POST",
+                        "/v1/providers/jepa/embed",
+                        &embed_body.to_string(),
+                        &state,
+                    )
+                    .await;
+                    assert_eq!(status, 200);
+
+                    let embed_value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+                    assert_eq!(embed_value["data"]["provider"], "jepa");
+                    assert_eq!(
+                        embed_value["data"]["model"],
+                        "vjepa2-local-burn-representation"
+                    );
+                    assert_eq!(
+                        embed_value["data"]["embedding"]["shape"],
+                        serde_json::json!([1536])
+                    );
+
+                    let mut reason_state = WorldState::new("reason-world", "jepa");
+                    let mut object = SceneObject::new(
+                        "block",
+                        Pose::default(),
+                        BBox {
+                            min: Position {
+                                x: -0.05,
+                                y: -0.05,
+                                z: -0.05,
+                            },
+                            max: Position {
+                                x: 0.05,
+                                y: 0.05,
+                                z: 0.05,
+                            },
+                        },
+                    );
+                    object.pose.position = Position {
+                        x: 0.40,
+                        y: 0.25,
+                        z: -0.10,
+                    };
+                    reason_state.scene.add_object(object);
+
+                    let reason_body = serde_json::json!({
+                        "query": "Where is the block?",
+                        "state": reason_state,
+                    });
+                    let (status, resp) = route(
+                        "POST",
+                        "/v1/providers/jepa/reason",
+                        &reason_body.to_string(),
+                        &state,
+                    )
+                    .await;
+                    assert_eq!(status, 200);
+
+                    let reason_value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+                    assert!(reason_value["data"]["answer"]
+                        .as_str()
+                        .unwrap()
+                        .contains("block"));
+                    assert!(reason_value["data"]["evidence"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|entry| {
+                            entry
+                                .as_str()
+                                .is_some_and(|value| value.starts_with("position:block="))
+                        }));
+                });
+            },
+        );
     }
 
     #[tokio::test]

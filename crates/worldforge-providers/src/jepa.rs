@@ -27,13 +27,15 @@ use worldforge_core::prediction::{
     PhysicsScores, Plan, PlanGoal, PlanRequest, Prediction, PredictionConfig, PredictionProvenance,
 };
 use worldforge_core::provider::{
-    CostEstimate, GenerationConfig, GenerationPrompt, HealthStatus, LatencyProfile, Operation,
-    ProviderCapabilities, ReasoningInput, ReasoningOutput, SpatialControls, TransferConfig,
-    WorldModelProvider,
+    CostEstimate, EmbeddingInput, EmbeddingOutput, GenerationConfig, GenerationPrompt,
+    HealthStatus, LatencyProfile, Operation, ProviderCapabilities, ReasoningInput, ReasoningOutput,
+    SpatialControls, TransferConfig, WorldModelProvider,
 };
 use worldforge_core::scene::{SceneGraph, SceneObject, SpatialRelationship};
 use worldforge_core::state::{sha256_hash, WorldState};
-use worldforge_core::types::{BBox, Pose, Position, Rotation, Vec3, Velocity, VideoClip};
+use worldforge_core::types::{
+    BBox, DType, Device, Pose, Position, Rotation, Tensor, TensorData, Vec3, Velocity, VideoClip,
+};
 
 const DEFAULT_MODEL_NAME: &str = "v-jepa-2-surrogate";
 const MANIFEST_FILES: &[&str] = &["worldforge-jepa.json", "jepa.json", "config.json"];
@@ -244,9 +246,9 @@ impl WorldModelProvider for JepaProvider {
         ProviderCapabilities {
             predict: true,
             generate: false,
-            reason: false,
+            reason: true,
             transfer: false,
-            embed: false,
+            embed: true,
             action_conditioned: true,
             multi_view: false,
             max_video_length_seconds: 5.0,
@@ -318,9 +320,52 @@ impl WorldModelProvider for JepaProvider {
     }
 
     async fn reason(&self, _input: &ReasoningInput, _query: &str) -> Result<ReasoningOutput> {
-        Err(WorldForgeError::UnsupportedCapability {
+        let assets = self.inspect_assets()?;
+        let base_confidence = (0.58 + assets.manifest.confidence_bias() * 0.5).clamp(0.35, 0.9);
+        let normalized = _query.trim().to_ascii_lowercase();
+        let (answer, evidence, confidence) = match (_input.state.as_ref(), _input.video.as_ref()) {
+            (Some(state), Some(video)) => {
+                let (answer, mut evidence, confidence) =
+                    reason_about_state(state, &normalized, &assets, base_confidence);
+                let (video_answer, video_evidence, video_confidence) =
+                    reason_about_video(video, &normalized, &assets, base_confidence);
+                evidence.extend(video_evidence);
+                (
+                    format!("{answer} {}", video_answer),
+                    evidence,
+                    ((confidence + video_confidence) * 0.5).clamp(0.35, 0.95),
+                )
+            }
+            (Some(state), None) => reason_about_state(state, &normalized, &assets, base_confidence),
+            (None, Some(video)) => reason_about_video(video, &normalized, &assets, base_confidence),
+            (None, None) => (
+                "JEPA reasoning requires a world state or video clip.".to_string(),
+                vec!["input: unavailable".to_string()],
+                0.2,
+            ),
+        };
+
+        Ok(ReasoningOutput {
+            answer,
+            confidence,
+            evidence,
+        })
+    }
+
+    async fn embed(&self, input: &EmbeddingInput) -> Result<EmbeddingOutput> {
+        input.validate()?;
+        let assets = self.inspect_assets()?;
+        let dimension = embedding_dimension(&assets);
+        let embedding = build_representation_embedding(input, &assets, dimension)?;
+
+        Ok(EmbeddingOutput {
             provider: "jepa".to_string(),
-            capability: "reason (use Cosmos Reason as fallback)".to_string(),
+            model: format!(
+                "{}-{}-representation",
+                assets.manifest.effective_model_name(),
+                self.backend.as_str()
+            ),
+            embedding,
         })
     }
 
@@ -442,9 +487,440 @@ impl WorldModelProvider for JepaProvider {
                 credits: 0.0,
                 estimated_latency_ms: self.backend.base_latency_ms() + u64::from(*steps) * 18,
             },
+            Operation::Reason => CostEstimate {
+                usd: 0.0,
+                credits: 0.0,
+                estimated_latency_ms: self.backend.base_latency_ms() / 2,
+            },
             _ => CostEstimate::default(),
         }
     }
+}
+
+fn reason_about_state(
+    state: &WorldState,
+    query: &str,
+    assets: &JepaAssets,
+    base_confidence: f32,
+) -> (String, Vec<String>, f32) {
+    if state.scene.objects.is_empty() {
+        return (
+            format!(
+                "The scene is empty in JEPA representation space ({} latent dimensions).",
+                assets.manifest.representation_dim()
+            ),
+            vec![
+                "objects: none".to_string(),
+                format!(
+                    "representation_dim:{}",
+                    assets.manifest.representation_dim()
+                ),
+            ],
+            (base_confidence + 0.12).clamp(0.35, 0.95),
+        );
+    }
+
+    let object_names = sorted_object_names(state);
+    let touching = touching_relationships(state);
+    let representation_dim = assets.manifest.representation_dim();
+
+    if contains_any(query, &["how many", "count"]) {
+        return (
+            format!(
+                "JEPA accounts for {} object(s): {}.",
+                object_names.len(),
+                object_names.join(", ")
+            ),
+            vec![
+                format!("objects: {}", object_names.join(", ")),
+                format!("representation_dim:{representation_dim}"),
+            ],
+            (base_confidence + 0.18).clamp(0.35, 0.95),
+        );
+    }
+
+    if contains_any(query, &["where", "position", "locat"]) {
+        if let Some(object) = find_mentioned_object(state, query) {
+            return (
+                format!(
+                    "{} is centered near ({:.2}, {:.2}, {:.2}) in the latent scene state.",
+                    object.name,
+                    object.pose.position.x,
+                    object.pose.position.y,
+                    object.pose.position.z
+                ),
+                vec![
+                    format!(
+                        "position:{}={:.2},{:.2},{:.2}",
+                        object.name,
+                        object.pose.position.x,
+                        object.pose.position.y,
+                        object.pose.position.z
+                    ),
+                    format!("representation_dim:{representation_dim}"),
+                ],
+                (base_confidence + 0.22).clamp(0.35, 0.95),
+            );
+        }
+    }
+
+    if contains_any(query, &["touch", "collision"]) {
+        if touching.is_empty() {
+            return (
+                "JEPA does not infer any touching pair or collision in the current scene."
+                    .to_string(),
+                vec![
+                    "touching: none".to_string(),
+                    format!("collision_bias:{:.2}", assets.manifest.collision_bias()),
+                ],
+                (base_confidence + 0.1).clamp(0.35, 0.95),
+            );
+        }
+        return (
+            format!("Touching relationships detected: {}.", touching.join("; ")),
+            touching,
+            (base_confidence + 0.08).clamp(0.35, 0.95),
+        );
+    }
+
+    if contains_any(query, &["fall", "stable", "gravity"]) {
+        let unsupported = unsupported_objects(state);
+        if unsupported.is_empty() {
+            return (
+                "The scene appears stable: JEPA does not see an unsupported elevated object."
+                    .to_string(),
+                vec![
+                    format!("objects: {}", object_names.join(", ")),
+                    format!("gravity_bias:{:.2}", assets.manifest.gravity_bias()),
+                ],
+                (base_confidence + 0.06).clamp(0.35, 0.95),
+            );
+        }
+        return (
+            format!(
+                "{} may fall because the latent scene graph shows elevation without support.",
+                unsupported.join(", ")
+            ),
+            unsupported
+                .iter()
+                .map(|name| format!("unsupported:{name}"))
+                .collect(),
+            base_confidence.clamp(0.35, 0.95),
+        );
+    }
+
+    if contains_any(query, &["moving", "velocity", "speed"]) {
+        let object = find_mentioned_object(state, query)
+            .or_else(|| primary_dynamic_object(state))
+            .or_else(|| sorted_objects(state).into_iter().next());
+        if let Some(object) = object {
+            let speed = vector_magnitude(object.velocity);
+            return (
+                format!(
+                    "{} has an estimated latent velocity magnitude of {:.2}.",
+                    object.name, speed
+                ),
+                vec![
+                    format!("velocity:{}={:.2}", object.name, speed),
+                    format!(
+                        "temporal_smoothness:{:.2}",
+                        assets.manifest.temporal_smoothness()
+                    ),
+                ],
+                (base_confidence + 0.14).clamp(0.35, 0.95),
+            );
+        }
+    }
+
+    (
+        format!(
+            "JEPA tracks {} object(s): {}. The latent width is {} and the scene is ready for local prediction or planning.",
+            object_names.len(),
+            object_names.join(", "),
+            representation_dim
+        ),
+        vec![
+            format!("objects: {}", object_names.join(", ")),
+            format!("representation_dim:{representation_dim}"),
+        ],
+        base_confidence.clamp(0.35, 0.95),
+    )
+}
+
+fn reason_about_video(
+    video: &VideoClip,
+    query: &str,
+    assets: &JepaAssets,
+    base_confidence: f32,
+) -> (String, Vec<String>, f32) {
+    let frame_count = video.frames.len();
+    let motion = clip_motion_score(video);
+    let has_depth = video.frames.iter().any(|frame| frame.depth.is_some());
+    let has_segmentation = video
+        .frames
+        .iter()
+        .any(|frame| frame.segmentation.is_some());
+    let metadata = vec![
+        format!("frames:{frame_count}"),
+        format!("resolution:{}x{}", video.resolution.0, video.resolution.1),
+        format!("fps:{:.2}", video.fps),
+        format!("duration:{:.2}", video.duration),
+        format!("latent_motion:{motion:.3}"),
+        format!(
+            "representation_dim:{}",
+            assets.manifest.representation_dim()
+        ),
+    ];
+
+    if contains_any(query, &["depth"]) {
+        return (
+            if has_depth {
+                "The clip includes depth supervision, so JEPA can align temporal structure with depth cues."
+                    .to_string()
+            } else {
+                "The clip does not include depth maps, so JEPA only has RGB-temporal evidence."
+                    .to_string()
+            },
+            metadata,
+            (base_confidence + 0.08).clamp(0.3, 0.9),
+        );
+    }
+
+    if contains_any(query, &["segmentation", "mask"]) {
+        return (
+            if has_segmentation {
+                "The clip includes segmentation labels alongside the RGB frames.".to_string()
+            } else {
+                "The clip does not include segmentation labels.".to_string()
+            },
+            metadata,
+            (base_confidence + 0.08).clamp(0.3, 0.9),
+        );
+    }
+
+    if contains_any(query, &["how long", "duration", "frames"]) {
+        return (
+            format!(
+                "The clip is {:.2} seconds long at {:.1} FPS with {} frame(s).",
+                video.duration, video.fps, frame_count
+            ),
+            metadata,
+            (base_confidence + 0.12).clamp(0.3, 0.9),
+        );
+    }
+
+    (
+        format!(
+            "JEPA can summarize this clip at {}x{} over {} frame(s); latent motion is {:.2}. Object-level grounding needs scene state for higher-confidence answers.",
+            video.resolution.0, video.resolution.1, frame_count, motion
+        ),
+        metadata,
+        (base_confidence - 0.06).clamp(0.25, 0.85),
+    )
+}
+
+fn build_representation_embedding(
+    input: &EmbeddingInput,
+    assets: &JepaAssets,
+    dimension: usize,
+) -> Result<Tensor> {
+    let digest = embedding_digest(input, assets)?;
+    let mut state = digest_to_u64(&digest, 0) ^ digest_to_u64(&digest, 8) ^ assets.fingerprint;
+    if state == 0 {
+        state = 0x9E37_79B9_7F4A_7C15;
+    }
+
+    let phase = assets.manifest.temporal_smoothness() * std::f32::consts::TAU;
+    let action_gain = assets.manifest.action_gain();
+    let gravity_bias = assets.manifest.gravity_bias();
+    let collision_bias = assets.manifest.collision_bias();
+    let confidence_bias = assets.manifest.confidence_bias();
+    let text_bias = input
+        .text
+        .as_ref()
+        .map(|text| (text.split_whitespace().count() as f32 / 24.0).clamp(0.0, 0.35))
+        .unwrap_or(0.0);
+    let video_bias = input
+        .video
+        .as_ref()
+        .map(|video| (clip_motion_score(video) * 0.25).clamp(0.0, 0.25))
+        .unwrap_or(0.0);
+
+    let mut values = Vec::with_capacity(dimension);
+    for index in 0..dimension {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+
+        let random = ((state >> 11) as f64 / ((1u64 << 53) as f64)) as f32;
+        let centered = random * 2.0 - 1.0;
+        let index_ratio = index as f32 / dimension.max(1) as f32;
+        let harmonic =
+            (index_ratio * phase).sin() * 0.28 + (index_ratio * phase * action_gain).cos() * 0.12;
+        let structural_bias = (gravity_bias * 0.05) - (collision_bias * 0.04);
+        let value = centered * 0.72
+            + harmonic
+            + structural_bias
+            + confidence_bias * 0.45
+            + text_bias
+            + video_bias;
+        values.push(value.clamp(-1.0, 1.0));
+    }
+
+    l2_normalize(&mut values);
+
+    Ok(Tensor {
+        data: TensorData::Float32(values),
+        shape: vec![dimension],
+        dtype: DType::Float32,
+        device: Device::Cpu,
+    })
+}
+
+fn embedding_dimension(assets: &JepaAssets) -> usize {
+    usize::try_from(assets.manifest.representation_dim()).unwrap_or(1024)
+}
+
+fn embedding_digest(input: &EmbeddingInput, assets: &JepaAssets) -> Result<[u8; 32]> {
+    let mut payload = format!(
+        "jepa:{}:{}:{}:{}:{}",
+        assets.manifest.effective_model_name(),
+        assets.manifest.representation_dim(),
+        assets.manifest.action_gain(),
+        assets.fingerprint,
+        assets.total_bytes
+    )
+    .into_bytes();
+
+    if let Some(text) = input.text.as_ref() {
+        payload.extend_from_slice(text.as_bytes());
+    }
+    if let Some(video) = input.video.as_ref() {
+        let encoded = serde_json::to_vec(video)
+            .map_err(|error| WorldForgeError::SerializationError(error.to_string()))?;
+        payload.extend(encoded);
+    }
+
+    Ok(sha256_hash(&payload))
+}
+
+fn digest_to_u64(digest: &[u8; 32], start: usize) -> u64 {
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&digest[start..start + 8]);
+    u64::from_le_bytes(bytes)
+}
+
+fn l2_normalize(values: &mut [f32]) {
+    let norm = values.iter().map(|value| value * value).sum::<f32>().sqrt();
+    if norm > f32::EPSILON {
+        for value in values {
+            *value /= norm;
+        }
+    }
+}
+
+fn clip_motion_score(video: &VideoClip) -> f32 {
+    if video.frames.len() < 2 {
+        return 0.0;
+    }
+
+    let first_values = video
+        .frames
+        .first()
+        .map(|frame| frame.data.data.to_f32_values());
+    let last_values = video
+        .frames
+        .last()
+        .map(|frame| frame.data.data.to_f32_values());
+    let (Some(first_values), Some(last_values)) = (first_values, last_values) else {
+        return 0.0;
+    };
+
+    let compared = first_values.len().min(last_values.len());
+    if compared == 0 {
+        return 0.0;
+    }
+
+    let difference = first_values
+        .iter()
+        .zip(last_values.iter())
+        .take(compared)
+        .map(|(left, right)| (left - right).abs())
+        .sum::<f32>();
+    (difference / compared as f32).clamp(0.0, 1.0)
+}
+
+fn sorted_objects(state: &WorldState) -> Vec<&SceneObject> {
+    let mut objects: Vec<_> = state.scene.objects.values().collect();
+    objects.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.id.as_bytes().cmp(right.id.as_bytes()))
+    });
+    objects
+}
+
+fn sorted_object_names(state: &WorldState) -> Vec<String> {
+    sorted_objects(state)
+        .into_iter()
+        .map(|object| object.name.clone())
+        .collect()
+}
+
+fn find_mentioned_object<'a>(state: &'a WorldState, query: &str) -> Option<&'a SceneObject> {
+    sorted_objects(state).into_iter().find(|object| {
+        query.contains(&object.name.to_ascii_lowercase())
+            || object
+                .semantic_label
+                .as_ref()
+                .is_some_and(|label| query.contains(&label.to_ascii_lowercase()))
+    })
+}
+
+fn primary_dynamic_object(state: &WorldState) -> Option<&SceneObject> {
+    sorted_objects(state)
+        .into_iter()
+        .find(|object| !object.physics.is_static)
+}
+
+fn touching_relationships(state: &WorldState) -> Vec<String> {
+    let mut touching = state
+        .scene
+        .relationships
+        .iter()
+        .filter_map(|relationship| match relationship {
+            SpatialRelationship::Touching { a, b } => Some(format!("touching:{a}:{b}")),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    touching.sort();
+    touching
+}
+
+fn unsupported_objects(state: &WorldState) -> Vec<String> {
+    let mut unsupported = Vec::new();
+    for object in state.scene.objects.values() {
+        if object.physics.is_static || object.bbox.min.y <= 0.05 {
+            continue;
+        }
+
+        let supported = state.scene.relationships.iter().any(|relationship| {
+            matches!(
+                relationship,
+                SpatialRelationship::On { subject, .. } | SpatialRelationship::In { subject, .. }
+                    if *subject == object.id
+            )
+        });
+        if !supported {
+            unsupported.push(object.name.clone());
+        }
+    }
+    unsupported.sort();
+    unsupported
+}
+
+fn vector_magnitude(vector: Velocity) -> f32 {
+    (vector.x.powi(2) + vector.y.powi(2) + vector.z.powi(2)).sqrt()
 }
 
 fn load_manifest(root: &Path) -> Result<JepaModelManifest> {
@@ -1749,7 +2225,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
-    use worldforge_core::types::Pose;
+    use worldforge_core::types::{Frame, Pose, SimTime};
 
     fn manifest_json(model_name: &str) -> String {
         format!(
@@ -1824,6 +2300,53 @@ mod tests {
         (state, object_id)
     }
 
+    fn sample_video_clip() -> VideoClip {
+        VideoClip {
+            frames: vec![
+                Frame {
+                    data: Tensor {
+                        data: TensorData::Float32(vec![0.0, 0.1, 0.2, 0.3]),
+                        shape: vec![2, 2],
+                        dtype: DType::Float32,
+                        device: Device::Cpu,
+                    },
+                    timestamp: SimTime {
+                        step: 0,
+                        seconds: 0.0,
+                        dt: 0.125,
+                    },
+                    camera: None,
+                    depth: None,
+                    segmentation: None,
+                },
+                Frame {
+                    data: Tensor {
+                        data: TensorData::Float32(vec![0.3, 0.2, 0.1, 0.0]),
+                        shape: vec![2, 2],
+                        dtype: DType::Float32,
+                        device: Device::Cpu,
+                    },
+                    timestamp: SimTime {
+                        step: 1,
+                        seconds: 0.125,
+                        dt: 0.125,
+                    },
+                    camera: None,
+                    depth: Some(Tensor {
+                        data: TensorData::Float32(vec![0.5, 0.5, 0.4, 0.4]),
+                        shape: vec![2, 2],
+                        dtype: DType::Float32,
+                        device: Device::Cpu,
+                    }),
+                    segmentation: None,
+                },
+            ],
+            fps: 8.0,
+            resolution: (2, 2),
+            duration: 0.25,
+        }
+    }
+
     #[test]
     fn test_jepa_provider_creation() {
         let provider = JepaProvider::new("/tmp/models/v-jepa-2", JepaBackend::Burn);
@@ -1836,8 +2359,9 @@ mod tests {
         let caps = provider.capabilities();
         assert!(caps.predict);
         assert!(!caps.generate);
-        assert!(!caps.reason);
+        assert!(caps.reason);
         assert!(!caps.transfer);
+        assert!(caps.embed);
         assert!(caps.supports_planning);
         assert!(caps.action_conditioned);
     }
@@ -1895,18 +2419,102 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_jepa_reason_unsupported() {
+    async fn test_jepa_reason_requires_assets() {
         let provider = JepaProvider::new("/tmp/models", JepaBackend::Burn);
         let result = provider
             .reason(
                 &ReasoningInput {
-                    video: None,
-                    state: None,
+                    video: Some(sample_video_clip()),
+                    state: Some(sample_state().0),
                 },
                 "will it fall?",
             )
             .await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_jepa_reason_with_state_is_grounded() {
+        let model_dir = TestModelDir::new("reason-state");
+        model_dir.write_weights("model.safetensors", b"latent-weights-go-here");
+        model_dir.write_manifest(&manifest_json("vjepa2-local"));
+
+        let provider = JepaProvider::new(&model_dir.path, JepaBackend::Burn);
+        let (state, _) = sample_state();
+        let reasoning = provider
+            .reason(
+                &ReasoningInput {
+                    video: None,
+                    state: Some(state),
+                },
+                "Where is the block?",
+            )
+            .await
+            .unwrap();
+
+        assert!(reasoning.answer.contains("block"));
+        assert!(reasoning.answer.contains("latent scene state"));
+        assert!(reasoning
+            .evidence
+            .iter()
+            .any(|entry| entry.starts_with("position:block=")));
+        assert!(reasoning.confidence > 0.6);
+    }
+
+    #[tokio::test]
+    async fn test_jepa_reason_with_video_reports_metadata() {
+        let model_dir = TestModelDir::new("reason-video");
+        model_dir.write_weights("model.safetensors", b"latent-weights-go-here");
+        model_dir.write_manifest(&manifest_json("vjepa2-local"));
+
+        let provider = JepaProvider::new(&model_dir.path, JepaBackend::Burn);
+        let reasoning = provider
+            .reason(
+                &ReasoningInput {
+                    video: Some(sample_video_clip()),
+                    state: None,
+                },
+                "How long is this clip and does it include depth?",
+            )
+            .await
+            .unwrap();
+
+        assert!(reasoning.answer.contains("depth"));
+        assert!(reasoning.evidence.iter().any(|entry| entry == "frames:2"));
+        assert!(reasoning
+            .evidence
+            .iter()
+            .any(|entry| entry == "resolution:2x2"));
+        assert!(reasoning.confidence > 0.4);
+    }
+
+    #[tokio::test]
+    async fn test_jepa_embed_returns_deterministic_representation() {
+        let model_dir = TestModelDir::new("embed");
+        model_dir.write_weights("model.safetensors", b"latent-weights-go-here");
+        model_dir.write_manifest(&manifest_json("vjepa2-local"));
+
+        let provider = JepaProvider::new(&model_dir.path, JepaBackend::Burn);
+        let input = EmbeddingInput::new(
+            Some("stack the block on the shelf".to_string()),
+            Some(sample_video_clip()),
+        )
+        .unwrap();
+
+        let first = provider.embed(&input).await.unwrap();
+        let second = provider.embed(&input).await.unwrap();
+
+        assert_eq!(first.provider, "jepa");
+        assert_eq!(first.model, "vjepa2-local-burn-representation");
+        assert_eq!(first.embedding.shape, vec![1536]);
+        assert_eq!(first.embedding.dtype, DType::Float32);
+        match (&first.embedding.data, &second.embedding.data) {
+            (TensorData::Float32(left), TensorData::Float32(right)) => {
+                assert_eq!(left.len(), 1536);
+                assert_eq!(left, right);
+            }
+            other => panic!("unexpected JEPA embedding tensors: {other:?}"),
+        }
     }
 
     #[tokio::test]

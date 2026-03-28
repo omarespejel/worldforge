@@ -6856,6 +6856,9 @@ fn worldforge(m: &Bound<'_, PyModule>) -> PyResult<()> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use std::sync::{Mutex, OnceLock};
+
+    use worldforge_core::types::{DType, Device, Frame, SimTime, Tensor, TensorData, VideoClip};
 
     #[allow(dead_code)]
     mod fake_state_backends {
@@ -6863,6 +6866,87 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../../tests/support/fake_state_backends.rs"
         ));
+    }
+
+    fn env_mutex() -> &'static Mutex<()> {
+        static ENV_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+        ENV_MUTEX.get_or_init(|| Mutex::new(()))
+    }
+
+    fn with_env_vars<F>(vars: &[(&str, Option<&str>)], test: F)
+    where
+        F: FnOnce(),
+    {
+        let _guard = env_mutex().lock().unwrap();
+        let saved: Vec<_> = vars
+            .iter()
+            .map(|(name, _)| ((*name).to_string(), std::env::var(name).ok()))
+            .collect();
+
+        for (name, value) in vars {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(test));
+
+        for (name, value) in saved {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(&name),
+            }
+        }
+
+        if let Err(panic) = result {
+            std::panic::resume_unwind(panic);
+        }
+    }
+
+    struct TestJepaModelDir {
+        path: PathBuf,
+    }
+
+    impl TestJepaModelDir {
+        fn new(label: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "wf-python-jepa-{label}-{}-{}",
+                std::process::id(),
+                uuid::Uuid::new_v4()
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+
+        fn write_assets(&self, representation_dim: u32) {
+            std::fs::write(
+                self.path.join("model.safetensors"),
+                b"python-jepa-latent-weights",
+            )
+            .unwrap();
+            std::fs::write(
+                self.path.join("worldforge-jepa.json"),
+                format!(
+                    r#"{{
+                        "model_name": "vjepa2-local",
+                        "representation_dim": {representation_dim},
+                        "action_gain": 1.1,
+                        "temporal_smoothness": 0.89,
+                        "gravity_bias": 0.92,
+                        "collision_bias": 0.9,
+                        "confidence_bias": 0.06
+                    }}"#
+                ),
+            )
+            .unwrap();
+        }
+    }
+
+    impl Drop for TestJepaModelDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
     }
 
     fn test_state_dir() -> PathBuf {
@@ -6886,6 +6970,55 @@ mod tests {
             None,
         )
         .unwrap()
+    }
+
+    fn sample_jepa_video_clip() -> PyVideoClip {
+        PyVideoClip {
+            inner: VideoClip {
+                frames: vec![
+                    Frame {
+                        data: Tensor {
+                            data: TensorData::Float32(vec![0.0, 0.1, 0.2, 0.3]),
+                            shape: vec![2, 2],
+                            dtype: DType::Float32,
+                            device: Device::Cpu,
+                        },
+                        timestamp: SimTime {
+                            step: 0,
+                            seconds: 0.0,
+                            dt: 0.125,
+                        },
+                        camera: None,
+                        depth: None,
+                        segmentation: None,
+                    },
+                    Frame {
+                        data: Tensor {
+                            data: TensorData::Float32(vec![0.3, 0.2, 0.1, 0.0]),
+                            shape: vec![2, 2],
+                            dtype: DType::Float32,
+                            device: Device::Cpu,
+                        },
+                        timestamp: SimTime {
+                            step: 1,
+                            seconds: 0.125,
+                            dt: 0.125,
+                        },
+                        camera: None,
+                        depth: Some(Tensor {
+                            data: TensorData::Float32(vec![0.5, 0.5, 0.4, 0.4]),
+                            shape: vec![2, 2],
+                            dtype: DType::Float32,
+                            device: Device::Cpu,
+                        }),
+                        segmentation: None,
+                    },
+                ],
+                fps: 8.0,
+                resolution: (2, 2),
+                duration: 0.25,
+            },
+        }
     }
 
     #[test]
@@ -7956,6 +8089,57 @@ mod tests {
     }
 
     #[test]
+    fn test_worldforge_jepa_reason_and_embed_via_auto_detect() {
+        let model_dir = TestJepaModelDir::new("auto-detect");
+        model_dir.write_assets(1536);
+        let model_dir_string = model_dir.path.to_string_lossy().to_string();
+
+        with_env_vars(
+            &[
+                ("JEPA_MODEL_PATH", Some(model_dir_string.as_str())),
+                ("JEPA_BACKEND", Some("burn")),
+            ],
+            || {
+                let wf = test_worldforge();
+                let embedding = wf
+                    .embed("jepa", Some("stack the block on the shelf"), None, None)
+                    .unwrap();
+                assert_eq!(embedding.provider(), "jepa");
+                assert_eq!(embedding.model(), "vjepa2-local-burn-representation");
+                assert_eq!(embedding.shape(), vec![1536]);
+                assert_eq!(embedding.vector().len(), 1536);
+
+                let mut world = PyWorld::new("reason_world", "jepa");
+                let position = PyPosition::new(0.4, 0.25, -0.1);
+                let bbox = PyBBox::new(
+                    &PyPosition::new(0.3, 0.15, -0.2),
+                    &PyPosition::new(0.5, 0.35, 0.0),
+                );
+                world
+                    .add_object(&PySceneObject::new("block", &position, &bbox))
+                    .unwrap();
+                let world_json = world.to_json().unwrap();
+
+                let reasoning = wf
+                    .reason(
+                        "jepa",
+                        "Where is the block?",
+                        None,
+                        Some(&world_json),
+                        None,
+                        None,
+                    )
+                    .unwrap();
+                assert!(reasoning.answer().contains("block"));
+                assert!(reasoning
+                    .evidence()
+                    .iter()
+                    .any(|entry| entry.starts_with("position:block=")));
+            },
+        );
+    }
+
+    #[test]
     fn test_genie_provider_construction_accepts_missing_api_key() {
         let provider = PyGenieProvider::new(None, "genie3", None).unwrap();
         assert_eq!(provider.name(), "genie");
@@ -8483,6 +8667,79 @@ mod tests {
         assert_eq!(output.shape(), vec![32]);
         assert_eq!(output.vector().len(), 32);
         assert!(output.__repr__().contains("EmbeddingOutput"));
+    }
+
+    #[test]
+    fn test_worldforge_embed_uses_auto_detected_jepa_provider() {
+        let assets = TestJepaModelDir::new("embed");
+        assets.write_assets(1536);
+
+        with_env_vars(
+            &[
+                ("JEPA_MODEL_PATH", Some(assets.path.to_str().unwrap())),
+                ("JEPA_BACKEND", Some("burn")),
+            ],
+            || {
+                let wf = test_worldforge();
+                assert!(wf.providers().iter().any(|provider| provider == "jepa"));
+
+                let clip = sample_jepa_video_clip();
+                let output = wf
+                    .embed("jepa", Some("a crate on a shelf"), Some(&clip), None)
+                    .unwrap();
+
+                assert_eq!(output.provider(), "jepa");
+                assert_eq!(output.model(), "vjepa2-local-burn-representation");
+                assert_eq!(output.shape(), vec![1536]);
+                assert_eq!(output.dtype(), "Float32");
+                assert_eq!(output.device(), "Cpu");
+                assert_eq!(output.vector().len(), 1536);
+                assert!(output.vector().iter().any(|value| *value != 0.0));
+            },
+        );
+    }
+
+    #[test]
+    fn test_worldforge_reason_uses_auto_detected_jepa_video_input() {
+        let assets = TestJepaModelDir::new("reason-video");
+        assets.write_assets(1536);
+
+        with_env_vars(
+            &[
+                ("JEPA_MODEL_PATH", Some(assets.path.to_str().unwrap())),
+                ("JEPA_BACKEND", Some("burn")),
+            ],
+            || {
+                let wf = test_worldforge();
+                assert!(wf.providers().iter().any(|provider| provider == "jepa"));
+
+                let clip = sample_jepa_video_clip();
+                let output = wf
+                    .reason(
+                        "jepa",
+                        "does the clip include depth?",
+                        None,
+                        None,
+                        Some(&clip),
+                        None,
+                    )
+                    .unwrap();
+
+                assert!(output.answer().contains("depth supervision"));
+                assert_eq!(
+                    output.evidence(),
+                    vec![
+                        "frames:2".to_string(),
+                        "resolution:2x2".to_string(),
+                        "fps:8.00".to_string(),
+                        "duration:0.25".to_string(),
+                        "latent_motion:0.200".to_string(),
+                        "representation_dim:1536".to_string(),
+                    ]
+                );
+                assert!(output.confidence() > 0.5);
+            },
+        );
     }
 
     #[test]

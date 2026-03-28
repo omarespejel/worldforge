@@ -1004,18 +1004,28 @@ fn test_provider_capabilities_querying() {
 fn test_registry_find_by_capability() {
     let mut registry = ProviderRegistry::new();
     registry.register(Box::new(MockProvider::new()));
+    registry.register(Box::new(JepaProvider::new(
+        "/tmp/models",
+        JepaBackend::Burn,
+    )));
 
     let predictors = registry.find_by_capability("predict");
-    assert_eq!(predictors.len(), 1);
-    assert_eq!(predictors[0].name(), "mock");
+    assert_eq!(predictors.len(), 2);
+    assert!(predictors.iter().any(|provider| provider.name() == "mock"));
+    assert!(predictors.iter().any(|provider| provider.name() == "jepa"));
 
     let embedders = registry.find_by_capability("embed");
-    assert_eq!(embedders.len(), 1);
-    assert_eq!(embedders[0].name(), "mock");
+    assert_eq!(embedders.len(), 2);
+    assert!(embedders.iter().any(|provider| provider.name() == "mock"));
+    assert!(embedders.iter().any(|provider| provider.name() == "jepa"));
+
+    let reasoners = registry.find_by_capability("reason");
+    assert_eq!(reasoners.len(), 2);
+    assert!(reasoners.iter().any(|provider| provider.name() == "mock"));
+    assert!(reasoners.iter().any(|provider| provider.name() == "jepa"));
 
     let planners = registry.find_by_capability("planning");
-    // MockProvider may or may not support planning
-    assert!(planners.len() <= 1);
+    assert!(planners.iter().any(|provider| provider.name() == "jepa"));
 }
 
 #[test]
@@ -1398,6 +1408,39 @@ async fn test_jepa_provider_predict_workflow() {
     assert!(prediction.model.starts_with("vjepa2-local-burn-"));
     assert!(prediction.confidence > 0.4);
     assert!(prediction.physics_scores.overall > 0.4);
+}
+
+#[tokio::test]
+async fn test_jepa_provider_reason_and_embed_workflow() {
+    let model_dir = TestModelDir::new("jepa-reason-embed");
+    model_dir.write_assets();
+
+    let provider = JepaProvider::new(&model_dir.path, JepaBackend::Burn);
+    let (state, _) = sample_jepa_state();
+
+    let reasoning = provider
+        .reason(
+            &ReasoningInput {
+                video: None,
+                state: Some(state),
+            },
+            "Where is the crate?",
+        )
+        .await
+        .unwrap();
+    assert!(reasoning.answer.contains("crate"));
+    assert!(reasoning
+        .evidence
+        .iter()
+        .any(|entry| entry.starts_with("position:crate=")));
+
+    let embedding = provider
+        .embed(&EmbeddingInput::from_text("a crate on a table"))
+        .await
+        .unwrap();
+    assert_eq!(embedding.provider, "jepa");
+    assert_eq!(embedding.model, "vjepa2-local-burn-representation");
+    assert_eq!(embedding.embedding.shape, vec![2048]);
 }
 
 #[tokio::test]

@@ -8,7 +8,7 @@
 //! - [`mock`] — Deterministic mock for testing and development
 //! - [`cosmos`] — NVIDIA Cosmos (Predict, Transfer, Reason, Embed)
 //! - [`runway`] — Runway GWM (Worlds, Robotics, Avatars)
-//! - [`jepa`] — Meta JEPA (local deterministic inference, ZK-compatible)
+//! - [`jepa`] — Meta JEPA (local deterministic inference, reasoning, embeddings, and native planning)
 //! - [`genie`] — Google Genie (deterministic local surrogate for prediction, reasoning, transfer, depth/segmentation outputs, and native planning)
 //! - [`marble`] — Experimental deterministic local surrogate for Marble with native planning
 //! - [`native_planning`] — shared deterministic adapter-native planning helper
@@ -52,9 +52,11 @@ use worldforge_core::WorldForge;
 /// predict/generate/transfer plus adapter-native planning under the stable
 /// `"runway"` name, and adds Cosmos-backed reasoning when both provider
 /// credentials are available.
-/// The Genie surrogate currently supports `predict`, `generate`, `reason`,
-/// `transfer`, depth/segmentation prediction outputs, and provider-native
-/// planning through the local deterministic backend.
+/// The JEPA adapter currently supports local `predict`, `reason`, `embed`,
+/// and provider-native planning through inspected model assets. The Genie
+/// surrogate currently supports `predict`, `generate`, `reason`, `transfer`,
+/// depth/segmentation prediction outputs, and provider-native planning through
+/// the local deterministic backend.
 /// Marble is an experimental deterministic local surrogate that registers by
 /// default and exposes prediction, generation, reasoning, planning, transfer,
 /// and embedding capabilities without a remote transport.
@@ -326,6 +328,57 @@ mod tests {
         assert!(capabilities.transfer);
         assert!(capabilities.supports_depth);
         assert!(capabilities.supports_segmentation);
+    }
+
+    #[test]
+    fn test_auto_detect_registers_jepa_reasoning_and_embeddings() {
+        let _guard = env_lock().lock().unwrap();
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let model_dir = std::env::temp_dir().join(format!(
+            "worldforge-jepa-auto-detect-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&model_dir).unwrap();
+        std::fs::write(model_dir.join("model.safetensors"), b"jepa-weights").unwrap();
+        std::fs::write(
+            model_dir.join("worldforge-jepa.json"),
+            r#"{
+                "model_name": "vjepa2-local",
+                "representation_dim": 1536,
+                "action_gain": 1.2,
+                "temporal_smoothness": 0.88,
+                "gravity_bias": 0.92,
+                "collision_bias": 0.9,
+                "confidence_bias": 0.07
+            }"#,
+        )
+        .unwrap();
+        let model_dir_string = model_dir.to_string_lossy().to_string();
+        let _env = EnvVarGuard::set(&[
+            ("JEPA_MODEL_PATH", &model_dir_string),
+            ("JEPA_BACKEND", "burn"),
+        ]);
+
+        let registry = auto_detect();
+        let capabilities = registry.get("jepa").unwrap().capabilities();
+
+        assert!(capabilities.predict);
+        assert!(capabilities.reason);
+        assert!(capabilities.embed);
+        assert!(capabilities.supports_planning);
+        assert!(registry
+            .find_by_capability("reason")
+            .iter()
+            .any(|provider| provider.name() == "jepa"));
+        assert!(registry
+            .find_by_capability("embed")
+            .iter()
+            .any(|provider| provider.name() == "jepa"));
+
+        let _ = std::fs::remove_dir_all(&model_dir);
     }
 
     #[test]

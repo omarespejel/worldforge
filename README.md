@@ -318,6 +318,9 @@ adapter-native deterministic planning. When `RUNWAY_API_SECRET` is present,
 auto-detection registers a `runway` provider covering predict/generate/transfer
 plus adapter-native deterministic planning, and that auto-detected `runway`
 alias adds Cosmos-backed reasoning only when `NVIDIA_API_KEY` is also present.
+When `JEPA_MODEL_PATH` is present, auto-detection registers `jepa` with local
+prediction, scene-grounded reasoning, representation-space embeddings, and
+adapter-native planning backed by the inspected asset bundle.
 Auto-detection also registers `genie` and `marble` as experimental local
 surrogates so offline workflows can exercise provider orchestration without a
 remote dependency; `MarbleProvider` is distinct from the mock backend and is
@@ -523,13 +526,21 @@ worldforge-server --bind 127.0.0.1:8080 --state-backend redis --state-redis-url 
 worldforge-server --bind 127.0.0.1:8080 --state-backend s3 --state-s3-bucket worldforge-states --state-s3-region us-east-1 --state-s3-access-key-id test-access --state-s3-secret-access-key test-secret --state-s3-prefix states
 ```
 
+When you run the server with `--state-backend s3`, omitted region and
+credential flags fall back to `AWS_REGION` or `AWS_DEFAULT_REGION`,
+`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_SESSION_TOKEN`.
+
 Then call the HTTP API directly:
 
 The server now enforces a few stricter transport rules that are useful in real
 clients and tests:
+- HTTP/1.1 clients can reuse a TCP connection across multiple requests unless
+  they ask to close it
+- request bodies can use either `Content-Length` or `Transfer-Encoding: chunked`
 - malformed request lines or invalid `Content-Length` headers return `400`
 - known paths return `405 Method Not Allowed` with an `Allow` header when the method is wrong
 - `HEAD` is supported on the existing `GET` endpoints
+- `GET /v1` and `HEAD /v1` return a lightweight API index for the major REST routes
 - percent-encoded query parameters are decoded before routing and filtering
 - rendered evaluation reports still return JSON envelopes when requested through the API
   with the rendered markdown/CSV exposed in the response payload
@@ -648,6 +659,8 @@ curl -X POST http://127.0.0.1:8080/v1/evals/run \
   -H 'content-type: application/json' \
   -d '{"suite":"physics","providers":["mock"],"report_formats":["json","markdown","csv"]}'
 
+curl http://127.0.0.1:8080/v1
+
 curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/evaluate \
   -H 'content-type: application/json' \
   -d '{"suite":"physics","providers":["mock"]}'
@@ -689,6 +702,10 @@ Pre-alpha. Core types, provider trait, state management, guardrails, evaluation
 framework, CLI, server, Python bindings, and the mock plus JEPA local providers
 are implemented. Prediction fallback and timeout handling are wired through the
 core orchestration layer and exposed in the CLI, REST server, and Python API.
+The JEPA adapter now exposes local scene-grounded reasoning plus
+representation-space embeddings in addition to prediction and provider-native
+planning, so offline workflows can stay on a single local provider for more of
+the unified surface.
 Planning now supports distinct sampling, CEM, MPC, gradient, and provider-native
 execution paths in the core, with planner selection exposed across the CLI,
 REST server, and Python bindings. Planner-specific tuning knobs such as

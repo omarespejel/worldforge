@@ -4434,6 +4434,8 @@ fn parse_axis_spec(tokens: &[&str]) -> Result<(Vec3, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+    use std::sync::{Mutex, OnceLock};
     use worldforge_core::scene::SceneObject;
     use worldforge_core::types::{DType, Device, Mesh, Tensor, TensorData};
     use worldforge_verify::{MockVerifier, ZkVerifier};
@@ -4444,6 +4446,87 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../../tests/support/fake_state_backends.rs"
         ));
+    }
+
+    fn env_mutex() -> &'static Mutex<()> {
+        static ENV_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+        ENV_MUTEX.get_or_init(|| Mutex::new(()))
+    }
+
+    fn with_env_vars<F>(vars: &[(&str, Option<&str>)], test: F)
+    where
+        F: FnOnce(),
+    {
+        let _guard = env_mutex().lock().unwrap();
+        let saved: Vec<_> = vars
+            .iter()
+            .map(|(name, _)| ((*name).to_string(), std::env::var(name).ok()))
+            .collect();
+
+        for (name, value) in vars {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(test));
+
+        for (name, value) in saved {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(&name),
+            }
+        }
+
+        if let Err(panic) = result {
+            std::panic::resume_unwind(panic);
+        }
+    }
+
+    struct TestJepaModelDir {
+        path: PathBuf,
+    }
+
+    impl TestJepaModelDir {
+        fn new(label: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "wf-cli-jepa-{label}-{}-{}",
+                std::process::id(),
+                uuid::Uuid::new_v4()
+            ));
+            fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+
+        fn write_assets(&self, representation_dim: u32) {
+            fs::write(
+                self.path.join("model.safetensors"),
+                b"cli-jepa-latent-weights",
+            )
+            .unwrap();
+            fs::write(
+                self.path.join("worldforge-jepa.json"),
+                format!(
+                    r#"{{
+                        "model_name": "vjepa2-local",
+                        "representation_dim": {representation_dim},
+                        "action_gain": 1.15,
+                        "temporal_smoothness": 0.88,
+                        "gravity_bias": 0.91,
+                        "collision_bias": 0.89,
+                        "confidence_bias": 0.05
+                    }}"#
+                ),
+            )
+            .unwrap();
+        }
+    }
+
+    impl Drop for TestJepaModelDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
     }
 
     fn world_with_named_object(name: &str) -> (WorldState, uuid::Uuid) {
@@ -7023,6 +7106,93 @@ mod tests {
             .contains("echo the query"));
 
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_cmd_jepa_embed_and_reason_via_auto_detect() {
+        let model_dir = TestJepaModelDir::new("auto-detect");
+        model_dir.write_assets(1536);
+        let model_dir_string = model_dir.path.to_string_lossy().to_string();
+
+        with_env_vars(
+            &[
+                ("JEPA_MODEL_PATH", Some(model_dir_string.as_str())),
+                ("JEPA_BACKEND", Some("burn")),
+            ],
+            || {
+                let runtime = tokio::runtime::Runtime::new().unwrap();
+                runtime.block_on(async {
+                    let dir = std::env::temp_dir()
+                        .join(format!("wf-cli-jepa-cmd-{}", uuid::Uuid::new_v4()));
+                    let state_path = dir.join("state.json");
+                    let embed_output = dir.join("embed.json");
+                    let reason_output = dir.join("reason.json");
+                    fs::create_dir_all(&dir).unwrap();
+
+                    let store = StateStoreKind::File(dir.join("store"))
+                        .open()
+                        .await
+                        .unwrap();
+                    let (mut state, object_id) = world_with_named_object("block");
+                    let object = state.scene.objects.get_mut(&object_id).unwrap();
+                    object.pose.position = Position {
+                        x: 0.45,
+                        y: 0.25,
+                        z: -0.10,
+                    };
+                    write_json_file(&state_path, &state).unwrap();
+
+                    cmd_embed(
+                        "jepa",
+                        EmbedOptions {
+                            fallback_provider: None,
+                            text: Some("stack the block on the shelf"),
+                            video_json: None,
+                            output_json: Some(&embed_output),
+                        },
+                    )
+                    .await
+                    .unwrap();
+
+                    let embedding: serde_json::Value = read_json_file(&embed_output).unwrap();
+                    assert_eq!(embedding["provider"], "jepa");
+                    assert_eq!(embedding["embedding"]["shape"], serde_json::json!([1536]));
+
+                    cmd_reason(
+                        store.as_ref(),
+                        ReasonOptions {
+                            world: None,
+                            state_json: Some(&state_path),
+                            video_json: None,
+                            query: "Where is the block?",
+                            provider: Some("jepa"),
+                            fallback_provider: None,
+                            output_json: Some(&reason_output),
+                        },
+                    )
+                    .await
+                    .unwrap();
+
+                    let reasoning: serde_json::Value = read_json_file(&reason_output).unwrap();
+                    assert_eq!(reasoning["provider"], "jepa");
+                    assert!(reasoning["reasoning"]["answer"]
+                        .as_str()
+                        .unwrap()
+                        .contains("block"));
+                    assert!(reasoning["reasoning"]["evidence"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|entry| {
+                            entry
+                                .as_str()
+                                .is_some_and(|value| value.starts_with("position:block="))
+                        }));
+
+                    let _ = fs::remove_dir_all(&dir);
+                });
+            },
+        );
     }
 
     #[tokio::test]
