@@ -17,7 +17,7 @@ use worldforge_core::error::WorldForgeError;
 use worldforge_core::guardrail::{Guardrail, GuardrailConfig};
 use worldforge_core::prediction::{
     ComparisonReportFormat, MultiPrediction, Plan, PlanExecution, PlanGoal, PlanGoalInput,
-    PlanRequest, PlannerOptions, PlannerType, Prediction, PredictionConfig,
+    PlanRequest, PlannerOptions, PlannerType, Prediction, PredictionConfig, StoredPlanRecord,
 };
 use worldforge_core::provider::{
     EmbeddingInput, GenerationConfig, GenerationPrompt, Operation, ProviderDescriptor,
@@ -447,6 +447,12 @@ pub enum Commands {
     Objects {
         #[command(subcommand)]
         command: ObjectCommands,
+    },
+
+    /// Manage stored plans in a persisted world.
+    Plans {
+        #[command(subcommand)]
+        command: PlanCommands,
     },
 
     /// List registered providers and their capabilities.
@@ -956,6 +962,41 @@ pub enum ObjectCommands {
     },
 }
 
+/// Plan-management subcommands for persisted worlds.
+#[derive(Subcommand)]
+pub enum PlanCommands {
+    /// List stored plans for a world.
+    List {
+        /// World ID.
+        #[arg(long)]
+        world: String,
+        /// Optional path to write the plan list as JSON.
+        #[arg(long)]
+        output_json: Option<PathBuf>,
+    },
+    /// Show a stored plan.
+    Show {
+        /// World ID.
+        #[arg(long)]
+        world: String,
+        /// Stored plan ID.
+        #[arg(long)]
+        plan_id: String,
+        /// Optional path to write the stored plan as JSON.
+        #[arg(long)]
+        output_json: Option<PathBuf>,
+    },
+    /// Delete a stored plan.
+    Delete {
+        /// World ID.
+        #[arg(long)]
+        world: String,
+        /// Stored plan ID.
+        #[arg(long)]
+        plan_id: String,
+    },
+}
+
 /// Run the CLI application.
 pub async fn run() -> Result<()> {
     let cli = Cli::parse();
@@ -1277,6 +1318,36 @@ pub async fn run() -> Result<()> {
             }
             ObjectCommands::Remove { world, object_id } => {
                 cmd_objects_remove(store.as_ref(), &world, &object_id).await
+            }
+        },
+        Commands::Plans { command } => match command {
+            PlanCommands::List { world, output_json } => {
+                cmd_plans_list(
+                    store.as_ref(),
+                    &world,
+                    PlanOutputOptions {
+                        output_json: output_json.as_deref(),
+                    },
+                )
+                .await
+            }
+            PlanCommands::Show {
+                world,
+                plan_id,
+                output_json,
+            } => {
+                cmd_plans_show(
+                    store.as_ref(),
+                    &world,
+                    &plan_id,
+                    PlanOutputOptions {
+                        output_json: output_json.as_deref(),
+                    },
+                )
+                .await
+            }
+            PlanCommands::Delete { world, plan_id } => {
+                cmd_plans_delete(store.as_ref(), &world, &plan_id).await
             }
         },
         Commands::Providers { .. } => {
@@ -1820,6 +1891,24 @@ fn print_scene_object(object: &SceneObject) {
     );
 }
 
+fn print_stored_plan(record: &StoredPlanRecord) {
+    println!("  ID: {}", record.id);
+    println!("  Provider: {}", record.provider);
+    println!("  Planner: {}", record.planner);
+    println!("  Goal: {}", record.goal_summary);
+    println!("  Created: {}", record.created_at);
+    println!("  Actions: {}", record.plan.actions.len());
+    println!("  Predicted states: {}", record.plan.predicted_states.len());
+    println!(
+        "  Verification proof: {}",
+        if record.plan.verification_proof.is_some() {
+            "present"
+        } else {
+            "none"
+        }
+    );
+}
+
 struct GenerateOptions<'a> {
     fallback_provider: Option<&'a str>,
     negative_prompt: Option<&'a str>,
@@ -1868,6 +1957,10 @@ struct ObjectUpdateOptions<'a> {
 }
 
 struct ObjectOutputOptions<'a> {
+    output_json: Option<&'a Path>,
+}
+
+struct PlanOutputOptions<'a> {
     output_json: Option<&'a Path>,
 }
 
@@ -3070,6 +3163,86 @@ async fn cmd_objects_remove(
 
     println!("Removed object from world: {world_id}");
     print_scene_object(&object);
+    Ok(())
+}
+
+async fn cmd_plans_list(
+    store: &(impl StateStore + ?Sized),
+    world_id: &str,
+    options: PlanOutputOptions<'_>,
+) -> Result<()> {
+    let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
+    let state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let plans: Vec<StoredPlanRecord> = state.stored_plans.values().cloned().collect();
+
+    if plans.is_empty() {
+        println!("No stored plans found.");
+    } else {
+        println!("Stored plans for world {}:", state.id);
+        for record in &plans {
+            println!(
+                "  {} — {} (planner {}, provider {}, actions {})",
+                record.id,
+                record.goal_summary,
+                record.planner,
+                record.provider,
+                record.plan.actions.len()
+            );
+        }
+    }
+
+    if let Some(path) = options.output_json {
+        write_json_file(path, &plans)?;
+        println!("Saved stored plan list: {}", path.display());
+    }
+
+    Ok(())
+}
+
+async fn cmd_plans_show(
+    store: &(impl StateStore + ?Sized),
+    world_id: &str,
+    plan_id: &str,
+    options: PlanOutputOptions<'_>,
+) -> Result<()> {
+    let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
+    let plan_id: uuid::Uuid = plan_id.parse().context("invalid plan ID")?;
+    let state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let plan = state
+        .stored_plan(&plan_id)
+        .cloned()
+        .context("stored plan not found")?;
+
+    println!("Stored plan for world {}:", state.id);
+    print_stored_plan(&plan);
+
+    if let Some(path) = options.output_json {
+        write_json_file(path, &plan)?;
+        println!("Saved stored plan JSON: {}", path.display());
+    }
+
+    Ok(())
+}
+
+async fn cmd_plans_delete(
+    store: &(impl StateStore + ?Sized),
+    world_id: &str,
+    plan_id: &str,
+) -> Result<()> {
+    let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
+    let plan_id: uuid::Uuid = plan_id.parse().context("invalid plan ID")?;
+    let mut state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let plan = state
+        .stored_plans
+        .remove(&plan_id)
+        .context("stored plan not found")?;
+    store
+        .save(&state)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    println!("Deleted stored plan from world {}:", state.id);
+    print_stored_plan(&plan);
     Ok(())
 }
 
@@ -4291,6 +4464,38 @@ mod tests {
         state
     }
 
+    fn sample_stored_plan_record(plan_id: uuid::Uuid) -> StoredPlanRecord {
+        let mut predicted_state = WorldState::new("stored-plan-state", "mock");
+        predicted_state.stored_plans.clear();
+
+        StoredPlanRecord {
+            id: plan_id,
+            provider: "mock".to_string(),
+            planner: "sampling".to_string(),
+            goal_summary: "spawn cube".to_string(),
+            created_at: chrono::Utc::now(),
+            plan: Plan {
+                actions: vec![Action::Move {
+                    target: Position {
+                        x: 1.0,
+                        y: 0.0,
+                        z: 0.0,
+                    },
+                    speed: 1.0,
+                }],
+                predicted_states: vec![predicted_state],
+                predicted_videos: None,
+                total_cost: 0.0,
+                success_probability: 1.0,
+                guardrail_compliance: vec![Vec::new()],
+                planning_time_ms: 1,
+                iterations_used: 1,
+                stored_plan_id: Some(plan_id),
+                verification_proof: None,
+            },
+        }
+    }
+
     fn sample_prediction(provider: &str, output_x: f32, latency_ms: u64) -> Prediction {
         let mut input_state = WorldState::new(format!("{provider}-input"), provider);
         input_state.scene.add_object(SceneObject::new(
@@ -4878,6 +5083,86 @@ mod tests {
                 assert_eq!(name.as_deref(), Some("restored-world"));
             }
             _ => panic!("expected Import"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_plan_list_command() {
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "plans",
+            "list",
+            "--world",
+            "123e4567-e89b-12d3-a456-426614174000",
+            "--output-json",
+            "/tmp/plans.json",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Plans {
+                command: PlanCommands::List { world, output_json },
+            } => {
+                assert_eq!(world, "123e4567-e89b-12d3-a456-426614174000");
+                assert_eq!(output_json, Some(PathBuf::from("/tmp/plans.json")));
+            }
+            _ => panic!("expected Plans::List"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_plan_show_command() {
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "plans",
+            "show",
+            "--world",
+            "123e4567-e89b-12d3-a456-426614174000",
+            "--plan-id",
+            "223e4567-e89b-12d3-a456-426614174000",
+            "--output-json",
+            "/tmp/plan.json",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Plans {
+                command:
+                    PlanCommands::Show {
+                        world,
+                        plan_id,
+                        output_json,
+                    },
+            } => {
+                assert_eq!(world, "123e4567-e89b-12d3-a456-426614174000");
+                assert_eq!(plan_id, "223e4567-e89b-12d3-a456-426614174000");
+                assert_eq!(output_json, Some(PathBuf::from("/tmp/plan.json")));
+            }
+            _ => panic!("expected Plans::Show"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_plan_delete_command() {
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "plans",
+            "delete",
+            "--world",
+            "123e4567-e89b-12d3-a456-426614174000",
+            "--plan-id",
+            "223e4567-e89b-12d3-a456-426614174000",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Plans {
+                command: PlanCommands::Delete { world, plan_id },
+            } => {
+                assert_eq!(world, "123e4567-e89b-12d3-a456-426614174000");
+                assert_eq!(plan_id, "223e4567-e89b-12d3-a456-426614174000");
+            }
+            _ => panic!("expected Plans::Delete"),
         }
     }
 
@@ -6828,6 +7113,63 @@ mod tests {
 
         let updated = store.load(&state.id).await.unwrap();
         assert!(updated.time.step >= 1);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn test_cmd_plans_list_show_delete_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("wf-cli-plans-{}", uuid::Uuid::new_v4()));
+        let store = StateStoreKind::File(dir.join("state"))
+            .open()
+            .await
+            .unwrap();
+        let state = WorldState::new("stored-plans-world", "mock");
+        store.save(&state).await.unwrap();
+
+        let plan_id = uuid::Uuid::new_v4();
+        let mut persisted = store.load(&state.id).await.unwrap();
+        let record = sample_stored_plan_record(plan_id);
+        persisted.store_plan_record(record.clone());
+        store.save(&persisted).await.unwrap();
+
+        let list_path = dir.join("plans.json");
+        cmd_plans_list(
+            store.as_ref(),
+            &state.id.to_string(),
+            PlanOutputOptions {
+                output_json: Some(&list_path),
+            },
+        )
+        .await
+        .unwrap();
+
+        let listed: Vec<StoredPlanRecord> = read_json_file(&list_path).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, plan_id);
+
+        let show_path = dir.join("plan.json");
+        cmd_plans_show(
+            store.as_ref(),
+            &state.id.to_string(),
+            &plan_id.to_string(),
+            PlanOutputOptions {
+                output_json: Some(&show_path),
+            },
+        )
+        .await
+        .unwrap();
+
+        let shown: StoredPlanRecord = read_json_file(&show_path).unwrap();
+        assert_eq!(shown.id, plan_id);
+        assert_eq!(shown.goal_summary, "spawn cube");
+
+        cmd_plans_delete(store.as_ref(), &state.id.to_string(), &plan_id.to_string())
+            .await
+            .unwrap();
+
+        let reloaded = store.load(&state.id).await.unwrap();
+        assert!(reloaded.stored_plans.is_empty());
 
         let _ = fs::remove_dir_all(dir);
     }

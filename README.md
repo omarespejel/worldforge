@@ -472,6 +472,9 @@ cargo run -p worldforge-cli -- plan --world <id> --goal "spawn cube" --planner c
 cargo run -p worldforge-cli -- plan --world <id> --goal "spawn cube" --planner cem --guardrails-json guardrails.json --output-json plans/generated.json
 cargo run -p worldforge-cli -- plan --world <id> --goal-json goals/object-at.json --planner sampling --output-json plans/object-at.json
 cargo run -p worldforge-cli -- execute-plan --world <id> --plan-json plans/generated.json --output-json plans/executed.json
+cargo run -p worldforge-cli -- plans list --world <id>
+cargo run -p worldforge-cli -- plans show --world <id> --plan-id <plan-id> --output-json plans/<plan-id>.json
+cargo run -p worldforge-cli -- plans delete --world <id> --plan-id <plan-id>
 cargo run -p worldforge-cli -- generate --provider mock --prompt "A cube rolling across a table" --duration-seconds 5 --output-json clips/generated.json
 cargo run -p worldforge-cli -- transfer --provider mock --source-json clips/generated.json --output-json clips/transferred.json
 cargo run -p worldforge-cli -- reason --world <id> --query "Will the mug fall if pushed?"
@@ -585,6 +588,12 @@ curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/plan \
 curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/plan \
   -H 'content-type: application/json' \
   -d '{"goal":{"type":"condition","condition":{"ObjectAt":{"object":"<object-id>","position":{"x":1.0,"y":0.8,"z":0.0},"tolerance":0.05}}},"planner":"sampling","num_samples":48,"top_k":5}'
+
+curl http://127.0.0.1:8080/v1/worlds/<world-id>/plans
+
+curl http://127.0.0.1:8080/v1/worlds/<world-id>/plans/<plan-id>
+
+curl -X DELETE http://127.0.0.1:8080/v1/worlds/<world-id>/plans/<plan-id>
 
 curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/execute-plan \
   -H 'content-type: application/json' \
@@ -752,7 +761,10 @@ support them. Structured
 `condition` and `goal_image` planning payloads are exercised end to end across
 the CLI, REST server, and Python bindings, and serialized plans can now be
 executed against persisted worlds through each surface with atomic state
-commit-on-success semantics. Scene object seeding and inspection are
+commit-on-success semantics. Stored plans are also manageable end to end via
+`worldforge plans list|show|delete` and `GET`/`DELETE /v1/worlds/{id}/plans`
+routes, so persisted plan artifacts can be inspected or removed without
+touching the underlying world state. Scene object seeding and inspection are
 now exposed across the CLI and REST server as first-class operations instead of
 requiring direct JSON state editing, and Python scene objects can round-trip
 through JSON for interop with those workflows. Provider discovery now exposes

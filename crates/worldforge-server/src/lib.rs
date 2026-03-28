@@ -1462,6 +1462,8 @@ enum RouteKind {
     ProviderReason,
     ProviderTransfer,
     WorldHistory,
+    WorldPlansCollection,
+    WorldPlanItem,
     WorldRestore,
     WorldFork,
     WorldObjects,
@@ -1495,6 +1497,8 @@ impl RouteKind {
             Self::ProviderReason => &["POST"],
             Self::ProviderTransfer => &["POST"],
             Self::WorldHistory => &["GET", "HEAD"],
+            Self::WorldPlansCollection => &["GET", "HEAD"],
+            Self::WorldPlanItem => &["GET", "HEAD", "DELETE"],
             Self::WorldRestore => &["POST"],
             Self::WorldFork => &["POST"],
             Self::WorldObjects => &["GET", "HEAD", "POST"],
@@ -1538,6 +1542,8 @@ fn classify_route_kind(path: &str) -> RouteKind {
         ["v1", "worlds", "import"] => RouteKind::WorldsImport,
         ["v1", "worlds", _, "export"] => RouteKind::WorldExport,
         ["v1", "worlds", _, "history"] => RouteKind::WorldHistory,
+        ["v1", "worlds", _, "plans"] => RouteKind::WorldPlansCollection,
+        ["v1", "worlds", _, "plans", _] => RouteKind::WorldPlanItem,
         ["v1", "worlds", _, "restore"] => RouteKind::WorldRestore,
         ["v1", "worlds", _, "fork"] => RouteKind::WorldFork,
         ["v1", "worlds", _, "objects", _] => RouteKind::WorldObject,
@@ -2238,6 +2244,75 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
             }
         }
 
+        // GET /v1/worlds/{id}/plans
+        ("GET", p) if p.starts_with("/v1/worlds/") && p.ends_with("/plans") => {
+            let id_str = p
+                .strip_prefix("/v1/worlds/")
+                .and_then(|value| value.strip_suffix("/plans"))
+                .unwrap_or("");
+            match id_str.parse::<WorldId>() {
+                Ok(id) => match state.store.load(&id).await {
+                    Ok(ws) => {
+                        let plans: Vec<_> = ws.stored_plans.values().cloned().collect();
+                        (200, ApiResponse::ok(plans))
+                    }
+                    Err(error) => (404, error_response(&error.to_string())),
+                },
+                Err(_) => (400, error_response("invalid world ID")),
+            }
+        }
+
+        // GET /v1/worlds/{id}/plans/{plan_id}
+        ("GET", p) if p.starts_with("/v1/worlds/") && p.contains("/plans/") => {
+            let Some((world_part, plan_part)) = p
+                .strip_prefix("/v1/worlds/")
+                .and_then(|value| value.split_once("/plans/"))
+            else {
+                return (404, error_response(&format!("not found: {method} {path}")));
+            };
+            match (world_part.parse::<WorldId>(), plan_part.parse::<PlanId>()) {
+                (Ok(world_id), Ok(plan_id)) => match state.store.load(&world_id).await {
+                    Ok(ws) => match ws.stored_plan(&plan_id) {
+                        Some(plan) => (200, ApiResponse::ok(plan.clone())),
+                        None => (404, error_response("stored plan not found")),
+                    },
+                    Err(error) => (404, error_response(&error.to_string())),
+                },
+                (Err(_), _) => (400, error_response("invalid world ID")),
+                (_, Err(_)) => (400, error_response("invalid plan ID")),
+            }
+        }
+
+        // DELETE /v1/worlds/{id}/plans/{plan_id}
+        ("DELETE", p) if p.starts_with("/v1/worlds/") && p.contains("/plans/") => {
+            let Some((world_part, plan_part)) = p
+                .strip_prefix("/v1/worlds/")
+                .and_then(|value| value.split_once("/plans/"))
+            else {
+                return (404, error_response(&format!("not found: {method} {path}")));
+            };
+            match (world_part.parse::<WorldId>(), plan_part.parse::<PlanId>()) {
+                (Ok(world_id), Ok(plan_id)) => match state.store.load(&world_id).await {
+                    Ok(mut ws) => match ws.stored_plans.remove(&plan_id) {
+                        Some(plan) => match state.store.save(&ws).await {
+                            Ok(()) => {
+                                state.worlds.write().await.insert(world_id, ws.clone());
+                                (200, ApiResponse::ok(plan))
+                            }
+                            Err(error) => (
+                                500,
+                                error_response(&format!("failed to save world: {error}")),
+                            ),
+                        },
+                        None => (404, error_response("stored plan not found")),
+                    },
+                    Err(error) => (404, error_response(&error.to_string())),
+                },
+                (Err(_), _) => (400, error_response("invalid world ID")),
+                (_, Err(_)) => (400, error_response("invalid plan ID")),
+            }
+        }
+
         // POST /v1/worlds/{id}/restore
         ("POST", p) if p.starts_with("/v1/worlds/") && p.ends_with("/restore") => {
             let id_str = p
@@ -2513,7 +2588,11 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
         }
 
         // DELETE /v1/worlds/{id}
-        ("DELETE", p) if p.starts_with("/v1/worlds/") => {
+        ("DELETE", p)
+            if p.starts_with("/v1/worlds/")
+                && !p.contains("/plans/")
+                && !p.contains("/objects/") =>
+        {
             let id_str = p.strip_prefix("/v1/worlds/").unwrap_or("");
             match id_str.parse::<WorldId>() {
                 Ok(id) => match state.store.delete(&id).await {
@@ -3043,6 +3122,7 @@ async fn send_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use worldforge_core::prediction::StoredPlanRecord;
     use worldforge_core::state::FileStateStore;
     use worldforge_core::types::{DType, Device, TensorData};
     use worldforge_providers::MockProvider;
@@ -3132,6 +3212,38 @@ mod tests {
             provenance: None,
             guardrail_results: Vec::new(),
             timestamp: chrono::Utc::now(),
+        }
+    }
+
+    fn sample_stored_plan_record(plan_id: PlanId) -> StoredPlanRecord {
+        let mut predicted_state = WorldState::new("stored-plan-state", "mock");
+        predicted_state.stored_plans.clear();
+
+        StoredPlanRecord {
+            id: plan_id,
+            provider: "mock".to_string(),
+            planner: "sampling".to_string(),
+            goal_summary: "spawn cube".to_string(),
+            created_at: chrono::Utc::now(),
+            plan: Plan {
+                actions: vec![Action::Move {
+                    target: Position {
+                        x: 1.0,
+                        y: 0.0,
+                        z: 0.0,
+                    },
+                    speed: 1.0,
+                }],
+                predicted_states: vec![predicted_state],
+                predicted_videos: None,
+                total_cost: 0.0,
+                success_probability: 1.0,
+                guardrail_compliance: vec![Vec::new()],
+                planning_time_ms: 1,
+                iterations_used: 1,
+                stored_plan_id: Some(plan_id),
+                verification_proof: None,
+            },
         }
     }
 
@@ -4539,6 +4651,55 @@ mod tests {
         let stored = persisted.stored_plan(&parsed_plan_id).unwrap();
         assert_eq!(stored.id, parsed_plan_id);
         assert_eq!(stored.plan.stored_plan_id, Some(parsed_plan_id));
+    }
+
+    #[tokio::test]
+    async fn test_route_manage_stored_plans_roundtrip() {
+        let state = test_state();
+        let id = seed_world(&state, "plan-management", "mock").await;
+        let plan_id = uuid::Uuid::new_v4();
+        let mut persisted = state.store.load(&id).await.unwrap();
+        let record = sample_stored_plan_record(plan_id);
+        persisted.store_plan_record(record.clone());
+        state.store.save(&persisted).await.unwrap();
+
+        let (status, resp) = route("GET", &format!("/v1/worlds/{id}/plans"), "", &state).await;
+        assert_eq!(status, 200);
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(value["data"].as_array().unwrap().len(), 1);
+        assert_eq!(value["data"][0]["id"], plan_id.to_string());
+
+        let (status, resp) = route(
+            "GET",
+            &format!("/v1/worlds/{id}/plans/{plan_id}"),
+            "",
+            &state,
+        )
+        .await;
+        assert_eq!(status, 200);
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(value["data"]["id"], plan_id.to_string());
+        assert_eq!(value["data"]["goal_summary"], "spawn cube");
+
+        let (status, resp) = route(
+            "DELETE",
+            &format!("/v1/worlds/{id}/plans/{plan_id}"),
+            "",
+            &state,
+        )
+        .await;
+        assert_eq!(status, 200);
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(value["data"]["id"], plan_id.to_string());
+
+        let persisted = state.store.load(&id).await.unwrap();
+        assert!(persisted.stored_plans.is_empty());
+        let cache = state.worlds.read().await;
+        assert!(cache
+            .get(&id)
+            .expect("world should be cached after mutation")
+            .stored_plans
+            .is_empty());
     }
 
     #[test]
