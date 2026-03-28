@@ -681,9 +681,10 @@ relational natural-language goals like spawning an object next to a named
 anchor instead of collapsing those requests into plain anchor existence checks.
 Planning requests can also set `fallback_provider` so the core retries against
 another registered provider when the primary planner or prediction path fails.
-Direct provider generation and world-state reasoning are now exposed across the
-CLI, REST server, and Python bindings as well, with REST requests defaulting to
-each stored world's configured provider instead of hard-coding `mock`. Stateless
+Direct provider generation and transfer now flow through the shared Rust
+`WorldForge` facade and are exposed across the CLI, REST server, and Python
+bindings as well, with REST requests defaulting to each stored world's
+configured provider instead of hard-coding `mock`. Stateless
 provider reasoning now accepts either a persisted world snapshot or a raw video
 clip in Python and over REST, and Python registers Genie as a local surrogate by
 default. `GENIE_API_KEY` and `GENIE_API_ENDPOINT` remain optional remote hints,

@@ -30,7 +30,6 @@ use worldforge_core::state::{
 use worldforge_core::types::{
     BBox, Mesh, Pose, Position, Rotation, Tensor, Velocity, VideoClip, WorldId,
 };
-use worldforge_core::world::World;
 use worldforge_eval::{EvalReportFormat, EvalSuite};
 use worldforge_verify::{
     prove_guardrail_plan, prove_inference_transition, prove_latest_inference,
@@ -1821,16 +1820,13 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                         reference_image: None,
                         negative_prompt: req.negative_prompt,
                     };
-                    let world = World::new(
-                        WorldState::new("server-generate", provider_name),
-                        provider_name,
-                        Arc::clone(&state.registry),
-                    );
-                    match world
-                        .generate_with_provider_and_fallback(
+                    let worldforge =
+                        worldforge_core::WorldForge::from_registry_arc(Arc::clone(&state.registry));
+                    match worldforge
+                        .generate_with_fallback(
+                            provider_name,
                             &prompt,
                             &req.config,
-                            provider_name,
                             req.fallback_provider.as_deref(),
                         )
                         .await
@@ -2074,17 +2070,14 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                 .unwrap_or("");
             match serde_json::from_str::<TransferRequest>(body) {
                 Ok(req) => {
-                    let world = World::new(
-                        WorldState::new("server-transfer", provider_name),
-                        provider_name,
-                        Arc::clone(&state.registry),
-                    );
-                    match world
-                        .transfer_with_provider_and_fallback(
+                    let worldforge =
+                        worldforge_core::WorldForge::from_registry_arc(Arc::clone(&state.registry));
+                    match worldforge
+                        .transfer_with_fallback(
+                            provider_name,
                             &req.source,
                             &req.controls,
                             &req.config,
-                            provider_name,
                             req.fallback_provider.as_deref(),
                         )
                         .await

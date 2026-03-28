@@ -2315,12 +2315,7 @@ async fn cmd_generate(
     provider_name: &str,
     options: GenerateOptions<'_>,
 ) -> Result<()> {
-    let registry = Arc::new(auto_detect_registry());
-    let world = worldforge_core::world::World::new(
-        WorldState::new("cli-generate", provider_name),
-        provider_name,
-        Arc::clone(&registry),
-    );
+    let wf = worldforge_core::WorldForge::from_registry(auto_detect_registry());
     let prompt = GenerationPrompt {
         text: prompt.to_string(),
         reference_image: None,
@@ -2334,13 +2329,8 @@ async fn cmd_generate(
         seed: options.seed,
     };
 
-    let (resolved_provider, clip) = world
-        .generate_with_provider_and_fallback(
-            &prompt,
-            &config,
-            provider_name,
-            options.fallback_provider,
-        )
+    let (resolved_provider, clip) = wf
+        .generate_with_fallback(provider_name, &prompt, &config, options.fallback_provider)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -2359,12 +2349,7 @@ async fn cmd_generate(
 }
 
 async fn cmd_transfer(provider_name: &str, options: TransferOptions<'_>) -> Result<()> {
-    let registry = Arc::new(auto_detect_registry());
-    let world = worldforge_core::world::World::new(
-        WorldState::new("cli-transfer", provider_name),
-        provider_name,
-        Arc::clone(&registry),
-    );
+    let wf = worldforge_core::WorldForge::from_registry(auto_detect_registry());
     let source: VideoClip = read_json_file(options.source_json)?;
     let controls = match options.controls_json {
         Some(path) => read_json_file(path)?,
@@ -2376,12 +2361,12 @@ async fn cmd_transfer(provider_name: &str, options: TransferOptions<'_>) -> Resu
         control_strength: options.control_strength,
     };
 
-    let (resolved_provider, clip) = world
-        .transfer_with_provider_and_fallback(
+    let (resolved_provider, clip) = wf
+        .transfer_with_fallback(
+            provider_name,
             &source,
             &controls,
             &config,
-            provider_name,
             options.fallback_provider,
         )
         .await

@@ -39,10 +39,12 @@ use action::Action;
 use error::Result;
 use prediction::{MultiPrediction, Prediction, PredictionConfig};
 use provider::{
-    CostEstimate, EmbeddingInput, EmbeddingOutput, Operation, ProviderDescriptor,
-    ProviderHealthReport, ProviderRegistry, ReasoningInput, ReasoningOutput,
+    CostEstimate, EmbeddingInput, EmbeddingOutput, GenerationConfig, GenerationPrompt, Operation,
+    ProviderDescriptor, ProviderHealthReport, ProviderRegistry, ReasoningInput, ReasoningOutput,
+    SpatialControls, TransferConfig,
 };
 use state::{DynStateStore, WorldState};
+use types::VideoClip;
 use world::World;
 
 /// The main entry point for WorldForge.
@@ -70,6 +72,14 @@ impl WorldForge {
     pub fn from_registry(registry: ProviderRegistry) -> Self {
         Self {
             registry: Arc::new(registry),
+            state_store: None,
+        }
+    }
+
+    /// Create a new WorldForge instance from a shared provider registry.
+    pub fn from_registry_arc(registry: Arc<ProviderRegistry>) -> Self {
+        Self {
+            registry,
             state_store: None,
         }
     }
@@ -248,6 +258,200 @@ impl WorldForge {
         self.embed_with_fallback(provider, input, None)
             .await
             .map(|(_, output)| output)
+    }
+
+    /// Generate a video clip directly from a prompt with a specific provider.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the provider is unknown, does not support generation,
+    /// or the request fails and no fallback succeeds.
+    pub async fn generate(
+        &self,
+        provider: &str,
+        prompt: &GenerationPrompt,
+        config: &GenerationConfig,
+    ) -> Result<VideoClip> {
+        self.generate_with_fallback(provider, prompt, config, None)
+            .await
+            .map(|(_, clip)| clip)
+    }
+
+    /// Generate a video clip directly from a prompt with an optional fallback provider.
+    ///
+    /// Returns the provider name that ultimately satisfied the request alongside the clip.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the primary request fails and no fallback succeeds.
+    pub async fn generate_with_fallback(
+        &self,
+        provider: &str,
+        prompt: &GenerationPrompt,
+        config: &GenerationConfig,
+        fallback_provider: Option<&str>,
+    ) -> Result<(String, VideoClip)> {
+        match self.registry.get(provider) {
+            Ok(provider_ref) => match provider_ref.generate(prompt, config).await {
+                Ok(clip) => Ok((provider.to_string(), clip)),
+                Err(primary_error) => {
+                    let Some(fallback_provider) =
+                        fallback_provider.filter(|fallback| *fallback != provider)
+                    else {
+                        return Err(primary_error);
+                    };
+
+                    tracing::warn!(
+                        provider,
+                        fallback = fallback_provider,
+                        error = %primary_error,
+                        "generation failed on primary provider, attempting fallback"
+                    );
+
+                    match self
+                        .registry
+                        .get(fallback_provider)?
+                        .generate(prompt, config)
+                        .await
+                    {
+                        Ok(clip) => Ok((fallback_provider.to_string(), clip)),
+                        Err(fallback_error) => Err(error::WorldForgeError::ProviderUnavailable {
+                            provider: provider.to_string(),
+                            reason: format!(
+                                "primary provider error: {primary_error}; fallback provider '{fallback_provider}' error: {fallback_error}"
+                            ),
+                        }),
+                    }
+                }
+            },
+            Err(primary_error) => {
+                let Some(fallback_provider) =
+                    fallback_provider.filter(|fallback| *fallback != provider)
+                else {
+                    return Err(primary_error);
+                };
+
+                tracing::warn!(
+                    provider,
+                    fallback = fallback_provider,
+                    error = %primary_error,
+                    "generation failed on primary provider, attempting fallback"
+                );
+
+                match self
+                    .registry
+                    .get(fallback_provider)?
+                    .generate(prompt, config)
+                    .await
+                {
+                    Ok(clip) => Ok((fallback_provider.to_string(), clip)),
+                    Err(fallback_error) => Err(error::WorldForgeError::ProviderUnavailable {
+                        provider: provider.to_string(),
+                        reason: format!(
+                            "primary provider error: {primary_error}; fallback provider '{fallback_provider}' error: {fallback_error}"
+                        ),
+                    }),
+                }
+            }
+        }
+    }
+
+    /// Transfer spatial controls over an existing clip with a specific provider.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the provider is unknown, does not support transfer,
+    /// or the request fails and no fallback succeeds.
+    pub async fn transfer(
+        &self,
+        provider: &str,
+        source: &VideoClip,
+        controls: &SpatialControls,
+        config: &TransferConfig,
+    ) -> Result<VideoClip> {
+        self.transfer_with_fallback(provider, source, controls, config, None)
+            .await
+            .map(|(_, clip)| clip)
+    }
+
+    /// Transfer spatial controls over an existing clip with an optional fallback provider.
+    ///
+    /// Returns the provider name that ultimately satisfied the request alongside the clip.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the primary request fails and no fallback succeeds.
+    pub async fn transfer_with_fallback(
+        &self,
+        provider: &str,
+        source: &VideoClip,
+        controls: &SpatialControls,
+        config: &TransferConfig,
+        fallback_provider: Option<&str>,
+    ) -> Result<(String, VideoClip)> {
+        match self.registry.get(provider) {
+            Ok(provider_ref) => match provider_ref.transfer(source, controls, config).await {
+                Ok(clip) => Ok((provider.to_string(), clip)),
+                Err(primary_error) => {
+                    let Some(fallback_provider) =
+                        fallback_provider.filter(|fallback| *fallback != provider)
+                    else {
+                        return Err(primary_error);
+                    };
+
+                    tracing::warn!(
+                        provider,
+                        fallback = fallback_provider,
+                        error = %primary_error,
+                        "transfer failed on primary provider, attempting fallback"
+                    );
+
+                    match self
+                        .registry
+                        .get(fallback_provider)?
+                        .transfer(source, controls, config)
+                        .await
+                    {
+                        Ok(clip) => Ok((fallback_provider.to_string(), clip)),
+                        Err(fallback_error) => Err(error::WorldForgeError::ProviderUnavailable {
+                            provider: provider.to_string(),
+                            reason: format!(
+                                "primary provider error: {primary_error}; fallback provider '{fallback_provider}' error: {fallback_error}"
+                            ),
+                        }),
+                    }
+                }
+            },
+            Err(primary_error) => {
+                let Some(fallback_provider) =
+                    fallback_provider.filter(|fallback| *fallback != provider)
+                else {
+                    return Err(primary_error);
+                };
+
+                tracing::warn!(
+                    provider,
+                    fallback = fallback_provider,
+                    error = %primary_error,
+                    "transfer failed on primary provider, attempting fallback"
+                );
+
+                match self
+                    .registry
+                    .get(fallback_provider)?
+                    .transfer(source, controls, config)
+                    .await
+                {
+                    Ok(clip) => Ok((fallback_provider.to_string(), clip)),
+                    Err(fallback_error) => Err(error::WorldForgeError::ProviderUnavailable {
+                        provider: provider.to_string(),
+                        reason: format!(
+                            "primary provider error: {primary_error}; fallback provider '{fallback_provider}' error: {fallback_error}"
+                        ),
+                    }),
+                }
+            }
+        }
     }
 
     /// Request an embedding from a specific provider with an optional fallback provider.
@@ -622,6 +826,12 @@ mod tests {
         should_fail: bool,
     }
 
+    struct MediaProvider {
+        name: &'static str,
+        fail_generate: bool,
+        fail_transfer: bool,
+    }
+
     #[async_trait]
     impl WorldModelProvider for EmbedProvider {
         fn name(&self) -> &str {
@@ -836,6 +1046,271 @@ mod tests {
         ) -> crate::provider::CostEstimate {
             crate::provider::CostEstimate::default()
         }
+    }
+
+    #[async_trait]
+    impl WorldModelProvider for MediaProvider {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities {
+                predict: false,
+                generate: true,
+                reason: false,
+                transfer: true,
+                embed: false,
+                action_conditioned: false,
+                multi_view: false,
+                max_video_length_seconds: 60.0,
+                max_resolution: (1920, 1080),
+                fps_range: (1.0, 60.0),
+                supported_action_spaces: Vec::new(),
+                supports_depth: false,
+                supports_segmentation: false,
+                supports_planning: false,
+                latency_profile: LatencyProfile {
+                    p50_ms: 1,
+                    p95_ms: 1,
+                    p99_ms: 1,
+                    throughput_fps: 24.0,
+                },
+            }
+        }
+
+        async fn predict(
+            &self,
+            _state: &crate::state::WorldState,
+            _action: &crate::action::Action,
+            _config: &crate::prediction::PredictionConfig,
+        ) -> Result<crate::prediction::Prediction> {
+            Err(crate::error::WorldForgeError::UnsupportedCapability {
+                provider: self.name.to_string(),
+                capability: "predict".to_string(),
+            })
+        }
+
+        async fn generate(
+            &self,
+            _prompt: &GenerationPrompt,
+            config: &GenerationConfig,
+        ) -> Result<VideoClip> {
+            if self.fail_generate {
+                return Err(crate::error::WorldForgeError::UnsupportedCapability {
+                    provider: self.name.to_string(),
+                    capability: "generate".to_string(),
+                });
+            }
+
+            Ok(VideoClip {
+                frames: Vec::new(),
+                fps: config.fps,
+                resolution: config.resolution,
+                duration: config.duration_seconds,
+            })
+        }
+
+        async fn reason(&self, _input: &ReasoningInput, _query: &str) -> Result<ReasoningOutput> {
+            Err(crate::error::WorldForgeError::UnsupportedCapability {
+                provider: self.name.to_string(),
+                capability: "reason".to_string(),
+            })
+        }
+
+        async fn embed(&self, _input: &EmbeddingInput) -> Result<EmbeddingOutput> {
+            Err(crate::error::WorldForgeError::UnsupportedCapability {
+                provider: self.name.to_string(),
+                capability: "embed".to_string(),
+            })
+        }
+
+        async fn transfer(
+            &self,
+            source: &VideoClip,
+            _controls: &SpatialControls,
+            config: &TransferConfig,
+        ) -> Result<VideoClip> {
+            if self.fail_transfer {
+                return Err(crate::error::WorldForgeError::UnsupportedCapability {
+                    provider: self.name.to_string(),
+                    capability: "transfer".to_string(),
+                });
+            }
+
+            Ok(VideoClip {
+                frames: source.frames.clone(),
+                fps: config.fps,
+                resolution: config.resolution,
+                duration: source.duration,
+            })
+        }
+
+        async fn health_check(&self) -> Result<HealthStatus> {
+            Ok(HealthStatus {
+                healthy: true,
+                message: "healthy".to_string(),
+                latency_ms: 1,
+            })
+        }
+
+        fn estimate_cost(
+            &self,
+            _operation: &crate::provider::Operation,
+        ) -> crate::provider::CostEstimate {
+            crate::provider::CostEstimate::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_worldforge_generate_delegates_to_provider() {
+        let mut registry = crate::provider::ProviderRegistry::new();
+        registry.register(Box::new(MediaProvider {
+            name: "media",
+            fail_generate: false,
+            fail_transfer: false,
+        }));
+        let wf = WorldForge::from_registry(registry);
+
+        let clip = wf
+            .generate(
+                "media",
+                &GenerationPrompt {
+                    text: "a rolling cube".to_string(),
+                    reference_image: None,
+                    negative_prompt: None,
+                },
+                &GenerationConfig {
+                    duration_seconds: 2.0,
+                    resolution: (640, 360),
+                    fps: 12.0,
+                    temperature: 1.0,
+                    seed: Some(7),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(clip.duration, 2.0);
+        assert_eq!(clip.resolution, (640, 360));
+        assert_eq!(clip.fps, 12.0);
+    }
+
+    #[tokio::test]
+    async fn test_worldforge_generate_uses_fallback_provider() {
+        let mut registry = crate::provider::ProviderRegistry::new();
+        registry.register(Box::new(MediaProvider {
+            name: "primary",
+            fail_generate: true,
+            fail_transfer: false,
+        }));
+        registry.register(Box::new(MediaProvider {
+            name: "fallback",
+            fail_generate: false,
+            fail_transfer: false,
+        }));
+        let wf = WorldForge::from_registry(registry);
+
+        let (provider, clip) = wf
+            .generate_with_fallback(
+                "primary",
+                &GenerationPrompt {
+                    text: "fallback clip".to_string(),
+                    reference_image: None,
+                    negative_prompt: None,
+                },
+                &GenerationConfig {
+                    duration_seconds: 1.5,
+                    resolution: (320, 180),
+                    fps: 8.0,
+                    temperature: 1.0,
+                    seed: None,
+                },
+                Some("fallback"),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(provider, "fallback");
+        assert_eq!(clip.duration, 1.5);
+        assert_eq!(clip.resolution, (320, 180));
+    }
+
+    #[tokio::test]
+    async fn test_worldforge_transfer_delegates_to_provider() {
+        let mut registry = crate::provider::ProviderRegistry::new();
+        registry.register(Box::new(MediaProvider {
+            name: "media",
+            fail_generate: false,
+            fail_transfer: false,
+        }));
+        let wf = WorldForge::from_registry(registry);
+        let source = VideoClip {
+            frames: Vec::new(),
+            fps: 10.0,
+            resolution: (320, 180),
+            duration: 3.0,
+        };
+
+        let clip = wf
+            .transfer(
+                "media",
+                &source,
+                &SpatialControls::default(),
+                &TransferConfig {
+                    resolution: (800, 600),
+                    fps: 24.0,
+                    control_strength: 0.5,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(clip.duration, 3.0);
+        assert_eq!(clip.resolution, (800, 600));
+        assert_eq!(clip.fps, 24.0);
+    }
+
+    #[tokio::test]
+    async fn test_worldforge_transfer_uses_fallback_provider() {
+        let mut registry = crate::provider::ProviderRegistry::new();
+        registry.register(Box::new(MediaProvider {
+            name: "primary",
+            fail_generate: false,
+            fail_transfer: true,
+        }));
+        registry.register(Box::new(MediaProvider {
+            name: "fallback",
+            fail_generate: false,
+            fail_transfer: false,
+        }));
+        let wf = WorldForge::from_registry(registry);
+        let source = VideoClip {
+            frames: Vec::new(),
+            fps: 12.0,
+            resolution: (320, 240),
+            duration: 1.5,
+        };
+
+        let (provider, clip) = wf
+            .transfer_with_fallback(
+                "primary",
+                &source,
+                &SpatialControls::default(),
+                &TransferConfig {
+                    resolution: (640, 360),
+                    fps: 18.0,
+                    control_strength: 0.7,
+                },
+                Some("fallback"),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(provider, "fallback");
+        assert_eq!(clip.duration, 1.5);
+        assert_eq!(clip.resolution, (640, 360));
+        assert_eq!(clip.fps, 18.0);
     }
 
     #[tokio::test]

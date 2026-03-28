@@ -3935,16 +3935,11 @@ impl PyWorldForge {
             seed,
         };
         let rt = new_runtime()?;
-        let world = CoreWorld::new(
-            WorldState::new("python-generate", provider),
-            provider,
-            self.inner.registry_arc(),
-        );
         let clip = rt
-            .block_on(world.generate_with_provider_and_fallback(
+            .block_on(self.inner.generate_with_fallback(
+                provider,
                 &prompt,
                 &config,
-                provider,
                 fallback_provider,
             ))
             .map_err(|e| {
@@ -3980,17 +3975,12 @@ impl PyWorldForge {
             control_strength,
         };
         let rt = new_runtime()?;
-        let world = CoreWorld::new(
-            WorldState::new("python-transfer", provider),
-            provider,
-            self.inner.registry_arc(),
-        );
         let clip = rt
-            .block_on(world.transfer_with_provider_and_fallback(
+            .block_on(self.inner.transfer_with_fallback(
+                provider,
                 &clip.inner,
                 &controls,
                 &config,
-                provider,
                 fallback_provider,
             ))
             .map_err(|e| {
