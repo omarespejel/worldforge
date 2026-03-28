@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use worldforge_core::action::{evaluate_condition, Action, ActionSpaceType, Condition, Weather};
+use worldforge_core::action::{ActionTranslator, ProviderAction};
 use worldforge_core::error::{Result, WorldForgeError};
 use worldforge_core::goal_image;
 use worldforge_core::guardrail::{evaluate_guardrails, has_blocking_violation};
@@ -2031,6 +2032,146 @@ fn multiply_rotation(left: Rotation, right: Rotation) -> Rotation {
     }
 }
 
+impl ActionTranslator for GenieProvider {
+    fn translate(&self, action: &Action) -> Result<ProviderAction> {
+        Ok(ProviderAction {
+            provider: "genie".to_string(),
+            data: genie_action_payload(action)?,
+        })
+    }
+
+    fn supported_actions(&self) -> Vec<ActionSpaceType> {
+        vec![ActionSpaceType::Discrete, ActionSpaceType::Language]
+    }
+}
+
+fn genie_action_payload(action: &Action) -> Result<serde_json::Value> {
+    let action_space = genie_action_space(action);
+    let command = match action {
+        Action::Move { target, speed } => serde_json::json!({
+            "type": "move",
+            "target": target,
+            "speed": speed,
+        }),
+        Action::Grasp { object, grip_force } => serde_json::json!({
+            "type": "grasp",
+            "object_id": object,
+            "grip_force": grip_force,
+        }),
+        Action::Release { object } => serde_json::json!({
+            "type": "release",
+            "object_id": object,
+        }),
+        Action::Push {
+            object,
+            direction,
+            force,
+        } => serde_json::json!({
+            "type": "push",
+            "object_id": object,
+            "direction": direction,
+            "force": force,
+        }),
+        Action::Rotate {
+            object,
+            axis,
+            angle,
+        } => serde_json::json!({
+            "type": "rotate",
+            "object_id": object,
+            "axis": axis,
+            "angle": angle,
+        }),
+        Action::Place { object, target } => serde_json::json!({
+            "type": "place",
+            "object_id": object,
+            "target": target,
+        }),
+        Action::CameraMove { delta } => serde_json::json!({
+            "type": "camera_move",
+            "delta": delta,
+        }),
+        Action::CameraLookAt { target } => serde_json::json!({
+            "type": "camera_look_at",
+            "target": target,
+        }),
+        Action::Navigate { waypoints } => serde_json::json!({
+            "type": "navigate",
+            "waypoints": waypoints,
+        }),
+        Action::Teleport { destination } => serde_json::json!({
+            "type": "teleport",
+            "destination": destination,
+        }),
+        Action::SetWeather { weather } => serde_json::json!({
+            "type": "weather",
+            "weather": weather,
+        }),
+        Action::SetLighting { time_of_day } => serde_json::json!({
+            "type": "lighting",
+            "time_of_day": time_of_day,
+        }),
+        Action::SpawnObject { template, pose } => serde_json::json!({
+            "type": "spawn",
+            "template": template,
+            "pose": pose,
+        }),
+        Action::RemoveObject { object } => serde_json::json!({
+            "type": "remove",
+            "object_id": object,
+        }),
+        Action::Sequence(actions) => serde_json::json!({
+            "type": "sequence",
+            "actions": genie_translate_actions(actions)?,
+        }),
+        Action::Parallel(actions) => serde_json::json!({
+            "type": "parallel",
+            "actions": genie_translate_actions(actions)?,
+        }),
+        Action::Conditional {
+            condition,
+            then,
+            otherwise,
+        } => serde_json::json!({
+            "type": "conditional",
+            "condition": serde_json::to_value(condition).map_err(|error| {
+                WorldForgeError::SerializationError(error.to_string())
+            })?,
+            "then": genie_action_payload(then)?,
+            "otherwise": otherwise
+                .as_deref()
+                .map(genie_action_payload)
+                .transpose()?,
+        }),
+        Action::Raw { provider, data } => serde_json::json!({
+            "type": "raw",
+            "provider": provider,
+            "payload": data,
+        }),
+    };
+
+    Ok(serde_json::json!({
+        "provider": "genie",
+        "dialect": "genie-local-command-v1",
+        "action_space": action_space,
+        "command": command,
+    }))
+}
+
+fn genie_translate_actions(actions: &[Action]) -> Result<Vec<serde_json::Value>> {
+    actions.iter().map(genie_action_payload).collect()
+}
+
+fn genie_action_space(action: &Action) -> &'static str {
+    match action {
+        Action::Sequence(_)
+        | Action::Parallel(_)
+        | Action::Conditional { .. }
+        | Action::Raw { .. } => "language",
+        _ => "discrete",
+    }
+}
+
 fn stable_hash(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
     for byte in bytes {
@@ -2479,7 +2620,7 @@ fn map_range(value: f32, from_min: f32, from_max: f32, to_min: f32, to_max: f32)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use worldforge_core::action::Condition;
+    use worldforge_core::action::{ActionSpaceType, ActionTranslator, Condition};
 
     fn sample_state() -> (WorldState, uuid::Uuid) {
         let mut state = WorldState::new("genie-test", "genie");
@@ -2524,6 +2665,45 @@ mod tests {
         assert!(caps.supports_planning);
         assert_eq!(caps.max_resolution, (256, 256));
         assert_eq!(caps.fps_range, (6.0, 12.0));
+    }
+
+    #[test]
+    fn test_genie_action_translator_uses_command_dialect() {
+        let provider = GenieProvider::new(GenieModel::Genie3, "key");
+        let (_, object_id) = sample_state();
+        let action = Action::Conditional {
+            condition: Condition::ObjectExists { object: object_id },
+            then: Box::new(Action::SetLighting { time_of_day: 18.5 }),
+            otherwise: Some(Box::new(Action::SetWeather {
+                weather: Weather::Clear,
+            })),
+        };
+
+        let translated = provider.translate(&action).unwrap();
+        assert_eq!(translated.provider, "genie");
+        assert_eq!(translated.data["dialect"], "genie-local-command-v1");
+        assert_eq!(translated.data["action_space"], "language");
+        assert_eq!(translated.data["command"]["type"], "conditional");
+        assert_eq!(
+            translated.data["command"]["then"]["dialect"],
+            "genie-local-command-v1"
+        );
+        assert_eq!(
+            translated.data["command"]["then"]["command"]["type"],
+            "lighting"
+        );
+        assert_eq!(
+            translated.data["command"]["otherwise"]["dialect"],
+            "genie-local-command-v1"
+        );
+        assert_eq!(
+            translated.data["command"]["otherwise"]["command"]["type"],
+            "weather"
+        );
+        assert_eq!(
+            provider.supported_actions(),
+            vec![ActionSpaceType::Discrete, ActionSpaceType::Language]
+        );
     }
 
     #[tokio::test]

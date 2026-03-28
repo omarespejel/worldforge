@@ -9,7 +9,9 @@ use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
 use async_trait::async_trait;
-use worldforge_core::action::{evaluate_condition, Action, ActionSpaceType};
+use worldforge_core::action::{
+    evaluate_condition, Action, ActionSpaceType, ActionTranslator, ProviderAction,
+};
 use worldforge_core::error::{Result, WorldForgeError};
 use worldforge_core::goal_image;
 use worldforge_core::guardrail::{evaluate_guardrails, has_blocking_violation};
@@ -295,6 +297,160 @@ impl WorldModelProvider for MockProvider {
             credits: 0.0,
             estimated_latency_ms: self.latency_ms,
         }
+    }
+}
+
+impl ActionTranslator for MockProvider {
+    fn translate(&self, action: &Action) -> Result<ProviderAction> {
+        Ok(ProviderAction {
+            provider: self.name.clone(),
+            data: mock_action_payload(&self.name, action)?,
+        })
+    }
+
+    fn supported_actions(&self) -> Vec<ActionSpaceType> {
+        vec![
+            ActionSpaceType::Continuous,
+            ActionSpaceType::Discrete,
+            ActionSpaceType::Language,
+        ]
+    }
+}
+
+fn mock_action_payload(provider_name: &str, action: &Action) -> Result<serde_json::Value> {
+    let action_space = mock_action_space(action);
+    let control = match action {
+        Action::Move { target, speed } => serde_json::json!({
+            "type": "move_toward",
+            "target": target,
+            "speed": speed,
+        }),
+        Action::Grasp { object, grip_force } => serde_json::json!({
+            "type": "grasp_object",
+            "object_id": object,
+            "grip_force": grip_force,
+        }),
+        Action::Release { object } => serde_json::json!({
+            "type": "release_object",
+            "object_id": object,
+        }),
+        Action::Push {
+            object,
+            direction,
+            force,
+        } => serde_json::json!({
+            "type": "push_object",
+            "object_id": object,
+            "direction": direction,
+            "force": force,
+        }),
+        Action::Rotate {
+            object,
+            axis,
+            angle,
+        } => serde_json::json!({
+            "type": "rotate_object",
+            "object_id": object,
+            "axis": axis,
+            "angle": angle,
+        }),
+        Action::Place { object, target } => serde_json::json!({
+            "type": "place_object",
+            "object_id": object,
+            "target": target,
+        }),
+        Action::CameraMove { delta } => serde_json::json!({
+            "type": "camera_move",
+            "delta": delta,
+        }),
+        Action::CameraLookAt { target } => serde_json::json!({
+            "type": "camera_look_at",
+            "target": target,
+        }),
+        Action::Navigate { waypoints } => serde_json::json!({
+            "type": "navigate",
+            "waypoints": waypoints,
+        }),
+        Action::Teleport { destination } => serde_json::json!({
+            "type": "teleport",
+            "destination": destination,
+        }),
+        Action::SetWeather { weather } => serde_json::json!({
+            "type": "set_weather",
+            "weather": weather,
+        }),
+        Action::SetLighting { time_of_day } => serde_json::json!({
+            "type": "set_lighting",
+            "time_of_day": time_of_day,
+        }),
+        Action::SpawnObject { template, pose } => serde_json::json!({
+            "type": "spawn_object",
+            "template": template,
+            "pose": pose,
+        }),
+        Action::RemoveObject { object } => serde_json::json!({
+            "type": "remove_object",
+            "object_id": object,
+        }),
+        Action::Sequence(actions) => serde_json::json!({
+            "type": "sequence",
+            "steps": mock_translate_actions(provider_name, actions)?,
+        }),
+        Action::Parallel(actions) => serde_json::json!({
+            "type": "parallel",
+            "branches": mock_translate_actions(provider_name, actions)?,
+        }),
+        Action::Conditional {
+            condition,
+            then,
+            otherwise,
+        } => serde_json::json!({
+            "type": "conditional",
+            "condition": serde_json::to_value(condition).map_err(|error| {
+                WorldForgeError::SerializationError(error.to_string())
+            })?,
+            "then": mock_action_payload(provider_name, then)?,
+            "otherwise": otherwise
+                .as_deref()
+                .map(|action| mock_action_payload(provider_name, action))
+                .transpose()?,
+        }),
+        Action::Raw { provider, data } => serde_json::json!({
+            "type": "raw",
+            "provider": provider,
+            "payload": data,
+        }),
+    };
+
+    Ok(serde_json::json!({
+        "provider": provider_name,
+        "dialect": "mock-sim-v1",
+        "action_space": action_space,
+        "control": control,
+    }))
+}
+
+fn mock_translate_actions(
+    provider_name: &str,
+    actions: &[Action],
+) -> Result<Vec<serde_json::Value>> {
+    actions
+        .iter()
+        .map(|action| mock_action_payload(provider_name, action))
+        .collect()
+}
+
+fn mock_action_space(action: &Action) -> &'static str {
+    match action {
+        Action::SetWeather { .. }
+        | Action::SetLighting { .. }
+        | Action::SpawnObject { .. }
+        | Action::RemoveObject { .. } => "discrete",
+        Action::Sequence(_)
+        | Action::Parallel(_)
+        | Action::Conditional { .. }
+        | Action::Raw { .. } => "language",
+        _ => "continuous",
     }
 }
 
@@ -2114,7 +2270,7 @@ fn deterministic_embedding_from_seed(seed: u64, dims: usize) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use worldforge_core::action::Condition;
+    use worldforge_core::action::{ActionSpaceType, ActionTranslator, Condition};
     use worldforge_core::guardrail::{Guardrail, GuardrailConfig};
     use worldforge_core::prediction::{PlanGoal, PlanRequest, PlannerType};
     use worldforge_core::types::Position;
@@ -2523,6 +2679,55 @@ mod tests {
         assert!(caps.supports_depth);
         assert!(caps.supports_segmentation);
         assert!(caps.supports_planning);
+    }
+
+    #[test]
+    fn test_mock_action_translator_uses_simulator_dialect() {
+        let provider = MockProvider::new();
+        let action = Action::Sequence(vec![
+            Action::Move {
+                target: Position {
+                    x: 0.5,
+                    y: 1.0,
+                    z: -0.25,
+                },
+                speed: 1.5,
+            },
+            Action::Raw {
+                provider: "mock".to_string(),
+                data: serde_json::json!({"type": "set_lighting", "time_of_day": 18.5}),
+            },
+        ]);
+
+        let translated = provider.translate(&action).unwrap();
+        assert_eq!(translated.provider, "mock");
+        assert_eq!(translated.data["dialect"], "mock-sim-v1");
+        assert_eq!(translated.data["action_space"], "language");
+        assert_eq!(translated.data["control"]["type"], "sequence");
+        assert_eq!(
+            translated.data["control"]["steps"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            translated.data["control"]["steps"][0]["control"]["type"],
+            "move_toward"
+        );
+        assert_eq!(
+            translated.data["control"]["steps"][1]["control"]["type"],
+            "raw"
+        );
+
+        assert_eq!(
+            provider.supported_actions(),
+            vec![
+                ActionSpaceType::Continuous,
+                ActionSpaceType::Discrete,
+                ActionSpaceType::Language,
+            ]
+        );
     }
 
     #[test]
