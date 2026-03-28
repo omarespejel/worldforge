@@ -2161,15 +2161,28 @@ mod tests {
 
     #[test]
     fn test_world_state_from_prompt_seeds_metadata_and_scene() {
-        let state =
-            WorldState::from_prompt("A kitchen with a mug", "mock", Some("seeded")).unwrap();
+        let state = WorldState::from_prompt(
+            "Two red blocks next to a blue mug on a table",
+            "mock",
+            Some("seeded"),
+        )
+        .unwrap();
 
         assert_eq!(state.metadata.name, "seeded");
-        assert_eq!(state.metadata.description, "A kitchen with a mug");
+        assert_eq!(
+            state.metadata.description,
+            "Two red blocks next to a blue mug on a table"
+        );
         assert_eq!(state.metadata.created_by, "mock");
         assert_eq!(state.history.len(), 1);
-        assert!(state.scene.find_object_by_name("counter").is_some());
-        assert!(state.scene.find_object_by_name("mug").is_some());
+        let table = state.scene.find_object_by_name("table").unwrap();
+        let mug = state.scene.find_object_by_name("blue_mug").unwrap();
+        let block = state.scene.find_object_by_name("red_block").unwrap();
+        let block_2 = state.scene.find_object_by_name("red_block_2").unwrap();
+
+        assert!(mug.pose.position.y > table.bbox.max.y);
+        assert!(block.pose.position.distance(mug.pose.position) < 0.35);
+        assert!(block_2.pose.position.distance(mug.pose.position) < 0.35);
     }
 
     #[test]

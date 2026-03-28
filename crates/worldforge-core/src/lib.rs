@@ -711,16 +711,29 @@ mod tests {
         wf.register_provider(Box::new(EmbedProvider)).unwrap();
 
         let world = wf
-            .create_world_from_prompt("A kitchen with a mug", "embedder", None)
+            .create_world_from_prompt(
+                "Two red blocks next to a blue mug on a table",
+                "embedder",
+                None,
+            )
             .await
             .unwrap();
 
         assert_eq!(
             world.current_state().metadata.description,
-            "A kitchen with a mug"
+            "Two red blocks next to a blue mug on a table"
         );
         assert_eq!(world.current_state().history.len(), 1);
-        assert!(!world.current_state().scene.objects.is_empty());
+        assert!(world
+            .current_state()
+            .scene
+            .find_object_by_name("blue_mug")
+            .is_some());
+        assert!(world
+            .current_state()
+            .scene
+            .find_object_by_name("red_block_2")
+            .is_some());
     }
 
     #[tokio::test]
