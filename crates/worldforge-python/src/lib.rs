@@ -12,7 +12,7 @@ use std::sync::Arc;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyList, PyModule, PyString};
 
-use worldforge_core::guardrail::GuardrailConfig;
+use worldforge_core::guardrail::{GuardrailConfig, GuardrailCostFunction};
 use worldforge_core::prediction::{
     ComparisonConsensus, ComparisonReportFormat, GuardrailDiagnostics, MultiPrediction,
     ObjectDiagnostic, ObjectDrift, PairwiseAgreement, PlanExecution, PlanGoal, PlanGoalInput,
@@ -48,6 +48,9 @@ use worldforge_verify::{
     VerificationBackend, VerificationBundle, VerificationResult as CoreVerificationResult,
     ZkVerifier,
 };
+
+#[cfg(test)]
+use worldforge_core::state::{inspect_world_state_snapshot, WORLD_STATE_SNAPSHOT_SCHEMA_VERSION};
 
 fn auto_detect_registry() -> Arc<worldforge_core::provider::ProviderRegistry> {
     Arc::new(worldforge_providers::auto_detect())
@@ -1531,7 +1534,7 @@ impl PyWorld {
     }
 
     /// Predict the next world state after applying an action.
-    #[pyo3(signature = (action, steps=1, provider=None, fallback_provider=None, return_video=false, max_latency_ms=None, disable_guardrails=false))]
+    #[pyo3(signature = (action, steps=1, provider=None, fallback_provider=None, return_video=false, max_latency_ms=None, guardrails_json=None, disable_guardrails=false))]
     #[allow(clippy::too_many_arguments)]
     fn predict(
         &mut self,
@@ -1541,6 +1544,7 @@ impl PyWorld {
         fallback_provider: Option<&str>,
         return_video: bool,
         max_latency_ms: Option<u64>,
+        guardrails_json: Option<&str>,
         disable_guardrails: bool,
     ) -> PyResult<PyPrediction> {
         let rt = tokio::runtime::Runtime::new().map_err(|e| {
@@ -1554,6 +1558,7 @@ impl PyWorld {
             return_video,
             max_latency_ms,
             fallback_provider: fallback_provider.map(ToOwned::to_owned),
+            guardrails: parse_guardrails_json(guardrails_json)?,
             ..PredictionConfig::default()
         };
         if disable_guardrails {
@@ -3239,6 +3244,33 @@ impl PyGuardrail {
         }
     }
 
+    /// Threshold a deterministic scene cost function against a maximum value.
+    #[staticmethod]
+    fn cost_function(function: &str, threshold: f32) -> PyResult<Self> {
+        let function = match function.trim() {
+            "scene_kinetic_energy" | "SceneKineticEnergy" => {
+                GuardrailCostFunction::SceneKineticEnergy
+            }
+            "object_count" | "ObjectCount" => GuardrailCostFunction::ObjectCount,
+            "average_object_height" | "AverageObjectHeight" => {
+                GuardrailCostFunction::AverageObjectHeight
+            }
+            "max_object_speed" | "MaxObjectSpeed" => GuardrailCostFunction::MaxObjectSpeed,
+            other => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "unknown guardrail cost function: {other}. Available: scene_kinetic_energy, object_count, average_object_height, max_object_speed"
+                )));
+            }
+        };
+
+        Ok(Self {
+            inner: worldforge_core::guardrail::Guardrail::CostFunction {
+                function,
+                threshold,
+            },
+        })
+    }
+
     /// Maximum velocity for any object.
     #[staticmethod]
     fn max_velocity(limit: f32) -> Self {
@@ -4168,8 +4200,8 @@ impl PyWorldForge {
 
     /// Export a persisted world snapshot.
     ///
-    /// Returns a Python `str` when `format="json"` and raw `bytes` when
-    /// `format="msgpack"`.
+    /// Returns a versioned Python `str` when `format="json"` and raw `bytes`
+    /// when `format="msgpack"`.
     #[pyo3(signature = (world_id, format="json"))]
     fn export_world(&self, py: Python<'_>, world_id: &str, format: &str) -> PyResult<Py<PyAny>> {
         let id = parse_world_id(world_id)?;
@@ -4200,6 +4232,7 @@ impl PyWorldForge {
     /// Accepts JSON text or bytes when `format="json"` and MessagePack bytes
     /// when `format="msgpack"`. If `new_id` or `name` is supplied, the imported
     /// world is rebased to a fresh initial history entry before persistence.
+    /// Legacy raw `WorldState` payloads are still accepted and normalized.
     #[pyo3(signature = (snapshot, format="json", new_id=false, name=None))]
     fn import_world(
         &self,
@@ -7356,6 +7389,7 @@ mod tests {
                 None,
                 false,
                 None,
+                None,
                 false,
             )
             .unwrap();
@@ -7375,6 +7409,7 @@ mod tests {
                 None,
                 None,
                 false,
+                None,
                 None,
                 false,
             )
@@ -7407,6 +7442,7 @@ mod tests {
                 Some("mock"),
                 false,
                 None,
+                None,
                 false,
             )
             .unwrap();
@@ -7425,6 +7461,7 @@ mod tests {
                 None,
                 None,
                 false,
+                None,
                 None,
                 false,
             )
@@ -7450,6 +7487,7 @@ mod tests {
                 None,
                 None,
                 false,
+                None,
                 None,
                 false,
             )
@@ -7540,6 +7578,7 @@ mod tests {
                 None,
                 None,
                 false,
+                None,
                 None,
                 true,
             )
@@ -7673,11 +7712,11 @@ mod tests {
 
         let action = PyAction::move_to(0.2, 0.5, 0.0, 1.0);
         let prediction = world
-            .predict(&action, 1, None, None, false, None, false)
+            .predict(&action, 1, None, None, false, None, None, false)
             .unwrap();
         let mut predicted_world = prediction.output_world();
         let follow_up = predicted_world
-            .predict(&action, 1, None, None, false, None, false)
+            .predict(&action, 1, None, None, false, None, None, false)
             .unwrap();
         assert_eq!(follow_up.provider(), "manual-mock");
 
@@ -7698,7 +7737,7 @@ mod tests {
 
         let mut comparison_world = comparison.best_prediction().output_world();
         let comparison_follow_up = comparison_world
-            .predict(&action, 1, None, None, false, None, false)
+            .predict(&action, 1, None, None, false, None, None, false)
             .unwrap();
         assert_eq!(comparison_follow_up.provider(), "manual-mock");
     }
@@ -7765,6 +7804,7 @@ mod tests {
             None,
             false,
             None,
+            None,
             false,
         );
         let error = default_result.unwrap_err().to_string();
@@ -7781,11 +7821,46 @@ mod tests {
                 None,
                 false,
                 None,
+                None,
                 true,
             )
             .unwrap();
 
         assert_eq!(prediction.guardrail_count(), 0);
+    }
+
+    #[test]
+    fn test_world_predict_accepts_cost_function_guardrails_json() {
+        let mut world = PyWorld::new("predict_cost_guardrails", "mock");
+        world
+            .add_object(&PySceneObject::new(
+                "mug",
+                &PyPosition::new(0.0, 0.5, 0.0),
+                &PyBBox::new(
+                    &PyPosition::new(-0.05, 0.45, -0.05),
+                    &PyPosition::new(0.05, 0.55, 0.05),
+                ),
+            ))
+            .unwrap();
+
+        let error = world
+            .predict(
+                &PyAction::set_weather("rain").unwrap(),
+                1,
+                None,
+                None,
+                false,
+                None,
+                Some(
+                    r#"[{"guardrail":{"CostFunction":{"function":"ObjectCount","threshold":0.5}},"blocking":true}]"#,
+                ),
+                false,
+            )
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("CostFunction"));
+        assert!(error.contains("ObjectCount"));
     }
 
     #[test]
@@ -7977,6 +8052,15 @@ mod tests {
     }
 
     #[test]
+    fn test_guardrail_cost_function() {
+        let g = PyGuardrail::cost_function("object_count", 1.5).unwrap();
+        let json = g.to_json().unwrap();
+        assert!(json.contains("CostFunction"));
+        assert!(json.contains("ObjectCount"));
+        assert!(json.contains("1.5"));
+    }
+
+    #[test]
     fn test_guardrail_boundary_constraint() {
         let min = PyPosition::new(-10.0, -10.0, -10.0);
         let max = PyPosition::new(10.0, 10.0, 10.0);
@@ -8114,6 +8198,7 @@ mod tests {
                 None,
                 false,
                 None,
+                None,
                 true,
             )
             .unwrap();
@@ -8227,10 +8312,10 @@ mod tests {
         let mut world_b = wf.create_world("compare-b", "mock").unwrap();
         let action = PyAction::move_to(1.0, 0.0, 0.0, 1.0);
         let prediction_a = world_a
-            .predict(&action, 1, None, None, false, None, false)
+            .predict(&action, 1, None, None, false, None, None, false)
             .unwrap();
         let prediction_b = world_b
-            .predict(&action, 1, None, None, false, None, false)
+            .predict(&action, 1, None, None, false, None, None, false)
             .unwrap();
 
         let comparison = wf.compare(vec![prediction_a, prediction_b]).unwrap();
@@ -8297,10 +8382,10 @@ mod tests {
         let mut world_b = wf.create_world("compare-b", "mock").unwrap();
         let action = PyAction::move_to(1.0, 0.0, 0.0, 1.0);
         let prediction_a = world_a
-            .predict(&action, 1, None, None, false, None, false)
+            .predict(&action, 1, None, None, false, None, None, false)
             .unwrap();
         let prediction_b = world_b
-            .predict(&action, 1, None, None, false, None, false)
+            .predict(&action, 1, None, None, false, None, None, false)
             .unwrap();
         let comparison = wf.compare(vec![prediction_a, prediction_b]).unwrap();
 
@@ -8915,8 +9000,19 @@ mod tests {
         pyo3::Python::with_gil(|py| {
             let snapshot = wf.export_world(py, &world_id, "json").unwrap();
             let json = snapshot.bind(py).extract::<String>().unwrap();
-            assert!(json.contains("\"snapshot_world\""));
-            assert!(json.contains("\"mug\""));
+            let payload: serde_json::Value = serde_json::from_str(&json).unwrap();
+            assert_eq!(
+                payload["schema_version"],
+                serde_json::json!(WORLD_STATE_SNAPSHOT_SCHEMA_VERSION)
+            );
+            assert_eq!(payload["state"]["metadata"]["name"], "snapshot_world");
+            assert_eq!(
+                payload["state"]["scene"]["objects"]
+                    .as_object()
+                    .unwrap()
+                    .len(),
+                1
+            );
 
             let snapshot = pyo3::types::PyString::new_bound(py, &json).into_any();
             let imported = wf
@@ -8965,6 +9061,10 @@ mod tests {
             let snapshot = wf.export_world(py, &world_id, "msgpack").unwrap();
             let bytes = snapshot.bind(py).extract::<Vec<u8>>().unwrap();
             assert!(!bytes.is_empty());
+            let metadata =
+                inspect_world_state_snapshot(CoreStateFileFormat::MessagePack, &bytes).unwrap();
+            assert_eq!(metadata.schema_version, WORLD_STATE_SNAPSHOT_SCHEMA_VERSION);
+            assert!(!metadata.legacy_payload);
 
             let snapshot = pyo3::types::PyBytes::new_bound(py, &bytes).into_any();
             let imported = wf.import_world(&snapshot, "msgpack", false, None).unwrap();
@@ -9519,6 +9619,7 @@ mod tests {
                 None,
                 false,
                 None,
+                None,
                 false,
             )
             .unwrap();
@@ -9986,6 +10087,7 @@ mod tests {
                 Some("mock"),
                 None,
                 false,
+                None,
                 None,
                 false,
             )

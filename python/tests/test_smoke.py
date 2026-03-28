@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 
@@ -40,6 +41,21 @@ class WorldForgePythonPackageSmokeTests(unittest.TestCase):
 
             world_id = forge.save_world(world)
             self.assertIn(world_id, forge.list_worlds())
+
+            snapshot_json = forge.export_world(world_id, format="json")
+            payload = json.loads(snapshot_json)
+            self.assertEqual(payload["schema_version"], 1)
+            self.assertEqual(payload["state"]["metadata"]["name"], "kitchen-counter")
+
+            snapshot_copy = forge.import_world(
+                snapshot_json,
+                format="json",
+                new_id=True,
+                name="kitchen-counter-copy",
+            )
+            self.assertNotEqual(snapshot_copy.id, world_id)
+            self.assertEqual(snapshot_copy.name, "kitchen-counter-copy")
+            self.assertEqual(snapshot_copy.object_count, 1)
 
             loaded = forge.load_world(world_id)
             self.assertIn("red_mug", loaded.list_objects())

@@ -610,6 +610,34 @@ pub trait StateStore: Send + Sync {
 /// Shared pointer to a dynamically selected state store implementation.
 pub type DynStateStore = Arc<dyn StateStore>;
 
+/// Schema version written into persisted world-state snapshots.
+pub const WORLD_STATE_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+
+/// Metadata discovered while inspecting a serialized world-state snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StateSnapshotMetadata {
+    /// Effective schema version associated with the snapshot payload.
+    ///
+    /// Legacy raw `WorldState` payloads report the current schema version and
+    /// set `legacy_payload=true`.
+    pub schema_version: u32,
+    /// Whether the payload used the legacy raw-`WorldState` shape.
+    pub legacy_payload: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WorldStateSnapshotEnvelope {
+    schema_version: u32,
+    state: WorldState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum WorldStateSnapshotDocument {
+    Envelope(WorldStateSnapshotEnvelope),
+    Legacy(WorldState),
+}
+
 /// Serialization format for file-backed world-state persistence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StateFileFormat {
@@ -645,12 +673,25 @@ impl StateFileFormat {
 
 /// Serialize a world state using the requested snapshot format.
 pub fn serialize_world_state(format: StateFileFormat, state: &WorldState) -> Result<Vec<u8>> {
+    let document = WorldStateSnapshotEnvelope {
+        schema_version: WORLD_STATE_SNAPSHOT_SCHEMA_VERSION,
+        state: state.clone(),
+    };
     match format {
-        StateFileFormat::Json => serde_json::to_vec_pretty(state)
+        StateFileFormat::Json => serde_json::to_vec_pretty(&document)
             .map_err(|e| WorldForgeError::SerializationError(e.to_string())),
-        StateFileFormat::MessagePack => rmp_serde::to_vec_named(state)
+        StateFileFormat::MessagePack => rmp_serde::to_vec_named(&document)
             .map_err(|e| WorldForgeError::SerializationError(e.to_string())),
     }
+}
+
+/// Inspect a serialized world-state snapshot without materializing the state.
+pub fn inspect_world_state_snapshot(
+    format: StateFileFormat,
+    data: &[u8],
+) -> Result<StateSnapshotMetadata> {
+    let (_, metadata) = decode_world_state_snapshot(format, data)?;
+    Ok(metadata)
 }
 
 /// Deserialize a world state using the requested snapshot format.
@@ -658,13 +699,51 @@ pub fn serialize_world_state(format: StateFileFormat, state: &WorldState) -> Res
 /// The returned state is normalized so legacy snapshots regain a recoverable
 /// latest history entry and a materialized checkpoint snapshot when needed.
 pub fn deserialize_world_state(format: StateFileFormat, data: &[u8]) -> Result<WorldState> {
-    let state = match format {
-        StateFileFormat::Json => serde_json::from_slice(data)
-            .map_err(|e| WorldForgeError::SerializationError(e.to_string())),
-        StateFileFormat::MessagePack => rmp_serde::from_slice(data)
-            .map_err(|e| WorldForgeError::SerializationError(e.to_string())),
-    }?;
+    let (state, _) = decode_world_state_snapshot(format, data)?;
     normalize_world_state(state)
+}
+
+fn decode_world_state_snapshot(
+    format: StateFileFormat,
+    data: &[u8],
+) -> Result<(WorldState, StateSnapshotMetadata)> {
+    let document = match format {
+        StateFileFormat::Json => serde_json::from_slice(data)
+            .map_err(|e| WorldForgeError::SerializationError(e.to_string()))?,
+        StateFileFormat::MessagePack => rmp_serde::from_slice(data)
+            .map_err(|e| WorldForgeError::SerializationError(e.to_string()))?,
+    };
+
+    match document {
+        WorldStateSnapshotDocument::Envelope(envelope) => {
+            validate_snapshot_schema_version(envelope.schema_version)?;
+            Ok((
+                envelope.state,
+                StateSnapshotMetadata {
+                    schema_version: envelope.schema_version,
+                    legacy_payload: false,
+                },
+            ))
+        }
+        WorldStateSnapshotDocument::Legacy(state) => Ok((
+            state,
+            StateSnapshotMetadata {
+                schema_version: WORLD_STATE_SNAPSHOT_SCHEMA_VERSION,
+                legacy_payload: true,
+            },
+        )),
+    }
+}
+
+fn validate_snapshot_schema_version(schema_version: u32) -> Result<()> {
+    if schema_version == 0 || schema_version > WORLD_STATE_SNAPSHOT_SCHEMA_VERSION {
+        return Err(WorldForgeError::InvalidState(format!(
+            "unsupported world-state snapshot schema version: {schema_version} (supported: 1..={})",
+            WORLD_STATE_SNAPSHOT_SCHEMA_VERSION
+        )));
+    }
+
+    Ok(())
 }
 
 /// Infer the snapshot format from a file path extension.
@@ -2396,8 +2475,17 @@ mod tests {
         state.metadata.description = "json roundtrip".to_string();
 
         let bytes = serialize_world_state(StateFileFormat::Json, &state).unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let metadata = inspect_world_state_snapshot(StateFileFormat::Json, &bytes).unwrap();
         let restored = deserialize_world_state(StateFileFormat::Json, &bytes).unwrap();
 
+        assert_eq!(
+            payload["schema_version"],
+            serde_json::json!(WORLD_STATE_SNAPSHOT_SCHEMA_VERSION)
+        );
+        assert_eq!(payload["state"]["metadata"]["name"], state.metadata.name);
+        assert_eq!(metadata.schema_version, WORLD_STATE_SNAPSHOT_SCHEMA_VERSION);
+        assert!(!metadata.legacy_payload);
         assert_eq!(restored.id, state.id);
         assert_eq!(restored.metadata.name, state.metadata.name);
         assert_eq!(restored.metadata.description, state.metadata.description);
@@ -2411,8 +2499,11 @@ mod tests {
         state.metadata.description = "msgpack roundtrip".to_string();
 
         let bytes = serialize_world_state(StateFileFormat::MessagePack, &state).unwrap();
+        let metadata = inspect_world_state_snapshot(StateFileFormat::MessagePack, &bytes).unwrap();
         let restored = deserialize_world_state(StateFileFormat::MessagePack, &bytes).unwrap();
 
+        assert_eq!(metadata.schema_version, WORLD_STATE_SNAPSHOT_SCHEMA_VERSION);
+        assert!(!metadata.legacy_payload);
         assert_eq!(restored.id, state.id);
         assert_eq!(restored.metadata.name, state.metadata.name);
         assert_eq!(restored.metadata.description, state.metadata.description);
@@ -2423,9 +2514,12 @@ mod tests {
     #[test]
     fn test_world_state_snapshot_codec_normalizes_legacy_history() {
         let state = legacy_world_state_without_snapshot();
-        let bytes = serialize_world_state(StateFileFormat::Json, &state).unwrap();
+        let bytes = serde_json::to_vec_pretty(&state).unwrap();
+        let metadata = inspect_world_state_snapshot(StateFileFormat::Json, &bytes).unwrap();
 
         let restored = deserialize_world_state(StateFileFormat::Json, &bytes).unwrap();
+        assert_eq!(metadata.schema_version, WORLD_STATE_SNAPSHOT_SCHEMA_VERSION);
+        assert!(metadata.legacy_payload);
         assert_eq!(restored.id, state.id);
         assert_eq!(restored.history.len(), 1);
         assert!(restored.history.latest().unwrap().snapshot.is_some());
@@ -2433,9 +2527,40 @@ mod tests {
     }
 
     #[test]
+    fn test_world_state_snapshot_codec_accepts_legacy_msgpack_payload() {
+        let state = legacy_world_state_without_snapshot();
+        let bytes = rmp_serde::to_vec_named(&state).unwrap();
+        let metadata = inspect_world_state_snapshot(StateFileFormat::MessagePack, &bytes).unwrap();
+        let restored = deserialize_world_state(StateFileFormat::MessagePack, &bytes).unwrap();
+
+        assert_eq!(metadata.schema_version, WORLD_STATE_SNAPSHOT_SCHEMA_VERSION);
+        assert!(metadata.legacy_payload);
+        assert_eq!(restored.id, state.id);
+        assert_eq!(restored.history.len(), 1);
+        assert!(restored.history.latest().unwrap().snapshot.is_some());
+    }
+
+    #[test]
     fn test_world_state_snapshot_codec_rejects_invalid_bytes() {
         let err = deserialize_world_state(StateFileFormat::Json, b"not json").unwrap_err();
         assert!(matches!(err, WorldForgeError::SerializationError(_)));
+    }
+
+    #[test]
+    fn test_world_state_snapshot_codec_rejects_future_schema_version() {
+        let state = WorldState::new("future-snapshot", "mock");
+        let bytes = serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": WORLD_STATE_SNAPSHOT_SCHEMA_VERSION + 1,
+            "state": state,
+        }))
+        .unwrap();
+
+        let error = deserialize_world_state(StateFileFormat::Json, &bytes).unwrap_err();
+        assert!(matches!(
+            error,
+            WorldForgeError::InvalidState(message)
+                if message.contains("unsupported world-state snapshot schema version")
+        ));
     }
 
     #[cfg(feature = "sqlite")]

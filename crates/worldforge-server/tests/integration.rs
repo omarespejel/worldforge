@@ -14,7 +14,7 @@ use tokio::net::TcpStream;
 use tokio::task::JoinHandle;
 
 use worldforge_core::provider::ProviderRegistry;
-use worldforge_core::state::{FileStateStore, StateStore};
+use worldforge_core::state::{FileStateStore, StateStore, WORLD_STATE_SNAPSHOT_SCHEMA_VERSION};
 use worldforge_providers::genie::GenieModel;
 use worldforge_providers::{GenieProvider, MockProvider};
 use worldforge_server::{Server, ServerConfig};
@@ -658,6 +658,10 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 fn assert_export_metadata(response: &Value, format: &str, encoding: &str, snapshot_bytes: &[u8]) {
+    assert_eq!(
+        response["data"]["schema_version"],
+        WORLD_STATE_SNAPSHOT_SCHEMA_VERSION
+    );
     assert_eq!(response["data"]["format"], format);
     assert_eq!(response["data"]["encoding"], encoding);
     assert_eq!(response["data"]["sha256"], sha256_hex(snapshot_bytes));
@@ -930,14 +934,24 @@ async fn test_live_http_snapshot_export_import_json_roundtrip() {
     let snapshot_bytes = snapshot.as_bytes();
     assert_export_metadata(&export, "json", "utf-8", snapshot_bytes);
     let snapshot_json: Value = serde_json::from_str(snapshot).unwrap();
-    assert_eq!(snapshot_json["metadata"]["name"], "json_export_world");
     assert_eq!(
-        snapshot_json["metadata"]["description"],
+        snapshot_json["schema_version"],
+        WORLD_STATE_SNAPSHOT_SCHEMA_VERSION
+    );
+    assert_eq!(
+        snapshot_json["state"]["metadata"]["name"],
+        "json_export_world"
+    );
+    assert_eq!(
+        snapshot_json["state"]["metadata"]["description"],
         "A kitchen with a mug"
     );
-    assert_eq!(snapshot_json["time"]["step"], 1);
+    assert_eq!(snapshot_json["state"]["time"]["step"], 1);
     assert_eq!(
-        snapshot_json["history"]["states"].as_array().unwrap().len(),
+        snapshot_json["state"]["history"]["states"]
+            .as_array()
+            .unwrap()
+            .len(),
         2
     );
 

@@ -26,9 +26,9 @@ use worldforge_core::provider::{
 };
 use worldforge_core::scene::{PhysicsProperties, SceneObject, SceneObjectPatch};
 use worldforge_core::state::{
-    deserialize_world_state, infer_state_file_format, serialize_world_state, DynStateStore,
-    S3Config, StateFileFormat as CoreStateFileFormat, StateHistory, StateStore, StateStoreKind,
-    WorldState,
+    deserialize_world_state, infer_state_file_format, inspect_world_state_snapshot,
+    serialize_world_state, DynStateStore, S3Config, StateFileFormat as CoreStateFileFormat,
+    StateHistory, StateStore, StateStoreKind, WorldState, WORLD_STATE_SNAPSHOT_SCHEMA_VERSION,
 };
 use worldforge_core::types::{BBox, Pose, Position, Rotation, Vec3, Velocity, VideoClip};
 use worldforge_eval::{EvalReportFormat, EvalSuite};
@@ -2185,10 +2185,19 @@ fn read_world_state_snapshot(
     path: &Path,
     format: Option<CoreStateFileFormat>,
 ) -> Result<WorldState> {
+    read_world_state_snapshot_with_metadata(path, format).map(|(state, _)| state)
+}
+
+fn read_world_state_snapshot_with_metadata(
+    path: &Path,
+    format: Option<CoreStateFileFormat>,
+) -> Result<(WorldState, worldforge_core::state::StateSnapshotMetadata)> {
     let format = resolve_snapshot_format(path, format)?;
     let bytes = fs::read(path)
         .with_context(|| format!("failed to read world snapshot from {}", path.display()))?;
-    deserialize_world_state(format, &bytes).map_err(anyhow::Error::new)
+    let metadata = inspect_world_state_snapshot(format, &bytes).map_err(anyhow::Error::new)?;
+    let state = deserialize_world_state(format, &bytes).map_err(anyhow::Error::new)?;
+    Ok((state, metadata))
 }
 
 fn write_world_state_snapshot(
@@ -2993,6 +3002,7 @@ async fn cmd_export(
 
     println!("Exported world snapshot:");
     println!("  World: {id}");
+    println!("  Schema version: {}", WORLD_STATE_SNAPSHOT_SCHEMA_VERSION);
     println!("  Format: {}", format.as_str());
     println!("  Output: {}", output.display());
     Ok(())
@@ -3006,7 +3016,8 @@ async fn cmd_import(
     name: Option<&str>,
 ) -> Result<WorldState> {
     let resolved_format = resolve_snapshot_format(input, format)?;
-    let mut state = read_world_state_snapshot(input, Some(resolved_format))?;
+    let (mut state, snapshot_metadata) =
+        read_world_state_snapshot_with_metadata(input, Some(resolved_format))?;
     if new_id {
         state.id = uuid::Uuid::new_v4();
     }
@@ -3022,6 +3033,8 @@ async fn cmd_import(
     println!("Imported world snapshot:");
     println!("  World: {}", state.id);
     println!("  Name: {}", state.metadata.name);
+    println!("  Schema version: {}", snapshot_metadata.schema_version);
+    println!("  Legacy payload: {}", snapshot_metadata.legacy_payload);
     println!("  Format: {}", resolved_format.as_str());
     println!("  Source: {}", input.display());
 
@@ -7944,6 +7957,12 @@ mod tests {
         .await
         .unwrap();
 
+        let exported_json: serde_json::Value =
+            serde_json::from_slice(&fs::read(&snapshot_path).unwrap()).unwrap();
+        assert_eq!(
+            exported_json["schema_version"],
+            serde_json::json!(WORLD_STATE_SNAPSHOT_SCHEMA_VERSION)
+        );
         let exported = read_world_state_snapshot(&snapshot_path, None).unwrap();
         assert_eq!(exported.id, source_id);
         assert_eq!(exported.metadata.name, "json-source");
@@ -7976,6 +7995,7 @@ mod tests {
     async fn test_cmd_import_legacy_snapshot_can_restore_history_checkpoint() {
         let dir =
             std::env::temp_dir().join(format!("wf-cli-legacy-import-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
         let import_store = StateStoreKind::File(dir.join("import"))
             .open()
             .await
@@ -7983,8 +8003,11 @@ mod tests {
         let legacy_state = legacy_snapshot_state("legacy-import-world");
         let snapshot_path = dir.join("legacy.json");
 
-        write_world_state_snapshot(&snapshot_path, &legacy_state, CoreStateFileFormat::Json)
-            .unwrap();
+        fs::write(
+            &snapshot_path,
+            serde_json::to_vec_pretty(&legacy_state).unwrap(),
+        )
+        .unwrap();
 
         let imported = cmd_import(
             import_store.as_ref(),
@@ -8042,6 +8065,12 @@ mod tests {
         .await
         .unwrap();
 
+        let snapshot_bytes = fs::read(&snapshot_path).unwrap();
+        let metadata =
+            inspect_world_state_snapshot(CoreStateFileFormat::MessagePack, &snapshot_bytes)
+                .unwrap();
+        assert_eq!(metadata.schema_version, WORLD_STATE_SNAPSHOT_SCHEMA_VERSION);
+        assert!(!metadata.legacy_payload);
         let exported =
             read_world_state_snapshot(&snapshot_path, Some(CoreStateFileFormat::MessagePack))
                 .unwrap();

@@ -364,8 +364,10 @@ Portable world snapshots are now first-class across the user surfaces:
 - CLI: `worldforge export ...` / `worldforge import ...`
 - REST: `GET /v1/worlds/{id}/export?format=json|msgpack` and `POST /v1/worlds/import`
 
-REST export returns a JSON envelope with `format`, `encoding`, `sha256`, and
-`snapshot`. JSON snapshots use `encoding: "utf-8"`, while MessagePack snapshots
+REST export returns a JSON envelope with `schema_version`, `format`,
+`encoding`, `sha256`, and `snapshot`. The serialized snapshot itself is also
+versioned, so file, CLI, REST, and Python exports all carry a stable schema
+contract. JSON snapshots use `encoding: "utf-8"`, while MessagePack snapshots
 use `encoding: "hex"` so they stay text-safe over HTTP. Import accepts either a
 raw `state` object or the exported snapshot payload shape. Legacy snapshots are
 normalized on load so restore/fork/history flows continue to work across file,

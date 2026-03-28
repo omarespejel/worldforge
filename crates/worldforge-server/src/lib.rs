@@ -25,8 +25,8 @@ use worldforge_core::provider::{
 };
 use worldforge_core::scene::{PhysicsProperties, SceneObject, SceneObjectPatch};
 use worldforge_core::state::{
-    deserialize_world_state, serialize_world_state, DynStateStore, S3Config, StateFileFormat,
-    StateHistory, StateStoreKind, WorldState,
+    deserialize_world_state, inspect_world_state_snapshot, serialize_world_state, DynStateStore,
+    S3Config, StateFileFormat, StateHistory, StateStoreKind, WorldState,
 };
 use worldforge_core::types::{
     BBox, Mesh, PlanId, Pose, Position, Rotation, Tensor, Velocity, VideoClip, WorldId,
@@ -38,6 +38,9 @@ use worldforge_verify::{
     verifier_for_backend as verify_backend_resolver, verify_bundle, verify_proof,
     VerificationBackend, VerificationBundle, VerificationResult, ZkProof, ZkVerifier,
 };
+
+#[cfg(test)]
+use worldforge_core::state::WORLD_STATE_SNAPSHOT_SCHEMA_VERSION;
 
 /// Server configuration.
 #[derive(Debug, Clone)]
@@ -1050,8 +1053,11 @@ fn encode_snapshot_payload(
     state: &WorldState,
 ) -> std::result::Result<SnapshotPayload, String> {
     let bytes = serialize_world_state(format, state).map_err(|error| error.to_string())?;
+    let metadata =
+        inspect_world_state_snapshot(format, &bytes).map_err(|error| error.to_string())?;
     match format {
         StateFileFormat::Json => Ok(SnapshotPayload {
+            schema_version: metadata.schema_version,
             format: format.as_str().to_string(),
             encoding: "utf-8".to_string(),
             sha256: encode_hex(&sha256_hash(&bytes)),
@@ -1059,6 +1065,7 @@ fn encode_snapshot_payload(
                 .map_err(|error| format!("invalid JSON snapshot encoding: {error}"))?,
         }),
         StateFileFormat::MessagePack => Ok(SnapshotPayload {
+            schema_version: metadata.schema_version,
             format: format.as_str().to_string(),
             encoding: "hex".to_string(),
             sha256: encode_hex(&sha256_hash(&bytes)),
@@ -1106,6 +1113,7 @@ fn decode_snapshot_payload(
 
 #[derive(Debug, Clone, Serialize)]
 struct SnapshotPayload {
+    schema_version: u32,
     format: String,
     encoding: String,
     sha256: String,
@@ -1909,6 +1917,7 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                             200,
                             ApiResponse::ok(serde_json::json!({
                                 "id": id.to_string(),
+                                "schema_version": payload.schema_version,
                                 "format": payload.format,
                                 "encoding": payload.encoding,
                                 "sha256": payload.sha256,
@@ -3869,6 +3878,10 @@ mod tests {
 
         let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert_eq!(value["data"]["id"], source_id.to_string());
+        assert_eq!(
+            value["data"]["schema_version"],
+            WORLD_STATE_SNAPSHOT_SCHEMA_VERSION
+        );
         assert_eq!(value["data"]["format"], "json");
         assert_eq!(value["data"]["encoding"], "utf-8");
         assert_eq!(
@@ -3879,7 +3892,7 @@ mod tests {
         );
 
         let snapshot = value["data"]["snapshot"].as_str().unwrap();
-        let restored: WorldState = serde_json::from_str(snapshot).unwrap();
+        let restored = deserialize_world_state(StateFileFormat::Json, snapshot.as_bytes()).unwrap();
         assert_eq!(restored.metadata.description, "portable snapshot");
         assert_eq!(restored.scene.objects.len(), source.scene.objects.len());
 
@@ -3931,6 +3944,10 @@ mod tests {
 
         let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert_eq!(value["data"]["id"], source_id.to_string());
+        assert_eq!(
+            value["data"]["schema_version"],
+            WORLD_STATE_SNAPSHOT_SCHEMA_VERSION
+        );
         assert_eq!(value["data"]["format"], "msgpack");
         assert_eq!(value["data"]["encoding"], "hex");
         assert_eq!(
@@ -4569,6 +4586,10 @@ mod tests {
             "NoCollisions"
         );
         assert_eq!(
+            blocked["error_details"]["violations"][0]["guardrail"],
+            serde_json::json!("NoCollisions")
+        );
+        assert_eq!(
             blocked["error_details"]["violations"][0]["severity"],
             "Blocking"
         );
@@ -4600,6 +4621,52 @@ mod tests {
                 weather: worldforge_core::action::Weather::Rain
             })
         ));
+    }
+
+    #[tokio::test]
+    async fn test_route_predict_supports_cost_function_guardrails() {
+        let state = test_state();
+        let id = seed_colliding_world(&state).await;
+
+        let pred_body = r#"{
+            "action":{"SetWeather":{"weather":"Rain"}},
+            "config":{
+                "guardrails":[
+                    {
+                        "guardrail":{
+                            "CostFunction":{
+                                "function":"ObjectCount",
+                                "threshold":0.5
+                            }
+                        },
+                        "blocking":true
+                    }
+                ]
+            }
+        }"#;
+
+        let (status, blocked_resp) = route(
+            "POST",
+            &format!("/v1/worlds/{id}/predict"),
+            pred_body,
+            &state,
+        )
+        .await;
+        assert_eq!(status, 409);
+
+        let blocked: serde_json::Value = serde_json::from_str(&blocked_resp).unwrap();
+        assert_eq!(
+            blocked["error_details"]["violations"][0]["guardrail_name"],
+            "CostFunction"
+        );
+        assert_eq!(
+            blocked["error_details"]["violations"][0]["guardrail"]["CostFunction"]["function"],
+            "ObjectCount"
+        );
+        assert_eq!(
+            blocked["error_details"]["violations"][0]["guardrail"]["CostFunction"]["threshold"],
+            0.5
+        );
     }
 
     #[tokio::test]
