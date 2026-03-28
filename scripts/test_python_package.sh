@@ -16,6 +16,7 @@ trap cleanup EXIT
 
 unset PYTHONPATH
 export PYTHONNOUSERSITE=1
+export WORLDFORGE_PYTHON_REQUIRE_PACKAGE=1
 
 "$PYTHON_BIN" -m venv "$VENV_DIR"
 "$VENV_DIR/bin/python" -m pip install --upgrade pip
