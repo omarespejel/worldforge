@@ -751,8 +751,18 @@ pub enum EvalDimension {
     MaterialUnderstanding,
     /// Perception of depth, scale, and distance
     SpatialReasoning,
-    /// Custom evaluation metric
-    Custom { name: String, evaluator: Box<dyn Evaluator> },
+    /// Custom evaluation metric resolved through a runtime metric registry.
+    /// Serialized suite definitions retain only the metric name; Rust callers
+    /// can supply an explicit evaluator registry when running the suite.
+    Custom { name: String },
+}
+
+pub trait Evaluator {
+    fn evaluate(&self, context: &CustomMetricContext) -> Result<f32>;
+}
+
+pub struct CustomMetricRegistry {
+    pub evaluators: HashMap<String, Arc<dyn Evaluator>>,
 }
 ```
 
@@ -940,6 +950,10 @@ plan = world.plan(
     ]
 )
 
+# Discover built-in evaluation metric names
+metrics = worldforge.list_eval_metrics()
+assert "latency_efficiency" in metrics
+
 # Evaluate across providers
 suite = PhysicsEval.standard_suite()
 results = suite.run(providers=["cosmos", "runway", "jepa"])
@@ -979,6 +993,7 @@ worldforge plan --world <id> --goal "mug in dishwasher" --planner cem
 
 # Evaluate
 worldforge eval --suite physics --providers cosmos,runway,jepa
+worldforge eval --list-metrics
 
 # Compare
 worldforge compare --world <id> --action "push mug" --providers cosmos,runway

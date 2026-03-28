@@ -509,6 +509,9 @@ pub enum Commands {
         /// Print the built-in suite names and exit.
         #[arg(long, default_value_t = false)]
         list_suites: bool,
+        /// Print the available evaluation metric names and exit.
+        #[arg(long, default_value_t = false)]
+        list_metrics: bool,
         /// Optional path to write the evaluation report as JSON.
         #[arg(long)]
         output_json: Option<PathBuf>,
@@ -1363,6 +1366,7 @@ pub async fn run() -> Result<()> {
             world_snapshot,
             providers,
             list_suites,
+            list_metrics,
             output_json,
             output_markdown,
             output_csv,
@@ -1376,6 +1380,7 @@ pub async fn run() -> Result<()> {
                     world_snapshot: world_snapshot.as_deref(),
                     providers: providers.as_deref(),
                     list_suites,
+                    list_metrics,
                     output_json: output_json.as_deref(),
                     output_markdown: output_markdown.as_deref(),
                     output_csv: output_csv.as_deref(),
@@ -1716,6 +1721,10 @@ fn available_eval_suite_names() -> String {
     EvalSuite::builtin_names().join(", ")
 }
 
+fn available_eval_metric_names() -> String {
+    EvalSuite::builtin_metric_names().join(", ")
+}
+
 fn available_provider_capabilities() -> &'static str {
     "predict, generate, reason, transfer, embed, planning, action-conditioned, multi-view, depth, segmentation"
 }
@@ -2044,6 +2053,7 @@ struct EvalOptions<'a> {
     world_snapshot: Option<&'a Path>,
     providers: Option<&'a str>,
     list_suites: bool,
+    list_metrics: bool,
     output_json: Option<&'a Path>,
     output_markdown: Option<&'a Path>,
     output_csv: Option<&'a Path>,
@@ -3260,10 +3270,18 @@ async fn cmd_plans_delete(
 }
 
 async fn cmd_eval(store: Option<&dyn StateStore>, options: EvalOptions<'_>) -> Result<()> {
-    if options.list_suites {
-        println!("Built-in evaluation suites:");
-        for suite_name in EvalSuite::builtin_names() {
-            println!("  {suite_name}");
+    if options.list_suites || options.list_metrics {
+        if options.list_suites {
+            println!("Built-in evaluation suites:");
+            for suite_name in EvalSuite::builtin_names() {
+                println!("  {suite_name}");
+            }
+        }
+        if options.list_metrics {
+            println!("Available evaluation metrics:");
+            for metric_name in available_eval_metric_names().split(", ") {
+                println!("  {metric_name}");
+            }
         }
         return Ok(());
     }
@@ -5991,6 +6009,7 @@ mod tests {
                 world_snapshot,
                 providers,
                 list_suites,
+                list_metrics,
                 output_json,
                 output_markdown,
                 output_csv,
@@ -6001,6 +6020,7 @@ mod tests {
                 assert!(world_snapshot.is_none());
                 assert_eq!(providers.as_deref(), Some("mock,jepa"));
                 assert!(!list_suites);
+                assert!(!list_metrics);
                 assert_eq!(output_json, Some(PathBuf::from("/tmp/eval-report.json")));
                 assert_eq!(output_markdown, Some(PathBuf::from("/tmp/eval-report.md")));
                 assert_eq!(output_csv, Some(PathBuf::from("/tmp/eval-report.csv")));
@@ -6027,6 +6047,7 @@ mod tests {
                 world,
                 providers,
                 list_suites,
+                list_metrics,
                 output_markdown,
                 output_csv,
                 ..
@@ -6038,6 +6059,7 @@ mod tests {
                 );
                 assert!(providers.is_none());
                 assert!(!list_suites);
+                assert!(!list_metrics);
                 assert!(output_markdown.is_none());
                 assert!(output_csv.is_none());
             }
@@ -6073,6 +6095,30 @@ mod tests {
             }
             _ => panic!("expected Eval"),
         }
+    }
+
+    #[test]
+    fn test_cli_parse_eval_list_metrics() {
+        let cli = Cli::try_parse_from(["worldforge", "eval", "--list-metrics"]).unwrap();
+
+        match cli.command {
+            Commands::Eval {
+                list_suites,
+                list_metrics,
+                ..
+            } => {
+                assert!(!list_suites);
+                assert!(list_metrics);
+            }
+            _ => panic!("expected Eval"),
+        }
+    }
+
+    #[test]
+    fn test_available_eval_metric_names_includes_custom_metrics() {
+        let metrics = available_eval_metric_names();
+        assert!(metrics.contains("latency_efficiency"));
+        assert!(metrics.contains("outcome_pass_rate"));
     }
 
     #[test]
@@ -6618,6 +6664,7 @@ mod tests {
                 world_snapshot: None,
                 providers: None,
                 list_suites: false,
+                list_metrics: false,
                 output_json: Some(&report_path),
                 output_markdown: None,
                 output_csv: None,
@@ -6733,6 +6780,7 @@ mod tests {
                 world_snapshot: None,
                 providers: None,
                 list_suites: false,
+                list_metrics: false,
                 output_json: Some(&report_path),
                 output_markdown: None,
                 output_csv: None,
@@ -6811,6 +6859,7 @@ mod tests {
                 world_snapshot: Some(&snapshot),
                 providers: None,
                 list_suites: false,
+                list_metrics: false,
                 output_json: Some(&report_path),
                 output_markdown: None,
                 output_csv: None,
@@ -6842,6 +6891,7 @@ mod tests {
                 world_snapshot: None,
                 providers: None,
                 list_suites: false,
+                list_metrics: false,
                 output_json: None,
                 output_markdown: Some(&markdown_path),
                 output_csv: Some(&csv_path),

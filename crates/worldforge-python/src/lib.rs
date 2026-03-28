@@ -5550,6 +5550,12 @@ fn list_eval_suites() -> Vec<String> {
         .collect()
 }
 
+/// List the available evaluation metric names.
+#[pyfunction]
+fn list_eval_metrics() -> Vec<String> {
+    worldforge_eval::EvalSuite::builtin_metric_names()
+}
+
 /// Run an evaluation suite and return provider summaries.
 #[pyfunction]
 #[pyo3(signature = (suite_name="physics", providers="", suite_json=None, forge=None))]
@@ -5658,6 +5664,7 @@ fn build_eval_submodule(py: Python<'_>) -> PyResult<Bound<'_, PyModule>> {
     module.add_class::<PyEvalScenarioSummary>()?;
     module.add_class::<PyEvalReport>()?;
     module.add_function(wrap_pyfunction!(list_eval_suites, &module)?)?;
+    module.add_function(wrap_pyfunction!(list_eval_metrics, &module)?)?;
     module.add_function(wrap_pyfunction!(run_eval, &module)?)?;
     module.add_function(wrap_pyfunction!(run_eval_report, &module)?)?;
     module.add_function(wrap_pyfunction!(run_eval_report_data, &module)?)?;
@@ -6823,6 +6830,7 @@ fn worldforge(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMockVerifier>()?;
     m.add_function(wrap_pyfunction!(plan, m)?)?;
     m.add_function(wrap_pyfunction!(list_eval_suites, m)?)?;
+    m.add_function(wrap_pyfunction!(list_eval_metrics, m)?)?;
     m.add_function(wrap_pyfunction!(run_eval, m)?)?;
     m.add_function(wrap_pyfunction!(run_eval_report, m)?)?;
     m.add_function(wrap_pyfunction!(run_eval_report_data, m)?)?;
@@ -9665,6 +9673,13 @@ mod tests {
     }
 
     #[test]
+    fn test_list_eval_metrics_includes_custom_metrics() {
+        let metrics = list_eval_metrics();
+        assert!(metrics.contains(&"latency_efficiency".to_string()));
+        assert!(metrics.contains(&"outcome_pass_rate".to_string()));
+    }
+
+    #[test]
     fn test_run_eval_report_with_custom_suite_json() {
         let suite_json =
             serde_json::to_string(&worldforge_eval::EvalSuite::physics_standard()).unwrap();
@@ -9686,6 +9701,37 @@ mod tests {
             .scenario_summaries()
             .iter()
             .any(|summary| summary.scenario() == "object_drop"));
+    }
+
+    #[test]
+    fn test_run_eval_report_with_builtin_custom_metric_json() {
+        let suite = worldforge_eval::EvalSuite {
+            name: "Custom Metric JSON".to_string(),
+            scenarios: vec![worldforge_eval::EvalScenario {
+                name: "custom_metric".to_string(),
+                description: "Expose built-in custom metrics through JSON".to_string(),
+                initial_state: WorldState::new("custom_metric", "eval"),
+                actions: vec![worldforge_core::action::Action::SetLighting { time_of_day: 0.5 }],
+                expected_outcomes: vec![worldforge_eval::ExpectedOutcome::MinPhysicsScore {
+                    dimension: worldforge_eval::EvalDimension::Custom {
+                        name: "latency_efficiency".to_string(),
+                    },
+                    threshold: 0.0,
+                }],
+                ground_truth: None,
+            }],
+            dimensions: vec![worldforge_eval::EvalDimension::Custom {
+                name: "latency_efficiency".to_string(),
+            }],
+            providers: vec![],
+        };
+        let suite_json = serde_json::to_string(&suite).unwrap();
+        let report = run_eval_report_data("physics", "mock", Some(&suite_json), None).unwrap();
+
+        assert!(report
+            .dimension_summaries()
+            .iter()
+            .any(|summary| summary.dimension() == "latency_efficiency"));
     }
 
     #[test]

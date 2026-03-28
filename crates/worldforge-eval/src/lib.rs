@@ -11,6 +11,7 @@ use std::fmt;
 use std::fs;
 use std::path::Path;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -18,21 +19,25 @@ use crate::async_utils::{join_all_ordered, BoxFuture};
 use worldforge_core::action::{evaluate_condition, Action, Condition};
 use worldforge_core::error::{Result, WorldForgeError};
 use worldforge_core::prediction::{PhysicsScores, PredictionConfig};
-use worldforge_core::provider::WorldModelProvider;
+use worldforge_core::provider::{ProviderCapabilities, WorldModelProvider};
 use worldforge_core::state::{WorldMetadata, WorldState};
 use worldforge_core::types::{Position, Tensor, TensorData, VideoClip};
 
 const BUILTIN_SUITE_NAMES: [&str; 4] = ["physics", "manipulation", "spatial", "comprehensive"];
-const SUPPORTED_CUSTOM_DIMENSION_NAMES: [&str; 8] = [
+const BUILTIN_SCORE_KEYS: [&str; 11] = [
     "overall",
     "object_permanence",
     "gravity_compliance",
     "collision_accuracy",
     "spatial_consistency",
     "temporal_consistency",
+    "action_prediction_accuracy",
+    "material_understanding",
+    "spatial_reasoning",
     "confidence",
     "video_similarity",
 ];
+const BUILTIN_CUSTOM_METRIC_NAMES: [&str; 2] = ["latency_efficiency", "outcome_pass_rate"];
 
 /// Dimension along which a provider is evaluated.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -68,8 +73,117 @@ impl EvalDimension {
             Self::ActionPredictionAccuracy => "action_prediction_accuracy".to_string(),
             Self::MaterialUnderstanding => "material_understanding".to_string(),
             Self::SpatialReasoning => "spatial_reasoning".to_string(),
-            Self::Custom { name } => name.clone(),
+            Self::Custom { name } => normalize_metric_name(name),
         }
+    }
+}
+
+/// Context made available to runtime custom metric evaluators.
+pub struct CustomMetricContext<'a> {
+    /// Scenario currently being evaluated.
+    pub scenario: &'a EvalScenario,
+    /// Provider name that produced the evaluated result.
+    pub provider_name: &'a str,
+    /// Provider capabilities advertised for this run.
+    pub provider_capabilities: &'a ProviderCapabilities,
+    /// State before the scenario actions were applied.
+    pub initial_state: &'a WorldState,
+    /// Final state produced by the provider for this scenario.
+    pub final_state: &'a WorldState,
+    /// Base score map accumulated before custom metrics are resolved.
+    pub scores: &'a HashMap<String, f32>,
+    /// Average confidence across the scenario's prediction steps.
+    pub average_confidence: Option<f32>,
+    /// End-to-end evaluation latency in milliseconds.
+    pub latency_ms: u64,
+    /// Optional video similarity metrics for visual scenarios.
+    pub video_metrics: Option<&'a VideoMetrics>,
+    /// Outcomes already evaluated for this scenario.
+    pub outcomes: &'a [OutcomeResult],
+}
+
+/// Runtime evaluator for a named custom metric.
+pub trait CustomMetricEvaluator: Send + Sync {
+    /// Compute a normalized score for the supplied evaluation context.
+    fn evaluate(&self, context: &CustomMetricContext<'_>) -> Result<f32>;
+}
+
+impl<F> CustomMetricEvaluator for F
+where
+    F: for<'a> Fn(&CustomMetricContext<'a>) -> Result<f32> + Send + Sync,
+{
+    fn evaluate(&self, context: &CustomMetricContext<'_>) -> Result<f32> {
+        self(context)
+    }
+}
+
+/// Runtime registry for named custom evaluation metrics.
+#[derive(Clone, Default)]
+pub struct CustomMetricRegistry {
+    evaluators: HashMap<String, Arc<dyn CustomMetricEvaluator>>,
+}
+
+impl fmt::Debug for CustomMetricRegistry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CustomMetricRegistry")
+            .field("names", &self.names())
+            .finish()
+    }
+}
+
+impl CustomMetricRegistry {
+    /// Create an empty registry.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create a registry pre-populated with WorldForge's built-in custom metrics.
+    pub fn with_builtin_metrics() -> Self {
+        let mut registry = Self::new();
+        registry.register("latency_efficiency", |context: &CustomMetricContext<'_>| {
+            Ok(latency_efficiency_score(
+                context.provider_capabilities,
+                context.latency_ms,
+            ))
+        });
+        registry.register("outcome_pass_rate", |context: &CustomMetricContext<'_>| {
+            let total = context.outcomes.len();
+            if total == 0 {
+                return Ok(1.0);
+            }
+            let passed = context
+                .outcomes
+                .iter()
+                .filter(|outcome| outcome.passed)
+                .count();
+            Ok(passed as f32 / total as f32)
+        });
+        registry
+    }
+
+    /// Register or replace a named custom evaluator.
+    pub fn register<E>(&mut self, name: impl Into<String>, evaluator: E)
+    where
+        E: CustomMetricEvaluator + 'static,
+    {
+        self.evaluators
+            .insert(normalize_metric_name(&name.into()), Arc::new(evaluator));
+    }
+
+    /// Return whether a named evaluator exists in this registry.
+    pub fn contains(&self, name: &str) -> bool {
+        self.evaluators.contains_key(&normalize_metric_name(name))
+    }
+
+    /// List registered metric names in deterministic order.
+    pub fn names(&self) -> Vec<String> {
+        let mut names: Vec<_> = self.evaluators.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
+    fn get(&self, name: &str) -> Option<&Arc<dyn CustomMetricEvaluator>> {
+        self.evaluators.get(&normalize_metric_name(name))
     }
 }
 
@@ -564,6 +678,18 @@ impl EvalSuite {
         &BUILTIN_SUITE_NAMES
     }
 
+    /// List the built-in evaluation metric names available to suites.
+    pub fn builtin_metric_names() -> Vec<String> {
+        let mut names: Vec<String> = BUILTIN_SCORE_KEYS
+            .iter()
+            .chain(BUILTIN_CUSTOM_METRIC_NAMES.iter())
+            .map(|name| (*name).to_string())
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+
     /// Load one of the built-in evaluation suites by name.
     pub fn from_builtin(name: &str) -> Result<Self> {
         let suite = match name {
@@ -590,6 +716,17 @@ impl EvalSuite {
         Ok(suite)
     }
 
+    /// Deserialize an evaluation suite from JSON with a custom metric registry.
+    pub fn from_json_str_with_registry(
+        json: &str,
+        registry: &CustomMetricRegistry,
+    ) -> Result<Self> {
+        let suite: Self = serde_json::from_str(json)
+            .map_err(|error| WorldForgeError::SerializationError(error.to_string()))?;
+        suite.validate_with_registry(registry)?;
+        Ok(suite)
+    }
+
     /// Read and deserialize an evaluation suite from a JSON file.
     pub fn from_json_path(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
@@ -602,6 +739,21 @@ impl EvalSuite {
         Self::from_json_str(&contents)
     }
 
+    /// Read and deserialize an evaluation suite from a JSON file with a custom metric registry.
+    pub fn from_json_path_with_registry(
+        path: impl AsRef<Path>,
+        registry: &CustomMetricRegistry,
+    ) -> Result<Self> {
+        let path = path.as_ref();
+        let contents = fs::read_to_string(path).map_err(|error| {
+            WorldForgeError::SerializationError(format!(
+                "failed to read {}: {error}",
+                path.display()
+            ))
+        })?;
+        Self::from_json_str_with_registry(&contents, registry)
+    }
+
     /// Serialize the suite to pretty JSON.
     pub fn to_json_pretty(&self) -> Result<String> {
         self.validate()?;
@@ -611,6 +763,12 @@ impl EvalSuite {
 
     /// Validate that the suite is structurally usable.
     pub fn validate(&self) -> Result<()> {
+        let registry = CustomMetricRegistry::with_builtin_metrics();
+        self.validate_with_registry(&registry)
+    }
+
+    /// Validate that the suite is structurally usable with a custom metric registry.
+    pub fn validate_with_registry(&self, registry: &CustomMetricRegistry) -> Result<()> {
         if self.name.trim().is_empty() {
             return Err(WorldForgeError::InvalidState(
                 "evaluation suite name cannot be empty".to_string(),
@@ -673,10 +831,10 @@ impl EvalSuite {
                     self.name
                 )));
             }
-            if !is_supported_custom_dimension(normalized) {
+            if !is_supported_custom_dimension(normalized, registry) {
                 return Err(WorldForgeError::InvalidState(format!(
                     "unsupported custom evaluation dimension '{normalized}'. Supported names: {}",
-                    SUPPORTED_CUSTOM_DIMENSION_NAMES.join(", ")
+                    available_metric_names(registry).join(", ")
                 )));
             }
             if normalized.eq_ignore_ascii_case("video_similarity")
@@ -741,7 +899,24 @@ impl EvalSuite {
         providers: &[&dyn WorldModelProvider],
         world_state: &WorldState,
     ) -> Result<EvalReport> {
-        self.run_internal(providers, Some(world_state)).await
+        let registry = CustomMetricRegistry::with_builtin_metrics();
+        self.run_with_world_state_and_registry(providers, world_state, &registry)
+            .await
+    }
+
+    /// Run the suite against a supplied world state with a custom metric registry.
+    ///
+    /// The supplied world is merged over each scenario's fixture state before
+    /// evaluation. This preserves the scenario's action fixtures while letting
+    /// persisted world context influence the results.
+    pub async fn run_with_world_state_and_registry(
+        &self,
+        providers: &[&dyn WorldModelProvider],
+        world_state: &WorldState,
+        registry: &CustomMetricRegistry,
+    ) -> Result<EvalReport> {
+        self.run_internal(providers, Some(world_state), registry)
+            .await
     }
 
     /// Create a standard physics evaluation suite.
@@ -1187,15 +1362,26 @@ impl EvalSuite {
 
     /// Run the evaluation suite against a set of providers.
     pub async fn run(&self, providers: &[&dyn WorldModelProvider]) -> Result<EvalReport> {
-        self.run_internal(providers, None).await
+        let registry = CustomMetricRegistry::with_builtin_metrics();
+        self.run_with_registry(providers, &registry).await
+    }
+
+    /// Run the evaluation suite against a set of providers with a custom metric registry.
+    pub async fn run_with_registry(
+        &self,
+        providers: &[&dyn WorldModelProvider],
+        registry: &CustomMetricRegistry,
+    ) -> Result<EvalReport> {
+        self.run_internal(providers, None, registry).await
     }
 
     async fn run_internal(
         &self,
         providers: &[&dyn WorldModelProvider],
         world_state: Option<&WorldState>,
+        registry: &CustomMetricRegistry,
     ) -> Result<EvalReport> {
-        self.validate()?;
+        self.validate_with_registry(registry)?;
         let mut futures = Vec::<BoxFuture<'_, EvalResult>>::new();
 
         for &provider in providers {
@@ -1205,6 +1391,7 @@ impl EvalSuite {
                     scenario,
                     world_state,
                     &self.dimensions,
+                    registry,
                 )));
             }
         }
@@ -1240,6 +1427,7 @@ async fn evaluate_provider_scenario(
     scenario: &EvalScenario,
     world_state: Option<&WorldState>,
     dimensions: &[EvalDimension],
+    registry: &CustomMetricRegistry,
 ) -> EvalResult {
     if !provider.capabilities().predict {
         return EvalResult {
@@ -1364,7 +1552,66 @@ async fn evaluate_provider_scenario(
     }
 
     if !prediction_failed {
-        for expected in &scenario.expected_outcomes {
+        for expected in scenario.expected_outcomes.iter().filter(|expected| {
+            !matches!(
+                expected,
+                ExpectedOutcome::MinPhysicsScore {
+                    dimension: EvalDimension::Custom { .. },
+                    ..
+                }
+            )
+        }) {
+            outcomes.push(check_outcome(
+                expected,
+                &current_state,
+                &scores,
+                average_confidence,
+                scenario.ground_truth.as_ref(),
+                video_metrics.as_ref(),
+            ));
+        }
+
+        let latency_ms = start.elapsed().as_millis() as u64;
+        let provider_capabilities = provider.capabilities();
+        let context = CustomMetricContext {
+            scenario,
+            provider_name: provider.name(),
+            provider_capabilities: &provider_capabilities,
+            initial_state: &starting_state,
+            final_state: &current_state,
+            scores: &scores,
+            average_confidence,
+            latency_ms,
+            video_metrics: video_metrics.as_ref(),
+            outcomes: &outcomes,
+        };
+
+        let mut resolved_custom_metrics = Vec::new();
+        for metric_name in requested_custom_metric_names(dimensions, &scenario.expected_outcomes) {
+            if let Ok(Some(score)) = resolve_custom_metric_score(
+                metric_name.as_str(),
+                &scores,
+                average_confidence,
+                video_metrics.as_ref(),
+                registry,
+                &context,
+            ) {
+                resolved_custom_metrics.push((metric_name, score));
+            }
+        }
+        for (metric_name, score) in resolved_custom_metrics {
+            scores.insert(metric_name, score);
+        }
+
+        for expected in scenario.expected_outcomes.iter().filter(|expected| {
+            matches!(
+                expected,
+                ExpectedOutcome::MinPhysicsScore {
+                    dimension: EvalDimension::Custom { .. },
+                    ..
+                }
+            )
+        }) {
             outcomes.push(check_outcome(
                 expected,
                 &current_state,
@@ -1564,10 +1811,12 @@ fn scenario_requires_video_artifacts(scenario: &EvalScenario) -> bool {
             .any(|expected| matches!(expected, ExpectedOutcome::MinVideoSimilarity { .. }))
 }
 
-fn is_supported_custom_dimension(name: &str) -> bool {
-    SUPPORTED_CUSTOM_DIMENSION_NAMES
+fn is_supported_custom_dimension(name: &str, registry: &CustomMetricRegistry) -> bool {
+    let normalized = normalize_metric_name(name);
+    BUILTIN_SCORE_KEYS
         .iter()
-        .any(|supported| supported.eq_ignore_ascii_case(name))
+        .any(|supported| *supported == normalized)
+        || registry.contains(&normalized)
 }
 
 fn custom_metric_requested(
@@ -1591,13 +1840,42 @@ fn custom_metric_requested(
     })
 }
 
+fn requested_custom_metric_names(
+    dimensions: &[EvalDimension],
+    expected_outcomes: &[ExpectedOutcome],
+) -> Vec<String> {
+    let mut names = HashSet::new();
+
+    for dimension in dimensions {
+        if let EvalDimension::Custom { name } = dimension {
+            names.insert(normalize_metric_name(name));
+        }
+    }
+
+    for expected in expected_outcomes {
+        if let ExpectedOutcome::MinPhysicsScore {
+            dimension: EvalDimension::Custom { name },
+            ..
+        } = expected
+        {
+            names.insert(normalize_metric_name(name));
+        }
+    }
+
+    let mut names: Vec<_> = names.into_iter().collect();
+    names.sort();
+    names
+}
+
 fn derived_metric_requested(
     dimensions: &[EvalDimension],
     expected_outcomes: &[ExpectedOutcome],
     target: EvalDimension,
     implied_by_outcome: fn(&ExpectedOutcome) -> bool,
 ) -> bool {
+    let target_key = target.key();
     dimensions.contains(&target)
+        || custom_metric_requested(dimensions, expected_outcomes, &target_key)
         || expected_outcomes.iter().any(implied_by_outcome)
         // Threshold checks can require this key, but score derivation itself
         // intentionally ignores MinPhysicsScore to avoid circular logic.
@@ -1607,6 +1885,67 @@ fn derived_metric_requested(
                 ExpectedOutcome::MinPhysicsScore { dimension, .. } if *dimension == target
             )
         })
+}
+
+fn resolve_custom_metric_score(
+    name: &str,
+    scores: &HashMap<String, f32>,
+    average_confidence: Option<f32>,
+    video_metrics: Option<&VideoMetrics>,
+    registry: &CustomMetricRegistry,
+    context: &CustomMetricContext<'_>,
+) -> Result<Option<f32>> {
+    let normalized = normalize_metric_name(name);
+    if let Some(score) = scores.get(&normalized) {
+        return Ok(Some(*score));
+    }
+
+    if normalized == "confidence" {
+        return Ok(average_confidence.map(|confidence| confidence.clamp(0.0, 1.0)));
+    }
+
+    if normalized == "video_similarity" {
+        return Ok(video_metrics.map(|metrics| metrics.overall_similarity.clamp(0.0, 1.0)));
+    }
+
+    registry
+        .get(&normalized)
+        .map(|evaluator| {
+            evaluator
+                .evaluate(context)
+                .map(|score| score.clamp(0.0, 1.0))
+        })
+        .transpose()
+}
+
+fn normalize_metric_name(name: &str) -> String {
+    name.trim().to_ascii_lowercase()
+}
+
+fn available_metric_names(registry: &CustomMetricRegistry) -> Vec<String> {
+    let mut names = EvalSuite::builtin_metric_names();
+    names.extend(registry.names());
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn latency_efficiency_score(capabilities: &ProviderCapabilities, latency_ms: u64) -> f32 {
+    let latency = latency_ms as f32;
+    let target = capabilities.latency_profile.p50_ms.max(1) as f32;
+    let worst = capabilities
+        .latency_profile
+        .p99_ms
+        .max(capabilities.latency_profile.p95_ms)
+        .max(capabilities.latency_profile.p50_ms.max(1)) as f32;
+
+    if latency <= target {
+        1.0
+    } else if worst <= target {
+        0.0
+    } else {
+        (1.0 - ((latency - target) / (worst - target))).clamp(0.0, 1.0)
+    }
 }
 
 fn outcome_implies_action_prediction_accuracy(expected: &ExpectedOutcome) -> bool {
@@ -4214,6 +4553,157 @@ mod tests {
             report.dimension_summaries[0].best_provider.as_deref(),
             Some("sequenced")
         );
+    }
+
+    #[test]
+    fn test_builtin_metric_names_include_runtime_custom_metrics() {
+        let names = EvalSuite::builtin_metric_names();
+        assert!(names.contains(&"latency_efficiency".to_string()));
+        assert!(names.contains(&"outcome_pass_rate".to_string()));
+        assert!(names.contains(&"confidence".to_string()));
+    }
+
+    #[test]
+    fn test_validate_with_registry_accepts_registered_custom_dimension() {
+        let suite = EvalSuite {
+            name: "Registry Validation".to_string(),
+            scenarios: vec![EvalScenario {
+                name: "registered_metric".to_string(),
+                description: "Registered metrics should validate".to_string(),
+                initial_state: WorldState::new("registered_metric", "eval"),
+                actions: vec![Action::SetLighting { time_of_day: 0.3 }],
+                expected_outcomes: vec![ExpectedOutcome::MinPhysicsScore {
+                    dimension: EvalDimension::Custom {
+                        name: "stability_bonus".to_string(),
+                    },
+                    threshold: 0.5,
+                }],
+                ground_truth: None,
+            }],
+            dimensions: vec![EvalDimension::Custom {
+                name: "stability_bonus".to_string(),
+            }],
+            providers: vec![],
+        };
+        let mut registry = CustomMetricRegistry::with_builtin_metrics();
+        registry.register("stability_bonus", |_context: &CustomMetricContext<'_>| {
+            Ok(0.75)
+        });
+        let suite_json = serde_json::to_string(&suite).unwrap();
+
+        assert!(suite.validate().is_err());
+        assert!(suite.validate_with_registry(&registry).is_ok());
+        assert!(EvalSuite::from_json_str_with_registry(&suite_json, &registry).is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_run_with_registry_reports_registered_custom_metric() {
+        let suite = EvalSuite {
+            name: "Runtime Registry".to_string(),
+            scenarios: vec![EvalScenario {
+                name: "runtime_metric".to_string(),
+                description: "Registered metrics should be resolved at runtime".to_string(),
+                initial_state: WorldState::new("runtime_metric", "eval"),
+                actions: vec![Action::SetLighting { time_of_day: 0.6 }],
+                expected_outcomes: vec![ExpectedOutcome::MinPhysicsScore {
+                    dimension: EvalDimension::Custom {
+                        name: "stability_bonus".to_string(),
+                    },
+                    threshold: 0.7,
+                }],
+                ground_truth: None,
+            }],
+            dimensions: vec![EvalDimension::Custom {
+                name: "stability_bonus".to_string(),
+            }],
+            providers: vec![],
+        };
+        let provider = SequencedEvalProvider::new(
+            "sequenced",
+            vec![(
+                PhysicsScores {
+                    overall: 0.4,
+                    object_permanence: 0.4,
+                    gravity_compliance: 0.4,
+                    collision_accuracy: 0.4,
+                    spatial_consistency: 0.4,
+                    temporal_consistency: 0.4,
+                },
+                0.4,
+            )],
+        );
+        let mut registry = CustomMetricRegistry::with_builtin_metrics();
+        registry.register("stability_bonus", |_context: &CustomMetricContext<'_>| {
+            Ok(0.8)
+        });
+
+        let report = suite
+            .run_with_registry(&[&provider as &dyn WorldModelProvider], &registry)
+            .await
+            .unwrap();
+
+        assert_eq!(report.results[0].scores["stability_bonus"], 0.8);
+        assert!(report.results[0]
+            .outcomes
+            .iter()
+            .all(|outcome| outcome.passed));
+        assert_eq!(report.dimension_summaries[0].dimension, "stability_bonus");
+    }
+
+    #[tokio::test]
+    async fn test_builtin_custom_metrics_are_reported() {
+        let suite = EvalSuite {
+            name: "Built-in Runtime Metrics".to_string(),
+            scenarios: vec![EvalScenario {
+                name: "builtins".to_string(),
+                description: "Built-in runtime metrics should resolve without caller registry"
+                    .to_string(),
+                initial_state: WorldState::new("builtins", "eval"),
+                actions: vec![Action::SetLighting { time_of_day: 0.4 }],
+                expected_outcomes: vec![ExpectedOutcome::MinPhysicsScore {
+                    dimension: EvalDimension::Custom {
+                        name: "outcome_pass_rate".to_string(),
+                    },
+                    threshold: 1.0,
+                }],
+                ground_truth: None,
+            }],
+            dimensions: vec![
+                EvalDimension::Custom {
+                    name: "latency_efficiency".to_string(),
+                },
+                EvalDimension::Custom {
+                    name: "outcome_pass_rate".to_string(),
+                },
+            ],
+            providers: vec![],
+        };
+        let provider = SequencedEvalProvider::new(
+            "sequenced",
+            vec![(
+                PhysicsScores {
+                    overall: 0.9,
+                    object_permanence: 0.9,
+                    gravity_compliance: 0.9,
+                    collision_accuracy: 0.9,
+                    spatial_consistency: 0.9,
+                    temporal_consistency: 0.9,
+                },
+                0.95,
+            )],
+        );
+
+        let report = suite
+            .run(&[&provider as &dyn WorldModelProvider])
+            .await
+            .unwrap();
+        let result = &report.results[0];
+
+        assert!(result.scores.contains_key("latency_efficiency"));
+        assert!(result.scores.contains_key("outcome_pass_rate"));
+        assert_eq!(result.scores["outcome_pass_rate"], 1.0);
+        assert!(result.scores["latency_efficiency"] >= 0.0);
+        assert!(result.outcomes.iter().all(|outcome| outcome.passed));
     }
 
     #[test]
