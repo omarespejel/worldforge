@@ -18,13 +18,15 @@ use serde::{Deserialize, Serialize};
 use crate::async_utils::{join_all_ordered, BoxFuture};
 use worldforge_core::action::{evaluate_condition, Action, Condition};
 use worldforge_core::error::{Result, WorldForgeError};
-use worldforge_core::prediction::{PhysicsScores, PredictionConfig};
+use worldforge_core::prediction::{
+    PhysicsScores, Prediction, PredictionConfig, PredictionSamplingMetadata,
+};
 use worldforge_core::provider::{ProviderCapabilities, WorldModelProvider};
 use worldforge_core::state::{WorldMetadata, WorldState};
 use worldforge_core::types::{Position, Tensor, TensorData, VideoClip};
 
 const BUILTIN_SUITE_NAMES: [&str; 4] = ["physics", "manipulation", "spatial", "comprehensive"];
-const BUILTIN_SCORE_KEYS: [&str; 11] = [
+const BUILTIN_SCORE_KEYS: [&str; 19] = [
     "overall",
     "object_permanence",
     "gravity_compliance",
@@ -36,6 +38,14 @@ const BUILTIN_SCORE_KEYS: [&str; 11] = [
     "spatial_reasoning",
     "confidence",
     "video_similarity",
+    "sampling_prediction_steps",
+    "sampling_sampled_steps",
+    "sampling_requested_samples",
+    "sampling_completed_samples",
+    "sampling_completion_rate",
+    "sampling_confidence_mean",
+    "sampling_physics_mean",
+    "sampling_quality_mean",
 ];
 const BUILTIN_CUSTOM_METRIC_NAMES: [&str; 2] = ["latency_efficiency", "outcome_pass_rate"];
 
@@ -254,6 +264,17 @@ pub struct EvalSuite {
     pub providers: Vec<String>,
 }
 
+/// Runtime overrides applied to an evaluation run.
+#[derive(Debug, Clone, Default)]
+pub struct EvalRunOptions {
+    /// Override the per-prediction sample count used while evaluating each action.
+    ///
+    /// When set to a value greater than `1`, evaluation fans out single-sample
+    /// provider predictions and aggregates the best sample into the final
+    /// result's sampling diagnostics.
+    pub num_samples: Option<u32>,
+}
+
 /// Result of evaluating one scenario with one provider.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvalResult {
@@ -271,6 +292,9 @@ pub struct EvalResult {
     /// Derived similarity metrics between the predicted clip and ground truth.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub video_metrics: Option<VideoMetrics>,
+    /// Aggregated sampling diagnostics captured from prediction steps.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sampling: Option<SamplingDiagnostics>,
     /// Whether each expected outcome was met.
     pub outcomes: Vec<OutcomeResult>,
 }
@@ -294,6 +318,36 @@ pub struct VideoMetrics {
     pub depth_similarity: Option<f32>,
     /// Average similarity of aligned segmentation tensors when present in both clips.
     pub segmentation_similarity: Option<f32>,
+}
+
+/// Aggregate sampling metrics distilled from one or more sampled predictions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SamplingSummary {
+    /// Total number of prediction steps evaluated.
+    pub prediction_steps: usize,
+    /// Number of prediction steps that returned sampling metadata.
+    pub sampled_steps: usize,
+    /// Total requested samples across all sampled prediction steps.
+    pub requested_samples: u32,
+    /// Total completed samples across all sampled prediction steps.
+    pub completed_samples: u32,
+    /// Fraction of requested samples that completed successfully.
+    pub completion_rate: f32,
+    /// Mean confidence across the captured sampling metadata.
+    pub confidence_mean: Option<f32>,
+    /// Mean overall physics score across the captured sampling metadata.
+    pub physics_mean: Option<f32>,
+    /// Mean quality score across the captured sampling metadata.
+    pub quality_mean: Option<f32>,
+}
+
+/// Detailed sampling diagnostics captured from evaluation predictions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SamplingDiagnostics {
+    /// Aggregated metrics for the captured sampling data.
+    pub summary: SamplingSummary,
+    /// Per-prediction sampling metadata in execution order.
+    pub steps: Vec<PredictionSamplingMetadata>,
 }
 
 /// Whether an expected outcome was met.
@@ -471,6 +525,9 @@ impl EvalReport {
                     summary.outcomes_passed,
                     summary.total_outcomes,
                 ));
+                if let Some(sampling) = summary.sampling.as_ref() {
+                    append_sampling_summary_markdown(&mut output, sampling);
+                }
 
                 if summary.dimension_scores.is_empty() {
                     output.push_str("\n_No dimension scores recorded._\n\n");
@@ -514,15 +571,24 @@ impl EvalReport {
         if self.scenario_summaries.is_empty() {
             output.push_str("_No scenario summaries recorded._\n");
         } else {
-            output.push_str("| Scenario | Best Provider | Best Score | Outcomes | Passed By | Failed By |\n| --- | --- | ---: | ---: | --- | --- |\n");
+            output.push_str(
+                "| Scenario | Best Provider | Best Score | Outcomes | Sampling | Passed By | Failed By |\n| --- | --- | ---: | ---: | --- | --- | --- |\n",
+            );
             for summary in &self.scenario_summaries {
                 output.push_str(&format!(
-                    "| {} | {} | {} | {}/{} | {} | {} |\n",
+                    "| {} | {} | {} | {}/{} | {} | {} | {} |\n",
                     markdown_cell(&summary.scenario),
                     markdown_optional(summary.best_provider.as_deref()),
                     format_optional_score(summary.best_score),
                     summary.outcomes_passed,
                     summary.total_outcomes,
+                    markdown_optional(
+                        summary
+                            .sampling
+                            .as_ref()
+                            .map(sampling_summary_short)
+                            .as_deref(),
+                    ),
                     markdown_joined_list(&summary.passed_by),
                     markdown_joined_list(&summary.failed_by),
                 ));
@@ -634,6 +700,9 @@ pub struct ProviderSummary {
     pub dimension_scores: HashMap<String, f32>,
     /// Scenario-level overall scores keyed by scenario name.
     pub scenario_scores: HashMap<String, f32>,
+    /// Aggregated sampling summary across all scenarios, when available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sampling: Option<SamplingSummary>,
 }
 
 /// Aggregated metrics for a dimension across all providers.
@@ -670,6 +739,9 @@ pub struct ScenarioSummary {
     pub outcomes_passed: usize,
     /// Total number of evaluated outcomes across every provider for this scenario.
     pub total_outcomes: usize,
+    /// Aggregated sampling summary across providers for this scenario, when available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sampling: Option<SamplingSummary>,
 }
 
 impl EvalSuite {
@@ -900,8 +972,34 @@ impl EvalSuite {
         world_state: &WorldState,
     ) -> Result<EvalReport> {
         let registry = CustomMetricRegistry::with_builtin_metrics();
-        self.run_with_world_state_and_registry(providers, world_state, &registry)
-            .await
+        self.run_with_world_state_and_registry_and_options(
+            providers,
+            world_state,
+            &registry,
+            &EvalRunOptions::default(),
+        )
+        .await
+    }
+
+    /// Run the suite against a supplied world state with runtime overrides.
+    ///
+    /// The supplied world is merged over each scenario's fixture state before
+    /// evaluation. This preserves the scenario's action fixtures while letting
+    /// persisted world context influence the results.
+    pub async fn run_with_world_state_and_options(
+        &self,
+        providers: &[&dyn WorldModelProvider],
+        world_state: &WorldState,
+        run_options: &EvalRunOptions,
+    ) -> Result<EvalReport> {
+        let registry = CustomMetricRegistry::with_builtin_metrics();
+        self.run_with_world_state_and_registry_and_options(
+            providers,
+            world_state,
+            &registry,
+            run_options,
+        )
+        .await
     }
 
     /// Run the suite against a supplied world state with a custom metric registry.
@@ -915,7 +1013,29 @@ impl EvalSuite {
         world_state: &WorldState,
         registry: &CustomMetricRegistry,
     ) -> Result<EvalReport> {
-        self.run_internal(providers, Some(world_state), registry)
+        self.run_with_world_state_and_registry_and_options(
+            providers,
+            world_state,
+            registry,
+            &EvalRunOptions::default(),
+        )
+        .await
+    }
+
+    /// Run the suite against a supplied world state with a custom metric
+    /// registry and runtime overrides.
+    ///
+    /// The supplied world is merged over each scenario's fixture state before
+    /// evaluation. This preserves the scenario's action fixtures while letting
+    /// persisted world context influence the results.
+    pub async fn run_with_world_state_and_registry_and_options(
+        &self,
+        providers: &[&dyn WorldModelProvider],
+        world_state: &WorldState,
+        registry: &CustomMetricRegistry,
+        run_options: &EvalRunOptions,
+    ) -> Result<EvalReport> {
+        self.run_internal(providers, Some(world_state), registry, run_options)
             .await
     }
 
@@ -1363,7 +1483,20 @@ impl EvalSuite {
     /// Run the evaluation suite against a set of providers.
     pub async fn run(&self, providers: &[&dyn WorldModelProvider]) -> Result<EvalReport> {
         let registry = CustomMetricRegistry::with_builtin_metrics();
-        self.run_with_registry(providers, &registry).await
+        self.run_with_registry_and_options(providers, &registry, &EvalRunOptions::default())
+            .await
+    }
+
+    /// Run the evaluation suite against a set of providers with runtime
+    /// overrides.
+    pub async fn run_with_options(
+        &self,
+        providers: &[&dyn WorldModelProvider],
+        run_options: &EvalRunOptions,
+    ) -> Result<EvalReport> {
+        let registry = CustomMetricRegistry::with_builtin_metrics();
+        self.run_with_registry_and_options(providers, &registry, run_options)
+            .await
     }
 
     /// Run the evaluation suite against a set of providers with a custom metric registry.
@@ -1372,7 +1505,19 @@ impl EvalSuite {
         providers: &[&dyn WorldModelProvider],
         registry: &CustomMetricRegistry,
     ) -> Result<EvalReport> {
-        self.run_internal(providers, None, registry).await
+        self.run_with_registry_and_options(providers, registry, &EvalRunOptions::default())
+            .await
+    }
+
+    /// Run the evaluation suite against a set of providers with a custom
+    /// metric registry and runtime overrides.
+    pub async fn run_with_registry_and_options(
+        &self,
+        providers: &[&dyn WorldModelProvider],
+        registry: &CustomMetricRegistry,
+        run_options: &EvalRunOptions,
+    ) -> Result<EvalReport> {
+        self.run_internal(providers, None, registry, run_options).await
     }
 
     async fn run_internal(
@@ -1380,6 +1525,7 @@ impl EvalSuite {
         providers: &[&dyn WorldModelProvider],
         world_state: Option<&WorldState>,
         registry: &CustomMetricRegistry,
+        run_options: &EvalRunOptions,
     ) -> Result<EvalReport> {
         self.validate_with_registry(registry)?;
         let mut futures = Vec::<BoxFuture<'_, EvalResult>>::new();
@@ -1392,6 +1538,7 @@ impl EvalSuite {
                     world_state,
                     &self.dimensions,
                     registry,
+                    run_options,
                 )));
             }
         }
@@ -1428,6 +1575,7 @@ async fn evaluate_provider_scenario(
     world_state: Option<&WorldState>,
     dimensions: &[EvalDimension],
     registry: &CustomMetricRegistry,
+    run_options: &EvalRunOptions,
 ) -> EvalResult {
     if !provider.capabilities().predict {
         return EvalResult {
@@ -1437,6 +1585,7 @@ async fn evaluate_provider_scenario(
             latency_ms: 0,
             video: None,
             video_metrics: None,
+            sampling: None,
             outcomes: vec![OutcomeResult {
                 description: "provider supports prediction".to_string(),
                 passed: false,
@@ -1448,7 +1597,7 @@ async fn evaluate_provider_scenario(
     }
 
     let start = std::time::Instant::now();
-    let config = prediction_config_for_scenario(scenario);
+    let config = prediction_config_for_scenario(scenario, run_options);
     let mut score_accumulator = ScenarioAccumulator::default();
     let mut outcomes = Vec::new();
     let mut current_state = scenario.initial_state.clone();
@@ -1460,7 +1609,7 @@ async fn evaluate_provider_scenario(
 
     let mut prediction_failed = false;
     for action in &scenario.actions {
-        match provider.predict(&current_state, action, &config).await {
+        match predict_for_evaluation(provider, &current_state, action, &config).await {
             Ok(prediction) => {
                 score_accumulator.record(&prediction);
                 current_state = prediction.output_state.clone();
@@ -1479,9 +1628,13 @@ async fn evaluate_provider_scenario(
 
     let average_scores = score_accumulator.average_scores();
     let average_confidence = score_accumulator.average_confidence();
+    let sampling = score_accumulator.sampling_diagnostics();
     let mut scores = HashMap::new();
     if let Some(average_scores) = average_scores.as_ref() {
         record_physics_scores(average_scores, &mut scores);
+    }
+    if let Some(sampling) = sampling.as_ref() {
+        sampling_scores(&sampling.summary, &mut scores);
     }
 
     let predicted_video = if prediction_failed {
@@ -1630,8 +1783,77 @@ async fn evaluate_provider_scenario(
         latency_ms: start.elapsed().as_millis() as u64,
         video: predicted_video,
         video_metrics,
+        sampling,
         outcomes,
     }
+}
+
+async fn predict_for_evaluation(
+    provider: &dyn WorldModelProvider,
+    state: &WorldState,
+    action: &Action,
+    config: &PredictionConfig,
+) -> Result<Prediction> {
+    if config.num_samples <= 1 {
+        return provider.predict(state, action, config).await;
+    }
+
+    let mut sample_config = config.clone();
+    sample_config.num_samples = 1;
+    let futures: Vec<BoxFuture<'_, Result<Prediction>>> = (0..config.num_samples)
+        .map(|_| {
+            Box::pin(provider.predict(state, action, &sample_config)) as BoxFuture<'_, Result<_>>
+        })
+        .collect();
+    let predictions = join_all_ordered(futures)
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>>>()?;
+
+    select_best_prediction_sample(predictions, config.num_samples)
+}
+
+fn select_best_prediction_sample(
+    predictions: Vec<Prediction>,
+    requested_samples: u32,
+) -> Result<Prediction> {
+    if predictions.is_empty() {
+        return Err(WorldForgeError::InternalError(
+            "no evaluation prediction samples generated".to_string(),
+        ));
+    }
+
+    let provisional = PredictionSamplingMetadata::from_predictions(&predictions, requested_samples, 0);
+    let selected_sample_index = provisional
+        .sample_summaries
+        .iter()
+        .enumerate()
+        .max_by(|(left_index, left), (right_index, right)| {
+            left.quality_score
+                .total_cmp(&right.quality_score)
+                .then_with(|| left.confidence.total_cmp(&right.confidence))
+                .then_with(|| left.physics_score.total_cmp(&right.physics_score))
+                .then_with(|| right.latency_ms.cmp(&left.latency_ms))
+                .then_with(|| right_index.cmp(left_index))
+        })
+        .map(|(index, _)| index)
+        .ok_or_else(|| {
+            WorldForgeError::InternalError("no evaluation prediction samples generated".to_string())
+        })?;
+
+    let sampling = PredictionSamplingMetadata::from_predictions(
+        &predictions,
+        requested_samples,
+        selected_sample_index,
+    );
+    let mut selected = predictions
+        .into_iter()
+        .nth(selected_sample_index)
+        .ok_or_else(|| {
+            WorldForgeError::InternalError("no evaluation prediction samples generated".to_string())
+        })?;
+    selected.sampling = Some(sampling);
+    Ok(selected)
 }
 
 fn normalize_provider_names(provider_names: &[String]) -> Vec<String> {
@@ -1717,6 +1939,7 @@ struct ScenarioAccumulator {
     total_confidence: f32,
     count: usize,
     final_video: Option<VideoClip>,
+    sampling_steps: Vec<PredictionSamplingMetadata>,
 }
 
 impl ScenarioAccumulator {
@@ -1727,6 +1950,9 @@ impl ScenarioAccumulator {
         if let Some(video) = &prediction.video {
             self.final_video = Some(video.clone());
         }
+        if let Some(sampling) = &prediction.sampling {
+            self.sampling_steps.push(sampling.clone());
+        }
     }
 
     fn average_scores(&self) -> Option<PhysicsScores> {
@@ -1735,6 +1961,17 @@ impl ScenarioAccumulator {
 
     fn average_confidence(&self) -> Option<f32> {
         (self.count > 0).then_some(self.total_confidence / self.count as f32)
+    }
+
+    fn sampling_diagnostics(&self) -> Option<SamplingDiagnostics> {
+        if self.sampling_steps.is_empty() {
+            return None;
+        }
+
+        Some(SamplingDiagnostics {
+            summary: summarize_sampling_metadata(&self.sampling_steps, self.count),
+            steps: self.sampling_steps.clone(),
+        })
     }
 }
 
@@ -1787,9 +2024,88 @@ fn record_physics_scores(scores: &PhysicsScores, map: &mut HashMap<String, f32>)
     );
 }
 
-fn prediction_config_for_scenario(scenario: &EvalScenario) -> PredictionConfig {
+fn summarize_sampling_metadata(
+    steps: &[PredictionSamplingMetadata],
+    prediction_steps: usize,
+) -> SamplingSummary {
+    let sampled_steps = steps.len();
+    let requested_samples = steps.iter().map(|step| step.requested_samples).sum();
+    let completed_samples = steps.iter().map(|step| step.completed_samples).sum();
+    let completion_rate = if requested_samples == 0 {
+        0.0
+    } else {
+        completed_samples as f32 / requested_samples as f32
+    };
+
+    SamplingSummary {
+        prediction_steps,
+        sampled_steps,
+        requested_samples,
+        completed_samples,
+        completion_rate,
+        confidence_mean: mean_f32(steps.iter().map(|step| step.confidence_mean)),
+        physics_mean: mean_f32(steps.iter().map(|step| step.physics_mean)),
+        quality_mean: mean_f32(steps.iter().map(|step| step.quality_mean)),
+    }
+}
+
+fn combine_sampling_diagnostics<'a, I>(diagnostics: I) -> Option<SamplingSummary>
+where
+    I: IntoIterator<Item = &'a SamplingDiagnostics>,
+{
+    let mut prediction_steps = 0usize;
+    let mut steps = Vec::new();
+
+    for diagnostic in diagnostics {
+        prediction_steps += diagnostic.summary.prediction_steps;
+        steps.extend(diagnostic.steps.iter().cloned());
+    }
+
+    if steps.is_empty() {
+        return None;
+    }
+
+    Some(summarize_sampling_metadata(&steps, prediction_steps))
+}
+
+fn sampling_scores(summary: &SamplingSummary, map: &mut HashMap<String, f32>) {
+    map.insert(
+        "sampling_prediction_steps".to_string(),
+        summary.prediction_steps as f32,
+    );
+    map.insert(
+        "sampling_sampled_steps".to_string(),
+        summary.sampled_steps as f32,
+    );
+    map.insert(
+        "sampling_requested_samples".to_string(),
+        summary.requested_samples as f32,
+    );
+    map.insert(
+        "sampling_completed_samples".to_string(),
+        summary.completed_samples as f32,
+    );
+    map.insert(
+        "sampling_completion_rate".to_string(),
+        summary.completion_rate,
+    );
+    if let Some(confidence_mean) = summary.confidence_mean {
+        map.insert("sampling_confidence_mean".to_string(), confidence_mean);
+    }
+    if let Some(physics_mean) = summary.physics_mean {
+        map.insert("sampling_physics_mean".to_string(), physics_mean);
+    }
+    if let Some(quality_mean) = summary.quality_mean {
+        map.insert("sampling_quality_mean".to_string(), quality_mean);
+    }
+}
+
+fn prediction_config_for_scenario(
+    scenario: &EvalScenario,
+    run_options: &EvalRunOptions,
+) -> PredictionConfig {
     let needs_video = scenario_requires_video_artifacts(scenario);
-    PredictionConfig {
+    let mut config = PredictionConfig {
         return_video: needs_video,
         return_depth: scenario
             .ground_truth
@@ -1800,7 +2116,11 @@ fn prediction_config_for_scenario(scenario: &EvalScenario) -> PredictionConfig {
             .as_ref()
             .is_some_and(video_has_segmentation_maps),
         ..PredictionConfig::default()
+    };
+    if let Some(num_samples) = run_options.num_samples {
+        config.num_samples = num_samples.max(1);
     }
+    config
 }
 
 fn scenario_requires_video_artifacts(scenario: &EvalScenario) -> bool {
@@ -2822,6 +3142,9 @@ fn build_provider_summaries(
             let mut scenario_scores = HashMap::new();
             let mut outcomes_passed = 0usize;
             let mut total_outcomes = 0usize;
+            let sampling = combine_sampling_diagnostics(
+                results.iter().filter_map(|result| result.sampling.as_ref()),
+            );
 
             for result in &results {
                 if let Some(score) = result.scores.get("overall") {
@@ -2882,6 +3205,7 @@ fn build_provider_summaries(
                     .map(|(dimension, (total, count))| (dimension, total / count as f32))
                     .collect(),
                 scenario_scores,
+                sampling,
             }
         })
         .collect();
@@ -2948,6 +3272,11 @@ fn build_scenario_summaries(
                 .iter()
                 .filter(|result| result.scenario == scenario.name)
                 .collect();
+            let sampling = combine_sampling_diagnostics(
+                scenario_results
+                    .iter()
+                    .filter_map(|result| result.sampling.as_ref()),
+            );
             let provider_scores: HashMap<String, f32> = scenario_results
                 .iter()
                 .filter_map(|result| {
@@ -2996,6 +3325,7 @@ fn build_scenario_summaries(
                 best_score,
                 outcomes_passed,
                 total_outcomes,
+                sampling,
             }
         })
         .collect()
@@ -3043,6 +3373,60 @@ fn provider_score_list(provider_scores: &HashMap<String, f32>) -> String {
         .map(|(provider, score)| format!("{provider}: {score:.3}"))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+fn append_sampling_summary_markdown(output: &mut String, sampling: &SamplingSummary) {
+    output.push_str("\n- Sampling steps: ");
+    output.push_str(&format!(
+        "{}/{}",
+        sampling.sampled_steps, sampling.prediction_steps
+    ));
+    output.push_str("\n- Requested samples: ");
+    output.push_str(&sampling.requested_samples.to_string());
+    output.push_str("\n- Completed samples: ");
+    output.push_str(&sampling.completed_samples.to_string());
+    output.push_str("\n- Sampling completion rate: ");
+    output.push_str(&format_percent(sampling.completion_rate));
+    if let Some(confidence_mean) = sampling.confidence_mean {
+        output.push_str(&format!(
+            "\n- Mean sampling confidence: {confidence_mean:.3}"
+        ));
+    }
+    if let Some(physics_mean) = sampling.physics_mean {
+        output.push_str(&format!(
+            "\n- Mean sampling physics score: {physics_mean:.3}"
+        ));
+    }
+    if let Some(quality_mean) = sampling.quality_mean {
+        output.push_str(&format!(
+            "\n- Mean sampling quality score: {quality_mean:.3}"
+        ));
+    }
+    output.push('\n');
+}
+
+fn sampling_summary_short(sampling: &SamplingSummary) -> String {
+    format!(
+        "{}/{} steps, {} requests, {:.1}% complete",
+        sampling.sampled_steps,
+        sampling.prediction_steps,
+        sampling.requested_samples,
+        sampling.completion_rate * 100.0
+    )
+}
+
+fn mean_f32<I>(values: I) -> Option<f32>
+where
+    I: IntoIterator<Item = f32>,
+{
+    let mut total = 0.0f32;
+    let mut count = 0usize;
+    for value in values {
+        total += value;
+        count += 1;
+    }
+
+    (count > 0).then_some(total / count as f32)
 }
 
 fn report_score_keys(results: &[EvalResult]) -> Vec<String> {
@@ -3286,6 +3670,7 @@ mod tests {
                 latency_ms: 1,
                 cost: CostEstimate::default(),
                 provenance: None,
+                sampling: None,
                 guardrail_results: Vec::new(),
                 timestamp: chrono::Utc::now(),
             })
@@ -3393,6 +3778,7 @@ mod tests {
                 latency_ms: 1,
                 cost: CostEstimate::default(),
                 provenance: None,
+                sampling: None,
                 guardrail_results: Vec::new(),
                 timestamp: chrono::Utc::now(),
             })
@@ -3505,6 +3891,7 @@ mod tests {
                 latency_ms: self.delay_ms,
                 cost: CostEstimate::default(),
                 provenance: None,
+                sampling: None,
                 guardrail_results: Vec::new(),
                 timestamp: chrono::Utc::now(),
             })
@@ -3660,6 +4047,7 @@ mod tests {
                 latency_ms: 12,
                 video: None,
                 video_metrics: None,
+                sampling: None,
                 outcomes: vec![OutcomeResult {
                     description: "prediction".to_string(),
                     passed: true,

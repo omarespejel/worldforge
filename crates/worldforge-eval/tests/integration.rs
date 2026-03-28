@@ -3,8 +3,16 @@
 //! Tests the evaluation framework with real providers and
 //! verifies the full eval pipeline: suite creation → run → report.
 
+use async_trait::async_trait;
+use uuid::Uuid;
 use worldforge_core::action::Condition;
-use worldforge_core::provider::WorldModelProvider;
+use worldforge_core::error::{Result, WorldForgeError};
+use worldforge_core::prediction::{PhysicsScores, Prediction, PredictionSamplingMetadata};
+use worldforge_core::provider::{
+    CostEstimate, GenerationConfig, GenerationPrompt, HealthStatus, LatencyProfile, Operation,
+    ProviderCapabilities, ReasoningInput, ReasoningOutput, SpatialControls, TransferConfig,
+    WorldModelProvider,
+};
 use worldforge_core::scene::SceneObject;
 use worldforge_core::state::WorldState;
 use worldforge_core::types::{BBox, DType, Frame, Pose, Position, SimTime, Tensor, VideoClip};
@@ -133,6 +141,184 @@ fn sample_ground_truth_clip() -> VideoClip {
     }
 }
 
+#[derive(Debug, Default)]
+struct SamplingFixtureProvider;
+
+impl SamplingFixtureProvider {
+    fn new() -> Self {
+        Self
+    }
+}
+
+fn sampled_prediction(
+    provider: &str,
+    state: &WorldState,
+    action: &worldforge_core::action::Action,
+    confidence: f32,
+    physics: PhysicsScores,
+) -> Prediction {
+    let mut output_state = state.clone();
+    output_state.time.step += 1;
+
+    Prediction {
+        id: Uuid::new_v4(),
+        provider: provider.to_string(),
+        model: "sampling-fixture".to_string(),
+        input_state: state.clone(),
+        action: action.clone(),
+        output_state,
+        video: None,
+        confidence,
+        physics_scores: physics,
+        latency_ms: 1,
+        cost: CostEstimate::default(),
+        provenance: None,
+        sampling: None,
+        guardrail_results: Vec::new(),
+        timestamp: chrono::Utc::now(),
+    }
+}
+
+#[async_trait]
+impl WorldModelProvider for SamplingFixtureProvider {
+    fn name(&self) -> &str {
+        "sampling-fixture"
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            predict: true,
+            generate: false,
+            reason: false,
+            transfer: false,
+            embed: false,
+            action_conditioned: true,
+            multi_view: false,
+            max_video_length_seconds: 0.0,
+            max_resolution: (0, 0),
+            fps_range: (0.0, 0.0),
+            supported_action_spaces: Vec::new(),
+            supports_depth: false,
+            supports_segmentation: false,
+            supports_planning: false,
+            latency_profile: LatencyProfile {
+                p50_ms: 1,
+                p95_ms: 1,
+                p99_ms: 1,
+                throughput_fps: 1.0,
+            },
+        }
+    }
+
+    async fn predict(
+        &self,
+        state: &WorldState,
+        action: &worldforge_core::action::Action,
+        _config: &worldforge_core::prediction::PredictionConfig,
+    ) -> Result<Prediction> {
+        let samples = vec![
+            sampled_prediction(
+                self.name(),
+                state,
+                action,
+                0.82,
+                PhysicsScores {
+                    overall: 0.8,
+                    object_permanence: 0.81,
+                    gravity_compliance: 0.8,
+                    collision_accuracy: 0.79,
+                    spatial_consistency: 0.83,
+                    temporal_consistency: 0.8,
+                },
+            ),
+            sampled_prediction(
+                self.name(),
+                state,
+                action,
+                0.91,
+                PhysicsScores {
+                    overall: 0.9,
+                    object_permanence: 0.89,
+                    gravity_compliance: 0.92,
+                    collision_accuracy: 0.91,
+                    spatial_consistency: 0.9,
+                    temporal_consistency: 0.93,
+                },
+            ),
+        ];
+        let sampling = PredictionSamplingMetadata::from_predictions(&samples, 4, 1);
+        let mut output_state = state.clone();
+        output_state.time.step += 1;
+
+        Ok(Prediction {
+            id: Uuid::new_v4(),
+            provider: self.name().to_string(),
+            model: "sampling-fixture".to_string(),
+            input_state: state.clone(),
+            action: action.clone(),
+            output_state,
+            video: None,
+            confidence: 0.87,
+            physics_scores: PhysicsScores {
+                overall: 0.85,
+                object_permanence: 0.85,
+                gravity_compliance: 0.85,
+                collision_accuracy: 0.84,
+                spatial_consistency: 0.86,
+                temporal_consistency: 0.85,
+            },
+            latency_ms: 1,
+            cost: CostEstimate::default(),
+            provenance: None,
+            sampling: Some(sampling),
+            guardrail_results: Vec::new(),
+            timestamp: chrono::Utc::now(),
+        })
+    }
+
+    async fn generate(
+        &self,
+        _prompt: &GenerationPrompt,
+        _config: &GenerationConfig,
+    ) -> Result<VideoClip> {
+        Err(WorldForgeError::UnsupportedCapability {
+            provider: self.name().to_string(),
+            capability: "generate".to_string(),
+        })
+    }
+
+    async fn reason(&self, _input: &ReasoningInput, _query: &str) -> Result<ReasoningOutput> {
+        Err(WorldForgeError::UnsupportedCapability {
+            provider: self.name().to_string(),
+            capability: "reason".to_string(),
+        })
+    }
+
+    async fn transfer(
+        &self,
+        _source: &VideoClip,
+        _controls: &SpatialControls,
+        _config: &TransferConfig,
+    ) -> Result<VideoClip> {
+        Err(WorldForgeError::UnsupportedCapability {
+            provider: self.name().to_string(),
+            capability: "transfer".to_string(),
+        })
+    }
+
+    async fn health_check(&self) -> Result<HealthStatus> {
+        Ok(HealthStatus {
+            healthy: true,
+            message: "healthy".to_string(),
+            latency_ms: 1,
+        })
+    }
+
+    fn estimate_cost(&self, _operation: &Operation) -> CostEstimate {
+        CostEstimate::default()
+    }
+}
+
 #[tokio::test]
 async fn test_physics_suite_with_mock() {
     let suite = EvalSuite::physics_standard();
@@ -257,6 +443,51 @@ async fn test_custom_suite_scores_concrete_scene_thresholds() {
     assert!(result.scores["material_understanding"] >= 0.75);
     assert!(result.scores["gravity_compliance"] >= 0.8);
     assert!(result.scores["overall"] >= 0.0);
+}
+
+#[tokio::test]
+async fn test_sampling_diagnostics_flow_into_report_metrics() {
+    let suite = EvalSuite {
+        name: "Sampling Diagnostics".to_string(),
+        scenarios: vec![EvalScenario {
+            name: "sampled_move".to_string(),
+            description: "Verify sampling metadata is preserved in evaluation reports".to_string(),
+            initial_state: WorldState::new("sampling", "eval"),
+            actions: vec![worldforge_core::action::Action::Move {
+                target: Position {
+                    x: 0.1,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                speed: 0.5,
+            }],
+            expected_outcomes: vec![],
+            ground_truth: None,
+        }],
+        dimensions: vec![EvalDimension::ObjectPermanence],
+        providers: vec![],
+    };
+    let provider = SamplingFixtureProvider::new();
+    let providers: Vec<&dyn WorldModelProvider> = vec![&provider];
+
+    let report = suite.run(&providers).await.unwrap();
+    assert_eq!(report.results.len(), 1);
+
+    let result = &report.results[0];
+    let sampling = result.sampling.as_ref().expect("sampling diagnostics");
+    assert_eq!(sampling.summary.prediction_steps, 1);
+    assert_eq!(sampling.summary.sampled_steps, 1);
+    assert_eq!(sampling.summary.requested_samples, 4);
+    assert_eq!(sampling.summary.completed_samples, 2);
+    assert!(result.scores["sampling_completion_rate"] > 0.0);
+    assert_eq!(result.scores["sampling_requested_samples"], 4.0);
+    assert_eq!(result.scores["sampling_completed_samples"], 2.0);
+    assert!(report.provider_summaries[0].sampling.is_some());
+    assert!(report.scenario_summaries[0].sampling.is_some());
+
+    let markdown = report.to_markdown().unwrap();
+    assert!(markdown.contains("Sampling completion rate"));
+    assert!(markdown.contains("Sampling steps"));
 }
 
 #[test]
