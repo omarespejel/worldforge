@@ -675,8 +675,9 @@ execution paths in the core, with planner selection exposed across the CLI,
 REST server, and Python bindings. Provider-native planning now dispatches
 through an explicit provider hook instead of aliasing core heuristics, with the
 local JEPA adapter and the full-stack Cosmos and Runway adapters supplying
-deterministic adapter-native plans on top of WorldForge-managed surrogate
-dynamics rather than vendor planning endpoints. Heuristic planners now parse
+deterministic adapter-native plans and storyboard previews on top of
+WorldForge-managed state simulation rather than vendor planning endpoints.
+Heuristic planners now parse
 relational natural-language goals like spawning an object next to a named
 anchor instead of collapsing those requests into plain anchor existence checks.
 Planning requests can also set `fallback_provider` so the core retries against

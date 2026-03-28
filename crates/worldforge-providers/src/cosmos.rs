@@ -1383,14 +1383,14 @@ impl WorldModelProvider for CosmosProvider {
 
     /// Adapter-native deterministic planning for Cosmos.
     ///
-    /// Cosmos does not call a vendor planning endpoint here; the provider uses
-    /// the shared local planner to keep tests deterministic and offline.
+    /// Cosmos uses a cinematic storyboard profile over the shared offline
+    /// state simulator, without calling a vendor planning endpoint.
     async fn plan(&self, request: &PlanRequest) -> Result<Plan> {
         let step_cost = self.estimate_cost(&Operation::Predict {
             steps: 1,
             resolution: PredictionConfig::default().resolution,
         });
-        native_planning::plan_native("cosmos", request, step_cost)
+        native_planning::plan_cosmos_native(request, step_cost)
     }
 
     async fn transfer(
@@ -1535,9 +1535,11 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    use worldforge_core::action::ActionTranslator;
+    use worldforge_core::action::{Action, ActionTranslator};
+    use worldforge_core::prediction::{PlanGoal, PlanRequest, PlannerType};
+    use worldforge_core::scene::SceneObject;
     use worldforge_core::state::WorldState;
-    use worldforge_core::types::Position;
+    use worldforge_core::types::{BBox, Pose, Position};
 
     #[derive(Debug)]
     struct RecordedRequest {
@@ -1711,6 +1713,86 @@ mod tests {
         });
         assert!(cost.usd > 0.0);
         assert!(cost.estimated_latency_ms > 0);
+    }
+
+    fn sample_manipulation_state(provider: &str) -> WorldState {
+        let mut state = WorldState::new("manipulation", provider);
+        let cube = SceneObject::new(
+            "cube",
+            Pose {
+                position: Position {
+                    x: 0.0,
+                    y: 0.8,
+                    z: 0.0,
+                },
+                ..Pose::default()
+            },
+            BBox {
+                min: Position {
+                    x: -0.1,
+                    y: 0.7,
+                    z: -0.1,
+                },
+                max: Position {
+                    x: 0.1,
+                    y: 0.9,
+                    z: 0.1,
+                },
+            },
+        );
+        let mug = SceneObject::new(
+            "mug",
+            Pose {
+                position: Position {
+                    x: 0.8,
+                    y: 0.8,
+                    z: 0.0,
+                },
+                ..Pose::default()
+            },
+            BBox {
+                min: Position {
+                    x: 0.7,
+                    y: 0.7,
+                    z: -0.1,
+                },
+                max: Position {
+                    x: 0.9,
+                    y: 0.9,
+                    z: 0.1,
+                },
+            },
+        );
+
+        state.scene.add_object(cube);
+        state.scene.add_object(mug);
+        state
+    }
+
+    #[tokio::test]
+    async fn test_cosmos_full_stack_native_planning_storyboard() {
+        let provider = CosmosProvider::full_stack(
+            "test-key",
+            CosmosEndpoint::NimApi("https://api.nvidia.com".to_string()),
+        );
+        let request = PlanRequest {
+            current_state: sample_manipulation_state("cosmos"),
+            goal: PlanGoal::Description("place the cube next to the mug".to_string()),
+            max_steps: 5,
+            guardrails: Vec::new(),
+            planner: PlannerType::ProviderNative,
+            timeout_seconds: 5.0,
+            fallback_provider: None,
+        };
+
+        let plan = provider.plan(&request).await.unwrap();
+
+        assert_eq!(plan.actions.len(), 1);
+        assert!(matches!(plan.actions[0], Action::Place { .. }));
+        let videos = plan.predicted_videos.as_ref().expect("storyboard clips");
+        assert_eq!(videos.len(), plan.actions.len());
+        assert_eq!(videos[0].frames.len(), 2);
+        assert!(videos[0].duration > 0.0);
     }
 
     #[test]

@@ -14,36 +14,133 @@ use worldforge_core::prediction::{Plan, PlanGoal, PlanRequest};
 use worldforge_core::provider::CostEstimate;
 use worldforge_core::scene::SceneObject;
 use worldforge_core::state::WorldState;
-use worldforge_core::types::{BBox, Pose, Position, Rotation, Vec3, Velocity};
+use worldforge_core::types::{
+    BBox, CameraPose, Frame, Pose, Position, Rotation, SimTime, Tensor, TensorData, Vec3, Velocity,
+    VideoClip,
+};
 
 const PLANNING_FPS: f32 = 24.0;
+const COSMOS_PREVIEW_RESOLUTION: (u32, u32) = (48, 32);
+const RUNWAY_PREVIEW_RESOLUTION: (u32, u32) = (40, 24);
 const DEFAULT_SPAWN_HALF_EXTENTS: Vec3 = Vec3 {
     x: 0.12,
     y: 0.12,
     z: 0.12,
 };
 
-/// Build a deterministic native plan for a provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlanningProfile {
+    Cosmos,
+    Runway,
+}
+
+impl PlanningProfile {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Cosmos => "cosmos",
+            Self::Runway => "runway",
+        }
+    }
+
+    fn preview_resolution(self) -> (u32, u32) {
+        match self {
+            Self::Cosmos => COSMOS_PREVIEW_RESOLUTION,
+            Self::Runway => RUNWAY_PREVIEW_RESOLUTION,
+        }
+    }
+
+    fn preview_fps(self) -> f32 {
+        match self {
+            Self::Cosmos => 2.0,
+            Self::Runway => 3.0,
+        }
+    }
+
+    fn storyboard_frames(self) -> usize {
+        match self {
+            Self::Cosmos => 2,
+            Self::Runway => 3,
+        }
+    }
+
+    fn default_camera(self, step_index: usize, phase: &str) -> CameraPose {
+        let phase_bias = phase.len() as f32 * 0.01;
+        let (position, fov) = match self {
+            Self::Cosmos => (
+                Position {
+                    x: phase_bias,
+                    y: 1.8,
+                    z: 5.0 + step_index as f32 * 0.05,
+                },
+                42.0,
+            ),
+            Self::Runway => (
+                Position {
+                    x: 0.2 + phase_bias,
+                    y: 1.6,
+                    z: 4.5 + step_index as f32 * 0.08,
+                },
+                35.0,
+            ),
+        };
+
+        CameraPose {
+            extrinsics: Pose {
+                position,
+                ..Pose::default()
+            },
+            fov,
+            near_clip: 0.1,
+            far_clip: 20.0,
+        }
+    }
+}
+
+/// Build a deterministic native plan for Cosmos.
+pub(crate) fn plan_cosmos_native(request: &PlanRequest, step_cost: CostEstimate) -> Result<Plan> {
+    plan_native_with_profile(PlanningProfile::Cosmos, request, step_cost)
+}
+
+/// Build a deterministic native plan for Runway.
+pub(crate) fn plan_runway_native(request: &PlanRequest, step_cost: CostEstimate) -> Result<Plan> {
+    plan_native_with_profile(PlanningProfile::Runway, request, step_cost)
+}
+
+/// Build a deterministic native plan for legacy callers.
 ///
-/// The helper is intentionally provider-agnostic: it derives actions from the
-/// goal, simulates each action locally, and performs the same guardrail and
-/// success bookkeeping expected by the core orchestration layer.
+/// This retains the old helper signature for adapters that still route through
+/// the shared planner entry point.
 pub(crate) fn plan_native(
     provider_name: &str,
     request: &PlanRequest,
     step_cost: CostEstimate,
 ) -> Result<Plan> {
+    let profile = match provider_name {
+        "runway" => PlanningProfile::Runway,
+        _ => PlanningProfile::Cosmos,
+    };
+    plan_native_with_profile(profile, request, step_cost)
+}
+
+fn plan_native_with_profile(
+    profile: PlanningProfile,
+    request: &PlanRequest,
+    step_cost: CostEstimate,
+) -> Result<Plan> {
     let started = Instant::now();
     let mut state = request.current_state.clone();
-    let mut actions = derive_native_actions(&request.goal, &state)?;
+    let mut actions = derive_native_actions(profile, &request.goal, &state, request.max_steps)?;
     actions.truncate(request.max_steps as usize);
 
     let mut planned_actions = Vec::with_capacity(actions.len());
     let mut predicted_states = Vec::with_capacity(actions.len());
     let mut guardrail_compliance = Vec::with_capacity(actions.len());
+    let mut predicted_videos = Vec::with_capacity(actions.len());
 
-    for action in actions {
+    for (index, action) in actions.into_iter().enumerate() {
+        let before_state = state.clone();
         let next_state = simulate_action(&state, &action);
+        let storyboard_action = action.clone();
         let guardrail_results = if request.guardrails.is_empty() {
             Vec::new()
         } else {
@@ -52,7 +149,8 @@ pub(crate) fn plan_native(
                 return Err(WorldForgeError::NoFeasiblePlan {
                     goal: format!("{:?}", request.goal),
                     reason: format!(
-                        "{provider_name} native planner generated a guardrail-blocked step"
+                        "{} native planner generated a guardrail-blocked step",
+                        profile.name()
                     ),
                 });
             }
@@ -63,6 +161,13 @@ pub(crate) fn plan_native(
         state = next_state;
         predicted_states.push(state.clone());
         guardrail_compliance.push(guardrail_results);
+        predicted_videos.push(build_storyboard_clip(
+            profile,
+            index,
+            &storyboard_action,
+            &before_state,
+            &state,
+        ));
 
         if goal_satisfied(&request.goal, &state) {
             break;
@@ -73,7 +178,8 @@ pub(crate) fn plan_native(
         return Err(WorldForgeError::NoFeasiblePlan {
             goal: format!("{:?}", request.goal),
             reason: format!(
-                "{provider_name} native planner exhausted the step budget before satisfying the goal"
+                "{} native planner exhausted the step budget before satisfying the goal",
+                profile.name()
             ),
         });
     }
@@ -83,7 +189,7 @@ pub(crate) fn plan_native(
     Ok(Plan {
         actions: planned_actions,
         predicted_states,
-        predicted_videos: None,
+        predicted_videos: Some(predicted_videos),
         total_cost: (step_cost.usd as f32) * iterations_used as f32,
         success_probability: goal_score(&request.goal, &state),
         guardrail_compliance,
@@ -239,18 +345,389 @@ fn apply_action(state: &mut WorldState, action: &Action) {
     bump_time(state);
 }
 
+fn build_storyboard_clip(
+    profile: PlanningProfile,
+    step_index: usize,
+    action: &Action,
+    before_state: &WorldState,
+    after_state: &WorldState,
+) -> VideoClip {
+    let resolution = profile.preview_resolution();
+    let fps = profile.preview_fps();
+    let mut phases = Vec::with_capacity(profile.storyboard_frames());
+
+    match profile {
+        PlanningProfile::Cosmos => {
+            phases.push(("establish", before_state.clone()));
+            phases.push(("resolve", after_state.clone()));
+        }
+        PlanningProfile::Runway => {
+            phases.push(("approach", before_state.clone()));
+            phases.push(("engage", preview_transition_state(action, before_state)));
+            phases.push(("settle", after_state.clone()));
+        }
+    }
+
+    let frames = phases
+        .into_iter()
+        .enumerate()
+        .map(|(phase_index, (phase, state))| Frame {
+            data: storyboard_tensor(profile, step_index, phase, action, &state, resolution),
+            timestamp: SimTime {
+                step: step_index as u64 * 10 + phase_index as u64,
+                seconds: (step_index as f64 * 1.5) + (phase_index as f64 / fps as f64),
+                dt: 1.0 / fps as f64,
+            },
+            camera: Some(profile.default_camera(step_index, phase)),
+            depth: None,
+            segmentation: None,
+        })
+        .collect::<Vec<_>>();
+
+    VideoClip {
+        frames,
+        fps,
+        resolution,
+        duration: profile.storyboard_frames() as f64 / fps as f64,
+    }
+}
+
+fn preview_transition_state(action: &Action, before_state: &WorldState) -> WorldState {
+    let mut preview = before_state.clone();
+    match action {
+        Action::Move { target, speed } => {
+            if let Some(object_id) = primary_movable_object_id(&preview, Some(*target)) {
+                if let Some(object) = preview.scene.get_object_mut(&object_id) {
+                    let blend = ((*speed * 0.08) + 0.35).clamp(0.2, 0.85);
+                    object.set_position(object.pose.position.lerp(*target, blend));
+                }
+            }
+        }
+        Action::Grasp { object, grip_force } => {
+            if let Some(item) = preview.scene.get_object_mut(object) {
+                let lift = (*grip_force).clamp(0.0, 20.0) * 0.0005;
+                item.pose.position.y += lift;
+                item.bbox.translate(Vec3 {
+                    x: 0.0,
+                    y: lift,
+                    z: 0.0,
+                });
+            }
+        }
+        Action::Release { object } => {
+            if let Some(item) = preview.scene.get_object_mut(object) {
+                item.velocity = Velocity::default();
+            }
+        }
+        Action::Push {
+            object,
+            direction,
+            force,
+        } => {
+            if let Some(item) = preview.scene.get_object_mut(object) {
+                let push = direction
+                    .normalized()
+                    .scale((*force).clamp(0.0, 50.0) * 0.02);
+                item.translate_by(push);
+            }
+        }
+        Action::Rotate {
+            object,
+            axis,
+            angle,
+        } => {
+            if let Some(item) = preview.scene.get_object_mut(object) {
+                let delta = quaternion_from_axis_angle(*axis, *angle * 0.5);
+                item.pose.rotation = multiply_rotation(item.pose.rotation, delta);
+            }
+        }
+        Action::Place { object, target } => {
+            if let Some(item) = preview.scene.get_object_mut(object) {
+                let next_position = item.pose.position.lerp(*target, 0.5);
+                item.set_position(next_position);
+            }
+        }
+        Action::Navigate { waypoints } => {
+            if let Some(target) = waypoints.last().copied() {
+                if let Some(object_id) = primary_movable_object_id(&preview, Some(target)) {
+                    if let Some(item) = preview.scene.get_object_mut(&object_id) {
+                        let next_position = item.pose.position.lerp(target, 0.5);
+                        item.set_position(next_position);
+                    }
+                }
+            }
+        }
+        Action::Teleport { destination } => {
+            if let Some(object_id) = primary_movable_object_id(&preview, Some(destination.position))
+            {
+                if let Some(item) = preview.scene.get_object_mut(&object_id) {
+                    let next_position = item.pose.position.lerp(destination.position, 0.5);
+                    item.set_position(next_position);
+                }
+            }
+        }
+        Action::SetWeather { weather } => {
+            replace_tag(
+                &mut preview.metadata.tags,
+                "weather:",
+                format!("weather:{weather:?}").to_lowercase(),
+            );
+        }
+        Action::SetLighting { time_of_day } => {
+            replace_tag(
+                &mut preview.metadata.tags,
+                "lighting:",
+                format!("lighting:{time_of_day:.2}"),
+            );
+        }
+        Action::SpawnObject { .. }
+        | Action::RemoveObject { .. }
+        | Action::CameraMove { .. }
+        | Action::CameraLookAt { .. }
+        | Action::Sequence(_)
+        | Action::Parallel(_)
+        | Action::Conditional { .. }
+        | Action::Raw { .. } => {}
+    }
+
+    preview.scene.refresh_relationships();
+    preview.time.step = preview.time.step.saturating_add(1);
+    preview.time.seconds += 1.0 / PLANNING_FPS as f64;
+    preview.time.dt = 1.0 / PLANNING_FPS as f64;
+    preview
+}
+
+fn storyboard_tensor(
+    profile: PlanningProfile,
+    step_index: usize,
+    phase: &str,
+    action: &Action,
+    state: &WorldState,
+    resolution: (u32, u32),
+) -> Tensor {
+    let mut tensor = goal_image::render_scene_goal_image(state, resolution);
+    let signature = format!(
+        "{}:{}:{}:{}",
+        profile.name(),
+        step_index,
+        phase,
+        action_signature(action)
+    );
+    overlay_signature(&mut tensor, &signature);
+    tensor
+}
+
+fn action_signature(action: &Action) -> String {
+    match action {
+        Action::Move { .. } => "move".to_string(),
+        Action::Grasp { .. } => "grasp".to_string(),
+        Action::Release { .. } => "release".to_string(),
+        Action::Push { .. } => "push".to_string(),
+        Action::Rotate { .. } => "rotate".to_string(),
+        Action::Place { .. } => "place".to_string(),
+        Action::CameraMove { .. } => "camera-move".to_string(),
+        Action::CameraLookAt { .. } => "camera-look-at".to_string(),
+        Action::Navigate { .. } => "navigate".to_string(),
+        Action::Teleport { .. } => "teleport".to_string(),
+        Action::SetWeather { .. } => "weather".to_string(),
+        Action::SetLighting { .. } => "lighting".to_string(),
+        Action::SpawnObject { template, .. } => format!("spawn:{template}"),
+        Action::RemoveObject { .. } => "remove".to_string(),
+        Action::Sequence(actions) => format!("sequence:{}", actions.len()),
+        Action::Parallel(actions) => format!("parallel:{}", actions.len()),
+        Action::Conditional { .. } => "conditional".to_string(),
+        Action::Raw { provider, .. } => format!("raw:{provider}"),
+    }
+}
+
+fn overlay_signature(tensor: &mut Tensor, signature: &str) {
+    let TensorData::Float32(values) = &mut tensor.data else {
+        return;
+    };
+
+    for (index, byte) in signature.bytes().enumerate() {
+        if index >= values.len() {
+            break;
+        }
+        let delta = (byte as f32 / 255.0) * 0.2;
+        values[index] = (values[index] + delta).clamp(0.0, 1.0);
+    }
+}
+
 fn bump_time(state: &mut WorldState) {
     state.time.step = state.time.step.saturating_add(1);
     state.time.seconds += 1.0 / PLANNING_FPS as f64;
     state.time.dt = 1.0 / PLANNING_FPS as f64;
 }
 
-fn derive_native_actions(goal: &PlanGoal, state: &WorldState) -> Result<Vec<Action>> {
+fn derive_native_actions(
+    profile: PlanningProfile,
+    goal: &PlanGoal,
+    state: &WorldState,
+    max_steps: u32,
+) -> Result<Vec<Action>> {
+    match profile {
+        PlanningProfile::Cosmos => derive_cosmos_actions(goal, state),
+        PlanningProfile::Runway => derive_runway_actions(goal, state, max_steps),
+    }
+}
+
+fn derive_cosmos_actions(goal: &PlanGoal, state: &WorldState) -> Result<Vec<Action>> {
     match goal {
         PlanGoal::Condition(condition) => actions_for_condition(condition, state),
         PlanGoal::TargetState(target) => Ok(actions_for_target_state(state, target)),
         PlanGoal::GoalImage(image) => actions_for_goal_image(image, state),
         PlanGoal::Description(description) => actions_for_description(description, state),
+    }
+}
+
+fn derive_runway_actions(
+    goal: &PlanGoal,
+    state: &WorldState,
+    max_steps: u32,
+) -> Result<Vec<Action>> {
+    let generic = derive_cosmos_actions(goal, state)?;
+    if let Some(robotic) = runway_robotic_actions(goal, state, &generic, max_steps) {
+        return Ok(robotic);
+    }
+    Ok(generic)
+}
+
+fn runway_robotic_actions(
+    goal: &PlanGoal,
+    state: &WorldState,
+    generic: &[Action],
+    max_steps: u32,
+) -> Option<Vec<Action>> {
+    if max_steps < 4 {
+        return None;
+    }
+
+    match goal {
+        PlanGoal::TargetState(target) => {
+            runway_robotic_actions_for_target_state(state, target, generic, max_steps)
+        }
+        PlanGoal::Description(description) => {
+            runway_robotic_actions_for_description(description, state, generic, max_steps)
+        }
+        _ => None,
+    }
+}
+
+fn runway_robotic_actions_for_target_state(
+    current: &WorldState,
+    _target: &WorldState,
+    generic: &[Action],
+    max_steps: u32,
+) -> Option<Vec<Action>> {
+    let single_manipulation = match generic {
+        [Action::Place { object, target }] => Some((*object, *target, false)),
+        [Action::Move { target, .. }] => {
+            primary_movable_object_id(current, Some(*target)).map(|object| (object, *target, true))
+        }
+        _ => None,
+    }?;
+
+    let (object, target_position, use_release) = single_manipulation;
+    let current_object = current.scene.get_object(&object)?;
+    robotic_manipulation_sequence(
+        object,
+        current_object.pose.position,
+        target_position,
+        max_steps,
+        use_release,
+    )
+}
+
+fn runway_robotic_actions_for_description(
+    description: &str,
+    state: &WorldState,
+    generic: &[Action],
+    max_steps: u32,
+) -> Option<Vec<Action>> {
+    let [action] = generic else {
+        return None;
+    };
+
+    match action {
+        Action::Place { object, target } => {
+            let current_object = state.scene.get_object(object)?;
+            robotic_manipulation_sequence(
+                *object,
+                current_object.pose.position,
+                *target,
+                max_steps,
+                true,
+            )
+        }
+        Action::Move { target, .. } => {
+            let object = primary_movable_object_id(state, Some(*target))?;
+            let current_object = state.scene.get_object(&object)?;
+            robotic_manipulation_sequence(
+                object,
+                current_object.pose.position,
+                *target,
+                max_steps,
+                true,
+            )
+        }
+        Action::SpawnObject { template, pose } => {
+            if template.trim().is_empty() || description.contains("spawn") {
+                Some(vec![Action::SpawnObject {
+                    template: template.clone(),
+                    pose: *pose,
+                }])
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn robotic_manipulation_sequence(
+    object: uuid::Uuid,
+    current_position: Position,
+    target_position: Position,
+    max_steps: u32,
+    include_release: bool,
+) -> Option<Vec<Action>> {
+    if max_steps < 4 {
+        return None;
+    }
+
+    let approach = current_position.lerp(target_position, 0.45);
+    let mut actions = vec![
+        Action::Navigate {
+            waypoints: vec![approach],
+        },
+        Action::Grasp {
+            object,
+            grip_force: 7.5,
+        },
+        Action::Move {
+            target: target_position,
+            speed: 0.9,
+        },
+        Action::Place {
+            object,
+            target: target_position,
+        },
+    ];
+
+    if include_release && max_steps >= 5 {
+        actions.push(Action::Release { object });
+    }
+
+    actions.truncate(max_steps as usize);
+
+    if !actions
+        .iter()
+        .any(|action| matches!(action, Action::Place { .. }))
+    {
+        None
+    } else {
+        Some(actions)
     }
 }
 
