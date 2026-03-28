@@ -144,6 +144,7 @@ impl WorldModelProvider for MarbleProvider {
                 resolution: config.resolution,
             }),
             provenance: None,
+            sampling: None,
             guardrail_results: Vec::new(),
             timestamp: chrono::Utc::now(),
         })

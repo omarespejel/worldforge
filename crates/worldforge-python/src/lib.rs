@@ -16,8 +16,8 @@ use worldforge_core::guardrail::{GuardrailConfig, GuardrailCostFunction};
 use worldforge_core::prediction::{
     ComparisonConsensus, ComparisonReportFormat, GuardrailDiagnostics, MultiPrediction,
     ObjectDiagnostic, ObjectDrift, PairwiseAgreement, PlanExecution, PlanGoal, PlanGoalInput,
-    PlannerOptions, PlannerType, PredictionConfig, ProviderScore, StateDiagnostics,
-    StoredPlanRecord,
+    PlannerOptions, PlannerType, PredictionConfig, PredictionSampleSummary,
+    PredictionSamplingMetadata, ProviderScore, StateDiagnostics, StoredPlanRecord,
 };
 use worldforge_core::provider::{
     CostEstimate, EmbeddingInput, EmbeddingOutput, GenerationConfig, GenerationPrompt, Operation,
@@ -1534,7 +1534,7 @@ impl PyWorld {
     }
 
     /// Predict the next world state after applying an action.
-    #[pyo3(signature = (action, steps=1, provider=None, fallback_provider=None, return_video=false, max_latency_ms=None, guardrails_json=None, disable_guardrails=false))]
+    #[pyo3(signature = (action, steps=1, provider=None, fallback_provider=None, return_video=false, max_latency_ms=None, guardrails_json=None, disable_guardrails=false, num_samples=None))]
     #[allow(clippy::too_many_arguments)]
     fn predict(
         &mut self,
@@ -1546,6 +1546,7 @@ impl PyWorld {
         max_latency_ms: Option<u64>,
         guardrails_json: Option<&str>,
         disable_guardrails: bool,
+        num_samples: Option<u32>,
     ) -> PyResult<PyPrediction> {
         let rt = tokio::runtime::Runtime::new().map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("failed to create runtime: {e}"))
@@ -1564,13 +1565,13 @@ impl PyWorld {
         if disable_guardrails {
             config = config.disable_guardrails();
         }
+        config.num_samples = num_samples.unwrap_or(1).max(1);
 
         let prediction = rt
             .block_on(self.world.predict(&action.inner, &config))
             .map_err(|e| {
                 pyo3::exceptions::PyRuntimeError::new_err(format!("prediction failed: {e}"))
             })?;
-        self.world.state = self.world.current_state().clone();
 
         Ok(prediction_from_inner(
             prediction,
@@ -2121,6 +2122,12 @@ impl PyPrediction {
         self.inner.guardrail_results.len()
     }
 
+    /// Sampling metadata when this prediction was produced from multiple samples.
+    #[getter]
+    fn sampling(&self) -> Option<PyPredictionSampling> {
+        self.inner.sampling().map(PyPredictionSampling::from_core)
+    }
+
     /// Get the predicted output state as a `World`.
     fn output_world(&self) -> PyWorld {
         let state = self.inner.output_state.clone();
@@ -2132,6 +2139,15 @@ impl PyPrediction {
         serde_json::to_string(&self.inner).map_err(|e| {
             pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
         })
+    }
+
+    /// Serialize the sampling metadata to JSON if present.
+    fn sampling_json(&self) -> PyResult<Option<String>> {
+        self.inner
+            .sampling()
+            .map(PyPredictionSampling::from_core)
+            .map(|sampling| sampling.to_json())
+            .transpose()
     }
 
     /// Deserialize a prediction from JSON.
@@ -2162,9 +2178,221 @@ impl PyPrediction {
     }
 
     fn __repr__(&self) -> String {
+        if let Some(sampling) = self.inner.sampling() {
+            format!(
+                "Prediction(provider='{}', confidence={:.2}, physics_score={:.2}, samples={})",
+                self.inner.provider,
+                self.inner.confidence,
+                self.inner.physics_scores.overall,
+                sampling.completed_samples
+            )
+        } else {
+            format!(
+                "Prediction(provider='{}', confidence={:.2}, physics_score={:.2})",
+                self.inner.provider, self.inner.confidence, self.inner.physics_scores.overall
+            )
+        }
+    }
+}
+
+/// Summary for one sampled prediction within a multi-sample run.
+#[pyclass(name = "PredictionSampleSummary")]
+#[derive(Clone)]
+pub struct PyPredictionSampleSummary {
+    inner: PredictionSampleSummary,
+}
+
+impl PyPredictionSampleSummary {
+    fn from_core(inner: PredictionSampleSummary) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyPredictionSampleSummary {
+    /// Sample prediction identifier.
+    #[getter]
+    fn id(&self) -> String {
+        self.inner.id.to_string()
+    }
+
+    /// Provider that produced the sample.
+    #[getter]
+    fn provider(&self) -> &str {
+        &self.inner.provider
+    }
+
+    /// Model identifier used for the sample.
+    #[getter]
+    fn model(&self) -> &str {
+        &self.inner.model
+    }
+
+    /// Confidence score for the sample.
+    #[getter]
+    fn confidence(&self) -> f32 {
+        self.inner.confidence
+    }
+
+    /// Physics score for the sample.
+    #[getter]
+    fn physics_score(&self) -> f32 {
+        self.inner.physics_score
+    }
+
+    /// Composite quality score used to choose the best sample.
+    #[getter]
+    fn quality_score(&self) -> f32 {
+        self.inner.quality_score
+    }
+
+    /// Latency in milliseconds for the sample.
+    #[getter]
+    fn latency_ms(&self) -> u64 {
+        self.inner.latency_ms
+    }
+
+    /// Guardrail pass rate for the sample.
+    #[getter]
+    fn guardrail_pass_rate(&self) -> f32 {
+        self.inner.guardrail_pass_rate
+    }
+
+    /// Number of blocking guardrail failures for the sample.
+    #[getter]
+    fn blocking_guardrail_failures(&self) -> usize {
+        self.inner.blocking_guardrail_failures
+    }
+
+    /// Serialize the sample summary to JSON.
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    }
+
+    /// Deserialize a sample summary from JSON.
+    #[staticmethod]
+    fn from_json(json: &str) -> PyResult<Self> {
+        let inner: PredictionSampleSummary = serde_json::from_str(json).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("deserialization error: {e}"))
+        })?;
+        Ok(Self { inner })
+    }
+
+    fn __repr__(&self) -> String {
         format!(
-            "Prediction(provider='{}', confidence={:.2}, physics_score={:.2})",
-            self.inner.provider, self.inner.confidence, self.inner.physics_scores.overall
+            "PredictionSampleSummary(provider='{}', confidence={:.2}, physics_score={:.2}, quality_score={:.2})",
+            self.inner.provider,
+            self.inner.confidence,
+            self.inner.physics_score,
+            self.inner.quality_score
+        )
+    }
+}
+
+/// Sampling metadata attached to multi-sample predictions.
+#[pyclass(name = "PredictionSampling")]
+#[derive(Clone)]
+pub struct PyPredictionSampling {
+    inner: PredictionSamplingMetadata,
+}
+
+impl PyPredictionSampling {
+    fn from_core(inner: PredictionSamplingMetadata) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyPredictionSampling {
+    /// Number of samples requested for the prediction.
+    #[getter]
+    fn requested_samples(&self) -> u32 {
+        self.inner.requested_samples
+    }
+
+    /// Number of samples that completed successfully.
+    #[getter]
+    fn completed_samples(&self) -> u32 {
+        self.inner.completed_samples
+    }
+
+    /// Index of the selected sample.
+    #[getter]
+    fn selected_sample_index(&self) -> usize {
+        self.inner.selected_sample_index
+    }
+
+    /// Mean confidence across the completed samples.
+    #[getter]
+    fn confidence_mean(&self) -> f32 {
+        self.inner.confidence_mean
+    }
+
+    /// Population standard deviation of confidence across the completed samples.
+    #[getter]
+    fn confidence_stddev(&self) -> f32 {
+        self.inner.confidence_stddev
+    }
+
+    /// Mean physics score across the completed samples.
+    #[getter]
+    fn physics_mean(&self) -> f32 {
+        self.inner.physics_mean
+    }
+
+    /// Population standard deviation of physics score across the completed samples.
+    #[getter]
+    fn physics_stddev(&self) -> f32 {
+        self.inner.physics_stddev
+    }
+
+    /// Mean sample quality score used for best-sample selection.
+    #[getter]
+    fn quality_mean(&self) -> f32 {
+        self.inner.quality_mean
+    }
+
+    /// Population standard deviation of the quality score.
+    #[getter]
+    fn quality_stddev(&self) -> f32 {
+        self.inner.quality_stddev
+    }
+
+    /// Per-sample summaries in deterministic execution order.
+    fn sample_summaries(&self) -> Vec<PyPredictionSampleSummary> {
+        self.inner
+            .sample_summaries
+            .iter()
+            .cloned()
+            .map(PyPredictionSampleSummary::from_core)
+            .collect()
+    }
+
+    /// Serialize the sampling metadata to JSON.
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    }
+
+    /// Deserialize sampling metadata from JSON.
+    #[staticmethod]
+    fn from_json(json: &str) -> PyResult<Self> {
+        let inner: PredictionSamplingMetadata = serde_json::from_str(json).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("deserialization error: {e}"))
+        })?;
+        Ok(Self { inner })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PredictionSampling(requested_samples={}, completed_samples={}, selected_sample_index={}, confidence_mean={:.2})",
+            self.inner.requested_samples,
+            self.inner.completed_samples,
+            self.inner.selected_sample_index,
+            self.inner.confidence_mean
         )
     }
 }
@@ -6782,6 +7010,8 @@ fn worldforge(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyHistoryEntry>()?;
     m.add_class::<PyStoredPlanRecord>()?;
     m.add_class::<PyPrediction>()?;
+    m.add_class::<PyPredictionSampleSummary>()?;
+    m.add_class::<PyPredictionSampling>()?;
     m.add_class::<PyObjectDiagnostic>()?;
     m.add_class::<PyObjectDrift>()?;
     m.add_class::<PyGuardrailDiagnostics>()?;
@@ -7532,12 +7762,66 @@ mod tests {
                 None,
                 None,
                 false,
+                None,
             )
             .unwrap();
 
         assert_eq!(prediction.provider(), "mock");
+        assert!(prediction.sampling().is_none());
+        assert!(prediction.sampling_json().unwrap().is_none());
         assert_eq!(world.step(), 1);
         assert_eq!(world.history_length(), 2);
+    }
+
+    #[test]
+    fn test_world_predict_num_samples_exposes_sampling_metadata() {
+        let mut world = PyWorld::new("predict_world", "mock");
+        let prediction = world
+            .predict(
+                &PyAction::move_to(1.0, 0.0, 0.0, 1.0),
+                1,
+                None,
+                None,
+                false,
+                None,
+                None,
+                false,
+                Some(3),
+            )
+            .unwrap();
+
+        let sampling = prediction
+            .sampling()
+            .expect("sampling metadata should be present");
+        assert_eq!(sampling.requested_samples(), 3);
+        assert_eq!(sampling.completed_samples(), 3);
+        assert!(sampling.selected_sample_index() < sampling.completed_samples() as usize);
+        assert_eq!(sampling.sample_summaries().len(), 3);
+        assert_eq!(
+            sampling
+                .sample_summaries()
+                .into_iter()
+                .map(|summary| summary.provider().to_string())
+                .collect::<Vec<_>>(),
+            vec!["mock".to_string(); 3]
+        );
+        assert!(sampling.confidence_mean().is_finite());
+        assert!(sampling.physics_mean().is_finite());
+        assert!(sampling.quality_mean().is_finite());
+        assert!(prediction.__repr__().contains("samples=3"));
+        assert!(prediction
+            .sampling_json()
+            .unwrap()
+            .unwrap()
+            .contains("\"completed_samples\":3"));
+
+        let json = sampling.to_json().unwrap();
+        assert!(json.contains("\"requested_samples\":3"));
+        assert!(json.contains("\"completed_samples\":3"));
+        let restored = PyPredictionSampling::from_json(&json).unwrap();
+        assert_eq!(restored.requested_samples(), 3);
+        assert_eq!(restored.completed_samples(), 3);
+        assert_eq!(restored.sample_summaries().len(), 3);
     }
 
     #[test]
@@ -7553,6 +7837,7 @@ mod tests {
                 None,
                 None,
                 false,
+                None,
             )
             .unwrap();
 
@@ -7569,6 +7854,7 @@ mod tests {
 
         assert_eq!(bundle.model_hash_hex(), format_hash_hex(&model_hash));
         assert_eq!(bundle.provider(), "mock");
+        assert!(restored.sampling().is_none());
         assert!(bundle.verify().unwrap().current_verification().valid());
     }
 
@@ -7585,6 +7871,7 @@ mod tests {
                 None,
                 None,
                 false,
+                None,
             )
             .unwrap();
 
@@ -7605,6 +7892,7 @@ mod tests {
                 None,
                 None,
                 false,
+                None,
             )
             .unwrap();
 
@@ -7631,6 +7919,7 @@ mod tests {
                 None,
                 None,
                 false,
+                None,
             )
             .unwrap();
 
@@ -7722,6 +8011,7 @@ mod tests {
                 None,
                 None,
                 true,
+                None,
             )
             .unwrap();
         let forked = world.fork(Some(0), None).unwrap();
@@ -7853,11 +8143,11 @@ mod tests {
 
         let action = PyAction::move_to(0.2, 0.5, 0.0, 1.0);
         let prediction = world
-            .predict(&action, 1, None, None, false, None, None, false)
+            .predict(&action, 1, None, None, false, None, None, false, None)
             .unwrap();
         let mut predicted_world = prediction.output_world();
         let follow_up = predicted_world
-            .predict(&action, 1, None, None, false, None, None, false)
+            .predict(&action, 1, None, None, false, None, None, false, None)
             .unwrap();
         assert_eq!(follow_up.provider(), "manual-mock");
 
@@ -7878,7 +8168,7 @@ mod tests {
 
         let mut comparison_world = comparison.best_prediction().output_world();
         let comparison_follow_up = comparison_world
-            .predict(&action, 1, None, None, false, None, None, false)
+            .predict(&action, 1, None, None, false, None, None, false, None)
             .unwrap();
         assert_eq!(comparison_follow_up.provider(), "manual-mock");
     }
@@ -7947,6 +8237,7 @@ mod tests {
             None,
             None,
             false,
+            None,
         );
         let error = default_result.unwrap_err().to_string();
         assert!(error.contains("NoCollisions"));
@@ -7964,6 +8255,7 @@ mod tests {
                 None,
                 None,
                 true,
+                None,
             )
             .unwrap();
 
@@ -7996,6 +8288,7 @@ mod tests {
                     r#"[{"guardrail":{"CostFunction":{"function":"ObjectCount","threshold":0.5}},"blocking":true}]"#,
                 ),
                 false,
+                None,
             )
             .unwrap_err()
             .to_string();
@@ -8392,6 +8685,7 @@ mod tests {
                 None,
                 None,
                 true,
+                None,
             )
             .unwrap();
 
@@ -8504,10 +8798,10 @@ mod tests {
         let mut world_b = wf.create_world("compare-b", "mock").unwrap();
         let action = PyAction::move_to(1.0, 0.0, 0.0, 1.0);
         let prediction_a = world_a
-            .predict(&action, 1, None, None, false, None, None, false)
+            .predict(&action, 1, None, None, false, None, None, false, None)
             .unwrap();
         let prediction_b = world_b
-            .predict(&action, 1, None, None, false, None, None, false)
+            .predict(&action, 1, None, None, false, None, None, false, None)
             .unwrap();
 
         let comparison = wf.compare(vec![prediction_a, prediction_b]).unwrap();
@@ -8574,10 +8868,10 @@ mod tests {
         let mut world_b = wf.create_world("compare-b", "mock").unwrap();
         let action = PyAction::move_to(1.0, 0.0, 0.0, 1.0);
         let prediction_a = world_a
-            .predict(&action, 1, None, None, false, None, None, false)
+            .predict(&action, 1, None, None, false, None, None, false, None)
             .unwrap();
         let prediction_b = world_b
-            .predict(&action, 1, None, None, false, None, None, false)
+            .predict(&action, 1, None, None, false, None, None, false, None)
             .unwrap();
         let comparison = wf.compare(vec![prediction_a, prediction_b]).unwrap();
 
@@ -9886,6 +10180,7 @@ mod tests {
                 None,
                 None,
                 false,
+                None,
             )
             .unwrap();
         assert_eq!(follow_up.provider(), "manual-mock");
@@ -10393,6 +10688,7 @@ mod tests {
                 None,
                 None,
                 false,
+                None,
             )
             .unwrap();
 

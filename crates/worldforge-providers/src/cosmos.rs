@@ -1028,6 +1028,7 @@ fn build_prediction_from_response(
             resolution: config.resolution,
         }),
         provenance: None,
+        sampling: None,
         guardrail_results: Vec::new(),
         timestamp: chrono::Utc::now(),
     }

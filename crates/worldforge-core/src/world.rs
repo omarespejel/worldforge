@@ -13,8 +13,8 @@ use crate::error::{Result, WorldForgeError};
 use crate::goal_image;
 use crate::guardrail::{evaluate_guardrails, has_blocking_violation};
 use crate::prediction::{
-    MultiPrediction, Plan, PlanExecution, PlanRequest, PlannerType, Prediction, PredictionConfig,
-    StoredPlanRecord,
+    prediction_quality_score, MultiPrediction, Plan, PlanExecution, PlanRequest, PlannerType,
+    Prediction, PredictionConfig, PredictionSamplingMetadata, StoredPlanRecord,
 };
 use crate::provider::{
     GenerationConfig, GenerationPrompt, Operation, ProviderCapabilities, ProviderRegistry,
@@ -742,8 +742,41 @@ impl World {
         let mut state = state.clone();
         let provider = state.current_state_provider();
         state.ensure_history_initialized(provider)?;
+
+        if config.num_samples <= 1 {
+            return self
+                .predict_single_from_state(&state, action, config, provider_name)
+                .await;
+        }
+
+        let sample_config = single_sample_prediction_config(config);
+        let futures: Vec<BoxFuture<'_, Result<Prediction>>> = (0..config.num_samples)
+            .map(|_| {
+                Box::pin(self.predict_single_from_state(
+                    &state,
+                    action,
+                    &sample_config,
+                    provider_name,
+                )) as BoxFuture<'_, Result<Prediction>>
+            })
+            .collect();
+        let predictions = join_all_ordered(futures)
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?;
+
+        select_best_prediction_sample(predictions, config.num_samples)
+    }
+
+    async fn predict_single_from_state(
+        &self,
+        state: &WorldState,
+        action: &Action,
+        config: &PredictionConfig,
+        provider_name: &str,
+    ) -> Result<Prediction> {
         let mut prediction = self
-            .run_prediction_with_fallback(&state, action, config, provider_name)
+            .run_prediction_with_fallback(state, action, config, provider_name)
             .await?;
 
         let results = evaluate_guardrails(&config.guardrails, &prediction.output_state);
@@ -865,6 +898,57 @@ impl World {
             }
         }
     }
+}
+
+fn single_sample_prediction_config(config: &PredictionConfig) -> PredictionConfig {
+    let mut sample_config = config.clone();
+    sample_config.num_samples = 1;
+    sample_config
+}
+
+fn select_best_prediction_sample(
+    predictions: Vec<Prediction>,
+    requested_samples: u32,
+) -> Result<Prediction> {
+    if predictions.is_empty() {
+        return Err(WorldForgeError::InternalError(
+            "no prediction samples generated".to_string(),
+        ));
+    }
+
+    let selected_sample_index = predictions
+        .iter()
+        .enumerate()
+        .max_by(|(left_index, left), (right_index, right)| {
+            prediction_quality_score(left)
+                .total_cmp(&prediction_quality_score(right))
+                .then_with(|| left.confidence.total_cmp(&right.confidence))
+                .then_with(|| {
+                    left.physics_scores
+                        .overall
+                        .total_cmp(&right.physics_scores.overall)
+                })
+                .then_with(|| right.latency_ms.cmp(&left.latency_ms))
+                .then_with(|| right_index.cmp(left_index))
+        })
+        .map(|(index, _)| index)
+        .ok_or_else(|| {
+            WorldForgeError::InternalError("no prediction samples generated".to_string())
+        })?;
+
+    let sampling = PredictionSamplingMetadata::from_predictions(
+        &predictions,
+        requested_samples,
+        selected_sample_index,
+    );
+    let mut selected = predictions
+        .into_iter()
+        .nth(selected_sample_index)
+        .ok_or_else(|| {
+            WorldForgeError::InternalError("no prediction samples generated".to_string())
+        })?;
+    selected.set_sampling_metadata(Some(sampling));
+    Ok(selected)
 }
 
 fn validate_prediction_modalities(
@@ -3675,6 +3759,145 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_predict_num_samples_selects_best_sample_and_commits_it() {
+        let (state, object_id) = sample_planning_state();
+        let registry = std::sync::Arc::new({
+            let mut registry = ProviderRegistry::new();
+            registry.register(Box::new(SamplingProvider::new(
+                "sampler",
+                vec![
+                    SampleOutcome {
+                        confidence: 0.35,
+                        physics: 0.40,
+                        latency_ms: 25,
+                        object_x: 0.5,
+                    },
+                    SampleOutcome {
+                        confidence: 0.82,
+                        physics: 0.93,
+                        latency_ms: 10,
+                        object_x: 1.5,
+                    },
+                    SampleOutcome {
+                        confidence: 0.70,
+                        physics: 0.75,
+                        latency_ms: 18,
+                        object_x: 1.0,
+                    },
+                ],
+            )));
+            registry
+        });
+        let mut world = World::new(state, "sampler", registry);
+        let action = Action::Move {
+            target: Position {
+                x: 2.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            speed: 1.0,
+        };
+        let config = PredictionConfig {
+            num_samples: 3,
+            ..PredictionConfig::default()
+        };
+
+        let prediction = world.predict(&action, &config).await.unwrap();
+        let sampling = prediction.sampling().unwrap();
+
+        assert_eq!(sampling.requested_samples, 3);
+        assert_eq!(sampling.completed_samples, 3);
+        assert_eq!(sampling.selected_sample_index, 1);
+        assert_eq!(sampling.sample_summaries.len(), 3);
+        assert!(
+            sampling.sample_summaries[1].quality_score > sampling.sample_summaries[0].quality_score
+        );
+        assert_eq!(
+            prediction
+                .output_state
+                .scene
+                .get_object(&object_id)
+                .unwrap()
+                .pose
+                .position
+                .x,
+            1.5
+        );
+        assert_eq!(
+            world
+                .current_state()
+                .scene
+                .get_object(&object_id)
+                .unwrap()
+                .pose
+                .position
+                .x,
+            1.5
+        );
+    }
+
+    #[tokio::test]
+    async fn test_predict_num_samples_uses_fallback_for_each_sample() {
+        let state = WorldState::new("fallback-sampling", "primary");
+        let registry = std::sync::Arc::new({
+            let mut registry = ProviderRegistry::new();
+            registry.register(Box::new(FailingProvider::new("primary")));
+            registry.register(Box::new(SuccessfulProvider::new("fallback")));
+            registry
+        });
+        let mut world = World::new(state, "primary", registry);
+        let action = Action::Move {
+            target: Position::default(),
+            speed: 1.0,
+        };
+        let config = PredictionConfig {
+            num_samples: 2,
+            fallback_provider: Some("fallback".to_string()),
+            ..PredictionConfig::default()
+        };
+
+        let prediction = world.predict(&action, &config).await.unwrap();
+        let sampling = prediction.sampling().unwrap();
+
+        assert_eq!(prediction.provider, "fallback");
+        assert_eq!(sampling.completed_samples, 2);
+        assert!(sampling
+            .sample_summaries
+            .iter()
+            .all(|sample| sample.provider == "fallback"));
+    }
+
+    #[tokio::test]
+    async fn test_predict_single_sample_keeps_sampling_metadata_empty() {
+        let (state, _) = sample_planning_state();
+        let registry = std::sync::Arc::new({
+            let mut registry = ProviderRegistry::new();
+            registry.register(Box::new(SamplingProvider::new(
+                "sampler",
+                vec![SampleOutcome {
+                    confidence: 0.75,
+                    physics: 0.8,
+                    latency_ms: 12,
+                    object_x: 0.25,
+                }],
+            )));
+            registry
+        });
+        let mut world = World::new(state, "sampler", registry);
+        let action = Action::Move {
+            target: Position::default(),
+            speed: 1.0,
+        };
+
+        let prediction = world
+            .predict(&action, &PredictionConfig::default())
+            .await
+            .unwrap();
+
+        assert!(prediction.sampling().is_none());
+    }
+
+    #[tokio::test]
     async fn test_predict_rejects_unsupported_depth_request() {
         let state = WorldState::new("depth", "primary");
         let registry = std::sync::Arc::new({
@@ -4446,6 +4669,21 @@ mod tests {
         capabilities: ProviderCapabilities,
     }
 
+    #[derive(Debug, Clone)]
+    struct SampleOutcome {
+        confidence: f32,
+        physics: f32,
+        latency_ms: u64,
+        object_x: f32,
+    }
+
+    #[derive(Debug, Clone)]
+    struct SamplingProvider {
+        name: String,
+        outcomes: Arc<Vec<SampleOutcome>>,
+        next_outcome: Arc<AtomicUsize>,
+    }
+
     impl SuccessfulProvider {
         fn new(name: &str) -> Self {
             Self::with_capabilities(name, test_capabilities(false))
@@ -4455,6 +4693,16 @@ mod tests {
             Self {
                 name: name.to_string(),
                 capabilities,
+            }
+        }
+    }
+
+    impl SamplingProvider {
+        fn new(name: &str, outcomes: Vec<SampleOutcome>) -> Self {
+            Self {
+                name: name.to_string(),
+                outcomes: Arc::new(outcomes),
+                next_outcome: Arc::new(AtomicUsize::new(0)),
             }
         }
     }
@@ -4740,6 +4988,7 @@ mod tests {
                 asset_fingerprint: None,
                 backend: Some("test".to_string()),
             }),
+            sampling: None,
             guardrail_results: Vec::new(),
             timestamp: chrono::Utc::now(),
         }
@@ -5057,6 +5306,114 @@ mod tests {
     }
 
     #[async_trait]
+    impl WorldModelProvider for SamplingProvider {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            test_capabilities(false)
+        }
+
+        async fn predict(
+            &self,
+            state: &WorldState,
+            action: &Action,
+            _config: &PredictionConfig,
+        ) -> Result<Prediction> {
+            let index = self.next_outcome.fetch_add(1, Ordering::SeqCst);
+            let outcome = self
+                .outcomes
+                .get(index)
+                .cloned()
+                .unwrap_or_else(|| self.outcomes.last().cloned().expect("sample outcome"));
+            let mut output_state = state.clone();
+            if let Some(object_id) = output_state
+                .scene
+                .list_objects()
+                .into_iter()
+                .next()
+                .map(|object| object.id)
+            {
+                if let Some(object) = output_state.scene.get_object_mut(&object_id) {
+                    object.pose.position.x = outcome.object_x;
+                }
+            }
+
+            Ok(Prediction {
+                id: uuid::Uuid::new_v4(),
+                provider: self.name.clone(),
+                model: format!("{}-sampler", self.name),
+                input_state: state.clone(),
+                action: action.clone(),
+                output_state,
+                video: None,
+                confidence: outcome.confidence,
+                physics_scores: PhysicsScores {
+                    overall: outcome.physics,
+                    object_permanence: outcome.physics,
+                    gravity_compliance: outcome.physics,
+                    collision_accuracy: outcome.physics,
+                    spatial_consistency: outcome.physics,
+                    temporal_consistency: outcome.physics,
+                },
+                latency_ms: outcome.latency_ms,
+                cost: CostEstimate {
+                    usd: outcome.latency_ms as f64 / 1_000.0,
+                    credits: 1.0,
+                    estimated_latency_ms: outcome.latency_ms,
+                },
+                provenance: None,
+                sampling: None,
+                guardrail_results: Vec::new(),
+                timestamp: chrono::Utc::now(),
+            })
+        }
+
+        async fn generate(
+            &self,
+            _prompt: &GenerationPrompt,
+            _config: &GenerationConfig,
+        ) -> Result<VideoClip> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.clone(),
+                capability: "generate".to_string(),
+            })
+        }
+
+        async fn reason(&self, _input: &ReasoningInput, _query: &str) -> Result<ReasoningOutput> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.clone(),
+                capability: "reason".to_string(),
+            })
+        }
+
+        async fn transfer(
+            &self,
+            _source: &VideoClip,
+            _controls: &SpatialControls,
+            _config: &TransferConfig,
+        ) -> Result<VideoClip> {
+            Err(WorldForgeError::UnsupportedCapability {
+                provider: self.name.clone(),
+                capability: "transfer".to_string(),
+            })
+        }
+
+        async fn health_check(&self) -> Result<HealthStatus> {
+            Ok(HealthStatus {
+                healthy: true,
+                message: "sampling provider".to_string(),
+                latency_ms: 1,
+            })
+        }
+
+        fn estimate_cost(&self, _operation: &Operation) -> CostEstimate {
+            CostEstimate::default()
+        }
+    }
+
+    #[async_trait]
     impl WorldModelProvider for PlanningProvider {
         fn name(&self) -> &str {
             &self.name
@@ -5094,6 +5451,7 @@ mod tests {
                 latency_ms: 1,
                 cost: CostEstimate::default(),
                 provenance: None,
+                sampling: None,
                 guardrail_results: Vec::new(),
                 timestamp: chrono::Utc::now(),
             })
@@ -5190,6 +5548,7 @@ mod tests {
                 latency_ms: 1,
                 cost: CostEstimate::default(),
                 provenance: None,
+                sampling: None,
                 guardrail_results: Vec::new(),
                 timestamp: chrono::Utc::now(),
             })

@@ -148,6 +148,7 @@ impl WorldModelProvider for MockProvider {
             latency_ms: self.latency_ms,
             cost: CostEstimate::default(),
             provenance: None,
+            sampling: None,
             guardrail_results: Vec::new(),
             timestamp: chrono::Utc::now(),
         })

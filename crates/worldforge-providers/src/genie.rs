@@ -1738,6 +1738,7 @@ impl WorldModelProvider for GenieProvider {
             latency_ms,
             cost,
             provenance: None,
+            sampling: None,
             guardrail_results: Vec::new(),
             timestamp: chrono::Utc::now(),
         })

@@ -3,11 +3,10 @@
 //! Handles forward prediction of world states, multi-provider comparison,
 //! and planning through world models.
 
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Write};
 use std::str::FromStr;
-
-use serde::{Deserialize, Serialize};
 
 use crate::action::Action;
 use crate::error::{Result, WorldForgeError};
@@ -58,10 +57,61 @@ pub struct Prediction {
     /// Execution provenance for the model run, if the provider surfaced it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<PredictionProvenance>,
+    /// Aggregated metadata for multi-sample prediction runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampling: Option<PredictionSamplingMetadata>,
     /// Guardrail evaluation results.
     pub guardrail_results: Vec<GuardrailResult>,
     /// When the prediction was generated.
     pub timestamp: chrono::DateTime<chrono::Utc>,
+}
+
+/// Aggregated uncertainty metadata for a multi-sample prediction run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PredictionSamplingMetadata {
+    /// Number of samples requested by the caller.
+    pub requested_samples: u32,
+    /// Number of samples that completed successfully.
+    pub completed_samples: u32,
+    /// Index of the selected best sample within `sample_summaries`.
+    pub selected_sample_index: usize,
+    /// Mean confidence across all completed samples.
+    pub confidence_mean: f32,
+    /// Population standard deviation of confidence across all completed samples.
+    pub confidence_stddev: f32,
+    /// Mean overall physics score across all completed samples.
+    pub physics_mean: f32,
+    /// Population standard deviation of overall physics score across all completed samples.
+    pub physics_stddev: f32,
+    /// Mean quality score used during best-sample selection.
+    pub quality_mean: f32,
+    /// Population standard deviation of the quality score used during best-sample selection.
+    pub quality_stddev: f32,
+    /// Per-sample summaries in deterministic execution order.
+    pub sample_summaries: Vec<PredictionSampleSummary>,
+}
+
+/// Compact summary for one completed sample within a multi-sample prediction run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PredictionSampleSummary {
+    /// Prediction identifier for the sample.
+    pub id: PredictionId,
+    /// Provider that produced this sample.
+    pub provider: String,
+    /// Model identifier used for this sample.
+    pub model: String,
+    /// Provider-reported confidence for the sample.
+    pub confidence: f32,
+    /// Overall physics plausibility score for the sample.
+    pub physics_score: f32,
+    /// Composite quality score used for deterministic best-sample selection.
+    pub quality_score: f32,
+    /// End-to-end latency for the sample in milliseconds.
+    pub latency_ms: u64,
+    /// Fraction of evaluated guardrails that passed for this sample.
+    pub guardrail_pass_rate: f32,
+    /// Number of blocking guardrail failures recorded for this sample.
+    pub blocking_guardrail_failures: usize,
 }
 
 /// Physics plausibility scores for a prediction.
@@ -143,6 +193,73 @@ impl ComparisonReportFormat {
             Self::Markdown => "markdown",
             Self::Csv => "csv",
         }
+    }
+}
+
+impl PredictionSampleSummary {
+    fn from_prediction(prediction: &Prediction) -> Self {
+        let guardrails = build_guardrail_diagnostics(&prediction.guardrail_results);
+        Self {
+            id: prediction.id,
+            provider: prediction.provider.clone(),
+            model: prediction.model.clone(),
+            confidence: prediction.confidence,
+            physics_score: prediction.physics_scores.overall,
+            quality_score: prediction_quality_score(prediction),
+            latency_ms: prediction.latency_ms,
+            guardrail_pass_rate: guardrails.pass_rate,
+            blocking_guardrail_failures: guardrails.blocking_failures,
+        }
+    }
+}
+
+impl PredictionSamplingMetadata {
+    /// Build aggregate metadata from a completed set of prediction samples.
+    pub fn from_predictions(
+        predictions: &[Prediction],
+        requested_samples: u32,
+        selected_sample_index: usize,
+    ) -> Self {
+        let sample_summaries: Vec<_> = predictions
+            .iter()
+            .map(PredictionSampleSummary::from_prediction)
+            .collect();
+        let confidence_values: Vec<_> = sample_summaries
+            .iter()
+            .map(|sample| sample.confidence)
+            .collect();
+        let physics_values: Vec<_> = sample_summaries
+            .iter()
+            .map(|sample| sample.physics_score)
+            .collect();
+        let quality_values: Vec<_> = sample_summaries
+            .iter()
+            .map(|sample| sample.quality_score)
+            .collect();
+
+        Self {
+            requested_samples,
+            completed_samples: predictions.len() as u32,
+            selected_sample_index,
+            confidence_mean: average_f32(confidence_values.iter().copied()),
+            confidence_stddev: standard_deviation_f32(&confidence_values),
+            physics_mean: average_f32(physics_values.iter().copied()),
+            physics_stddev: standard_deviation_f32(&physics_values),
+            quality_mean: average_f32(quality_values.iter().copied()),
+            quality_stddev: standard_deviation_f32(&quality_values),
+            sample_summaries,
+        }
+    }
+}
+
+impl Prediction {
+    /// Return the optional multi-sample metadata associated with this prediction.
+    pub fn sampling(&self) -> Option<PredictionSamplingMetadata> {
+        self.sampling.clone()
+    }
+
+    pub(crate) fn set_sampling_metadata(&mut self, sampling: Option<PredictionSamplingMetadata>) {
+        self.sampling = sampling;
     }
 }
 
@@ -471,6 +588,10 @@ fn build_provider_score(prediction: &Prediction) -> ProviderScore {
     .with_quality_score()
 }
 
+pub(crate) fn prediction_quality_score(prediction: &Prediction) -> f32 {
+    build_provider_score(prediction).quality_score
+}
+
 trait ProviderScoreExt {
     fn with_quality_score(self) -> Self;
 }
@@ -509,6 +630,23 @@ fn build_guardrail_diagnostics(results: &[GuardrailResult]) -> GuardrailDiagnost
         blocking_failures,
         pass_rate,
     }
+}
+
+fn standard_deviation_f32(values: &[f32]) -> f32 {
+    if values.is_empty() {
+        return 0.0;
+    }
+
+    let mean = average_f32(values.iter().copied());
+    let variance = values
+        .iter()
+        .map(|value| {
+            let delta = *value - mean;
+            delta * delta
+        })
+        .sum::<f32>()
+        / values.len() as f32;
+    variance.sqrt()
 }
 
 fn build_state_diagnostics(
@@ -1699,6 +1837,7 @@ mod tests {
                 estimated_latency_ms: latency_ms,
             },
             provenance: None,
+            sampling: None,
             guardrail_results: Vec::new(),
             timestamp: chrono::Utc::now(),
         }
@@ -1840,6 +1979,7 @@ mod tests {
                 estimated_latency_ms: latency_ms,
             },
             provenance: None,
+            sampling: None,
             guardrail_results: vec![GuardrailResult {
                 guardrail: Guardrail::NoCollisions,
                 guardrail_name: "NoCollisions".to_string(),
@@ -1862,6 +2002,7 @@ mod tests {
         assert_eq!(config.steps, 1);
         assert_eq!(config.resolution, (640, 480));
         assert!(!config.return_video);
+        assert_eq!(config.num_samples, 1);
     }
 
     #[test]
@@ -1878,6 +2019,42 @@ mod tests {
         assert_eq!(config.fallback_provider.as_deref(), Some("mock"));
         assert_eq!(config.steps, 1);
         assert_eq!(config.resolution, (640, 480));
+        assert_eq!(config.num_samples, 1);
+    }
+
+    #[test]
+    fn test_prediction_serialization_omits_empty_sampling_metadata() {
+        let prediction = sample_prediction("provider-a", 0.8, 24);
+        let json = serde_json::to_value(&prediction).unwrap();
+
+        assert!(json["provenance"].is_null());
+    }
+
+    #[test]
+    fn test_sampling_metadata_aggregates_prediction_samples() {
+        let predictions = vec![
+            sample_prediction("provider-a", 0.5, 20),
+            sample_prediction("provider-a", 0.8, 30),
+            sample_prediction("provider-a", 0.7, 40),
+        ];
+
+        let metadata = PredictionSamplingMetadata::from_predictions(&predictions, 3, 1);
+
+        assert_eq!(metadata.requested_samples, 3);
+        assert_eq!(metadata.completed_samples, 3);
+        assert_eq!(metadata.selected_sample_index, 1);
+        assert_eq!(metadata.sample_summaries.len(), 3);
+        assert!(metadata.confidence_mean > 0.0);
+        assert!(metadata.confidence_stddev > 0.0);
+        assert!(metadata.quality_mean > 0.0);
+    }
+
+    #[test]
+    fn test_prediction_quality_score_prefers_higher_signal_predictions() {
+        let low = diagnostic_prediction("provider-a", 0.4, 200, 0.0, true, false, false);
+        let high = diagnostic_prediction("provider-a", 0.9, 50, 0.0, true, false, true);
+
+        assert!(prediction_quality_score(&high) > prediction_quality_score(&low));
     }
 
     #[test]

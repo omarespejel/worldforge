@@ -17,7 +17,8 @@ use worldforge_core::error::WorldForgeError;
 use worldforge_core::guardrail::{Guardrail, GuardrailConfig};
 use worldforge_core::prediction::{
     ComparisonReportFormat, MultiPrediction, Plan, PlanExecution, PlanGoal, PlanGoalInput,
-    PlanRequest, PlannerOptions, PlannerType, Prediction, PredictionConfig, StoredPlanRecord,
+    PlanRequest, PlannerOptions, PlannerType, Prediction, PredictionConfig,
+    PredictionSamplingMetadata, StoredPlanRecord,
 };
 use worldforge_core::provider::{
     EmbeddingInput, GenerationConfig, GenerationPrompt, Operation, ProviderDescriptor,
@@ -240,6 +241,9 @@ pub enum Commands {
         /// Provider to use.
         #[arg(long, default_value = "mock")]
         provider: String,
+        /// Number of prediction samples to request.
+        #[arg(long)]
+        num_samples: Option<u32>,
         /// Optional fallback provider if the primary provider fails.
         #[arg(long)]
         fallback_provider: Option<String>,
@@ -1066,6 +1070,7 @@ pub async fn run() -> Result<()> {
             action,
             steps,
             provider,
+            num_samples,
             fallback_provider,
             timeout_ms,
             disable_guardrails,
@@ -1076,6 +1081,7 @@ pub async fn run() -> Result<()> {
                 &action,
                 steps,
                 &provider,
+                num_samples,
                 fallback_provider.as_deref(),
                 timeout_ms,
                 disable_guardrails,
@@ -2467,6 +2473,7 @@ async fn cmd_predict(
     action_str: &str,
     steps: u32,
     provider: &str,
+    num_samples: Option<u32>,
     fallback_provider: Option<&str>,
     timeout_ms: Option<u64>,
     disable_guardrails: bool,
@@ -2484,12 +2491,7 @@ async fn cmd_predict(
     }
     let action = parse_action(action_str, &state)?;
     let mut world = worldforge_core::world::World::new(state, provider, registry);
-    let mut config = PredictionConfig {
-        steps,
-        fallback_provider: fallback_provider.map(ToOwned::to_owned),
-        max_latency_ms: timeout_ms,
-        ..PredictionConfig::default()
-    };
+    let mut config = build_predict_config(steps, num_samples, fallback_provider, timeout_ms);
     if disable_guardrails {
         config = config.disable_guardrails();
     }
@@ -2513,9 +2515,38 @@ async fn cmd_predict(
     println!("  Confidence: {:.2}", prediction.confidence);
     println!("  Physics score: {:.2}", prediction.physics_scores.overall);
     println!("  Latency: {}ms", prediction.latency_ms);
+    if let Some(summary) = predict_sampling_summary(prediction.sampling.as_ref()) {
+        println!("  {summary}");
+    }
     println!("  New time step: {}", world.current_state().time.step);
 
     Ok(())
+}
+
+fn build_predict_config(
+    steps: u32,
+    num_samples: Option<u32>,
+    fallback_provider: Option<&str>,
+    timeout_ms: Option<u64>,
+) -> PredictionConfig {
+    PredictionConfig {
+        steps,
+        num_samples: num_samples.unwrap_or(1).max(1),
+        fallback_provider: fallback_provider.map(ToOwned::to_owned),
+        max_latency_ms: timeout_ms,
+        ..PredictionConfig::default()
+    }
+}
+
+fn predict_sampling_summary(sampling: Option<&PredictionSamplingMetadata>) -> Option<String> {
+    sampling.map(|sampling| {
+        format!(
+            "Sampling: {} requested, {} completed, best sample #{}",
+            sampling.requested_samples,
+            sampling.completed_samples,
+            sampling.selected_sample_index + 1
+        )
+    })
 }
 
 async fn cmd_generate(
@@ -4670,6 +4701,7 @@ mod tests {
                 credits: 1.0,
                 estimated_latency_ms: latency_ms,
             },
+            sampling: None,
             guardrail_results: Vec::new(),
             timestamp: chrono::Utc::now(),
         }
@@ -5539,6 +5571,8 @@ mod tests {
             "move 1 2 3",
             "--provider",
             "runway",
+            "--num-samples",
+            "4",
             "--fallback-provider",
             "mock",
             "--timeout-ms",
@@ -5549,18 +5583,53 @@ mod tests {
         match cli.command {
             Commands::Predict {
                 provider,
+                num_samples,
                 fallback_provider,
                 timeout_ms,
                 disable_guardrails,
                 ..
             } => {
                 assert_eq!(provider, "runway");
+                assert_eq!(num_samples, Some(4));
                 assert_eq!(fallback_provider.as_deref(), Some("mock"));
                 assert_eq!(timeout_ms, Some(250));
                 assert!(!disable_guardrails);
             }
             _ => panic!("expected Predict"),
         }
+    }
+
+    #[test]
+    fn test_build_predict_config_uses_requested_sample_count() {
+        let config = build_predict_config(3, Some(8), Some("mock"), Some(120));
+
+        assert_eq!(config.steps, 3);
+        assert_eq!(config.num_samples, 8);
+        assert_eq!(config.fallback_provider.as_deref(), Some("mock"));
+        assert_eq!(config.max_latency_ms, Some(120));
+    }
+
+    #[test]
+    fn test_predict_sampling_summary_uses_prediction_metadata() {
+        assert_eq!(predict_sampling_summary(None), None);
+
+        let sampling = PredictionSamplingMetadata {
+            requested_samples: 4,
+            completed_samples: 4,
+            selected_sample_index: 1,
+            confidence_mean: 0.5,
+            confidence_stddev: 0.1,
+            physics_mean: 0.4,
+            physics_stddev: 0.05,
+            quality_mean: 0.45,
+            quality_stddev: 0.06,
+            sample_summaries: Vec::new(),
+        };
+
+        assert_eq!(
+            predict_sampling_summary(Some(&sampling)).as_deref(),
+            Some("Sampling: 4 requested, 4 completed, best sample #2")
+        );
     }
 
     #[test]
@@ -7777,6 +7846,7 @@ mod tests {
             "mock",
             None,
             None,
+            None,
             false,
         )
         .await;
@@ -7796,6 +7866,7 @@ mod tests {
             "set-weather rain",
             1,
             "mock",
+            None,
             None,
             None,
             true,
@@ -7839,6 +7910,7 @@ mod tests {
             "mock",
             None,
             None,
+            None,
             true,
         )
         .await
@@ -7875,6 +7947,7 @@ mod tests {
             "set-weather rain",
             1,
             "mock",
+            None,
             None,
             None,
             true,

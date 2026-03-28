@@ -3655,6 +3655,7 @@ mod tests {
                 estimated_latency_ms: latency_ms,
             },
             provenance: None,
+            sampling: None,
             guardrail_results: Vec::new(),
             timestamp: chrono::Utc::now(),
         }
@@ -5002,7 +5003,7 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
         let id = v["data"]["id"].as_str().unwrap();
 
-        let pred_body = r#"{"action":{"Move":{"target":{"x":1.0,"y":0.0,"z":0.0},"speed":1.0}},"provider":"mock"}"#;
+        let pred_body = r#"{"action":{"Move":{"target":{"x":1.0,"y":0.0,"z":0.0},"speed":1.0}},"provider":"mock","config":{"num_samples":4}}"#;
         let (status, resp) = route(
             "POST",
             &format!("/v1/worlds/{id}/predict"),
@@ -5014,6 +5015,23 @@ mod tests {
 
         let prediction: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert_eq!(prediction["data"]["provider"], "mock");
+        assert_eq!(prediction["data"]["sampling"]["requested_samples"], 4);
+        assert_eq!(prediction["data"]["sampling"]["completed_samples"], 4);
+        assert_eq!(
+            prediction["data"]["sampling"]["sample_summaries"]
+                .as_array()
+                .unwrap()
+                .len(),
+            4
+        );
+        assert!(
+            prediction["data"]["sampling"]["selected_sample_index"]
+                .as_u64()
+                .unwrap()
+                < 4
+        );
+        assert!(prediction["data"]["sampling"]["confidence_mean"].is_number());
+        assert!(prediction["data"]["sampling"]["quality_mean"].is_number());
 
         let (status, resp) = route("GET", &format!("/v1/worlds/{id}"), "", &state).await;
         assert_eq!(status, 200);
@@ -5047,6 +5065,7 @@ mod tests {
         assert_eq!(status, 200);
         let prediction: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert_eq!(prediction["data"]["provider"], "alt-mock");
+        assert!(prediction["data"].get("sampling").is_none());
     }
 
     #[tokio::test]
@@ -5328,6 +5347,9 @@ mod tests {
         let id = value["data"]["id"].as_str().unwrap();
 
         let execute_body = serde_json::json!({
+            "config": {
+                "num_samples": 3
+            },
             "plan": {
                 "actions": [
                     {
@@ -5361,6 +5383,21 @@ mod tests {
         assert_eq!(
             execution["data"]["predictions"].as_array().unwrap().len(),
             1
+        );
+        assert_eq!(
+            execution["data"]["predictions"][0]["sampling"]["requested_samples"],
+            3
+        );
+        assert_eq!(
+            execution["data"]["predictions"][0]["sampling"]["completed_samples"],
+            3
+        );
+        assert_eq!(
+            execution["data"]["predictions"][0]["sampling"]["sample_summaries"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
         );
         assert_eq!(execution["data"]["final_state"]["time"]["step"], 1);
 

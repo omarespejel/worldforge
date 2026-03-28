@@ -83,10 +83,15 @@ assert world.get_object_by_id(mug.id).is_graspable
 # visual embeddings across Python, CLI, and REST object workflows.
 
 # Predict the next state
-prediction = world.predict(Action.move_to(0.25, 0.8, 0.0), steps=10)
+prediction = world.predict(Action.move_to(0.25, 0.8, 0.0), steps=10, num_samples=4)
 
 # Check physics plausibility
 score = prediction.physics_score  # 0.0 - 1.0
+
+# When multiple samples are requested, sampling metadata is attached.
+sampling = prediction.sampling()
+assert sampling is not None
+assert sampling.requested_samples == 4
 
 # Plan a sequence of actions to achieve a goal
 plan = world.plan(
@@ -468,7 +473,7 @@ cargo run -p worldforge-cli -- export --world <id> --output snapshots/world.msgp
 cargo run -p worldforge-cli -- import --input snapshots/world.msgpack --format msgpack --new-id --name kitchen-copy
 cargo run -p worldforge-cli -- history --world <id> --output-json histories/<id>.json
 cargo run -p worldforge-cli -- restore --world <id> --history-index 0 --output-json restored/<id>.json
-cargo run -p worldforge-cli -- predict --world <id> --action "move 1 0 0" --provider runway --fallback-provider mock --timeout-ms 500
+cargo run -p worldforge-cli -- predict --world <id> --action "move 1 0 0" --provider runway --fallback-provider mock --num-samples 4 --timeout-ms 500
 cargo run -p worldforge-cli -- compare --prediction-json runs/mock.json --prediction-json runs/runway.json --output-json reports/compare.json
 cargo run -p worldforge-cli -- compare --world-snapshot snapshots/world.msgpack --action "move 1 0 0" --providers mock,runway --output-json reports/compare-from-snapshot.json
 cargo run -p worldforge-cli -- compare --world-snapshot snapshots/world.msgpack --action "move 1 0 0" --providers mock,runway --output-json reports/compare.json --output-markdown reports/compare.md --output-csv reports/compare.csv

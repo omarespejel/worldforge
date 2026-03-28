@@ -302,6 +302,7 @@ impl WorldModelProvider for JepaProvider {
                 resolution: config.resolution,
             }),
             provenance: Some(self.prediction_provenance(&assets)),
+            sampling: None,
             guardrail_results: Vec::new(),
             timestamp: chrono::Utc::now(),
         })
