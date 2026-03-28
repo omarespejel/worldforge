@@ -959,7 +959,7 @@ fn finalize_provider_plan(
                 .map(|result| {
                     format!(
                         "{}: {}",
-                        result.guardrail_name,
+                        result.canonical_identity(),
                         result.violation_details.as_deref().unwrap_or("violation")
                     )
                 })

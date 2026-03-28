@@ -9,10 +9,77 @@ use crate::types::{BBox, ObjectId};
 
 const DEFAULT_ENERGY_TOLERANCE_JOULES: f32 = 5_000.0;
 
+/// Serializable scene metric used by [`Guardrail::CostFunction`].
+///
+/// The specification models cost functions as callbacks. WorldForge needs a
+/// stable JSON shape for CLI, REST, Python, and proof artifacts, so the core
+/// implementation exposes a small deterministic registry of scene-level metrics
+/// that can be thresholded without runtime closures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum GuardrailCostFunction {
+    /// Sum of kinetic energy across all objects in the scene.
+    SceneKineticEnergy,
+    /// Number of objects currently present.
+    ObjectCount,
+    /// Average object height (`y` position) across the scene.
+    AverageObjectHeight,
+    /// Maximum observed object speed.
+    MaxObjectSpeed,
+}
+
+impl GuardrailCostFunction {
+    /// Canonical identifier for this metric.
+    pub fn canonical_name(self) -> &'static str {
+        match self {
+            Self::SceneKineticEnergy => "SceneKineticEnergy",
+            Self::ObjectCount => "ObjectCount",
+            Self::AverageObjectHeight => "AverageObjectHeight",
+            Self::MaxObjectSpeed => "MaxObjectSpeed",
+        }
+    }
+
+    fn evaluate(self, state: &crate::state::WorldState) -> f32 {
+        match self {
+            Self::SceneKineticEnergy => state
+                .scene
+                .objects
+                .values()
+                .map(|obj| {
+                    let mass = obj.physics.mass.unwrap_or(1.0);
+                    let speed = obj.velocity.magnitude();
+                    0.5 * mass * speed * speed
+                })
+                .sum(),
+            Self::ObjectCount => state.scene.objects.len() as f32,
+            Self::AverageObjectHeight => {
+                let count = state.scene.objects.len() as f32;
+                if count == 0.0 {
+                    0.0
+                } else {
+                    state
+                        .scene
+                        .objects
+                        .values()
+                        .map(|obj| obj.pose.position.y)
+                        .sum::<f32>()
+                        / count
+                }
+            }
+            Self::MaxObjectSpeed => state
+                .scene
+                .objects
+                .values()
+                .map(|obj| obj.velocity.magnitude())
+                .fold(0.0, f32::max),
+        }
+    }
+}
+
 /// A safety or physics constraint to enforce.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub enum Guardrail {
     /// Disable all guardrail evaluation for an operation.
+    #[default]
     Disabled,
 
     /// No collisions between objects.
@@ -30,6 +97,12 @@ pub enum Guardrail {
     /// Energy must be conserved within a tolerance.
     EnergyConservation { tolerance: f32 },
 
+    /// Threshold a numeric scene metric against a maximum value.
+    CostFunction {
+        function: GuardrailCostFunction,
+        threshold: f32,
+    },
+
     /// Certain conditions must never be true.
     ForbiddenStates {
         conditions: Vec<crate::action::Condition>,
@@ -40,6 +113,32 @@ pub enum Guardrail {
 
     /// Human safety exclusion zone.
     HumanSafetyZone { radius: f32 },
+}
+
+impl Guardrail {
+    /// Human-readable variant name used for compatibility output.
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Self::Disabled => "Disabled",
+            Self::NoCollisions => "NoCollisions",
+            Self::StayUpright { .. } => "StayUpright",
+            Self::BoundaryConstraint { .. } => "BoundaryConstraint",
+            Self::EnergyConservation { .. } => "EnergyConservation",
+            Self::CostFunction { .. } => "CostFunction",
+            Self::ForbiddenStates { .. } => "ForbiddenStates",
+            Self::MaxVelocity { .. } => "MaxVelocity",
+            Self::HumanSafetyZone { .. } => "HumanSafetyZone",
+        }
+    }
+
+    /// Stable identity for this guardrail, preserving structured parameters.
+    pub fn stable_key(&self) -> String {
+        match serde_json::to_value(self) {
+            Ok(serde_json::Value::String(name)) => name,
+            Ok(value) => value.to_string(),
+            Err(_) => self.display_name().to_string(),
+        }
+    }
 }
 
 /// Configuration for applying a guardrail.
@@ -54,7 +153,15 @@ pub struct GuardrailConfig {
 /// Result of evaluating a guardrail against a state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GuardrailResult {
+    /// Typed guardrail payload for newly computed results.
+    ///
+    /// Older serialized predictions only carry `guardrail_name`; those legacy
+    /// payloads deserialize with [`Guardrail::Disabled`] here.
+    #[serde(default)]
+    pub guardrail: Guardrail,
     /// Name of the guardrail that was evaluated.
+    ///
+    /// This short identifier remains serialized for backward compatibility.
     pub guardrail_name: String,
     /// Whether the guardrail passed.
     pub passed: bool,
@@ -62,6 +169,42 @@ pub struct GuardrailResult {
     pub violation_details: Option<String>,
     /// Severity of the violation.
     pub severity: ViolationSeverity,
+}
+
+impl GuardrailResult {
+    /// Construct a guardrail result with both typed and compatibility fields.
+    pub fn new(
+        guardrail: Guardrail,
+        passed: bool,
+        violation_details: Option<String>,
+        severity: ViolationSeverity,
+    ) -> Self {
+        Self {
+            guardrail_name: guardrail.display_name().to_string(),
+            guardrail,
+            passed,
+            violation_details,
+            severity,
+        }
+    }
+
+    /// Human-readable name for the evaluated guardrail.
+    pub fn display_name(&self) -> &str {
+        if self.guardrail_name.is_empty() {
+            self.guardrail.display_name()
+        } else {
+            &self.guardrail_name
+        }
+    }
+
+    /// Canonical identity used for comparisons and proof inputs.
+    pub fn canonical_identity(&self) -> String {
+        if matches!(self.guardrail, Guardrail::Disabled) && !self.guardrail_name.is_empty() {
+            self.guardrail_name.clone()
+        } else {
+            self.guardrail.stable_key()
+        }
+    }
 }
 
 /// Severity level for a guardrail violation.
@@ -133,8 +276,8 @@ fn evaluate_single(
     blocking: bool,
     state: &crate::state::WorldState,
 ) -> GuardrailResult {
-    let (name, passed, details) = match guardrail {
-        Guardrail::Disabled => ("Disabled".to_string(), true, None),
+    let (passed, details) = match guardrail {
+        Guardrail::Disabled => (true, None),
         Guardrail::NoCollisions => {
             // Check bounding box overlaps between all object pairs
             let objects: Vec<_> = state.scene.objects.values().collect();
@@ -155,7 +298,7 @@ fn evaluate_single(
                     break;
                 }
             }
-            ("NoCollisions".to_string(), !collision_found, detail)
+            (!collision_found, detail)
         }
         Guardrail::BoundaryConstraint { bounds } => {
             let mut out_of_bounds = false;
@@ -174,7 +317,7 @@ fn evaluate_single(
                     break;
                 }
             }
-            ("BoundaryConstraint".to_string(), !out_of_bounds, detail)
+            (!out_of_bounds, detail)
         }
         Guardrail::MaxVelocity { limit } => {
             let mut violation = false;
@@ -190,7 +333,7 @@ fn evaluate_single(
                     break;
                 }
             }
-            ("MaxVelocity".to_string(), !violation, detail)
+            (!violation, detail)
         }
         Guardrail::HumanSafetyZone { radius } => {
             // Find objects tagged as "human" and check that all other objects
@@ -230,7 +373,7 @@ fn evaluate_single(
                     }
                 }
             }
-            ("HumanSafetyZone".to_string(), !violation, detail)
+            (!violation, detail)
         }
         Guardrail::StayUpright {
             objects,
@@ -251,7 +394,7 @@ fn evaluate_single(
                     }
                 }
             }
-            ("StayUpright".to_string(), !violation, detail)
+            (!violation, detail)
         }
         Guardrail::EnergyConservation { tolerance } => {
             // Compare total kinetic energy across objects.
@@ -281,7 +424,25 @@ fn evaluate_single(
             } else {
                 None
             };
-            ("EnergyConservation".to_string(), !violation, detail)
+            (!violation, detail)
+        }
+        Guardrail::CostFunction {
+            function,
+            threshold,
+        } => {
+            let value = function.evaluate(state);
+            let passed = value <= *threshold;
+            let detail = if passed {
+                None
+            } else {
+                Some(format!(
+                    "{} cost {:.3} exceeds threshold {:.3}",
+                    function.canonical_name(),
+                    value,
+                    threshold
+                ))
+            };
+            (passed, detail)
         }
         Guardrail::ForbiddenStates { conditions } => {
             use crate::action::evaluate_condition;
@@ -294,7 +455,7 @@ fn evaluate_single(
                     break;
                 }
             }
-            ("ForbiddenStates".to_string(), !violation, detail)
+            (!violation, detail)
         }
     };
 
@@ -306,12 +467,7 @@ fn evaluate_single(
         ViolationSeverity::Info
     };
 
-    GuardrailResult {
-        guardrail_name: name,
-        passed,
-        violation_details: details,
-        severity,
-    }
+    GuardrailResult::new(guardrail.clone(), passed, details, severity)
 }
 
 fn bbox_intersects(a: &BBox, b: &BBox) -> bool {
@@ -908,12 +1064,139 @@ mod tests {
     #[test]
     fn test_has_blocking_violation() {
         let results = vec![GuardrailResult {
+            guardrail: Guardrail::NoCollisions,
             guardrail_name: "test".to_string(),
             passed: false,
             violation_details: None,
             severity: ViolationSeverity::Blocking,
         }];
         assert!(has_blocking_violation(&results));
+    }
+
+    #[test]
+    fn test_cost_function_pass_and_fail() {
+        let low_state = make_state_with_objects(vec![SceneObject::new(
+            "cube",
+            Pose::default(),
+            BBox {
+                min: Position {
+                    x: -0.5,
+                    y: -0.5,
+                    z: -0.5,
+                },
+                max: Position {
+                    x: 0.5,
+                    y: 0.5,
+                    z: 0.5,
+                },
+            },
+        )]);
+        let high_state = make_state_with_objects(vec![
+            SceneObject::new(
+                "cube-a",
+                Pose::default(),
+                BBox {
+                    min: Position {
+                        x: -0.5,
+                        y: -0.5,
+                        z: -0.5,
+                    },
+                    max: Position {
+                        x: 0.5,
+                        y: 0.5,
+                        z: 0.5,
+                    },
+                },
+            ),
+            SceneObject::new(
+                "cube-b",
+                Pose::default(),
+                BBox {
+                    min: Position {
+                        x: 0.5,
+                        y: -0.5,
+                        z: -0.5,
+                    },
+                    max: Position {
+                        x: 1.5,
+                        y: 0.5,
+                        z: 0.5,
+                    },
+                },
+            ),
+        ]);
+        let configs = vec![GuardrailConfig {
+            guardrail: Guardrail::CostFunction {
+                function: GuardrailCostFunction::ObjectCount,
+                threshold: 1.5,
+            },
+            blocking: true,
+        }];
+
+        let pass = evaluate_guardrails(&configs, &low_state);
+        let fail = evaluate_guardrails(&configs, &high_state);
+
+        assert!(pass[0].passed);
+        assert_eq!(pass[0].guardrail_name, "CostFunction");
+        assert!(matches!(
+            pass[0].guardrail,
+            Guardrail::CostFunction {
+                function: GuardrailCostFunction::ObjectCount,
+                threshold,
+            } if (threshold - 1.5).abs() < f32::EPSILON
+        ));
+
+        assert!(!fail[0].passed);
+        assert_eq!(fail[0].severity, ViolationSeverity::Blocking);
+        assert!(fail[0]
+            .violation_details
+            .as_deref()
+            .unwrap_or_default()
+            .contains("ObjectCount"));
+    }
+
+    #[test]
+    fn test_cost_function_roundtrip_preserves_typed_guardrail() {
+        let result = GuardrailResult::new(
+            Guardrail::CostFunction {
+                function: GuardrailCostFunction::MaxObjectSpeed,
+                threshold: 2.0,
+            },
+            false,
+            Some("speed too high".to_string()),
+            ViolationSeverity::Warning,
+        );
+
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"guardrail_name\":\"CostFunction\""));
+        assert!(json.contains("\"MaxObjectSpeed\""));
+
+        let restored: GuardrailResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.guardrail_name, "CostFunction");
+        assert!(matches!(
+            restored.guardrail,
+            Guardrail::CostFunction {
+                function: GuardrailCostFunction::MaxObjectSpeed,
+                threshold,
+            } if (threshold - 2.0).abs() < f32::EPSILON
+        ));
+        assert_eq!(restored.canonical_identity(), result.canonical_identity());
+    }
+
+    #[test]
+    fn test_guardrail_result_legacy_name_payload_deserializes() {
+        let json = r#"{
+            "guardrail_name":"NoCollisions",
+            "passed":false,
+            "violation_details":"collision detected",
+            "severity":"Blocking"
+        }"#;
+
+        let restored: GuardrailResult = serde_json::from_str(json).unwrap();
+
+        assert_eq!(restored.guardrail_name, "NoCollisions");
+        assert!(matches!(restored.guardrail, Guardrail::Disabled));
+        assert_eq!(restored.canonical_identity(), "NoCollisions");
     }
 
     mod proptests {
@@ -944,6 +1227,7 @@ mod tests {
                 sev in arb_severity()
             ) {
                 let result = GuardrailResult {
+                    guardrail: Guardrail::Disabled,
                     guardrail_name: name.clone(),
                     passed,
                     violation_details: None,
@@ -962,6 +1246,7 @@ mod tests {
                 sev in arb_severity()
             ) {
                 let results = vec![GuardrailResult {
+                    guardrail: Guardrail::Disabled,
                     guardrail_name: "test".to_string(),
                     passed,
                     violation_details: None,

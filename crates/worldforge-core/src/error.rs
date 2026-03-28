@@ -120,7 +120,7 @@ fn format_guardrail_violations(violations: &[GuardrailResult]) -> String {
                 .violation_details
                 .as_deref()
                 .unwrap_or("violation detected");
-            format!("{}: {}", result.guardrail_name, details)
+            format!("{}: {}", result.canonical_identity(), details)
         })
         .collect::<Vec<_>>()
         .join("; ")
@@ -151,6 +151,7 @@ mod tests {
     fn test_guardrail_blocked_error_serialization_roundtrip() {
         let e = WorldForgeError::GuardrailBlocked {
             violations: vec![GuardrailResult {
+                guardrail: crate::guardrail::Guardrail::NoCollisions,
                 guardrail_name: "NoCollisions".to_string(),
                 passed: false,
                 violation_details: Some("collision between 'left' and 'right'".to_string()),
@@ -180,6 +181,7 @@ mod tests {
                 ".*".prop_map(WorldForgeError::ProviderAuthError),
                 (".*", ".*").prop_map(|(name, details)| WorldForgeError::GuardrailBlocked {
                     violations: vec![GuardrailResult {
+                        guardrail: crate::guardrail::Guardrail::Disabled,
                         guardrail_name: name,
                         passed: false,
                         violation_details: Some(details),

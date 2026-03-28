@@ -1028,6 +1028,7 @@ mod tests {
 
     fn sample_guardrail_result(passed: bool) -> GuardrailResult {
         GuardrailResult {
+            guardrail: worldforge_core::guardrail::Guardrail::NoCollisions,
             guardrail_name: "NoCollisions".to_string(),
             passed,
             violation_details: (!passed).then(|| "collision".to_string()),

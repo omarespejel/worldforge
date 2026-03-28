@@ -730,21 +730,21 @@ fn build_guardrail_agreement_rate(
 ) -> f32 {
     let left_by_name: HashMap<_, _> = left_results
         .iter()
-        .map(|result| (result.guardrail_name.as_str(), result.passed))
+        .map(|result| (result.canonical_identity(), result.passed))
         .collect();
     let right_by_name: HashMap<_, _> = right_results
         .iter()
-        .map(|result| (result.guardrail_name.as_str(), result.passed))
+        .map(|result| (result.canonical_identity(), result.passed))
         .collect();
-    let mut guardrail_names: HashSet<&str> = left_by_name.keys().copied().collect();
-    guardrail_names.extend(right_by_name.keys().copied());
+    let mut guardrail_names: HashSet<String> = left_by_name.keys().cloned().collect();
+    guardrail_names.extend(right_by_name.keys().cloned());
     if guardrail_names.is_empty() {
         return 1.0;
     }
 
     let matches = guardrail_names
         .iter()
-        .filter(|name| left_by_name.get(**name) == right_by_name.get(**name))
+        .filter(|name| left_by_name.get(*name) == right_by_name.get(*name))
         .count();
     matches as f32 / guardrail_names.len() as f32
 }
@@ -1841,6 +1841,7 @@ mod tests {
             },
             provenance: None,
             guardrail_results: vec![GuardrailResult {
+                guardrail: Guardrail::NoCollisions,
                 guardrail_name: "NoCollisions".to_string(),
                 passed: guardrail_passed,
                 violation_details: (!guardrail_passed)
