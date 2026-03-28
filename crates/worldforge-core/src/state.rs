@@ -297,6 +297,21 @@ impl WorldState {
             return Ok(false);
         }
 
+        if self
+            .history
+            .latest()
+            .map(|entry| entry.time == self.time)
+            .unwrap_or(false)
+        {
+            let repaired_hash = canonical_hash_without_latest_history(self)?;
+            let snapshot = self.snapshot();
+            if let Some(entry) = self.history.states.back_mut() {
+                entry.state_hash = repaired_hash;
+                entry.snapshot = Some(snapshot);
+                return Ok(true);
+            }
+        }
+
         self.record_current_state(None, None, provider)?;
         Ok(true)
     }
@@ -534,9 +549,23 @@ fn current_state_matches_latest_history(state: &WorldState) -> Result<bool> {
         return Ok(false);
     };
 
-    let mut snapshot = state.clone();
-    snapshot.history.states.pop_back();
+    let snapshot = current_state_without_latest_history(state)?;
     Ok(snapshot.time == latest.time && canonical_state_hash(&snapshot)? == latest.state_hash)
+}
+
+fn current_state_without_latest_history(state: &WorldState) -> Result<WorldState> {
+    let mut snapshot = state.clone();
+    if snapshot.history.states.pop_back().is_none() {
+        return Err(WorldForgeError::InvalidState(
+            "cannot compare current state without history entries".to_string(),
+        ));
+    }
+    Ok(snapshot)
+}
+
+fn canonical_hash_without_latest_history(state: &WorldState) -> Result<[u8; 32]> {
+    let snapshot = current_state_without_latest_history(state)?;
+    canonical_state_hash(&snapshot)
 }
 
 fn normalize_world_state(mut state: WorldState) -> Result<WorldState> {
@@ -2045,8 +2074,9 @@ mod tests {
         let repaired = state.ensure_current_state_recorded("mock").unwrap();
 
         assert!(repaired);
-        assert_eq!(state.history.len(), 2);
+        assert_eq!(state.history.len(), 1);
         assert_ne!(state.history.latest().unwrap().state_hash, [7; 32]);
+        assert!(state.history.latest().unwrap().snapshot.is_some());
     }
 
     #[test]
@@ -2322,7 +2352,7 @@ mod tests {
 
         let restored = deserialize_world_state(StateFileFormat::Json, &bytes).unwrap();
         assert_eq!(restored.id, state.id);
-        assert_eq!(restored.history.len(), 2);
+        assert_eq!(restored.history.len(), 1);
         assert!(restored.history.latest().unwrap().snapshot.is_some());
         assert_ne!(restored.history.latest().unwrap().state_hash, [7; 32]);
     }
@@ -2424,7 +2454,7 @@ mod tests {
 
         let loaded = store.load(&state.id).await.unwrap();
         assert_eq!(loaded.id, state.id);
-        assert_eq!(loaded.history.len(), 2);
+        assert_eq!(loaded.history.len(), 1);
         assert!(loaded.history.latest().unwrap().snapshot.is_some());
 
         let _ = tokio::fs::remove_dir_all(&dir).await;

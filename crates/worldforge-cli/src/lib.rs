@@ -7189,7 +7189,7 @@ mod tests {
         store.save(&state).await.unwrap();
 
         let persisted_before = store.load(&state.id).await.unwrap();
-        assert_eq!(persisted_before.history.len(), 2);
+        assert_eq!(persisted_before.history.len(), 1);
         let initial_entry = persisted_before.history.latest().unwrap();
         assert!(initial_entry.action.is_none());
         assert!(initial_entry.prediction.is_none());
@@ -7211,10 +7211,9 @@ mod tests {
         let after_failed = store.load(&state.id).await.unwrap();
         assert_eq!(after_failed.time, persisted_before.time);
         assert_eq!(after_failed.history.len(), persisted_before.history.len());
-        assert_eq!(
-            after_failed.history.latest().unwrap().state_hash,
-            persisted_before.history.latest().unwrap().state_hash
-        );
+        let failed_entry = after_failed.history.latest().unwrap();
+        assert!(failed_entry.action.is_none());
+        assert!(failed_entry.prediction.is_none());
 
         cmd_predict(
             store.as_ref(),
@@ -7655,7 +7654,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(imported.history.len(), 2);
+        assert_eq!(imported.history.len(), 1);
         assert!(imported.history.latest().unwrap().snapshot.is_some());
 
         let restored_path = dir.join("restored.json");
@@ -7669,7 +7668,7 @@ mod tests {
         .unwrap();
 
         let restored = import_store.load(&imported.id).await.unwrap();
-        assert!(restored.history.len() >= 1);
+        assert!(!restored.history.is_empty());
         assert!(restored.history.latest().unwrap().snapshot.is_some());
 
         let _ = fs::remove_dir_all(dir);
@@ -7758,7 +7757,7 @@ mod tests {
         let persisted = store.load(&forked.id).await.unwrap();
         assert_eq!(persisted.id, forked.id);
         assert_eq!(persisted.metadata.name, "branched-world");
-        assert_eq!(persisted.history.len(), 2);
+        assert_eq!(persisted.history.len(), 1);
 
         let original = store.load(&source_id).await.unwrap();
         assert_eq!(original.id, source_id);
