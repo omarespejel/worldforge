@@ -1517,7 +1517,8 @@ impl EvalSuite {
         registry: &CustomMetricRegistry,
         run_options: &EvalRunOptions,
     ) -> Result<EvalReport> {
-        self.run_internal(providers, None, registry, run_options).await
+        self.run_internal(providers, None, registry, run_options)
+            .await
     }
 
     async fn run_internal(
@@ -1823,7 +1824,8 @@ fn select_best_prediction_sample(
         ));
     }
 
-    let provisional = PredictionSamplingMetadata::from_predictions(&predictions, requested_samples, 0);
+    let provisional =
+        PredictionSamplingMetadata::from_predictions(&predictions, requested_samples, 0);
     let selected_sample_index = provisional
         .sample_summaries
         .iter()
