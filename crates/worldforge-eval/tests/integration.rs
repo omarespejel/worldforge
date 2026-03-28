@@ -95,6 +95,8 @@ fn sample_scene_suite() -> EvalSuite {
             EvalDimension::ObjectPermanence,
             EvalDimension::GravityCompliance,
             EvalDimension::SpatialConsistency,
+            EvalDimension::ActionPredictionAccuracy,
+            EvalDimension::MaterialUnderstanding,
         ],
         providers: vec![],
     }
@@ -159,6 +161,18 @@ async fn test_manipulation_suite_with_mock() {
     let report = suite.run(&providers).await.unwrap();
     assert_eq!(report.suite, "Manipulation Standard");
     assert!(!report.results.is_empty());
+    let action_summary = report
+        .dimension_summaries
+        .iter()
+        .find(|summary| summary.dimension == "action_prediction_accuracy")
+        .unwrap();
+    assert!(!action_summary.provider_scores.is_empty());
+    let material_summary = report
+        .dimension_summaries
+        .iter()
+        .find(|summary| summary.dimension == "material_understanding")
+        .unwrap();
+    assert!(!material_summary.provider_scores.is_empty());
 }
 
 #[tokio::test]
@@ -170,6 +184,12 @@ async fn test_spatial_reasoning_suite_with_mock() {
     let report = suite.run(&providers).await.unwrap();
     assert_eq!(report.suite, "Spatial Reasoning");
     assert!(!report.results.is_empty());
+    let spatial_summary = report
+        .dimension_summaries
+        .iter()
+        .find(|summary| summary.dimension == "spatial_reasoning")
+        .unwrap();
+    assert!(!spatial_summary.provider_scores.is_empty());
 }
 
 #[tokio::test]
@@ -233,6 +253,8 @@ async fn test_custom_suite_scores_concrete_scene_thresholds() {
     assert_eq!(result.scenario, "move_cube");
     assert_eq!(result.outcomes.len(), 5);
     assert!(result.outcomes.iter().all(|outcome| outcome.passed));
+    assert!(result.scores["action_prediction_accuracy"] >= 0.75);
+    assert!(result.scores["material_understanding"] >= 0.75);
     assert!(result.scores["gravity_compliance"] >= 0.8);
     assert!(result.scores["overall"] >= 0.0);
 }

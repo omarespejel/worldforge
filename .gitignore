@@ -9,6 +9,7 @@
 
 # State storage (runtime data)
 .worldforge/
+.worldforge-python-tests/
 
 # IDE and editor files
 .idea/

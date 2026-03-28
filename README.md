@@ -225,8 +225,10 @@ suite = EvalSuite.from_builtin("physics")
 report = suite.run_report_data()
 markdown = report.to_markdown()
 csv = report.to_csv()
+artifacts = suite.run_report_artifacts()
 assert markdown.startswith("# Evaluation Report:")
 assert "suite,provider,scenario" in csv
+assert set(artifacts) == {"json", "markdown", "csv"}
 
 verifier = ZkVerifier(backend="stark")  # or "mock" / "ezkl"
 guardrail_bundle = plan.prove_guardrail_bundle()
@@ -510,6 +512,8 @@ clients and tests:
 - percent-encoded query parameters are decoded before routing and filtering
 - rendered evaluation reports still return JSON envelopes when requested through the API
   with the rendered markdown/CSV exposed in the response payload
+- evaluation requests can fan out multiple artifact formats from one run via
+  `report_formats`
 ```bash
 curl -X POST http://127.0.0.1:8080/v1/worlds \
   -H 'content-type: application/json' \
@@ -604,6 +608,10 @@ curl -X POST http://127.0.0.1:8080/v1/evals/run \
   -H 'content-type: application/json' \
   -d '{"suite":"physics","providers":["mock"],"world_id":"<world-id>","report_format":"markdown"}'
 
+curl -X POST http://127.0.0.1:8080/v1/evals/run \
+  -H 'content-type: application/json' \
+  -d '{"suite":"physics","providers":["mock"],"report_formats":["json","markdown","csv"]}'
+
 curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/evaluate \
   -H 'content-type: application/json' \
   -d '{"suite":"physics","providers":["mock"]}'
@@ -694,8 +702,11 @@ object positions and semantic labels, and can score deterministic clips against
 optional ground-truth video references. They can also assert final-state
 conditions using the core `Condition` semantics for relational checks. Named
 custom dimensions now resolve to real metrics instead of placeholder labels:
-`overall`, the built-in physics score keys, `confidence`, and
-`video_similarity`. Structured
+`overall`, the built-in physics score keys, `confidence`,
+`video_similarity`, and derived dimensions such as
+`action_prediction_accuracy`, `spatial_reasoning`, and
+`material_understanding` when the suite definition and scenario evidence
+support them. Structured
 `condition` and `goal_image` planning payloads are exercised end to end across
 the CLI, REST server, and Python bindings, and serialized plans can now be
 executed against persisted worlds through each surface with atomic state

@@ -548,6 +548,9 @@ struct EvaluateRequest {
     /// Optional rendered report format. Defaults to full JSON report data.
     #[serde(default)]
     report_format: Option<EvalReportFormat>,
+    /// Optional rendered report formats to return from a single evaluation run.
+    #[serde(default)]
+    report_formats: Vec<EvalReportFormat>,
     /// Optional persisted world ID whose state overlays each scenario fixture.
     #[serde(default)]
     world_id: Option<String>,
@@ -565,6 +568,24 @@ struct RenderedEvalReport {
     format: EvalReportFormat,
     /// Rendered report body.
     content: String,
+}
+
+/// One rendered evaluation artifact returned from a multi-format request.
+#[derive(Debug, Serialize)]
+struct RenderedEvalArtifact {
+    /// Requested report format.
+    format: EvalReportFormat,
+    /// Rendered report body.
+    content: String,
+}
+
+/// Multiple rendered evaluation artifacts returned from a single evaluation run.
+#[derive(Debug, Serialize)]
+struct RenderedEvalArtifacts {
+    /// Suite name used for the evaluation.
+    suite: String,
+    /// Rendered report artifacts, in request order.
+    artifacts: Vec<RenderedEvalArtifact>,
 }
 
 #[derive(Debug)]
@@ -619,9 +640,25 @@ fn resolve_eval_suite(request: &EvaluateRequest) -> std::result::Result<EvalSuit
 
 fn render_eval_report_response(
     report: worldforge_eval::EvalReport,
-    format: EvalReportFormat,
+    request: &EvaluateRequest,
 ) -> (u16, String) {
-    match format {
+    if !request.report_formats.is_empty() {
+        return match report.render_many(request.report_formats.iter().copied()) {
+            Ok(rendered) => (
+                200,
+                ApiResponse::ok(RenderedEvalArtifacts {
+                    suite: report.suite.clone(),
+                    artifacts: rendered
+                        .into_iter()
+                        .map(|(format, content)| RenderedEvalArtifact { format, content })
+                        .collect(),
+                }),
+            ),
+            Err(error) => (500, error_response(&error.to_string())),
+        };
+    }
+
+    match request.report_format.unwrap_or(EvalReportFormat::Json) {
         EvalReportFormat::Json => (200, ApiResponse::ok(report)),
         other => match report.render(other) {
             Ok(content) => (
@@ -635,6 +672,14 @@ fn render_eval_report_response(
             Err(error) => (500, error_response(&error.to_string())),
         },
     }
+}
+
+fn validate_eval_report_request(request: &EvaluateRequest) -> std::result::Result<(), String> {
+    if request.report_format.is_some() && !request.report_formats.is_empty() {
+        return Err("provide either `report_format` or `report_formats`, not both".to_string());
+    }
+
+    Ok(())
 }
 
 async fn resolve_eval_world_state(
@@ -667,6 +712,10 @@ async fn run_evaluation_request(
     state: &AppState,
     world_state: Option<&WorldState>,
 ) -> (u16, String) {
+    if let Err(error) = validate_eval_report_request(request) {
+        return (400, error_response(&error));
+    }
+
     let suite = match resolve_eval_suite(request) {
         Ok(suite) => suite,
         Err(error) => return (400, error_response(&error)),
@@ -691,10 +740,7 @@ async fn run_evaluation_request(
     };
 
     match report {
-        Ok(report) => render_eval_report_response(
-            report,
-            request.report_format.unwrap_or(EvalReportFormat::Json),
-        ),
+        Ok(report) => render_eval_report_response(report, request),
         Err(error) => (500, error_response(&error.to_string())),
     }
 }
@@ -4545,6 +4591,54 @@ mod tests {
             .unwrap()
             .contains("suite,provider,scenario"));
         assert!(content.contains("Physics Standard,mock,object_drop"));
+    }
+
+    #[tokio::test]
+    async fn test_route_evaluate_renders_multiple_artifacts_from_single_run() {
+        let state = test_state();
+        let id = seed_world(&state, "eval-world", "mock").await;
+        let body = r#"{"suite":"physics","report_formats":["markdown","csv","markdown","json"]}"#;
+
+        let (status, resp) =
+            route("POST", &format!("/v1/worlds/{id}/evaluate"), body, &state).await;
+        assert_eq!(status, 200);
+
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(value["data"]["suite"], "Physics Standard");
+        let artifacts = value["data"]["artifacts"].as_array().unwrap();
+        assert_eq!(artifacts.len(), 3);
+        assert_eq!(artifacts[0]["format"], "markdown");
+        assert!(artifacts[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("# Evaluation Report: Physics Standard"));
+        assert_eq!(artifacts[1]["format"], "csv");
+        assert!(artifacts[1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("suite,provider,scenario"));
+        assert_eq!(artifacts[2]["format"], "json");
+        assert!(artifacts[2]["content"]
+            .as_str()
+            .unwrap()
+            .contains("\"suite\": \"Physics Standard\""));
+    }
+
+    #[tokio::test]
+    async fn test_route_evaluate_rejects_ambiguous_format_request() {
+        let state = test_state();
+        let id = seed_world(&state, "eval-world", "mock").await;
+        let body = r#"{"suite":"physics","report_format":"markdown","report_formats":["csv"]}"#;
+
+        let (status, resp) =
+            route("POST", &format!("/v1/worlds/{id}/evaluate"), body, &state).await;
+        assert_eq!(status, 400);
+
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(
+            value["error"],
+            "provide either `report_format` or `report_formats`, not both"
+        );
     }
 
     #[tokio::test]

@@ -281,6 +281,28 @@ impl EvalReport {
         }
     }
 
+    /// Render the report in multiple formats, deduplicating repeats while
+    /// preserving the first-requested order.
+    pub fn render_many<I>(&self, formats: I) -> Result<Vec<(EvalReportFormat, String)>>
+    where
+        I: IntoIterator<Item = EvalReportFormat>,
+    {
+        let mut rendered = Vec::new();
+
+        for format in formats {
+            if rendered
+                .iter()
+                .any(|(existing_format, _)| *existing_format == format)
+            {
+                continue;
+            }
+
+            rendered.push((format, self.render(format)?));
+        }
+
+        Ok(rendered)
+    }
+
     /// Render a deterministic Markdown summary of the report.
     pub fn to_markdown(&self) -> Result<String> {
         let mut output = String::new();
@@ -779,7 +801,7 @@ impl EvalSuite {
         use worldforge_core::types::{BBox, Pose, Position};
 
         let mut state = WorldState::new("manipulation_test", "eval");
-        let mug = SceneObject::new(
+        let mut mug = SceneObject::new(
             "mug",
             Pose {
                 position: Position {
@@ -802,6 +824,8 @@ impl EvalSuite {
                 },
             },
         );
+        mug.semantic_label = Some("mug".to_string());
+        mug.physics.material = Some("ceramic".to_string());
         let mug_id = mug.id;
         state.scene.add_object(mug);
 
@@ -823,7 +847,9 @@ impl EvalSuite {
             },
         );
         table.physics.is_static = true;
-        let block = SceneObject::new(
+        table.semantic_label = Some("table".to_string());
+        table.physics.material = Some("wood".to_string());
+        let mut block = SceneObject::new(
             "block",
             Pose {
                 position: Position {
@@ -846,6 +872,8 @@ impl EvalSuite {
                 },
             },
         );
+        block.semantic_label = Some("block".to_string());
+        block.physics.material = Some("rubber".to_string());
         let block_id = block.id;
         table_state.scene.add_object(table);
         table_state.scene.add_object(block);
@@ -864,6 +892,10 @@ impl EvalSuite {
                     expected_outcomes: vec![
                         ExpectedOutcome::ObjectExists {
                             name: "mug".to_string(),
+                        },
+                        ExpectedOutcome::ObjectSemanticLabel {
+                            name: "mug".to_string(),
+                            label: "mug".to_string(),
                         },
                         ExpectedOutcome::MinConfidence { threshold: 0.5 },
                     ],
@@ -924,6 +956,10 @@ impl EvalSuite {
                         ExpectedOutcome::ObjectExists {
                             name: "table".to_string(),
                         },
+                        ExpectedOutcome::ObjectSemanticLabel {
+                            name: "block".to_string(),
+                            label: "block".to_string(),
+                        },
                         ExpectedOutcome::MinPhysicsScore {
                             dimension: EvalDimension::GravityCompliance,
                             threshold: 0.5,
@@ -937,6 +973,7 @@ impl EvalSuite {
                 EvalDimension::GravityCompliance,
                 EvalDimension::SpatialConsistency,
                 EvalDimension::ActionPredictionAccuracy,
+                EvalDimension::MaterialUnderstanding,
             ],
             providers: vec!["mock".to_string()],
         }
@@ -1141,6 +1178,7 @@ impl EvalSuite {
                 EvalDimension::SpatialConsistency,
                 EvalDimension::TemporalConsistency,
                 EvalDimension::ActionPredictionAccuracy,
+                EvalDimension::MaterialUnderstanding,
                 EvalDimension::SpatialReasoning,
             ],
             providers: vec!["mock".to_string()],
@@ -1230,6 +1268,7 @@ async fn evaluate_provider_scenario(
     if let Some(world_state) = world_state {
         current_state = merge_world_state(&current_state, world_state);
     }
+    let starting_state = current_state.clone();
 
     let mut prediction_failed = false;
     for action in &scenario.actions {
@@ -1278,6 +1317,49 @@ async fn evaluate_provider_scenario(
     if custom_metric_requested(dimensions, &scenario.expected_outcomes, "confidence") {
         if let Some(confidence) = average_confidence {
             scores.insert("confidence".to_string(), confidence);
+        }
+    }
+
+    if !prediction_failed {
+        if derived_metric_requested(
+            dimensions,
+            &scenario.expected_outcomes,
+            EvalDimension::ActionPredictionAccuracy,
+            outcome_implies_action_prediction_accuracy,
+        ) {
+            scores.insert(
+                "action_prediction_accuracy".to_string(),
+                action_prediction_accuracy_score(
+                    scenario,
+                    &starting_state,
+                    &current_state,
+                    average_scores.as_ref(),
+                ),
+            );
+        }
+
+        if derived_metric_requested(
+            dimensions,
+            &scenario.expected_outcomes,
+            EvalDimension::SpatialReasoning,
+            outcome_implies_spatial_reasoning,
+        ) {
+            scores.insert(
+                "spatial_reasoning".to_string(),
+                spatial_reasoning_score(scenario, &current_state, average_scores.as_ref()),
+            );
+        }
+
+        if derived_metric_requested(
+            dimensions,
+            &scenario.expected_outcomes,
+            EvalDimension::MaterialUnderstanding,
+            outcome_implies_material_understanding,
+        ) {
+            scores.insert(
+                "material_understanding".to_string(),
+                material_understanding_score(&starting_state, scenario, &current_state),
+            );
         }
     }
 
@@ -1509,6 +1591,46 @@ fn custom_metric_requested(
     })
 }
 
+fn derived_metric_requested(
+    dimensions: &[EvalDimension],
+    expected_outcomes: &[ExpectedOutcome],
+    target: EvalDimension,
+    implied_by_outcome: fn(&ExpectedOutcome) -> bool,
+) -> bool {
+    dimensions.contains(&target)
+        || expected_outcomes.iter().any(implied_by_outcome)
+        // Threshold checks can require this key, but score derivation itself
+        // intentionally ignores MinPhysicsScore to avoid circular logic.
+        || expected_outcomes.iter().any(|expected| {
+            matches!(
+                expected,
+                ExpectedOutcome::MinPhysicsScore { dimension, .. } if *dimension == target
+            )
+        })
+}
+
+fn outcome_implies_action_prediction_accuracy(expected: &ExpectedOutcome) -> bool {
+    matches!(
+        expected,
+        ExpectedOutcome::ObjectExists { .. }
+            | ExpectedOutcome::ObjectNotExists { .. }
+            | ExpectedOutcome::ObjectPosition { .. }
+            | ExpectedOutcome::ObjectSemanticLabel { .. }
+            | ExpectedOutcome::FinalStateCondition { .. }
+    )
+}
+
+fn outcome_implies_spatial_reasoning(expected: &ExpectedOutcome) -> bool {
+    matches!(
+        expected,
+        ExpectedOutcome::ObjectPosition { .. } | ExpectedOutcome::FinalStateCondition { .. }
+    )
+}
+
+fn outcome_implies_material_understanding(expected: &ExpectedOutcome) -> bool {
+    matches!(expected, ExpectedOutcome::ObjectSemanticLabel { .. })
+}
+
 fn video_has_depth_maps(video: &VideoClip) -> bool {
     video.frames.iter().any(|frame| frame.depth.is_some())
 }
@@ -1518,6 +1640,441 @@ fn video_has_segmentation_maps(video: &VideoClip) -> bool {
         .frames
         .iter()
         .any(|frame| frame.segmentation.is_some())
+}
+
+fn average_components(components: &[f32]) -> Option<f32> {
+    (!components.is_empty()).then(|| components.iter().sum::<f32>() / components.len() as f32)
+}
+
+fn push_component(components: &mut Vec<f32>, score: Option<f32>) {
+    if let Some(score) = score {
+        components.push(score.clamp(0.0, 1.0));
+    }
+}
+
+fn scalar_similarity(actual: f32, target: f32, tolerance: f32) -> f32 {
+    let tolerance = tolerance.max(0.001);
+    let delta = (actual - target).abs();
+    if delta <= tolerance {
+        1.0
+    } else {
+        (1.0 - (delta - tolerance) / (tolerance * 2.0)).clamp(0.0, 1.0)
+    }
+}
+
+fn position_similarity(actual: Position, target: Position, tolerance: f32) -> f32 {
+    scalar_similarity(actual.distance(target), 0.0, tolerance)
+}
+
+fn objects_touching(state: &WorldState, a: uuid::Uuid, b: uuid::Uuid) -> bool {
+    state.scene.relationships.iter().any(|relationship| {
+        matches!(
+            relationship,
+            worldforge_core::scene::SpatialRelationship::Touching { a: left, b: right }
+                if (*left == a && *right == b) || (*left == b && *right == a)
+        )
+    })
+}
+
+fn condition_score(condition: &Condition, state: &WorldState) -> f32 {
+    match condition {
+        Condition::ObjectAt {
+            object,
+            position,
+            tolerance,
+        } => state
+            .scene
+            .get_object(object)
+            .map(|item| position_similarity(item.pose.position, *position, *tolerance))
+            .unwrap_or(0.0),
+        Condition::ObjectsTouching { a, b } => f32::from(objects_touching(state, *a, *b)),
+        Condition::ObjectExists { object } => f32::from(state.scene.get_object(object).is_some()),
+        Condition::And(conditions) => average_components(
+            &conditions
+                .iter()
+                .map(|condition| condition_score(condition, state))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or(1.0),
+        Condition::Or(conditions) => conditions
+            .iter()
+            .map(|condition| condition_score(condition, state))
+            .fold(0.0, f32::max),
+        Condition::Not(inner) => 1.0 - condition_score(inner, state),
+    }
+}
+
+fn object_named<'a>(
+    state: &'a WorldState,
+    name: &str,
+) -> Option<&'a worldforge_core::scene::SceneObject> {
+    state
+        .scene
+        .objects
+        .values()
+        .find(|object| object.name == name)
+}
+
+fn object_exists_score(state: &WorldState, name: &str) -> f32 {
+    f32::from(object_named(state, name).is_some())
+}
+
+fn object_not_exists_score(state: &WorldState, name: &str) -> f32 {
+    1.0 - object_exists_score(state, name)
+}
+
+fn object_position_score(
+    state: &WorldState,
+    name: &str,
+    position: Position,
+    tolerance: f32,
+) -> f32 {
+    object_named(state, name)
+        .map(|object| position_similarity(object.pose.position, position, tolerance))
+        .unwrap_or(0.0)
+}
+
+fn object_semantic_label_score(state: &WorldState, name: &str, label: &str) -> f32 {
+    object_named(state, name)
+        .map(|object| f32::from(object.semantic_label.as_deref() == Some(label)))
+        .unwrap_or(0.0)
+}
+
+fn non_threshold_outcome_score(expected: &ExpectedOutcome, state: &WorldState) -> Option<f32> {
+    match expected {
+        ExpectedOutcome::ObjectExists { name } => Some(object_exists_score(state, name)),
+        ExpectedOutcome::ObjectNotExists { name } => Some(object_not_exists_score(state, name)),
+        ExpectedOutcome::ObjectPosition {
+            name,
+            position,
+            tolerance,
+        } => Some(object_position_score(state, name, *position, *tolerance)),
+        ExpectedOutcome::ObjectSemanticLabel { name, label } => {
+            Some(object_semantic_label_score(state, name, label))
+        }
+        ExpectedOutcome::FinalStateCondition { condition } => {
+            Some(condition_score(condition, state))
+        }
+        _ => None,
+    }
+}
+
+fn best_object_position_score(state: &WorldState, target: Position, tolerance: f32) -> Option<f32> {
+    state
+        .scene
+        .objects
+        .values()
+        .map(|object| position_similarity(object.pose.position, target, tolerance))
+        .max_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal))
+}
+
+fn tag_value<'a>(state: &'a WorldState, prefix: &str) -> Option<&'a str> {
+    state
+        .metadata
+        .tags
+        .iter()
+        .find_map(|tag| tag.strip_prefix(prefix))
+}
+
+fn action_effect_score(
+    action: &Action,
+    initial_state: &WorldState,
+    final_state: &WorldState,
+) -> Option<f32> {
+    match action {
+        Action::Move { target, .. } => best_object_position_score(final_state, *target, 0.2),
+        Action::Place { object, target } => final_state
+            .scene
+            .get_object(object)
+            .map(|item| position_similarity(item.pose.position, *target, 0.05)),
+        Action::Push {
+            object, direction, ..
+        } => {
+            let initial = initial_state.scene.get_object(object)?;
+            let final_object = final_state.scene.get_object(object)?;
+            let displacement = (
+                final_object.pose.position.x - initial.pose.position.x,
+                final_object.pose.position.y - initial.pose.position.y,
+                final_object.pose.position.z - initial.pose.position.z,
+            );
+            let normalized = direction.normalized();
+            let projection = displacement.0 * normalized.x
+                + displacement.1 * normalized.y
+                + displacement.2 * normalized.z;
+            Some((projection.max(0.0) / 0.1).clamp(0.0, 1.0))
+        }
+        Action::Rotate { object, angle, .. } => {
+            let initial = initial_state.scene.get_object(object)?;
+            let final_object = final_state.scene.get_object(object)?;
+            let delta = (final_object.pose.rotation.w - initial.pose.rotation.w).abs()
+                + (final_object.pose.rotation.x - initial.pose.rotation.x).abs()
+                + (final_object.pose.rotation.y - initial.pose.rotation.y).abs()
+                + (final_object.pose.rotation.z - initial.pose.rotation.z).abs();
+            Some(if angle.abs() <= f32::EPSILON {
+                1.0
+            } else {
+                (delta / 0.5).clamp(0.0, 1.0)
+            })
+        }
+        Action::Navigate { waypoints } => waypoints
+            .last()
+            .copied()
+            .and_then(|target| best_object_position_score(final_state, target, 0.2)),
+        Action::Teleport { destination } => {
+            best_object_position_score(final_state, destination.position, 0.05)
+        }
+        Action::CameraMove { .. } => Some(f32::from(
+            tag_value(final_state, "camera-offset:").is_some(),
+        )),
+        Action::CameraLookAt { .. } => Some(f32::from(
+            tag_value(final_state, "camera-look-at:").is_some(),
+        )),
+        Action::SetWeather { weather } => tag_value(final_state, "weather:")
+            .map(|value| f32::from(value.eq_ignore_ascii_case(&format!("{weather:?}")))),
+        Action::SetLighting { time_of_day } => tag_value(final_state, "lighting:")
+            .and_then(|value| value.parse::<f32>().ok())
+            .map(|value| scalar_similarity(value, *time_of_day, 0.5)),
+        Action::SpawnObject { template, pose } => Some(
+            object_named(final_state, template)
+                .map(|object| position_similarity(object.pose.position, pose.position, 0.2))
+                .unwrap_or_else(|| {
+                    final_state
+                        .scene
+                        .objects
+                        .values()
+                        .find(|object| object.semantic_label.as_deref() == Some(template.as_str()))
+                        .map(|object| position_similarity(object.pose.position, pose.position, 0.2))
+                        .unwrap_or(0.0)
+                }),
+        ),
+        Action::RemoveObject { object } => {
+            Some(f32::from(final_state.scene.get_object(object).is_none()))
+        }
+        Action::Grasp { object, .. } => Some(f32::from(
+            final_state
+                .metadata
+                .tags
+                .iter()
+                .any(|tag| tag == &format!("grasped:{object}")),
+        )),
+        Action::Release { object } => Some(f32::from(
+            !final_state
+                .metadata
+                .tags
+                .iter()
+                .any(|tag| tag == &format!("grasped:{object}")),
+        )),
+        Action::Sequence(actions) | Action::Parallel(actions) => average_components(
+            &actions
+                .iter()
+                .filter_map(|action| action_effect_score(action, initial_state, final_state))
+                .collect::<Vec<_>>(),
+        ),
+        Action::Conditional {
+            condition,
+            then,
+            otherwise,
+        } => {
+            if evaluate_condition(condition, initial_state) {
+                action_effect_score(then, initial_state, final_state)
+            } else {
+                otherwise
+                    .as_deref()
+                    .and_then(|action| action_effect_score(action, initial_state, final_state))
+                    .or(Some(1.0))
+            }
+        }
+        Action::Raw { provider, .. } => {
+            tag_value(final_state, "raw-provider:").map(|value| f32::from(value == provider))
+        }
+    }
+}
+
+fn action_prediction_accuracy_score(
+    scenario: &EvalScenario,
+    starting_state: &WorldState,
+    final_state: &WorldState,
+    average_scores: Option<&PhysicsScores>,
+) -> f32 {
+    let outcome_scores = scenario
+        .expected_outcomes
+        .iter()
+        .filter_map(|expected| match expected {
+            ExpectedOutcome::ObjectExists { .. }
+            | ExpectedOutcome::ObjectNotExists { .. }
+            | ExpectedOutcome::ObjectPosition { .. }
+            | ExpectedOutcome::ObjectSemanticLabel { .. }
+            | ExpectedOutcome::FinalStateCondition { .. } => {
+                non_threshold_outcome_score(expected, final_state)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let action_scores = scenario
+        .actions
+        .iter()
+        .filter_map(|action| action_effect_score(action, starting_state, final_state))
+        .collect::<Vec<_>>();
+
+    if let Some(outcome_score) = average_components(&outcome_scores) {
+        return outcome_score;
+    }
+
+    if let Some(action_score) = average_components(&action_scores) {
+        return action_score;
+    }
+
+    average_scores.map_or(0.5, |scores| scores.overall)
+}
+
+fn range_overlap_ratio(a_min: f32, a_max: f32, b_min: f32, b_max: f32) -> f32 {
+    let overlap = (a_max.min(b_max) - a_min.max(b_min)).max(0.0);
+    let baseline = (a_max - a_min).min(b_max - b_min).max(0.001);
+    (overlap / baseline).clamp(0.0, 1.0)
+}
+
+fn spatial_relationship_score(
+    state: &WorldState,
+    relationship: &worldforge_core::scene::SpatialRelationship,
+) -> Option<f32> {
+    use worldforge_core::scene::SpatialRelationship;
+
+    match relationship {
+        SpatialRelationship::Touching { a, b } => Some(f32::from(objects_touching(state, *a, *b))),
+        SpatialRelationship::Near { a, b, distance } => {
+            let left = state.scene.get_object(a)?;
+            let right = state.scene.get_object(b)?;
+            Some(scalar_similarity(
+                left.pose.position.distance(right.pose.position),
+                *distance,
+                distance.max(0.05),
+            ))
+        }
+        SpatialRelationship::Above { subject, reference } => {
+            let subject = state.scene.get_object(subject)?;
+            let reference = state.scene.get_object(reference)?;
+            let delta = subject.pose.position.y - reference.pose.position.y;
+            Some(if delta >= 0.0 {
+                1.0
+            } else {
+                (1.0 + (delta / 0.5)).clamp(0.0, 1.0)
+            })
+        }
+        SpatialRelationship::Below { subject, reference } => {
+            let subject = state.scene.get_object(subject)?;
+            let reference = state.scene.get_object(reference)?;
+            let delta = reference.pose.position.y - subject.pose.position.y;
+            Some(if delta >= 0.0 {
+                1.0
+            } else {
+                (1.0 + (delta / 0.5)).clamp(0.0, 1.0)
+            })
+        }
+        SpatialRelationship::On { subject, surface } => {
+            let subject = state.scene.get_object(subject)?;
+            let surface = state.scene.get_object(surface)?;
+            let vertical = scalar_similarity(subject.bbox.min.y, surface.bbox.max.y, 0.1);
+            let overlap_x = range_overlap_ratio(
+                subject.bbox.min.x,
+                subject.bbox.max.x,
+                surface.bbox.min.x,
+                surface.bbox.max.x,
+            );
+            let overlap_z = range_overlap_ratio(
+                subject.bbox.min.z,
+                subject.bbox.max.z,
+                surface.bbox.min.z,
+                surface.bbox.max.z,
+            );
+            Some(((vertical + overlap_x + overlap_z) / 3.0).clamp(0.0, 1.0))
+        }
+        SpatialRelationship::In { subject, container } => {
+            let subject = state.scene.get_object(subject)?;
+            let container = state.scene.get_object(container)?;
+            Some(if container.bbox.contains(&subject.bbox) {
+                1.0
+            } else if container.bbox.intersects_or_touches(&subject.bbox) {
+                0.5
+            } else {
+                0.0
+            })
+        }
+    }
+}
+
+fn spatial_relationship_signal_score(state: &WorldState) -> Option<f32> {
+    average_components(
+        &state
+            .scene
+            .relationships
+            .iter()
+            .filter_map(|relationship| spatial_relationship_score(state, relationship))
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn spatial_reasoning_score(
+    scenario: &EvalScenario,
+    final_state: &WorldState,
+    average_scores: Option<&PhysicsScores>,
+) -> f32 {
+    let mut components = scenario
+        .expected_outcomes
+        .iter()
+        .filter_map(|expected| match expected {
+            ExpectedOutcome::ObjectPosition { .. } | ExpectedOutcome::FinalStateCondition { .. } => {
+                non_threshold_outcome_score(expected, final_state)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    push_component(
+        &mut components,
+        average_scores.map(|scores| scores.spatial_consistency),
+    );
+    push_component(
+        &mut components,
+        spatial_relationship_signal_score(final_state),
+    );
+
+    average_components(&components).unwrap_or(0.5)
+}
+
+fn material_understanding_score(
+    starting_state: &WorldState,
+    scenario: &EvalScenario,
+    final_state: &WorldState,
+) -> f32 {
+    let mut components = Vec::new();
+
+    for expected in &scenario.expected_outcomes {
+        if let ExpectedOutcome::ObjectSemanticLabel { .. } = expected {
+            push_component(
+                &mut components,
+                non_threshold_outcome_score(expected, final_state),
+            );
+        }
+    }
+
+    for initial_object in starting_state.scene.objects.values() {
+        let Some(final_object) = final_state.scene.get_object(&initial_object.id) else {
+            continue;
+        };
+
+        if initial_object.semantic_label.is_some() {
+            components.push(f32::from(
+                final_object.semantic_label == initial_object.semantic_label,
+            ));
+        }
+        if initial_object.physics.material.is_some() {
+            components.push(f32::from(
+                final_object.physics.material == initial_object.physics.material,
+            ));
+        }
+    }
+
+    average_components(&components).unwrap_or(0.5)
 }
 
 fn check_outcome(
@@ -2722,6 +3279,33 @@ mod tests {
         assert!(csv.contains("Physics Standard,mock,object_drop"));
     }
 
+    #[tokio::test]
+    async fn test_eval_report_render_many_deduplicates_and_preserves_order() {
+        let suite = EvalSuite::physics_standard();
+        let provider = MockProvider::new();
+        let providers: Vec<&dyn WorldModelProvider> = vec![&provider];
+        let report = suite.run(&providers).await.unwrap();
+
+        let rendered = report
+            .render_many([
+                EvalReportFormat::Markdown,
+                EvalReportFormat::Csv,
+                EvalReportFormat::Markdown,
+                EvalReportFormat::Json,
+            ])
+            .unwrap();
+
+        assert_eq!(rendered.len(), 3);
+        assert_eq!(rendered[0].0, EvalReportFormat::Markdown);
+        assert!(rendered[0]
+            .1
+            .contains("# Evaluation Report: Physics Standard"));
+        assert_eq!(rendered[1].0, EvalReportFormat::Csv);
+        assert!(rendered[1].1.contains("suite,provider,scenario"));
+        assert_eq!(rendered[2].0, EvalReportFormat::Json);
+        assert!(rendered[2].1.contains("\"suite\": \"Physics Standard\""));
+    }
+
     #[test]
     fn test_eval_report_csv_escapes_text_fields() {
         let report = EvalReport {
@@ -2838,6 +3422,9 @@ mod tests {
         assert!(suite
             .dimensions
             .contains(&EvalDimension::ActionPredictionAccuracy));
+        assert!(suite
+            .dimensions
+            .contains(&EvalDimension::MaterialUnderstanding));
     }
 
     #[tokio::test]
@@ -2848,6 +3435,18 @@ mod tests {
         let report = suite.run(&providers).await.unwrap();
         assert_eq!(report.results.len(), 3);
         assert_eq!(report.leaderboard[0].provider, "mock");
+        let action_summary = report
+            .dimension_summaries
+            .iter()
+            .find(|summary| summary.dimension == "action_prediction_accuracy")
+            .unwrap();
+        assert!(!action_summary.provider_scores.is_empty());
+        let material_summary = report
+            .dimension_summaries
+            .iter()
+            .find(|summary| summary.dimension == "material_understanding")
+            .unwrap();
+        assert!(!material_summary.provider_scores.is_empty());
     }
 
     #[test]
@@ -2865,6 +3464,12 @@ mod tests {
         let providers: Vec<&dyn WorldModelProvider> = vec![&provider];
         let report = suite.run(&providers).await.unwrap();
         assert_eq!(report.results.len(), 2);
+        let spatial_summary = report
+            .dimension_summaries
+            .iter()
+            .find(|summary| summary.dimension == "spatial_reasoning")
+            .unwrap();
+        assert!(!spatial_summary.provider_scores.is_empty());
     }
 
     #[test]
@@ -2873,7 +3478,10 @@ mod tests {
         assert_eq!(suite.name, "Comprehensive");
         // 2 physics + 3 manipulation + 2 spatial = 7
         assert_eq!(suite.scenarios.len(), 7);
-        assert_eq!(suite.dimensions.len(), 7);
+        assert_eq!(suite.dimensions.len(), 8);
+        assert!(suite
+            .dimensions
+            .contains(&EvalDimension::MaterialUnderstanding));
     }
 
     #[tokio::test]
@@ -3116,6 +3724,7 @@ mod tests {
         let result = &report.results[0];
 
         assert!(result.outcomes.iter().all(|outcome| outcome.passed));
+        assert!(result.scores["action_prediction_accuracy"] >= 0.75);
     }
 
     #[tokio::test]

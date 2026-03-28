@@ -5,6 +5,7 @@
 //! Exposes core types, scene management, and the main WorldForge
 //! orchestrator to Python via PyO3.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -4511,6 +4512,11 @@ impl PyEvalReport {
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("render error: {e}")))
     }
 
+    #[pyo3(signature = (formats=None))]
+    fn artifacts(&self, formats: Option<Vec<String>>) -> PyResult<BTreeMap<String, String>> {
+        render_eval_report_artifacts(&self.inner, formats)
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "EvalReport(suite='{}', providers={}, scenarios={})",
@@ -4711,6 +4717,36 @@ impl PyEvalSuite {
         )?))
     }
 
+    /// Run the evaluation suite once and return one or more rendered artifacts.
+    ///
+    /// When `formats` is omitted, JSON, Markdown, and CSV artifacts are all
+    /// returned from the same evaluation run.
+    #[pyo3(signature = (formats=None, providers="", world=None, world_json=None, forge=None))]
+    fn run_report_artifacts(
+        &self,
+        formats: Option<Vec<String>>,
+        providers: &str,
+        world: Option<&PyWorld>,
+        world_json: Option<&str>,
+        forge: Option<&PyWorldForge>,
+    ) -> PyResult<BTreeMap<String, String>> {
+        let EvalContext {
+            world_state,
+            registry,
+        } = resolve_eval_context(
+            world,
+            world_json,
+            forge.map(|worldforge| worldforge.inner.registry_arc()),
+        )?;
+        let report = run_eval_suite_report_with_world(
+            &self.inner,
+            providers,
+            world_state.as_ref(),
+            registry,
+        )?;
+        render_eval_report_artifacts(&report, formats)
+    }
+
     /// Run the evaluation suite against a supplied world and return provider summaries.
     #[pyo3(signature = (providers="", world=None, world_json=None, forge=None))]
     fn run_with_world(
@@ -4745,6 +4781,19 @@ impl PyEvalSuite {
         forge: Option<&PyWorldForge>,
     ) -> PyResult<PyEvalReport> {
         self.run_report_data(providers, world, world_json, forge)
+    }
+
+    /// Run the evaluation suite against a supplied world and return rendered artifacts.
+    #[pyo3(signature = (formats=None, providers="", world=None, world_json=None, forge=None))]
+    fn run_report_artifacts_with_world(
+        &self,
+        formats: Option<Vec<String>>,
+        providers: &str,
+        world: Option<&PyWorld>,
+        world_json: Option<&str>,
+        forge: Option<&PyWorldForge>,
+    ) -> PyResult<BTreeMap<String, String>> {
+        self.run_report_artifacts(formats, providers, world, world_json, forge)
     }
 
     fn to_json(&self) -> PyResult<String> {
@@ -4874,6 +4923,48 @@ fn to_py_eval_report(report: worldforge_eval::EvalReport) -> PyEvalReport {
         total_outcomes: report.total_outcomes,
         inner: report,
     }
+}
+
+fn parse_eval_report_formats(
+    formats: Option<Vec<String>>,
+) -> PyResult<Vec<worldforge_eval::EvalReportFormat>> {
+    let formats = formats.unwrap_or_else(|| {
+        vec![
+            "json".to_string(),
+            "markdown".to_string(),
+            "csv".to_string(),
+        ]
+    });
+
+    let mut parsed = Vec::with_capacity(formats.len());
+    for format in formats {
+        parsed.push(
+            format
+                .parse::<worldforge_eval::EvalReportFormat>()
+                .map_err(|e| {
+                    pyo3::exceptions::PyValueError::new_err(format!(
+                        "invalid evaluation report format: {e}"
+                    ))
+                })?,
+        );
+    }
+
+    Ok(parsed)
+}
+
+fn render_eval_report_artifacts(
+    report: &worldforge_eval::EvalReport,
+    formats: Option<Vec<String>>,
+) -> PyResult<BTreeMap<String, String>> {
+    report
+        .render_many(parse_eval_report_formats(formats)?)
+        .map(|artifacts| {
+            artifacts
+                .into_iter()
+                .map(|(format, content)| (format.as_str().to_string(), content))
+                .collect()
+        })
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("render error: {e}")))
 }
 
 fn eval_dimension_name(dimension: &worldforge_eval::EvalDimension) -> String {
@@ -6279,11 +6370,17 @@ fn worldforge(m: &Bound<'_, PyModule>) -> PyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    fn test_state_dir() -> PathBuf {
+        std::env::temp_dir().join(format!("worldforge-python-tests-{}", uuid::Uuid::new_v4()))
+    }
 
     fn test_worldforge() -> PyWorldForge {
+        let state_dir = test_state_dir();
         PyWorldForge::new(
             "file",
-            ".worldforge-python-tests",
+            state_dir.to_str().unwrap(),
             None,
             "json",
             None,
@@ -8694,6 +8791,52 @@ mod tests {
             .unwrap()
             .contains("suite,provider,scenario"));
         assert!(csv.contains("Physics Standard,mock,object_drop"));
+    }
+
+    #[test]
+    fn test_eval_report_artifacts_returns_requested_formats_without_duplicates() {
+        let report = run_eval_report_data("physics", "mock", None, None).unwrap();
+
+        let artifacts = report
+            .artifacts(Some(vec![
+                "markdown".to_string(),
+                "csv".to_string(),
+                "markdown".to_string(),
+            ]))
+            .unwrap();
+
+        assert_eq!(artifacts.len(), 2);
+        assert!(artifacts
+            .get("markdown")
+            .unwrap()
+            .contains("# Evaluation Report: Physics Standard"));
+        assert!(artifacts
+            .get("csv")
+            .unwrap()
+            .contains("suite,provider,scenario"));
+    }
+
+    #[test]
+    fn test_eval_suite_run_report_artifacts_defaults_to_all_formats() {
+        let suite = PyEvalSuite::from_builtin("physics").unwrap();
+
+        let artifacts = suite
+            .run_report_artifacts(None, "mock", None, None, None)
+            .unwrap();
+
+        assert_eq!(artifacts.len(), 3);
+        assert!(artifacts
+            .get("json")
+            .unwrap()
+            .contains("\"suite\": \"Physics Standard\""));
+        assert!(artifacts
+            .get("markdown")
+            .unwrap()
+            .contains("# Evaluation Report: Physics Standard"));
+        assert!(artifacts
+            .get("csv")
+            .unwrap()
+            .contains("suite,provider,scenario"));
     }
 
     #[test]
