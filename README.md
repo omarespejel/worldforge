@@ -231,10 +231,10 @@ from worldforge.eval import EvalSuite
 from worldforge.verify import ZkVerifier
 
 suite = EvalSuite.from_builtin("physics")
-report = suite.run_report_data()
+report = suite.run_report_data(num_samples=4)
 markdown = report.to_markdown()
 csv = report.to_csv()
-artifacts = suite.run_report_artifacts()
+artifacts = suite.run_report_artifacts(num_samples=4)
 assert markdown.startswith("# Evaluation Report:")
 assert "suite,provider,scenario" in csv
 assert set(artifacts) == {"json", "markdown", "csv"}
@@ -260,6 +260,8 @@ REST evaluation entry points use those suite defaults when you omit an explicit
 provider override, and explicit provider lists still take precedence. REST can
 run suites directly via `POST /v1/evals/run`, optionally overlaying either a
 persisted `world_id` or an inline `world_state` onto every scenario fixture.
+All three surfaces also accept `num_samples` when you want sampled predictions,
+and the resulting provider summaries include sampling diagnostics in the report.
 
 The CLI can export the same evaluation report as multiple artifacts in one run:
 
@@ -313,7 +315,8 @@ The CLI, REST API, and Python bindings use that list when callers omit an
 explicit provider list, and explicit provider arguments still override the
 suite defaults. For example, `worldforge eval --suite physics` uses the suite's
 providers, while `worldforge eval --suite-json evals/custom.json --providers
-mock,jepa` forces an explicit list.
+mock,jepa` forces an explicit list. Add `--num-samples 4` to request sampled
+predictions during evaluation.
 
 To attach persistence up front, open a `StateStore` and pass it to
 `worldforge_providers::auto_detect_worldforge_with_state_store(...)`.
@@ -654,7 +657,7 @@ curl http://127.0.0.1:8080/v1/evals/suites
 
 curl -X POST http://127.0.0.1:8080/v1/evals/run \
   -H 'content-type: application/json' \
-  -d '{"suite":"physics","providers":["mock"]}'
+  -d '{"suite":"physics","providers":["mock"],"num_samples":4}'
 
 curl -X POST http://127.0.0.1:8080/v1/evals/run \
   -H 'content-type: application/json' \
@@ -668,7 +671,7 @@ curl http://127.0.0.1:8080/v1
 
 curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/evaluate \
   -H 'content-type: application/json' \
-  -d '{"suite":"physics","providers":["mock"]}'
+  -d '{"suite":"physics","providers":["mock"],"num_samples":4}'
 
 curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/evaluate \
   -H 'content-type: application/json' \

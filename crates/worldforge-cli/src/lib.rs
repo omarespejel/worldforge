@@ -510,6 +510,9 @@ pub enum Commands {
         /// When omitted, the suite's baked-in providers are used.
         #[arg(long)]
         providers: Option<String>,
+        /// Optional number of samples to request per prediction during evaluation.
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+        num_samples: Option<u32>,
         /// Print the built-in suite names and exit.
         #[arg(long, default_value_t = false)]
         list_suites: bool,
@@ -1371,6 +1374,7 @@ pub async fn run() -> Result<()> {
             world,
             world_snapshot,
             providers,
+            num_samples,
             list_suites,
             list_metrics,
             output_json,
@@ -1385,6 +1389,7 @@ pub async fn run() -> Result<()> {
                     world: world.as_deref(),
                     world_snapshot: world_snapshot.as_deref(),
                     providers: providers.as_deref(),
+                    num_samples,
                     list_suites,
                     list_metrics,
                     output_json: output_json.as_deref(),
@@ -2058,6 +2063,7 @@ struct EvalOptions<'a> {
     world: Option<&'a str>,
     world_snapshot: Option<&'a Path>,
     providers: Option<&'a str>,
+    num_samples: Option<u32>,
     list_suites: bool,
     list_metrics: bool,
     output_json: Option<&'a Path>,
@@ -2545,6 +2551,18 @@ fn predict_sampling_summary(sampling: Option<&PredictionSamplingMetadata>) -> Op
             sampling.requested_samples,
             sampling.completed_samples,
             sampling.selected_sample_index + 1
+        )
+    })
+}
+
+fn eval_sampling_summary(sampling: Option<&worldforge_eval::SamplingSummary>) -> Option<String> {
+    sampling.map(|sampling| {
+        format!(
+            "{}/{} steps, {} requests, {:.1}% complete",
+            sampling.sampled_steps,
+            sampling.prediction_steps,
+            sampling.requested_samples,
+            sampling.completion_rate * 100.0
         )
     })
 }
@@ -3328,13 +3346,17 @@ async fn cmd_eval(store: Option<&dyn StateStore>, options: EvalOptions<'_>) -> R
 
     let world_state =
         load_optional_world_state_input(store, options.world, options.world_snapshot).await?;
+    let run_options = worldforge_eval::EvalRunOptions {
+        num_samples: options.num_samples,
+        ..Default::default()
+    };
     let report = match world_state.as_ref() {
         Some(state) => suite
-            .run_with_world_state(&provider_list, state)
+            .run_with_world_state_and_options(&provider_list, state, &run_options)
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?,
         None => suite
-            .run(&provider_list)
+            .run_with_options(&provider_list, &run_options)
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?,
     };
@@ -3392,6 +3414,9 @@ async fn cmd_eval(store: Option<&dyn StateStore>, options: EvalOptions<'_>) -> R
         dimensions.sort_by(|a, b| a.0.cmp(b.0));
         for (dimension, score) in dimensions {
             println!("    {dimension}: {:.2}", score);
+        }
+        if let Some(sampling) = eval_sampling_summary(summary.sampling.as_ref()) {
+            println!("    sampling: {sampling}");
         }
     }
     println!();
@@ -6144,6 +6169,8 @@ mod tests {
             "/tmp/custom-suite.json",
             "--providers",
             "mock,jepa",
+            "--num-samples",
+            "4",
             "--output-json",
             "/tmp/eval-report.json",
             "--output-markdown",
@@ -6160,6 +6187,7 @@ mod tests {
                 world,
                 world_snapshot,
                 providers,
+                num_samples,
                 list_suites,
                 list_metrics,
                 output_json,
@@ -6171,6 +6199,7 @@ mod tests {
                 assert!(world.is_none());
                 assert!(world_snapshot.is_none());
                 assert_eq!(providers.as_deref(), Some("mock,jepa"));
+                assert_eq!(num_samples, Some(4));
                 assert!(!list_suites);
                 assert!(!list_metrics);
                 assert_eq!(output_json, Some(PathBuf::from("/tmp/eval-report.json")));
@@ -6815,6 +6844,7 @@ mod tests {
                 world: None,
                 world_snapshot: None,
                 providers: None,
+                num_samples: Some(4),
                 list_suites: false,
                 list_metrics: false,
                 output_json: Some(&report_path),
@@ -6829,6 +6859,10 @@ mod tests {
         assert_eq!(report["suite"], "Physics Standard");
         assert_eq!(report["leaderboard"][0]["provider"], "mock");
         assert_eq!(report["provider_summaries"][0]["provider"], "mock");
+        assert_eq!(
+            report["provider_summaries"][0]["sampling"]["requested_samples"],
+            8
+        );
         assert_eq!(
             report["dimension_summaries"][0]["dimension"],
             "object_permanence"
@@ -6931,6 +6965,7 @@ mod tests {
                 world: Some(&world_state.id.to_string()),
                 world_snapshot: None,
                 providers: None,
+                num_samples: None,
                 list_suites: false,
                 list_metrics: false,
                 output_json: Some(&report_path),
@@ -7010,6 +7045,7 @@ mod tests {
                 world: None,
                 world_snapshot: Some(&snapshot),
                 providers: None,
+                num_samples: None,
                 list_suites: false,
                 list_metrics: false,
                 output_json: Some(&report_path),
@@ -7042,6 +7078,7 @@ mod tests {
                 world: None,
                 world_snapshot: None,
                 providers: None,
+                num_samples: None,
                 list_suites: false,
                 list_metrics: false,
                 output_json: None,
@@ -8206,7 +8243,7 @@ mod tests {
 
         cmd_create(
             store.as_ref(),
-            "A kitchen with a mug",
+            "Two red blocks next to a blue mug on a table",
             Some("seeded-kitchen"),
             "mock",
         )
@@ -8218,8 +8255,17 @@ mod tests {
 
         let state = store.load(&world_ids[0]).await.unwrap();
         assert_eq!(state.metadata.name, "seeded-kitchen");
-        assert_eq!(state.metadata.description, "A kitchen with a mug");
-        assert!(state.scene.objects.len() >= 2);
+        assert_eq!(
+            state.metadata.description,
+            "Two red blocks next to a blue mug on a table"
+        );
+        let table = state.scene.find_object_by_name("table").unwrap();
+        let mug = state.scene.find_object_by_name("blue_mug").unwrap();
+        let block = state.scene.find_object_by_name("red_block").unwrap();
+        let block_2 = state.scene.find_object_by_name("red_block_2").unwrap();
+        assert!(mug.pose.position.y > table.bbox.max.y);
+        assert!(block.pose.position.distance(mug.pose.position) < 0.35);
+        assert!(block_2.pose.position.distance(mug.pose.position) < 0.35);
         assert_eq!(state.history.len(), 1);
 
         let _ = fs::remove_dir_all(dir);

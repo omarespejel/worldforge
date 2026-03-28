@@ -572,6 +572,9 @@ struct EvaluateRequest {
     /// Optional explicit provider override; otherwise suite defaults are used.
     #[serde(default)]
     providers: Vec<String>,
+    /// Optional number of samples to request per prediction during evaluation.
+    #[serde(default)]
+    num_samples: Option<u32>,
     /// Optional rendered report format. Defaults to full JSON report data.
     #[serde(default)]
     report_format: Option<EvalReportFormat>,
@@ -713,6 +716,9 @@ fn validate_eval_report_request(request: &EvaluateRequest) -> std::result::Resul
     if request.report_format.is_some() && !request.report_formats.is_empty() {
         return Err("provide either `report_format` or `report_formats`, not both".to_string());
     }
+    if matches!(request.num_samples, Some(0)) {
+        return Err("`num_samples` must be at least 1".to_string());
+    }
 
     Ok(())
 }
@@ -819,13 +825,17 @@ async fn run_evaluation_request(
         }
     }
 
+    let run_options = worldforge_eval::EvalRunOptions {
+        num_samples: request.num_samples,
+        ..Default::default()
+    };
     let report = match world_state {
         Some(world_state) => {
             suite
-                .run_with_world_state(&provider_refs, world_state)
+                .run_with_world_state_and_options(&provider_refs, world_state, &run_options)
                 .await
         }
-        None => suite.run(&provider_refs).await,
+        None => suite.run_with_options(&provider_refs, &run_options).await,
     };
 
     match report {
@@ -4137,14 +4147,17 @@ mod tests {
     #[tokio::test]
     async fn test_route_create_world_from_prompt_bootstraps_scene() {
         let state = test_state();
-        let body = r#"{"prompt":"A kitchen with a mug","name":"seeded-kitchen","provider":"mock"}"#;
+        let body = r#"{"prompt":"Two red blocks next to a blue mug on a table","name":"seeded-kitchen","provider":"mock"}"#;
         let (status, resp) = route("POST", "/v1/worlds", body, &state).await;
         assert_eq!(status, 201);
 
         let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert_eq!(value["data"]["name"], "seeded-kitchen");
-        assert_eq!(value["data"]["description"], "A kitchen with a mug");
-        assert!(value["data"]["object_count"].as_u64().unwrap() >= 2);
+        assert_eq!(
+            value["data"]["description"],
+            "Two red blocks next to a blue mug on a table"
+        );
+        assert!(value["data"]["object_count"].as_u64().unwrap() >= 4);
 
         let world_id = value["data"]["id"].as_str().unwrap();
         let (status, world) = route("GET", &format!("/v1/worlds/{world_id}"), "", &state).await;
@@ -4153,15 +4166,17 @@ mod tests {
         let loaded: serde_json::Value = serde_json::from_str(&world).unwrap();
         assert_eq!(
             loaded["data"]["metadata"]["description"],
-            "A kitchen with a mug"
+            "Two red blocks next to a blue mug on a table"
         );
-        assert!(
-            loaded["data"]["scene"]["objects"]
-                .as_object()
-                .unwrap()
-                .len()
-                >= 2
-        );
+        let objects = loaded["data"]["scene"]["objects"].as_object().unwrap();
+        let names: Vec<_> = objects
+            .values()
+            .filter_map(|value| value["name"].as_str())
+            .collect();
+        assert!(names.contains(&"table"));
+        assert!(names.contains(&"blue_mug"));
+        assert!(names.contains(&"red_block"));
+        assert!(names.contains(&"red_block_2"));
     }
 
     #[tokio::test]
@@ -5686,6 +5701,7 @@ mod tests {
         suite.providers = vec!["alt-mock".to_string()];
         let body = serde_json::json!({
             "suite_definition": suite,
+            "num_samples": 4,
         })
         .to_string();
         let id = seed_world(&state, "eval-world", "mock").await;
@@ -5700,6 +5716,10 @@ mod tests {
         assert_eq!(
             value["data"]["provider_summaries"][0]["provider"],
             "alt-mock"
+        );
+        assert_eq!(
+            value["data"]["provider_summaries"][0]["sampling"]["requested_samples"],
+            8
         );
     }
 

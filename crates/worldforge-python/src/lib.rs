@@ -2397,6 +2397,83 @@ impl PyPredictionSampling {
     }
 }
 
+/// Aggregated sampling diagnostics attached to evaluation summaries.
+#[pyclass(name = "EvalSamplingSummary")]
+#[derive(Debug, Clone)]
+pub struct PyEvalSamplingSummary {
+    inner: worldforge_eval::SamplingSummary,
+}
+
+impl PyEvalSamplingSummary {
+    fn from_core(inner: worldforge_eval::SamplingSummary) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyEvalSamplingSummary {
+    #[getter]
+    fn prediction_steps(&self) -> usize {
+        self.inner.prediction_steps
+    }
+
+    #[getter]
+    fn sampled_steps(&self) -> usize {
+        self.inner.sampled_steps
+    }
+
+    #[getter]
+    fn requested_samples(&self) -> u32 {
+        self.inner.requested_samples
+    }
+
+    #[getter]
+    fn completed_samples(&self) -> u32 {
+        self.inner.completed_samples
+    }
+
+    #[getter]
+    fn completion_rate(&self) -> f32 {
+        self.inner.completion_rate
+    }
+
+    #[getter]
+    fn confidence_mean(&self) -> Option<f32> {
+        self.inner.confidence_mean
+    }
+
+    #[getter]
+    fn physics_mean(&self) -> Option<f32> {
+        self.inner.physics_mean
+    }
+
+    #[getter]
+    fn quality_mean(&self) -> Option<f32> {
+        self.inner.quality_mean
+    }
+
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    }
+
+    #[staticmethod]
+    fn from_json(json: &str) -> PyResult<Self> {
+        let inner: worldforge_eval::SamplingSummary = serde_json::from_str(json).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("deserialization error: {e}"))
+        })?;
+        Ok(Self { inner })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "EvalSamplingSummary(requested_samples={}, completed_samples={}, completion_rate={:.2})",
+            self.inner.requested_samples, self.inner.completed_samples, self.inner.completion_rate
+        )
+    }
+}
+
 /// Stable object identity surfaced in compare diagnostics.
 #[pyclass(name = "ObjectDiagnostic")]
 #[derive(Debug, Clone)]
@@ -4981,6 +5058,8 @@ pub struct PyEvalResult {
     dimension_scores: std::collections::HashMap<String, f32>,
     /// Scenario-level overall scores.
     scenario_scores: std::collections::HashMap<String, f32>,
+    /// Sampling diagnostics for the provider's evaluation run, when available.
+    sampling: Option<PyEvalSamplingSummary>,
 }
 
 #[pymethods]
@@ -5038,6 +5117,19 @@ impl PyEvalResult {
     #[getter]
     fn scenario_scores(&self) -> std::collections::HashMap<String, f32> {
         self.scenario_scores.clone()
+    }
+
+    #[getter]
+    fn sampling(&self) -> Option<PyEvalSamplingSummary> {
+        self.sampling.clone()
+    }
+
+    /// Serialize the sampling diagnostics to JSON if available.
+    fn sampling_json(&self) -> PyResult<Option<String>> {
+        self.sampling
+            .as_ref()
+            .map(PyEvalSamplingSummary::to_json)
+            .transpose()
     }
 
     fn __repr__(&self) -> String {
@@ -5332,13 +5424,14 @@ impl PyEvalSuite {
     ///
     /// When `world` or `world_json` is supplied, each scenario is evaluated
     /// against that world state instead of its baked-in initial state.
-    #[pyo3(signature = (providers="", world=None, world_json=None, forge=None))]
+    #[pyo3(signature = (providers="", world=None, world_json=None, forge=None, num_samples=None))]
     fn run(
         &self,
         providers: &str,
         world: Option<&PyWorld>,
         world_json: Option<&str>,
         forge: Option<&PyWorldForge>,
+        num_samples: Option<u32>,
     ) -> PyResult<Vec<PyEvalResult>> {
         let EvalContext {
             world_state,
@@ -5353,6 +5446,7 @@ impl PyEvalSuite {
             providers,
             world_state.as_ref(),
             registry,
+            num_samples,
         )?
         .provider_summaries
         .iter()
@@ -5364,13 +5458,14 @@ impl PyEvalSuite {
     ///
     /// When `world` or `world_json` is supplied, each scenario is evaluated
     /// against that world state instead of its baked-in initial state.
-    #[pyo3(signature = (providers="", world=None, world_json=None, forge=None))]
+    #[pyo3(signature = (providers="", world=None, world_json=None, forge=None, num_samples=None))]
     fn run_report(
         &self,
         providers: &str,
         world: Option<&PyWorld>,
         world_json: Option<&str>,
         forge: Option<&PyWorldForge>,
+        num_samples: Option<u32>,
     ) -> PyResult<String> {
         let EvalContext {
             world_state,
@@ -5385,6 +5480,7 @@ impl PyEvalSuite {
             providers,
             world_state.as_ref(),
             registry,
+            num_samples,
         )?)
         .map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!(
@@ -5397,13 +5493,14 @@ impl PyEvalSuite {
     ///
     /// When `world` or `world_json` is supplied, each scenario is evaluated
     /// against that world state instead of its baked-in initial state.
-    #[pyo3(signature = (providers="", world=None, world_json=None, forge=None))]
+    #[pyo3(signature = (providers="", world=None, world_json=None, forge=None, num_samples=None))]
     fn run_report_data(
         &self,
         providers: &str,
         world: Option<&PyWorld>,
         world_json: Option<&str>,
         forge: Option<&PyWorldForge>,
+        num_samples: Option<u32>,
     ) -> PyResult<PyEvalReport> {
         let EvalContext {
             world_state,
@@ -5418,6 +5515,7 @@ impl PyEvalSuite {
             providers,
             world_state.as_ref(),
             registry,
+            num_samples,
         )?))
     }
 
@@ -5425,7 +5523,7 @@ impl PyEvalSuite {
     ///
     /// When `formats` is omitted, JSON, Markdown, and CSV artifacts are all
     /// returned from the same evaluation run.
-    #[pyo3(signature = (formats=None, providers="", world=None, world_json=None, forge=None))]
+    #[pyo3(signature = (formats=None, providers="", world=None, world_json=None, forge=None, num_samples=None))]
     fn run_report_artifacts(
         &self,
         formats: Option<Vec<String>>,
@@ -5433,6 +5531,7 @@ impl PyEvalSuite {
         world: Option<&PyWorld>,
         world_json: Option<&str>,
         forge: Option<&PyWorldForge>,
+        num_samples: Option<u32>,
     ) -> PyResult<BTreeMap<String, String>> {
         let EvalContext {
             world_state,
@@ -5447,48 +5546,52 @@ impl PyEvalSuite {
             providers,
             world_state.as_ref(),
             registry,
+            num_samples,
         )?;
         render_eval_report_artifacts(&report, formats)
     }
 
     /// Run the evaluation suite against a supplied world and return provider summaries.
-    #[pyo3(signature = (providers="", world=None, world_json=None, forge=None))]
+    #[pyo3(signature = (providers="", world=None, world_json=None, forge=None, num_samples=None))]
     fn run_with_world(
         &self,
         providers: &str,
         world: Option<&PyWorld>,
         world_json: Option<&str>,
         forge: Option<&PyWorldForge>,
+        num_samples: Option<u32>,
     ) -> PyResult<Vec<PyEvalResult>> {
-        self.run(providers, world, world_json, forge)
+        self.run(providers, world, world_json, forge, num_samples)
     }
 
     /// Run the evaluation suite against a supplied world and return the full report JSON.
-    #[pyo3(signature = (providers="", world=None, world_json=None, forge=None))]
+    #[pyo3(signature = (providers="", world=None, world_json=None, forge=None, num_samples=None))]
     fn run_report_with_world(
         &self,
         providers: &str,
         world: Option<&PyWorld>,
         world_json: Option<&str>,
         forge: Option<&PyWorldForge>,
+        num_samples: Option<u32>,
     ) -> PyResult<String> {
-        self.run_report(providers, world, world_json, forge)
+        self.run_report(providers, world, world_json, forge, num_samples)
     }
 
     /// Run the evaluation suite against a supplied world and return the structured report.
-    #[pyo3(signature = (providers="", world=None, world_json=None, forge=None))]
+    #[pyo3(signature = (providers="", world=None, world_json=None, forge=None, num_samples=None))]
     fn run_report_data_with_world(
         &self,
         providers: &str,
         world: Option<&PyWorld>,
         world_json: Option<&str>,
         forge: Option<&PyWorldForge>,
+        num_samples: Option<u32>,
     ) -> PyResult<PyEvalReport> {
-        self.run_report_data(providers, world, world_json, forge)
+        self.run_report_data(providers, world, world_json, forge, num_samples)
     }
 
     /// Run the evaluation suite against a supplied world and return rendered artifacts.
-    #[pyo3(signature = (formats=None, providers="", world=None, world_json=None, forge=None))]
+    #[pyo3(signature = (formats=None, providers="", world=None, world_json=None, forge=None, num_samples=None))]
     fn run_report_artifacts_with_world(
         &self,
         formats: Option<Vec<String>>,
@@ -5496,8 +5599,9 @@ impl PyEvalSuite {
         world: Option<&PyWorld>,
         world_json: Option<&str>,
         forge: Option<&PyWorldForge>,
+        num_samples: Option<u32>,
     ) -> PyResult<BTreeMap<String, String>> {
-        self.run_report_artifacts(formats, providers, world, world_json, forge)
+        self.run_report_artifacts(formats, providers, world, world_json, forge, num_samples)
     }
 
     fn to_json(&self) -> PyResult<String> {
@@ -5581,6 +5685,10 @@ fn to_py_eval_result(summary: &worldforge_eval::ProviderSummary) -> PyEvalResult
         outcome_pass_rate: summary.outcome_pass_rate,
         dimension_scores: summary.dimension_scores.clone(),
         scenario_scores: summary.scenario_scores.clone(),
+        sampling: summary
+            .sampling
+            .clone()
+            .map(PyEvalSamplingSummary::from_core),
     }
 }
 
@@ -5694,9 +5802,19 @@ fn run_eval_suite_report_with_world(
     providers: &str,
     world_state: Option<&WorldState>,
     registry: Arc<ProviderRegistry>,
+    num_samples: Option<u32>,
 ) -> PyResult<worldforge_eval::EvalReport> {
+    if matches!(num_samples, Some(0)) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "num_samples must be at least 1",
+        ));
+    }
     let rt = new_runtime()?;
     let provider_names = resolve_eval_provider_names(suite, providers);
+    let run_options = worldforge_eval::EvalRunOptions {
+        num_samples,
+        ..Default::default()
+    };
     let mut provider_list: Vec<&dyn worldforge_core::provider::WorldModelProvider> = Vec::new();
     for provider_name in &provider_names {
         let provider = registry.get(provider_name).map_err(|e| {
@@ -5706,8 +5824,12 @@ fn run_eval_suite_report_with_world(
     }
 
     match world_state {
-        Some(world_state) => rt.block_on(suite.run_with_world_state(&provider_list, world_state)),
-        None => rt.block_on(suite.run(&provider_list)),
+        Some(world_state) => rt.block_on(suite.run_with_world_state_and_options(
+            &provider_list,
+            world_state,
+            &run_options,
+        )),
+        None => rt.block_on(suite.run_with_options(&provider_list, &run_options)),
     }
     .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("evaluation failed: {e}")))
 }
@@ -5786,12 +5908,13 @@ fn list_eval_metrics() -> Vec<String> {
 
 /// Run an evaluation suite and return provider summaries.
 #[pyfunction]
-#[pyo3(signature = (suite_name="physics", providers="", suite_json=None, forge=None))]
+#[pyo3(signature = (suite_name="physics", providers="", suite_json=None, forge=None, num_samples=None))]
 fn run_eval(
     suite_name: &str,
     providers: &str,
     suite_json: Option<&str>,
     forge: Option<&PyWorldForge>,
+    num_samples: Option<u32>,
 ) -> PyResult<Vec<PyEvalResult>> {
     let suite = load_eval_suite(suite_name, suite_json)?;
     let report = run_eval_suite_report_with_world(
@@ -5801,6 +5924,7 @@ fn run_eval(
         forge
             .map(|worldforge| worldforge.inner.registry_arc())
             .unwrap_or_else(auto_detect_registry),
+        num_samples,
     )?;
     Ok(report
         .provider_summaries
@@ -5811,12 +5935,13 @@ fn run_eval(
 
 /// Run an evaluation suite and return the full report JSON.
 #[pyfunction]
-#[pyo3(signature = (suite_name="physics", providers="", suite_json=None, forge=None))]
+#[pyo3(signature = (suite_name="physics", providers="", suite_json=None, forge=None, num_samples=None))]
 fn run_eval_report(
     suite_name: &str,
     providers: &str,
     suite_json: Option<&str>,
     forge: Option<&PyWorldForge>,
+    num_samples: Option<u32>,
 ) -> PyResult<String> {
     let suite = load_eval_suite(suite_name, suite_json)?;
     serde_json::to_string_pretty(&run_eval_suite_report_with_world(
@@ -5826,6 +5951,7 @@ fn run_eval_report(
         forge
             .map(|worldforge| worldforge.inner.registry_arc())
             .unwrap_or_else(auto_detect_registry),
+        num_samples,
     )?)
     .map_err(|e| {
         pyo3::exceptions::PyRuntimeError::new_err(format!(
@@ -5836,12 +5962,13 @@ fn run_eval_report(
 
 /// Run an evaluation suite and return the structured report object.
 #[pyfunction]
-#[pyo3(signature = (suite_name="physics", providers="", suite_json=None, forge=None))]
+#[pyo3(signature = (suite_name="physics", providers="", suite_json=None, forge=None, num_samples=None))]
 fn run_eval_report_data(
     suite_name: &str,
     providers: &str,
     suite_json: Option<&str>,
     forge: Option<&PyWorldForge>,
+    num_samples: Option<u32>,
 ) -> PyResult<PyEvalReport> {
     let suite = load_eval_suite(suite_name, suite_json)?;
     Ok(to_py_eval_report(run_eval_suite_report_with_world(
@@ -5851,6 +5978,7 @@ fn run_eval_report_data(
         forge
             .map(|worldforge| worldforge.inner.registry_arc())
             .unwrap_or_else(auto_detect_registry),
+        num_samples,
     )?))
 }
 
@@ -5887,6 +6015,7 @@ fn build_eval_submodule(py: Python<'_>) -> PyResult<Bound<'_, PyModule>> {
     module.add_class::<PyManipulationEval>()?;
     module.add_class::<PySpatialEval>()?;
     module.add_class::<PyComprehensiveEval>()?;
+    module.add_class::<PyEvalSamplingSummary>()?;
     module.add_class::<PyEvalResult>()?;
     module.add_class::<PyEvalDimensionSummary>()?;
     module.add_class::<PyEvalScenarioSummary>()?;
@@ -7012,6 +7141,7 @@ fn worldforge(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPrediction>()?;
     m.add_class::<PyPredictionSampleSummary>()?;
     m.add_class::<PyPredictionSampling>()?;
+    m.add_class::<PyEvalSamplingSummary>()?;
     m.add_class::<PyObjectDiagnostic>()?;
     m.add_class::<PyObjectDrift>()?;
     m.add_class::<PyGuardrailDiagnostics>()?;
@@ -8662,12 +8792,24 @@ mod tests {
     fn test_worldforge_create_world_from_prompt_keeps_seeded_history() {
         let wf = test_worldforge();
         let world = wf
-            .create_world_from_prompt("A kitchen with a mug", "mock", Some("seeded-kitchen"))
+            .create_world_from_prompt(
+                "Two red blocks next to a blue mug on a table",
+                "mock",
+                Some("seeded-kitchen"),
+            )
             .unwrap();
 
         assert_eq!(world.name(), "seeded-kitchen");
-        assert_eq!(world.description(), "A kitchen with a mug");
-        assert!(world.object_count() >= 2);
+        assert_eq!(
+            world.description(),
+            "Two red blocks next to a blue mug on a table"
+        );
+        assert!(world.object_count() >= 4);
+        let object_names = world.list_objects();
+        assert!(object_names.contains(&"table".to_string()));
+        assert!(object_names.contains(&"blue_mug".to_string()));
+        assert!(object_names.contains(&"red_block".to_string()));
+        assert!(object_names.contains(&"red_block_2".to_string()));
         assert_eq!(world.history_length(), 1);
     }
 
@@ -10190,29 +10332,53 @@ mod tests {
 
     #[test]
     fn test_run_eval_physics() {
-        let results = run_eval("physics", "mock", None, None).unwrap();
+        let results = run_eval("physics", "mock", None, None, Some(4)).unwrap();
         assert!(!results.is_empty());
         assert_eq!(results[0].provider(), "mock");
         assert!(results[0].dimension_scores().contains_key("overall"));
         assert!(results[0].scenario_pass_rate() > 0.0);
+        let sampling = results[0]
+            .sampling()
+            .expect("sampling metadata should be exposed");
+        assert_eq!(sampling.requested_samples(), 8);
+        assert!(results[0]
+            .sampling_json()
+            .unwrap()
+            .unwrap()
+            .contains("\"requested_samples\":8"));
     }
 
     #[test]
     fn test_run_eval_uses_suite_default_providers_when_omitted() {
-        let results = run_eval("physics", "", None, None).unwrap();
+        let results = run_eval("physics", "", None, None, None).unwrap();
         assert!(!results.is_empty());
         assert_eq!(results[0].provider(), "mock");
     }
 
     #[test]
+    fn test_run_eval_with_num_samples_exposes_sampling_summary() {
+        let results = run_eval("physics", "mock", None, None, Some(4)).unwrap();
+        let sampling = results[0].sampling().unwrap();
+
+        assert!(sampling.requested_samples() >= 4);
+        assert_eq!(sampling.completed_samples(), sampling.requested_samples());
+        assert!(sampling.sampled_steps() > 0);
+        assert!(results[0]
+            .sampling_json()
+            .unwrap()
+            .unwrap()
+            .contains("\"requested_samples\""));
+    }
+
+    #[test]
     fn test_run_eval_invalid_suite() {
-        let result = run_eval("nonexistent", "mock", None, None);
+        let result = run_eval("nonexistent", "mock", None, None, None);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_eval_result_repr() {
-        let results = run_eval("physics", "mock", None, None).unwrap();
+        let results = run_eval("physics", "mock", None, None, None).unwrap();
         let repr = results[0].__repr__();
         assert!(repr.contains("EvalResult"));
     }
@@ -10235,14 +10401,14 @@ mod tests {
     fn test_run_eval_report_with_custom_suite_json() {
         let suite_json =
             serde_json::to_string(&worldforge_eval::EvalSuite::physics_standard()).unwrap();
-        let report = run_eval_report("physics", "mock", Some(&suite_json), None).unwrap();
+        let report = run_eval_report("physics", "mock", Some(&suite_json), None, None).unwrap();
         assert!(report.contains("\"suite\": \"Physics Standard\""));
         assert!(report.contains("\"provider\": \"mock\""));
     }
 
     #[test]
     fn test_run_eval_report_data_exposes_rollups() {
-        let report = run_eval_report_data("physics", "mock", None, None).unwrap();
+        let report = run_eval_report_data("physics", "mock", None, None, Some(4)).unwrap();
         assert_eq!(report.suite(), "Physics Standard");
         assert_eq!(report.provider_summaries().len(), 1);
         assert!(report
@@ -10253,6 +10419,10 @@ mod tests {
             .scenario_summaries()
             .iter()
             .any(|summary| summary.scenario() == "object_drop"));
+        let sampling = report.provider_summaries()[0]
+            .sampling()
+            .expect("sampling metadata should be exposed");
+        assert_eq!(sampling.requested_samples(), 8);
     }
 
     #[test]
@@ -10278,7 +10448,8 @@ mod tests {
             providers: vec![],
         };
         let suite_json = serde_json::to_string(&suite).unwrap();
-        let report = run_eval_report_data("physics", "mock", Some(&suite_json), None).unwrap();
+        let report =
+            run_eval_report_data("physics", "mock", Some(&suite_json), None, None).unwrap();
 
         assert!(report
             .dimension_summaries()
@@ -10288,7 +10459,7 @@ mod tests {
 
     #[test]
     fn test_eval_report_roundtrips_and_renders_artifacts() {
-        let report = run_eval_report_data("physics", "mock", None, None).unwrap();
+        let report = run_eval_report_data("physics", "mock", None, None, None).unwrap();
 
         let json = report.to_json().unwrap();
         let restored = PyEvalReport::from_json(&json).unwrap();
@@ -10309,7 +10480,7 @@ mod tests {
 
     #[test]
     fn test_eval_report_artifacts_returns_requested_formats_without_duplicates() {
-        let report = run_eval_report_data("physics", "mock", None, None).unwrap();
+        let report = run_eval_report_data("physics", "mock", None, None, None).unwrap();
 
         let artifacts = report
             .artifacts(Some(vec![
@@ -10335,7 +10506,7 @@ mod tests {
         let suite = PyEvalSuite::from_builtin("physics").unwrap();
 
         let artifacts = suite
-            .run_report_artifacts(None, "mock", None, None, None)
+            .run_report_artifacts(None, "mock", None, None, None, None)
             .unwrap();
 
         assert_eq!(artifacts.len(), 3);
@@ -10374,7 +10545,7 @@ mod tests {
         };
 
         let empty_report = suite
-            .run_report_data_with_world("mock", None, None, None)
+            .run_report_data_with_world("mock", None, None, None, Some(4))
             .unwrap();
         assert_eq!(
             empty_report.provider_summaries()[0].scenario_pass_rate(),
@@ -10396,10 +10567,11 @@ mod tests {
             .unwrap();
 
         let report = suite
-            .run_report_data_with_world("mock", Some(&world), None, None)
+            .run_report_data_with_world("mock", Some(&world), None, None, Some(4))
             .unwrap();
         assert_eq!(report.provider_summaries()[0].scenario_pass_rate(), 1.0);
         assert_eq!(report.provider_summaries()[0].outcome_pass_rate(), 1.0);
+        assert!(report.provider_summaries()[0].sampling().is_none());
     }
 
     #[test]
@@ -10434,7 +10606,7 @@ mod tests {
         let world_json = world.to_json().unwrap();
 
         let report = suite
-            .run_report_data_with_world("mock", None, Some(&world_json), None)
+            .run_report_data_with_world("mock", None, Some(&world_json), None, Some(4))
             .unwrap();
         assert_eq!(report.provider_summaries()[0].scenario_pass_rate(), 1.0);
         assert_eq!(report.provider_summaries()[0].outcome_pass_rate(), 1.0);
@@ -10462,7 +10634,7 @@ mod tests {
 
         let suite = PyEvalSuite::from_builtin("physics").unwrap();
         let report = suite
-            .run_report_data_with_world("manual-mock", Some(&world), None, None)
+            .run_report_data_with_world("manual-mock", Some(&world), None, None, Some(4))
             .unwrap();
 
         assert_eq!(report.provider_summaries().len(), 1);
@@ -10480,7 +10652,7 @@ mod tests {
         })
         .unwrap();
 
-        let results = run_eval("physics", "manual-mock", None, Some(&wf)).unwrap();
+        let results = run_eval("physics", "manual-mock", None, Some(&wf), Some(4)).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].provider(), "manual-mock");
         assert!(results[0].scenario_pass_rate() > 0.0);
