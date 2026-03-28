@@ -16,7 +16,8 @@ use worldforge_core::action::{Action, Weather};
 use worldforge_core::error::WorldForgeError;
 use worldforge_core::guardrail::{Guardrail, GuardrailConfig};
 use worldforge_core::prediction::{
-    Plan, PlanExecution, PlanGoal, PlanGoalInput, PlanRequest, PlannerType, PredictionConfig,
+    MultiPrediction, Plan, PlanExecution, PlanGoal, PlanGoalInput, PlanRequest, PlannerType,
+    Prediction, PredictionConfig,
 };
 use worldforge_core::provider::{
     EmbeddingInput, GenerationConfig, GenerationPrompt, Operation, ProviderDescriptor,
@@ -499,14 +500,31 @@ pub enum Commands {
     /// Compare predictions across providers.
     Compare {
         /// World ID.
-        #[arg(long)]
-        world: String,
+        #[arg(long, required_unless_present = "prediction_json")]
+        world: Option<String>,
         /// Action description.
-        #[arg(long)]
-        action: String,
+        #[arg(long, required_unless_present = "prediction_json")]
+        action: Option<String>,
         /// Comma-separated list of providers.
-        #[arg(long)]
-        providers: String,
+        #[arg(long, required_unless_present = "prediction_json")]
+        providers: Option<String>,
+        /// One or more JSON files containing serialized `Prediction` payloads to compare directly.
+        #[arg(
+            long = "prediction-json",
+            value_name = "PATH",
+            action = clap::ArgAction::Append,
+            conflicts_with_all = [
+                "world",
+                "action",
+                "providers",
+                "steps",
+                "fallback_provider",
+                "timeout_ms",
+                "guardrails_json",
+                "disable_guardrails",
+            ],
+        )]
+        prediction_json: Vec<PathBuf>,
         /// Number of prediction steps to compare.
         #[arg(long, default_value = "1")]
         steps: u32,
@@ -522,6 +540,9 @@ pub enum Commands {
         /// Disable WorldForge's automatic guardrail checks.
         #[arg(long, default_value_t = false)]
         disable_guardrails: bool,
+        /// Optional path to write the comparison report as JSON.
+        #[arg(long)]
+        output_json: Option<PathBuf>,
     },
 
     /// Plan a sequence of actions to achieve a goal.
@@ -1189,23 +1210,27 @@ pub async fn run() -> Result<()> {
             world,
             action,
             providers,
+            prediction_json,
             steps,
             fallback_provider,
             timeout_ms,
             guardrails_json,
             disable_guardrails,
+            output_json,
         } => {
             cmd_compare(
                 store.as_ref(),
-                &world,
-                &action,
-                &providers,
+                world.as_deref(),
+                action.as_deref(),
+                providers.as_deref(),
                 CompareOptions {
+                    prediction_json: &prediction_json,
                     steps,
                     fallback_provider: fallback_provider.as_deref(),
                     timeout_ms,
                     guardrails_json: guardrails_json.as_deref(),
                     disable_guardrails,
+                    output_json: output_json.as_deref(),
                 },
             )
             .await
@@ -1752,11 +1777,13 @@ struct ExecutePlanOptions<'a> {
 }
 
 struct CompareOptions<'a> {
+    prediction_json: &'a [PathBuf],
     steps: u32,
     fallback_provider: Option<&'a str>,
     timeout_ms: Option<u64>,
     guardrails_json: Option<&'a Path>,
     disable_guardrails: bool,
+    output_json: Option<&'a Path>,
 }
 
 struct EvalOptions<'a> {
@@ -2985,43 +3012,71 @@ async fn cmd_eval(store: Option<&dyn StateStore>, options: EvalOptions<'_>) -> R
 
 async fn cmd_compare(
     store: &(impl StateStore + ?Sized),
-    world_id: &str,
-    action_str: &str,
-    providers_str: &str,
+    world_id: Option<&str>,
+    action_str: Option<&str>,
+    providers_str: Option<&str>,
     options: CompareOptions<'_>,
 ) -> Result<()> {
-    let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
-    let state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let multi = if !options.prediction_json.is_empty() {
+        let predictions = load_prediction_files(options.prediction_json)?;
+        MultiPrediction::try_from_predictions(predictions).map_err(|e| anyhow::anyhow!("{e}"))?
+    } else {
+        let world_id =
+            world_id.context("compare requires --world when --prediction-json is not provided")?;
+        let action_str = action_str
+            .context("compare requires --action when --prediction-json is not provided")?;
+        let providers_str = providers_str
+            .context("compare requires --providers when --prediction-json is not provided")?;
+        let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
+        let state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    let provider_names = parse_provider_names(providers_str);
-    let registry = Arc::new(auto_detect_registry());
-    for provider_name in &provider_names {
-        require_provider(&registry, provider_name)?;
-    }
-    if let Some(fallback_provider) = options.fallback_provider {
-        require_provider(&registry, fallback_provider)?;
-    }
+        let provider_names = parse_provider_names(providers_str);
+        let registry = Arc::new(auto_detect_registry());
+        for provider_name in &provider_names {
+            require_provider(&registry, provider_name)?;
+        }
+        if let Some(fallback_provider) = options.fallback_provider {
+            require_provider(&registry, fallback_provider)?;
+        }
 
-    let default_provider = provider_names.first().map(String::as_str).unwrap_or("mock");
-    let action = parse_action(action_str, &state)?;
-    let world = worldforge_core::world::World::new(state, default_provider, registry);
-    let config = PredictionConfig {
-        steps: options.steps,
-        guardrails: resolve_guardrails(
-            read_guardrails(options.guardrails_json)?,
-            options.disable_guardrails,
-        ),
-        max_latency_ms: options.timeout_ms,
-        fallback_provider: options.fallback_provider.map(ToOwned::to_owned),
-        ..PredictionConfig::default()
+        let default_provider = provider_names.first().map(String::as_str).unwrap_or("mock");
+        let action = parse_action(action_str, &state)?;
+        let world = worldforge_core::world::World::new(state, default_provider, registry);
+        let config = PredictionConfig {
+            steps: options.steps,
+            guardrails: resolve_guardrails(
+                read_guardrails(options.guardrails_json)?,
+                options.disable_guardrails,
+            ),
+            max_latency_ms: options.timeout_ms,
+            fallback_provider: options.fallback_provider.map(ToOwned::to_owned),
+            ..PredictionConfig::default()
+        };
+
+        let provider_names: Vec<&str> = provider_names.iter().map(String::as_str).collect();
+        world
+            .predict_multi(&action, &provider_names, &config)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?
     };
 
-    let provider_names: Vec<&str> = provider_names.iter().map(String::as_str).collect();
-    let multi = world
-        .predict_multi(&action, &provider_names, &config)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    print_comparison_results(&multi);
+    if let Some(path) = options.output_json {
+        write_json_file(path, &multi)?;
+        println!();
+        println!("Saved comparison JSON: {}", path.display());
+    }
+    Ok(())
+}
 
+fn load_prediction_files(paths: &[PathBuf]) -> Result<Vec<Prediction>> {
+    paths
+        .iter()
+        .map(|path| read_json_file(path.as_path()))
+        .collect()
+}
+
+fn print_comparison_results(multi: &MultiPrediction) {
     println!("Comparison results:");
     println!("  Agreement score: {:.2}", multi.agreement_score);
     println!(
@@ -3120,7 +3175,6 @@ async fn cmd_compare(
             );
         }
     }
-    Ok(())
 }
 
 async fn cmd_plan(
@@ -3937,6 +3991,70 @@ mod tests {
         .unwrap()
     }
 
+    fn sample_prediction(provider: &str, output_x: f32, latency_ms: u64) -> Prediction {
+        let mut input_state = WorldState::new(format!("{provider}-input"), provider);
+        input_state.scene.add_object(SceneObject::new(
+            "cube",
+            Pose::default(),
+            BBox {
+                min: Position {
+                    x: -0.05,
+                    y: -0.05,
+                    z: -0.05,
+                },
+                max: Position {
+                    x: 0.05,
+                    y: 0.05,
+                    z: 0.05,
+                },
+            },
+        ));
+        let mut output_state = input_state.clone();
+        let updated = output_state
+            .scene
+            .find_object_by_name_mut("cube")
+            .expect("cube should exist");
+        updated.set_position(Position {
+            x: output_x,
+            y: 0.0,
+            z: 0.0,
+        });
+
+        Prediction {
+            id: uuid::Uuid::new_v4(),
+            provider: provider.to_string(),
+            model: format!("{provider}-model"),
+            input_state,
+            action: Action::Move {
+                target: Position {
+                    x: output_x,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                speed: 1.0,
+            },
+            output_state,
+            video: None,
+            confidence: 0.8,
+            physics_scores: worldforge_core::prediction::PhysicsScores {
+                overall: 0.8,
+                object_permanence: 0.8,
+                gravity_compliance: 0.8,
+                collision_accuracy: 0.8,
+                spatial_consistency: 0.8,
+                temporal_consistency: 0.8,
+            },
+            latency_ms,
+            cost: worldforge_core::provider::CostEstimate {
+                usd: latency_ms as f64 / 1_000.0,
+                credits: 1.0,
+                estimated_latency_ms: latency_ms,
+            },
+            guardrail_results: Vec::new(),
+            timestamp: chrono::Utc::now(),
+        }
+    }
+
     #[test]
     fn test_parse_action_move() {
         let state = WorldState::new("parse", "mock");
@@ -4611,23 +4729,75 @@ mod tests {
             "300",
             "--guardrails-json",
             "/tmp/guardrails.json",
+            "--output-json",
+            "/tmp/compare.json",
         ])
         .unwrap();
 
         match cli.command {
             Commands::Compare {
+                world,
+                action,
                 providers,
+                prediction_json,
                 steps,
                 fallback_provider,
                 timeout_ms,
                 guardrails_json,
+                output_json,
                 ..
             } => {
-                assert_eq!(providers, "runway,cosmos");
+                assert_eq!(
+                    world.as_deref(),
+                    Some("123e4567-e89b-12d3-a456-426614174000")
+                );
+                assert_eq!(action.as_deref(), Some("move 1 2 3"));
+                assert_eq!(providers.as_deref(), Some("runway,cosmos"));
+                assert!(prediction_json.is_empty());
                 assert_eq!(steps, 4);
                 assert_eq!(fallback_provider.as_deref(), Some("mock"));
                 assert_eq!(timeout_ms, Some(300));
                 assert_eq!(guardrails_json, Some(PathBuf::from("/tmp/guardrails.json")));
+                assert_eq!(output_json, Some(PathBuf::from("/tmp/compare.json")));
+            }
+            _ => panic!("expected Compare"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_compare_prediction_json_inputs() {
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "compare",
+            "--prediction-json",
+            "/tmp/prediction-a.json",
+            "--prediction-json",
+            "/tmp/prediction-b.json",
+            "--output-json",
+            "/tmp/compare.json",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Compare {
+                world,
+                action,
+                providers,
+                prediction_json,
+                output_json,
+                ..
+            } => {
+                assert!(world.is_none());
+                assert!(action.is_none());
+                assert!(providers.is_none());
+                assert_eq!(
+                    prediction_json,
+                    vec![
+                        PathBuf::from("/tmp/prediction-a.json"),
+                        PathBuf::from("/tmp/prediction-b.json")
+                    ]
+                );
+                assert_eq!(output_json, Some(PathBuf::from("/tmp/compare.json")));
             }
             _ => panic!("expected Compare"),
         }
@@ -5379,6 +5549,48 @@ mod tests {
         let clip: VideoClip = read_json_file(&output).unwrap();
         assert_eq!(clip.duration, 1.5);
         assert_eq!(clip.resolution, (320, 180));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn test_cmd_compare_prediction_json_writes_output_json() {
+        let dir = std::env::temp_dir().join(format!("wf-cli-compare-{}", uuid::Uuid::new_v4()));
+        let prediction_a = dir.join("prediction-a.json");
+        let prediction_b = dir.join("prediction-b.json");
+        let output = dir.join("compare.json");
+        fs::create_dir_all(&dir).unwrap();
+        write_json_file(&prediction_a, &sample_prediction("mock", 0.25, 120)).unwrap();
+        write_json_file(&prediction_b, &sample_prediction("mock-2", 0.35, 180)).unwrap();
+
+        let store = StateStoreKind::File(dir.join("state"))
+            .open()
+            .await
+            .unwrap();
+        let prediction_paths = [prediction_a.clone(), prediction_b.clone()];
+
+        cmd_compare(
+            store.as_ref(),
+            None,
+            None,
+            None,
+            CompareOptions {
+                prediction_json: &prediction_paths,
+                steps: 1,
+                fallback_provider: None,
+                timeout_ms: None,
+                guardrails_json: None,
+                disable_guardrails: false,
+                output_json: Some(&output),
+            },
+        )
+        .await
+        .unwrap();
+
+        let comparison: MultiPrediction = read_json_file(&output).unwrap();
+        assert_eq!(comparison.predictions.len(), 2);
+        assert_eq!(comparison.comparison.scores.len(), 2);
+        assert_eq!(comparison.comparison.pairwise_agreements.len(), 1);
 
         let _ = fs::remove_dir_all(dir);
     }

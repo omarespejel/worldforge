@@ -15,7 +15,9 @@ use tokio::sync::RwLock;
 use worldforge_core::action::Action;
 use worldforge_core::error::WorldForgeError;
 use worldforge_core::guardrail::{Guardrail, GuardrailConfig};
-use worldforge_core::prediction::{Plan, PlanGoal, PlanGoalInput, PlannerType, PredictionConfig};
+use worldforge_core::prediction::{
+    Plan, PlanGoal, PlanGoalInput, PlannerType, Prediction, PredictionConfig,
+};
 use worldforge_core::provider::{
     EmbeddingInput, GenerationConfig, GenerationPrompt, Operation, ProviderRegistry,
     ReasoningInput, SpatialControls, TransferConfig,
@@ -688,7 +690,8 @@ async fn run_evaluation_request(
 
 /// JSON request body for cross-provider comparison.
 #[derive(Debug, Deserialize)]
-struct CompareRequest {
+#[serde(deny_unknown_fields)]
+struct CompareWorldRequest {
     world_id: String,
     action: Action,
     providers: Vec<String>,
@@ -696,6 +699,21 @@ struct CompareRequest {
     config: PredictionConfig,
     #[serde(default)]
     disable_guardrails: bool,
+}
+
+/// JSON request body for comparing previously captured predictions directly.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComparePredictionsRequest {
+    predictions: Vec<Prediction>,
+}
+
+/// JSON request body for cross-provider comparison.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum CompareRequest {
+    World(CompareWorldRequest),
+    Predictions(ComparePredictionsRequest),
 }
 
 /// JSON request body for ZK verification.
@@ -2592,7 +2610,7 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
 
         // POST /v1/compare
         ("POST", "/v1/compare") => match serde_json::from_str::<CompareRequest>(body) {
-            Ok(req) => {
+            Ok(CompareRequest::World(req)) => {
                 if req.providers.is_empty() {
                     return (
                         400,
@@ -2621,6 +2639,14 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                     .predict_multi(&req.action, &provider_refs, &config)
                     .await
                 {
+                    Ok(multi) => (200, ApiResponse::ok(multi)),
+                    Err(error) => (api_error_status(&error), error_response(&error.to_string())),
+                }
+            }
+            Ok(CompareRequest::Predictions(req)) => {
+                match worldforge_core::prediction::MultiPrediction::try_from_predictions(
+                    req.predictions,
+                ) {
                     Ok(multi) => (200, ApiResponse::ok(multi)),
                     Err(error) => (api_error_status(&error), error_response(&error.to_string())),
                 }
@@ -2696,6 +2722,70 @@ mod tests {
             )),
             worlds: RwLock::new(HashMap::new()),
         })
+    }
+
+    fn sample_prediction(provider: &str, output_x: f32, latency_ms: u64) -> Prediction {
+        let mut input_state = WorldState::new(format!("{provider}-input"), provider);
+        input_state.scene.add_object(SceneObject::new(
+            "cube",
+            Pose::default(),
+            BBox {
+                min: Position {
+                    x: -0.05,
+                    y: -0.05,
+                    z: -0.05,
+                },
+                max: Position {
+                    x: 0.05,
+                    y: 0.05,
+                    z: 0.05,
+                },
+            },
+        ));
+        let mut output_state = input_state.clone();
+        let updated = output_state
+            .scene
+            .find_object_by_name_mut("cube")
+            .expect("cube should exist");
+        updated.set_position(Position {
+            x: output_x,
+            y: 0.0,
+            z: 0.0,
+        });
+
+        Prediction {
+            id: uuid::Uuid::new_v4(),
+            provider: provider.to_string(),
+            model: format!("{provider}-model"),
+            input_state,
+            action: Action::Move {
+                target: Position {
+                    x: output_x,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                speed: 1.0,
+            },
+            output_state,
+            video: None,
+            confidence: 0.75,
+            physics_scores: worldforge_core::prediction::PhysicsScores {
+                overall: 0.75,
+                object_permanence: 0.75,
+                gravity_compliance: 0.75,
+                collision_accuracy: 0.75,
+                spatial_consistency: 0.75,
+                temporal_consistency: 0.75,
+            },
+            latency_ms,
+            cost: worldforge_core::provider::CostEstimate {
+                usd: latency_ms as f64 / 1_000.0,
+                credits: 1.0,
+                estimated_latency_ms: latency_ms,
+            },
+            guardrail_results: Vec::new(),
+            timestamp: chrono::Utc::now(),
+        }
     }
 
     fn sample_mesh() -> Mesh {
@@ -4681,5 +4771,54 @@ mod tests {
 
         assert_eq!(status, 400);
         assert!(resp.contains("at least one provider"));
+    }
+
+    #[tokio::test]
+    async fn test_route_compare_from_predictions() {
+        let state = test_state();
+        let body = serde_json::json!({
+            "predictions": [
+                sample_prediction("mock", 0.25, 120),
+                sample_prediction("mock-2", 0.35, 180),
+            ],
+        })
+        .to_string();
+
+        let (status, resp) = route("POST", "/v1/compare", &body, &state).await;
+
+        assert_eq!(status, 200);
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(value["success"], true);
+        assert_eq!(value["data"]["predictions"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            value["data"]["comparison"]["pairwise_agreements"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn test_route_compare_rejects_mixed_request_shapes() {
+        let state = test_state();
+        let id = seed_world(&state, "cmp-world-mixed", "mock").await;
+        let body = serde_json::json!({
+            "world_id": id,
+            "action": {
+                "Move": {
+                    "target": { "x": 1.0, "y": 0.0, "z": 0.0 },
+                    "speed": 1.0
+                }
+            },
+            "providers": ["mock"],
+            "predictions": [sample_prediction("mock", 0.25, 120)],
+        })
+        .to_string();
+
+        let (status, resp) = route("POST", "/v1/compare", &body, &state).await;
+
+        assert_eq!(status, 400);
+        assert!(resp.contains("invalid request"));
     }
 }

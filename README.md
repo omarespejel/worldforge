@@ -442,6 +442,7 @@ cargo run -p worldforge-cli -- import --input snapshots/world.msgpack --format m
 cargo run -p worldforge-cli -- history --world <id> --output-json histories/<id>.json
 cargo run -p worldforge-cli -- restore --world <id> --history-index 0 --output-json restored/<id>.json
 cargo run -p worldforge-cli -- predict --world <id> --action "move 1 0 0" --provider runway --fallback-provider mock --timeout-ms 500
+cargo run -p worldforge-cli -- compare --prediction-json runs/mock.json --prediction-json runs/runway.json --output-json reports/compare.json
 cargo run -p worldforge-cli -- plan --world <id> --goal "spawn cube" --planner cem
 cargo run -p worldforge-cli -- plan --world <id> --goal "spawn cube" --planner cem --guardrails-json guardrails.json --output-json plans/generated.json
 cargo run -p worldforge-cli -- plan --world <id> --goal-json goals/object-at.json --planner sampling --output-json plans/object-at.json
@@ -615,6 +616,12 @@ curl http://127.0.0.1:8080/v1/providers/mock/health
 curl -X POST http://127.0.0.1:8080/v1/providers/mock/estimate \
   -H 'content-type: application/json' \
   -d '{"operation":{"Generate":{"duration_seconds":5.0,"resolution":[1280,720]}}}'
+
+# `compare-body.json` should contain `{"predictions":[...]}`
+# using previously exported `Prediction` JSON payloads.
+curl -X POST http://127.0.0.1:8080/v1/compare \
+  -H 'content-type: application/json' \
+  -d @compare-body.json
 ```
 
 ## Status
@@ -666,7 +673,9 @@ backend selection is now exposed end to end across the verify crate, CLI, REST
 server, and Python bindings for the deterministic `mock`, `ezkl`, and `stark`
 compatibility paths. Cross-provider comparison now reuses the same guardrail
 and fallback pipeline as single-provider prediction, with comparison config
-exposed in the CLI, REST server, and Python bindings. Evaluation now supports
+exposed in the CLI, REST server, and Python bindings. The CLI and REST API can
+also compare previously captured `Prediction` payloads directly, so expensive
+provider runs can be analyzed offline without replaying inference. Evaluation now supports
 built-in suite discovery, JSON-defined custom suites, suite-level default
 providers, provider selection, and aggregated leaderboard, provider, scenario,
 and dimension rollups. When a suite declares `providers`, the CLI, REST API,

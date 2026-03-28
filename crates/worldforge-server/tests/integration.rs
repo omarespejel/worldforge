@@ -1337,6 +1337,57 @@ async fn test_live_http_predict_uses_fallback_provider() {
 }
 
 #[tokio::test]
+async fn test_live_http_compare_from_prediction_payloads() {
+    let server = spawn_test_server().await;
+    let world_id = create_test_world(server.address, "compare_predictions").await;
+
+    let predict_a = r#"{"action":{"Move":{"target":{"x":0.25,"y":0.0,"z":0.0},"speed":1.0}},"provider":"mock"}"#;
+    let (status, prediction_a) = http_request(
+        server.address,
+        "POST",
+        &format!("/v1/worlds/{world_id}/predict"),
+        predict_a,
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    let predict_b =
+        r#"{"action":{"Move":{"target":{"x":0.5,"y":0.0,"z":0.0},"speed":1.0}},"provider":"mock"}"#;
+    let (status, prediction_b) = http_request(
+        server.address,
+        "POST",
+        &format!("/v1/worlds/{world_id}/predict"),
+        predict_b,
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    let compare_body = serde_json::json!({
+        "predictions": [
+            prediction_a["data"].clone(),
+            prediction_b["data"].clone(),
+        ],
+    })
+    .to_string();
+    let (status, comparison) =
+        http_request(server.address, "POST", "/v1/compare", &compare_body).await;
+
+    assert_eq!(status, 200);
+    assert_eq!(comparison["success"], true);
+    assert_eq!(
+        comparison["data"]["predictions"].as_array().unwrap().len(),
+        2
+    );
+    assert_eq!(
+        comparison["data"]["comparison"]["scores"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[tokio::test]
 async fn test_live_http_provider_transfer() {
     let server = spawn_test_server().await;
 
