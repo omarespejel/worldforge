@@ -827,7 +827,6 @@ async fn run_evaluation_request(
 
     let run_options = worldforge_eval::EvalRunOptions {
         num_samples: request.num_samples,
-        ..Default::default()
     };
     let report = match world_state {
         Some(world_state) => {
@@ -1680,8 +1679,553 @@ fn hex_value(byte: u8) -> Option<u8> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RouteParameterDoc {
+    name: &'static str,
+    schema_type: &'static str,
+    description: &'static str,
+    required: bool,
+    enum_values: &'static [&'static str],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RouteRequestBodyDoc {
+    methods: &'static [&'static str],
+    description: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RouteDocumentation {
+    path: &'static str,
+    methods: &'static [&'static str],
+    summary: &'static str,
+    query_parameters: &'static [RouteParameterDoc],
+    request_body: Option<RouteRequestBodyDoc>,
+}
+
+const GET_HEAD_METHODS: &[&str] = &["GET", "HEAD"];
+const GET_HEAD_POST_METHODS: &[&str] = &["GET", "HEAD", "POST"];
+const GET_HEAD_DELETE_METHODS: &[&str] = &["GET", "HEAD", "DELETE"];
+const GET_HEAD_PATCH_DELETE_METHODS: &[&str] = &["GET", "HEAD", "PATCH", "DELETE"];
+const POST_METHODS: &[&str] = &["POST"];
+const EMPTY_QUERY_PARAMETERS: &[RouteParameterDoc] = &[];
+
+const PROVIDERS_QUERY_PARAMETERS: &[RouteParameterDoc] = &[
+    RouteParameterDoc {
+        name: "capability",
+        schema_type: "string",
+        description: "Filter providers by a capability name.",
+        required: false,
+        enum_values: &[],
+    },
+    RouteParameterDoc {
+        name: "health",
+        schema_type: "boolean",
+        description: "When true, return live health reports instead of provider descriptors.",
+        required: false,
+        enum_values: &[],
+    },
+];
+
+const EXPORT_QUERY_PARAMETERS: &[RouteParameterDoc] = &[RouteParameterDoc {
+    name: "format",
+    schema_type: "string",
+    description: "Snapshot format to export.",
+    required: true,
+    enum_values: &["json", "msgpack"],
+}];
+
+const ROUTE_CATALOG: &[RouteDocumentation] = &[
+    RouteDocumentation {
+        path: "/v1/openapi.json",
+        methods: GET_HEAD_METHODS,
+        summary: "Render the OpenAPI contract document",
+        query_parameters: EMPTY_QUERY_PARAMETERS,
+        request_body: None,
+    },
+    RouteDocumentation {
+        path: "/v1/providers",
+        methods: GET_HEAD_METHODS,
+        summary: "List providers and filter by capability or health",
+        query_parameters: PROVIDERS_QUERY_PARAMETERS,
+        request_body: None,
+    },
+    RouteDocumentation {
+        path: "/v1/providers/{name}",
+        methods: GET_HEAD_METHODS,
+        summary: "Describe a provider",
+        query_parameters: EMPTY_QUERY_PARAMETERS,
+        request_body: None,
+    },
+    RouteDocumentation {
+        path: "/v1/providers/{name}/health",
+        methods: GET_HEAD_METHODS,
+        summary: "Run a provider health check",
+        query_parameters: EMPTY_QUERY_PARAMETERS,
+        request_body: None,
+    },
+    RouteDocumentation {
+        path: "/v1/providers/{name}/estimate",
+        methods: POST_METHODS,
+        summary: "Estimate provider operation cost",
+        query_parameters: EMPTY_QUERY_PARAMETERS,
+        request_body: Some(RouteRequestBodyDoc {
+            methods: POST_METHODS,
+            description: "Estimate the cost of a provider operation.",
+        }),
+    },
+    RouteDocumentation {
+        path: "/v1/evals/suites",
+        methods: GET_HEAD_METHODS,
+        summary: "List built-in evaluation suites",
+        query_parameters: EMPTY_QUERY_PARAMETERS,
+        request_body: None,
+    },
+    RouteDocumentation {
+        path: "/v1/evals/run",
+        methods: POST_METHODS,
+        summary: "Run an evaluation suite",
+        query_parameters: EMPTY_QUERY_PARAMETERS,
+        request_body: Some(RouteRequestBodyDoc {
+            methods: POST_METHODS,
+            description: "Run a suite against one or more providers and optional world state.",
+        }),
+    },
+    RouteDocumentation {
+        path: "/v1/worlds",
+        methods: GET_HEAD_POST_METHODS,
+        summary: "List or create worlds",
+        query_parameters: EMPTY_QUERY_PARAMETERS,
+        request_body: Some(RouteRequestBodyDoc {
+            methods: POST_METHODS,
+            description: "Create a new world from a name and optional prompt.",
+        }),
+    },
+    RouteDocumentation {
+        path: "/v1/worlds/import",
+        methods: POST_METHODS,
+        summary: "Import a world snapshot",
+        query_parameters: EMPTY_QUERY_PARAMETERS,
+        request_body: Some(RouteRequestBodyDoc {
+            methods: POST_METHODS,
+            description: "Import a serialized world snapshot with optional overrides.",
+        }),
+    },
+    RouteDocumentation {
+        path: "/v1/worlds/{id}",
+        methods: GET_HEAD_DELETE_METHODS,
+        summary: "Inspect or delete a world",
+        query_parameters: EMPTY_QUERY_PARAMETERS,
+        request_body: None,
+    },
+    RouteDocumentation {
+        path: "/v1/worlds/{id}/fork",
+        methods: POST_METHODS,
+        summary: "Fork a world from a history checkpoint",
+        query_parameters: EMPTY_QUERY_PARAMETERS,
+        request_body: Some(RouteRequestBodyDoc {
+            methods: POST_METHODS,
+            description: "Fork the world at the current state or a historical checkpoint.",
+        }),
+    },
+    RouteDocumentation {
+        path: "/v1/worlds/{id}/export",
+        methods: GET_HEAD_METHODS,
+        summary: "Export a world snapshot",
+        query_parameters: EXPORT_QUERY_PARAMETERS,
+        request_body: None,
+    },
+    RouteDocumentation {
+        path: "/v1/worlds/{id}/history",
+        methods: GET_HEAD_METHODS,
+        summary: "Inspect world history",
+        query_parameters: EMPTY_QUERY_PARAMETERS,
+        request_body: None,
+    },
+    RouteDocumentation {
+        path: "/v1/worlds/{id}/plans",
+        methods: GET_HEAD_METHODS,
+        summary: "List stored plans",
+        query_parameters: EMPTY_QUERY_PARAMETERS,
+        request_body: None,
+    },
+    RouteDocumentation {
+        path: "/v1/worlds/{id}/plans/{plan_id}",
+        methods: GET_HEAD_DELETE_METHODS,
+        summary: "Inspect or delete a stored plan",
+        query_parameters: EMPTY_QUERY_PARAMETERS,
+        request_body: None,
+    },
+    RouteDocumentation {
+        path: "/v1/worlds/{id}/restore",
+        methods: POST_METHODS,
+        summary: "Restore a world to a history checkpoint",
+        query_parameters: EMPTY_QUERY_PARAMETERS,
+        request_body: Some(RouteRequestBodyDoc {
+            methods: POST_METHODS,
+            description: "Restore the requested history checkpoint and persist the result.",
+        }),
+    },
+    RouteDocumentation {
+        path: "/v1/worlds/{id}/objects",
+        methods: GET_HEAD_POST_METHODS,
+        summary: "List or add objects",
+        query_parameters: EMPTY_QUERY_PARAMETERS,
+        request_body: Some(RouteRequestBodyDoc {
+            methods: POST_METHODS,
+            description: "Add a new scene object to the world.",
+        }),
+    },
+    RouteDocumentation {
+        path: "/v1/worlds/{id}/objects/{object_id}",
+        methods: GET_HEAD_PATCH_DELETE_METHODS,
+        summary: "Inspect, update, or remove an object",
+        query_parameters: EMPTY_QUERY_PARAMETERS,
+        request_body: Some(RouteRequestBodyDoc {
+            methods: &["PATCH"],
+            description: "Apply a partial patch to the stored object.",
+        }),
+    },
+    RouteDocumentation {
+        path: "/v1/worlds/{id}/predict",
+        methods: POST_METHODS,
+        summary: "Predict the next world state",
+        query_parameters: EMPTY_QUERY_PARAMETERS,
+        request_body: Some(RouteRequestBodyDoc {
+            methods: POST_METHODS,
+            description: "Predict the next world state for a given action and config.",
+        }),
+    },
+    RouteDocumentation {
+        path: "/v1/worlds/{id}/reason",
+        methods: POST_METHODS,
+        summary: "Reason about the current world state",
+        query_parameters: EMPTY_QUERY_PARAMETERS,
+        request_body: Some(RouteRequestBodyDoc {
+            methods: POST_METHODS,
+            description: "Ask a provider to reason about state, video, or both.",
+        }),
+    },
+    RouteDocumentation {
+        path: "/v1/worlds/{id}/plan",
+        methods: POST_METHODS,
+        summary: "Plan actions toward a goal",
+        query_parameters: EMPTY_QUERY_PARAMETERS,
+        request_body: Some(RouteRequestBodyDoc {
+            methods: POST_METHODS,
+            description: "Plan a sequence of actions toward a goal with optional guardrails.",
+        }),
+    },
+    RouteDocumentation {
+        path: "/v1/worlds/{id}/execute-plan",
+        methods: POST_METHODS,
+        summary: "Execute a stored or inline plan",
+        query_parameters: EMPTY_QUERY_PARAMETERS,
+        request_body: Some(RouteRequestBodyDoc {
+            methods: POST_METHODS,
+            description: "Execute a stored or inline plan against the current world state.",
+        }),
+    },
+    RouteDocumentation {
+        path: "/v1/worlds/{id}/verify",
+        methods: POST_METHODS,
+        summary: "Generate verification artifacts",
+        query_parameters: EMPTY_QUERY_PARAMETERS,
+        request_body: Some(RouteRequestBodyDoc {
+            methods: POST_METHODS,
+            description:
+                "Generate a verification proof for a prediction, plan, or provenance request.",
+        }),
+    },
+    RouteDocumentation {
+        path: "/v1/worlds/{id}/evaluate",
+        methods: POST_METHODS,
+        summary: "Evaluate a world against a suite",
+        query_parameters: EMPTY_QUERY_PARAMETERS,
+        request_body: Some(RouteRequestBodyDoc {
+            methods: POST_METHODS,
+            description: "Evaluate a world against a named or inline suite definition.",
+        }),
+    },
+    RouteDocumentation {
+        path: "/v1/compare",
+        methods: POST_METHODS,
+        summary: "Compare predictions across providers",
+        query_parameters: EMPTY_QUERY_PARAMETERS,
+        request_body: Some(RouteRequestBodyDoc {
+            methods: POST_METHODS,
+            description: "Compare predictions from stored payloads or by replaying providers.",
+        }),
+    },
+    RouteDocumentation {
+        path: "/v1/verify/proof",
+        methods: POST_METHODS,
+        summary: "Verify proofs and bundles",
+        query_parameters: EMPTY_QUERY_PARAMETERS,
+        request_body: Some(RouteRequestBodyDoc {
+            methods: POST_METHODS,
+            description: "Verify an explicit proof or verification bundle.",
+        }),
+    },
+];
+
+fn route_catalog() -> &'static [RouteDocumentation] {
+    ROUTE_CATALOG
+}
+
+fn api_index_document() -> serde_json::Value {
+    serde_json::json!({
+        "service": "WorldForge REST API",
+        "version": "v1",
+        "routes": route_catalog()
+            .iter()
+            .map(|route| {
+                serde_json::json!({
+                    "path": route.path,
+                    "methods": route.methods,
+                    "summary": route.summary,
+                })
+            })
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn openapi_document() -> serde_json::Value {
+    let mut paths = serde_json::Map::new();
+    for route in route_catalog() {
+        let mut path_item = serde_json::Map::new();
+        for method in route.methods {
+            path_item.insert(
+                method.to_ascii_lowercase(),
+                openapi_operation(route, method),
+            );
+        }
+        paths.insert(route.path.to_string(), serde_json::Value::Object(path_item));
+    }
+
+    serde_json::json!({
+        "openapi": "3.1.0",
+        "info": {
+            "title": "WorldForge REST API",
+            "version": "v1",
+            "description": "Machine-readable contract generated from the server route catalog.",
+        },
+        "servers": [
+            {
+                "url": "/",
+                "description": "Relative server root",
+            }
+        ],
+        "paths": paths,
+        "components": {
+            "schemas": {
+                "GenericObject": {
+                    "type": "object",
+                    "additionalProperties": true,
+                },
+                "GenericArray": {
+                    "type": "array",
+                    "items": { "type": "object" },
+                },
+                "ErrorResponse": {
+                    "type": "object",
+                    "additionalProperties": true,
+                },
+            }
+        }
+    })
+}
+
+fn openapi_operation(route: &RouteDocumentation, method: &str) -> serde_json::Value {
+    let mut parameters = route_path_parameters(route.path);
+    parameters.extend(route.query_parameters.iter().map(|parameter| {
+        serde_json::json!({
+            "name": parameter.name,
+            "in": "query",
+            "required": parameter.required,
+            "description": parameter.description,
+            "schema": openapi_parameter_schema(parameter),
+        })
+    }));
+
+    let mut operation = serde_json::Map::new();
+    operation.insert("summary".to_string(), serde_json::json!(route.summary));
+    operation.insert(
+        "operationId".to_string(),
+        serde_json::json!(openapi_operation_id(method, route.path)),
+    );
+    operation.insert(
+        "tags".to_string(),
+        serde_json::json!([openapi_route_tag(route.path)]),
+    );
+    if !parameters.is_empty() {
+        operation.insert(
+            "parameters".to_string(),
+            serde_json::Value::Array(parameters),
+        );
+    }
+
+    if let Some(request_body) = route.request_body.and_then(|request_body| {
+        request_body
+            .methods
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(method))
+            .then_some(request_body)
+    }) {
+        operation.insert(
+            "requestBody".to_string(),
+            serde_json::json!({
+                "required": true,
+                "description": request_body.description,
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true,
+                        }
+                    }
+                }
+            }),
+        );
+    }
+
+    let response_status = openapi_success_status(route.path, method);
+    operation.insert(
+        "responses".to_string(),
+        serde_json::json!({
+            response_status.to_string(): {
+                "description": "Successful response",
+                "content": {
+                    "application/json": {
+                        "schema": openapi_response_schema(route.path, method),
+                    }
+                }
+            },
+            "400": {
+                "description": "Client error",
+                "content": {
+                    "application/json": {
+                        "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                    }
+                }
+            },
+            "404": {
+                "description": "Resource not found",
+                "content": {
+                    "application/json": {
+                        "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                    }
+                }
+            },
+        }),
+    );
+
+    serde_json::Value::Object(operation)
+}
+
+fn openapi_route_tag(path: &str) -> &'static str {
+    match path.split('/').nth(2) {
+        Some("providers") => "providers",
+        Some("evals") => "evals",
+        Some("worlds") => "worlds",
+        Some("compare") => "compare",
+        Some("verify") => "verify",
+        Some("openapi.json") => "meta",
+        _ => "meta",
+    }
+}
+
+fn openapi_parameter_schema(parameter: &RouteParameterDoc) -> serde_json::Value {
+    let mut schema = serde_json::Map::new();
+    schema.insert("type".to_string(), serde_json::json!(parameter.schema_type));
+    if !parameter.enum_values.is_empty() {
+        schema.insert("enum".to_string(), serde_json::json!(parameter.enum_values));
+    }
+    serde_json::Value::Object(schema)
+}
+
+fn openapi_operation_id(method: &str, path: &str) -> String {
+    let mut identifier = method.to_ascii_lowercase();
+    for segment in path.trim_matches('/').split('/') {
+        identifier.push('_');
+        if let Some(name) = segment
+            .strip_prefix('{')
+            .and_then(|value| value.strip_suffix('}'))
+        {
+            identifier.push_str(&sanitize_openapi_token(name));
+        } else {
+            identifier.push_str(&sanitize_openapi_token(segment));
+        }
+    }
+    identifier
+}
+
+fn sanitize_openapi_token(token: &str) -> String {
+    token
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '_' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn openapi_response_schema(path: &str, method: &str) -> serde_json::Value {
+    if (method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD"))
+        && matches!(
+            path,
+            "/v1/providers"
+                | "/v1/evals/suites"
+                | "/v1/worlds"
+                | "/v1/worlds/{id}/history"
+                | "/v1/worlds/{id}/plans"
+                | "/v1/worlds/{id}/objects"
+        )
+    {
+        return serde_json::json!({
+            "type": "array",
+            "items": { "type": "object" },
+        });
+    }
+
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": true,
+    })
+}
+
+fn openapi_success_status(path: &str, method: &str) -> u16 {
+    match (method, path) {
+        ("POST", "/v1/worlds")
+        | ("POST", "/v1/worlds/import")
+        | ("POST", "/v1/worlds/{id}/fork")
+        | ("POST", "/v1/worlds/{id}/objects") => 201,
+        _ => 200,
+    }
+}
+
+fn route_path_parameters(path: &str) -> Vec<serde_json::Value> {
+    path.trim_matches('/')
+        .split('/')
+        .filter_map(|segment| {
+            let name = segment.strip_prefix('{')?.strip_suffix('}')?;
+            Some(serde_json::json!({
+                "name": name,
+                "in": "path",
+                "required": true,
+                "description": format!("Path parameter `{name}`."),
+                "schema": { "type": "string" },
+            }))
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RouteKind {
     ApiIndex,
+    OpenApiDocument,
     VerifyProof,
     ProvidersCollection,
     ProviderDescriptor,
@@ -1718,6 +2262,7 @@ impl RouteKind {
     fn allowed_methods(self) -> &'static [&'static str] {
         match self {
             Self::ApiIndex => &["GET", "HEAD"],
+            Self::OpenApiDocument => &["GET", "HEAD"],
             Self::VerifyProof => &["POST"],
             Self::ProvidersCollection => &["GET", "HEAD"],
             Self::ProviderDescriptor => &["GET", "HEAD"],
@@ -1764,6 +2309,7 @@ fn classify_route_kind(path: &str) -> RouteKind {
 
     match segments.as_slice() {
         ["v1"] => RouteKind::ApiIndex,
+        ["v1", "openapi.json"] => RouteKind::OpenApiDocument,
         ["v1", "verify", "proof"] => RouteKind::VerifyProof,
         ["v1", "providers"] => RouteKind::ProvidersCollection,
         ["v1", "providers", _, "health"] => RouteKind::ProviderHealth,
@@ -1833,121 +2379,11 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
     let path = path.trim_end_matches('/');
 
     match (method, path) {
+        // GET /v1/openapi.json
+        ("GET", "/v1/openapi.json") => (200, openapi_document().to_string()),
+
         // GET /v1
-        ("GET", "/v1") => (
-            200,
-            ApiResponse::ok(serde_json::json!({
-                "service": "WorldForge REST API",
-                "version": "v1",
-                "routes": [
-                    {
-                        "path": "/v1/providers",
-                        "methods": ["GET", "HEAD"],
-                        "summary": "List providers and filter by capability or health",
-                    },
-                    {
-                        "path": "/v1/providers/{name}",
-                        "methods": ["GET", "HEAD"],
-                        "summary": "Describe a provider",
-                    },
-                    {
-                        "path": "/v1/providers/{name}/health",
-                        "methods": ["GET", "HEAD"],
-                        "summary": "Run a provider health check",
-                    },
-                    {
-                        "path": "/v1/providers/{name}/estimate",
-                        "methods": ["POST"],
-                        "summary": "Estimate provider operation cost",
-                    },
-                    {
-                        "path": "/v1/evals/suites",
-                        "methods": ["GET", "HEAD"],
-                        "summary": "List built-in evaluation suites",
-                    },
-                    {
-                        "path": "/v1/evals/run",
-                        "methods": ["POST"],
-                        "summary": "Run an evaluation suite",
-                    },
-                    {
-                        "path": "/v1/worlds",
-                        "methods": ["GET", "HEAD", "POST"],
-                        "summary": "List or create worlds",
-                    },
-                    {
-                        "path": "/v1/worlds/import",
-                        "methods": ["POST"],
-                        "summary": "Import a world snapshot",
-                    },
-                    {
-                        "path": "/v1/worlds/{id}",
-                        "methods": ["GET", "HEAD", "DELETE"],
-                        "summary": "Inspect or delete a world",
-                    },
-                    {
-                        "path": "/v1/worlds/{id}/predict",
-                        "methods": ["POST"],
-                        "summary": "Predict the next world state",
-                    },
-                    {
-                        "path": "/v1/worlds/{id}/plan",
-                        "methods": ["POST"],
-                        "summary": "Plan actions toward a goal",
-                    },
-                    {
-                        "path": "/v1/worlds/{id}/execute-plan",
-                        "methods": ["POST"],
-                        "summary": "Execute a stored or inline plan",
-                    },
-                    {
-                        "path": "/v1/worlds/{id}/evaluate",
-                        "methods": ["POST"],
-                        "summary": "Evaluate a world against a suite",
-                    },
-                    {
-                        "path": "/v1/worlds/{id}/verify",
-                        "methods": ["POST"],
-                        "summary": "Generate verification artifacts",
-                    },
-                    {
-                        "path": "/v1/worlds/{id}/history",
-                        "methods": ["GET", "HEAD"],
-                        "summary": "Inspect world history",
-                    },
-                    {
-                        "path": "/v1/worlds/{id}/plans",
-                        "methods": ["GET", "HEAD"],
-                        "summary": "List stored plans",
-                    },
-                    {
-                        "path": "/v1/worlds/{id}/plans/{plan_id}",
-                        "methods": ["GET", "HEAD", "DELETE"],
-                        "summary": "Inspect or delete a stored plan",
-                    },
-                    {
-                        "path": "/v1/worlds/{id}/objects",
-                        "methods": ["GET", "HEAD", "POST"],
-                        "summary": "List or add objects",
-                    },
-                    {
-                        "path": "/v1/worlds/{id}/objects/{object_id}",
-                        "methods": ["GET", "HEAD", "PATCH", "DELETE"],
-                        "summary": "Inspect, update, or remove an object",
-                    },
-                    {
-                        "path": "/v1/compare",
-                        "methods": ["POST"],
-                        "summary": "Compare predictions across providers",
-                    },
-                    {
-                        "path": "/v1/verify/proof",
-                        "methods": ["POST"],
-                        "summary": "Verify proofs and bundles",
-                    },
-                ],
-            })),
-        ),
+        ("GET", "/v1") => (200, ApiResponse::ok(api_index_document())),
 
         // POST /v1/verify/proof
         ("POST", "/v1/verify/proof") => match serde_json::from_str::<VerifyProofRequest>(body) {
@@ -4127,12 +4563,137 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_route_api_index_lists_core_contract_routes() {
+        let state = test_state();
+        let (status, body) = route("GET", "/v1", "", &state).await;
+        assert_eq!(status, 200);
+
+        let payload: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(payload["success"].as_bool().unwrap());
+        let routes = payload["data"]["routes"].as_array().unwrap();
+
+        let route_map: std::collections::HashMap<&str, Vec<&str>> = routes
+            .iter()
+            .map(|route| {
+                let path = route["path"].as_str().unwrap();
+                let methods = route["methods"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|method| method.as_str().unwrap())
+                    .collect();
+                (path, methods)
+            })
+            .collect();
+
+        for (path, methods) in [
+            ("/v1/providers", &["GET", "HEAD"][..]),
+            ("/v1/providers/{name}", &["GET", "HEAD"][..]),
+            ("/v1/evals/suites", &["GET", "HEAD"][..]),
+            ("/v1/worlds", &["GET", "HEAD", "POST"][..]),
+            ("/v1/worlds/import", &["POST"][..]),
+            ("/v1/worlds/{id}/predict", &["POST"][..]),
+            ("/v1/worlds/{id}/plan", &["POST"][..]),
+            ("/v1/worlds/{id}/verify", &["POST"][..]),
+            ("/v1/compare", &["POST"][..]),
+            ("/v1/verify/proof", &["POST"][..]),
+        ] {
+            let actual_methods = route_map
+                .get(path)
+                .unwrap_or_else(|| panic!("missing route from /v1 index: {path}"));
+            assert_eq!(actual_methods, &methods);
+        }
+    }
+
+    #[tokio::test]
     async fn test_route_list_eval_suites() {
         let state = test_state();
         let (status, body) = route("GET", "/v1/evals/suites", "", &state).await;
         assert_eq!(status, 200);
         assert!(body.contains("physics"));
         assert!(body.contains("comprehensive"));
+    }
+
+    #[tokio::test]
+    async fn test_route_api_index_uses_route_catalog() {
+        let state = test_state();
+        let (status, body) = route("GET", "/v1", "", &state).await;
+        assert_eq!(status, 200);
+
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let routes = value["data"]["routes"].as_array().unwrap();
+        let actual_paths: Vec<_> = routes
+            .iter()
+            .map(|route| route["path"].as_str().unwrap())
+            .collect();
+        let expected_paths: Vec<_> = route_catalog().iter().map(|route| route.path).collect();
+
+        assert_eq!(actual_paths, expected_paths);
+        assert!(actual_paths.contains(&"/v1/openapi.json"));
+        assert!(actual_paths.contains(&"/v1/worlds/{id}/fork"));
+        assert!(actual_paths.contains(&"/v1/worlds/{id}/restore"));
+        assert!(actual_paths.contains(&"/v1/worlds/{id}/export"));
+    }
+
+    #[tokio::test]
+    async fn test_route_openapi_document_uses_route_catalog() {
+        let state = test_state();
+        let (status, body) = route("GET", "/v1/openapi.json", "", &state).await;
+        assert_eq!(status, 200);
+
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(value["openapi"], "3.1.0");
+
+        let paths = value["paths"].as_object().unwrap();
+        assert_eq!(paths.len(), route_catalog().len());
+        assert!(paths.contains_key("/v1/providers"));
+        assert!(paths.contains_key("/v1/worlds"));
+        assert!(paths.contains_key("/v1/worlds/{id}/fork"));
+        assert!(paths.contains_key("/v1/worlds/{id}/restore"));
+        assert!(paths.contains_key("/v1/worlds/{id}/export"));
+        assert!(paths.contains_key("/v1/compare"));
+        assert!(paths.contains_key("/v1/verify/proof"));
+
+        let providers = &paths["/v1/providers"]["get"];
+        let provider_params = providers["parameters"].as_array().unwrap();
+        assert!(provider_params
+            .iter()
+            .any(|parameter| { parameter["name"] == "capability" && parameter["in"] == "query" }));
+        assert!(provider_params
+            .iter()
+            .any(|parameter| parameter["name"] == "health"));
+
+        let world_create = &paths["/v1/worlds"]["post"];
+        assert_eq!(
+            world_create["requestBody"]["description"],
+            "Create a new world from a name and optional prompt."
+        );
+        assert_eq!(
+            world_create["responses"]["201"]["description"],
+            "Successful response"
+        );
+
+        let export = &paths["/v1/worlds/{id}/export"]["get"];
+        let export_params = export["parameters"].as_array().unwrap();
+        let format = export_params
+            .iter()
+            .find(|parameter| parameter["name"] == "format")
+            .unwrap();
+        assert_eq!(
+            format["schema"]["enum"],
+            serde_json::json!(["json", "msgpack"])
+        );
+
+        let fork = &paths["/v1/worlds/{id}/fork"]["post"];
+        assert!(fork["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|parameter| parameter["name"] == "id"));
+        assert!(fork["requestBody"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("Fork the world"));
     }
 
     #[tokio::test]
