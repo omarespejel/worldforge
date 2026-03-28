@@ -146,6 +146,10 @@ assert health.healthy
 # Or compare previously captured predictions directly
 prediction_2 = world.predict(Action.move_to(0.5, 0.8, 0.0), provider="runway")
 comparison_from_predictions = wf.compare([prediction, prediction_2])
+print(comparison_from_predictions.to_markdown())
+print(comparison_from_predictions.to_csv())
+artifacts = comparison_from_predictions.artifacts()
+assert set(artifacts) == {"json", "markdown", "csv"}
 
 # Transfer camera controls onto a generated clip
 clip = wf.generate("A robot arm reaching across a workbench", provider="mock")
@@ -460,6 +464,7 @@ cargo run -p worldforge-cli -- restore --world <id> --history-index 0 --output-j
 cargo run -p worldforge-cli -- predict --world <id> --action "move 1 0 0" --provider runway --fallback-provider mock --timeout-ms 500
 cargo run -p worldforge-cli -- compare --prediction-json runs/mock.json --prediction-json runs/runway.json --output-json reports/compare.json
 cargo run -p worldforge-cli -- compare --world-snapshot snapshots/world.msgpack --action "move 1 0 0" --providers mock,runway --output-json reports/compare-from-snapshot.json
+cargo run -p worldforge-cli -- compare --world-snapshot snapshots/world.msgpack --action "move 1 0 0" --providers mock,runway --output-json reports/compare.json --output-markdown reports/compare.md --output-csv reports/compare.csv
 cargo run -p worldforge-cli -- plan --world <id> --goal "spawn cube" --planner cem
 cargo run -p worldforge-cli -- plan --world <id> --goal "spawn cube" --planner cem --guardrails-json guardrails.json --output-json plans/generated.json
 cargo run -p worldforge-cli -- plan --world <id> --goal-json goals/object-at.json --planner sampling --output-json plans/object-at.json
@@ -655,13 +660,13 @@ curl -X POST http://127.0.0.1:8080/v1/providers/mock/estimate \
 # using previously exported `Prediction` JSON payloads.
 curl -X POST http://127.0.0.1:8080/v1/compare \
   -H 'content-type: application/json' \
-  -d @compare-body.json
+  -d '{"predictions":[...],"report_formats":["json","markdown","csv"]}'
 
 # `compare-state-body.json` should contain
 # `{"world_state": {...}, "action": {...}, "providers": ["mock","runway"]}`.
 curl -X POST http://127.0.0.1:8080/v1/compare \
   -H 'content-type: application/json' \
-  -d @compare-state-body.json
+  -d '{"world_state": {...},"action": {...},"providers":["mock","runway"],"report_format":"markdown"}'
 ```
 
 ## Status

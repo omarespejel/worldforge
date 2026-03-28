@@ -16,7 +16,8 @@ use worldforge_core::action::Action;
 use worldforge_core::error::WorldForgeError;
 use worldforge_core::guardrail::{Guardrail, GuardrailConfig};
 use worldforge_core::prediction::{
-    Plan, PlanGoal, PlanGoalInput, PlannerType, Prediction, PredictionConfig,
+    ComparisonReportFormat, Plan, PlanGoal, PlanGoalInput, PlannerType, Prediction,
+    PredictionConfig,
 };
 use worldforge_core::provider::{
     EmbeddingInput, GenerationConfig, GenerationPrompt, Operation, ProviderRegistry,
@@ -682,6 +683,60 @@ fn validate_eval_report_request(request: &EvaluateRequest) -> std::result::Resul
     Ok(())
 }
 
+fn render_compare_response(
+    comparison: worldforge_core::prediction::MultiPrediction,
+    report_format: Option<ComparisonReportFormat>,
+    report_formats: &[ComparisonReportFormat],
+) -> (u16, String) {
+    if !report_formats.is_empty() {
+        return match comparison.render_many(report_formats.iter().copied()) {
+            Ok(rendered) => (
+                200,
+                ApiResponse::ok(RenderedComparisonArtifacts {
+                    summary: comparison.comparison.summary.clone(),
+                    best_provider: comparison.predictions[comparison.best_prediction]
+                        .provider
+                        .clone(),
+                    artifacts: rendered
+                        .into_iter()
+                        .map(|(format, content)| RenderedComparisonArtifact { format, content })
+                        .collect(),
+                }),
+            ),
+            Err(error) => (500, error_response(&error.to_string())),
+        };
+    }
+
+    match report_format.unwrap_or(ComparisonReportFormat::Json) {
+        ComparisonReportFormat::Json => (200, ApiResponse::ok(comparison)),
+        other => match comparison.render(other) {
+            Ok(content) => (
+                200,
+                ApiResponse::ok(RenderedComparisonReport {
+                    summary: comparison.comparison.summary.clone(),
+                    best_provider: comparison.predictions[comparison.best_prediction]
+                        .provider
+                        .clone(),
+                    format: other,
+                    content,
+                }),
+            ),
+            Err(error) => (500, error_response(&error.to_string())),
+        },
+    }
+}
+
+fn validate_compare_report_request(
+    report_format: Option<ComparisonReportFormat>,
+    report_formats: &[ComparisonReportFormat],
+) -> std::result::Result<(), String> {
+    if report_format.is_some() && !report_formats.is_empty() {
+        return Err("provide either `report_format` or `report_formats`, not both".to_string());
+    }
+
+    Ok(())
+}
+
 async fn resolve_eval_world_state(
     request: &EvaluateRequest,
     state: &AppState,
@@ -759,6 +814,12 @@ struct CompareWorldRequest {
     config: PredictionConfig,
     #[serde(default)]
     disable_guardrails: bool,
+    /// Optional rendered report format. Defaults to full JSON comparison data.
+    #[serde(default)]
+    report_format: Option<ComparisonReportFormat>,
+    /// Optional rendered report formats to return from a single comparison run.
+    #[serde(default)]
+    report_formats: Vec<ComparisonReportFormat>,
 }
 
 /// JSON request body for comparing previously captured predictions directly.
@@ -766,6 +827,12 @@ struct CompareWorldRequest {
 #[serde(deny_unknown_fields)]
 struct ComparePredictionsRequest {
     predictions: Vec<Prediction>,
+    /// Optional rendered report format. Defaults to full JSON comparison data.
+    #[serde(default)]
+    report_format: Option<ComparisonReportFormat>,
+    /// Optional rendered report formats to return from a single comparison run.
+    #[serde(default)]
+    report_formats: Vec<ComparisonReportFormat>,
 }
 
 /// JSON request body for cross-provider comparison.
@@ -774,6 +841,39 @@ struct ComparePredictionsRequest {
 enum CompareRequest {
     World(Box<CompareWorldRequest>),
     Predictions(ComparePredictionsRequest),
+}
+
+/// Rendered comparison report artifact returned for non-JSON exports.
+#[derive(Debug, Serialize)]
+struct RenderedComparisonReport {
+    /// Summary of the comparison.
+    summary: String,
+    /// Provider selected as the best prediction.
+    best_provider: String,
+    /// Export format.
+    format: ComparisonReportFormat,
+    /// Rendered artifact content.
+    content: String,
+}
+
+/// A rendered comparison artifact.
+#[derive(Debug, Serialize)]
+struct RenderedComparisonArtifact {
+    /// Export format.
+    format: ComparisonReportFormat,
+    /// Rendered artifact content.
+    content: String,
+}
+
+/// Multiple comparison artifacts returned from a single comparison run.
+#[derive(Debug, Serialize)]
+struct RenderedComparisonArtifacts {
+    /// Summary of the comparison.
+    summary: String,
+    /// Provider selected as the best prediction.
+    best_provider: String,
+    /// Rendered artifacts in request order.
+    artifacts: Vec<RenderedComparisonArtifact>,
 }
 
 /// JSON request body for ZK verification.
@@ -913,6 +1013,7 @@ struct ApiResponse<T: Serialize> {
     success: bool,
     data: Option<T>,
     error: Option<String>,
+    error_details: Option<serde_json::Value>,
 }
 
 impl<T: Serialize> ApiResponse<T> {
@@ -921,18 +1022,34 @@ impl<T: Serialize> ApiResponse<T> {
             success: true,
             data: Some(data),
             error: None,
+            error_details: None,
         })
         .unwrap_or_else(|_| r#"{"success":false,"error":"serialization failed"}"#.to_string())
     }
 }
 
 fn error_response(msg: &str) -> String {
+    error_response_with_details(msg, None)
+}
+
+fn error_response_with_details(msg: &str, error_details: Option<serde_json::Value>) -> String {
     serde_json::to_string(&ApiResponse::<()> {
         success: false,
         data: None,
         error: Some(msg.to_string()),
+        error_details,
     })
     .unwrap_or_else(|_| format!(r#"{{"success":false,"error":"{msg}"}}"#))
+}
+
+fn worldforge_error_response(error: &WorldForgeError) -> String {
+    match error {
+        WorldForgeError::GuardrailBlocked { violations } => error_response_with_details(
+            &error.to_string(),
+            Some(serde_json::json!({ "violations": violations })),
+        ),
+        _ => error_response(&error.to_string()),
+    }
 }
 
 fn encode_snapshot_payload(
@@ -2391,7 +2508,7 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                                     let _ = state.store.save(world.current_state()).await;
                                     (200, ApiResponse::ok(prediction))
                                 }
-                                Err(e) => (api_error_status(&e), error_response(&e.to_string())),
+                                Err(e) => (api_error_status(&e), worldforge_error_response(&e)),
                             }
                         }
                         Err(e) => (400, error_response(&format!("invalid request: {e}"))),
@@ -2570,7 +2687,7 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                                 ),
                             },
                             Err(error) => {
-                                (api_error_status(&error), error_response(&error.to_string()))
+                                (api_error_status(&error), worldforge_error_response(&error))
                             }
                         }
                     }
@@ -2762,6 +2879,11 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
         // POST /v1/compare
         ("POST", "/v1/compare") => match serde_json::from_str::<CompareRequest>(body) {
             Ok(CompareRequest::World(req)) => {
+                if let Err(error) =
+                    validate_compare_report_request(req.report_format, &req.report_formats)
+                {
+                    return (400, error_response(&error));
+                }
                 if req.providers.is_empty() {
                     return (
                         400,
@@ -2809,15 +2931,24 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                     .predict_multi(&req.action, &provider_refs, &config)
                     .await
                 {
-                    Ok(multi) => (200, ApiResponse::ok(multi)),
-                    Err(error) => (api_error_status(&error), error_response(&error.to_string())),
+                    Ok(multi) => {
+                        render_compare_response(multi, req.report_format, &req.report_formats)
+                    }
+                    Err(error) => (api_error_status(&error), worldforge_error_response(&error)),
                 }
             }
             Ok(CompareRequest::Predictions(req)) => {
+                if let Err(error) =
+                    validate_compare_report_request(req.report_format, &req.report_formats)
+                {
+                    return (400, error_response(&error));
+                }
                 match worldforge_core::prediction::MultiPrediction::try_from_predictions(
                     req.predictions,
                 ) {
-                    Ok(multi) => (200, ApiResponse::ok(multi)),
+                    Ok(multi) => {
+                        render_compare_response(multi, req.report_format, &req.report_formats)
+                    }
                     Err(error) => (api_error_status(&error), error_response(&error.to_string())),
                 }
             }
@@ -4208,7 +4339,7 @@ mod tests {
 
         let pred_body = r#"{"action":{"SetWeather":{"weather":"Rain"}}}"#;
 
-        let (status, _) = route(
+        let (status, blocked_resp) = route(
             "POST",
             &format!("/v1/worlds/{id}/predict"),
             pred_body,
@@ -4216,6 +4347,15 @@ mod tests {
         )
         .await;
         assert_eq!(status, 409);
+        let blocked: serde_json::Value = serde_json::from_str(&blocked_resp).unwrap();
+        assert_eq!(
+            blocked["error_details"]["violations"][0]["guardrail_name"],
+            "NoCollisions"
+        );
+        assert_eq!(
+            blocked["error_details"]["violations"][0]["severity"],
+            "Blocking"
+        );
 
         let (status, resp) = route(
             "POST",
@@ -5123,6 +5263,74 @@ mod tests {
         assert!(value["data"]["comparison"]["scores"][0]["state"]["output_object_count"].is_u64());
         assert!(value["data"]["comparison"]["scores"][0]["quality_score"].is_number());
         assert!(value["data"]["comparison"]["consensus"]["shared_object_count"].is_u64());
+    }
+
+    #[tokio::test]
+    async fn test_route_compare_renders_markdown_report() {
+        let state = test_state();
+        let body = r#"{"name":"cmp_world_markdown","provider":"mock"}"#;
+        let (status, resp) = route("POST", "/v1/worlds", body, &state).await;
+        assert_eq!(status, 201);
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let id = value["data"]["id"].as_str().unwrap();
+
+        let cmp_body = format!(
+            r#"{{"world_id":"{}","action":{{"Move":{{"target":{{"x":1.0,"y":0.0,"z":0.0}},"speed":1.0}}}},"providers":["mock","mock"],"report_format":"markdown"}}"#,
+            id
+        );
+        let (status, resp) = route("POST", "/v1/compare", &cmp_body, &state).await;
+        assert_eq!(status, 200);
+
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(value["data"]["format"], "markdown");
+        assert_eq!(value["data"]["best_provider"], "mock");
+        assert!(value["data"]["content"]
+            .as_str()
+            .unwrap()
+            .contains("# Multi-Provider Comparison"));
+    }
+
+    #[tokio::test]
+    async fn test_route_compare_renders_multiple_artifacts() {
+        let state = test_state();
+        let body = r#"{"name":"cmp_world_artifacts","provider":"mock"}"#;
+        let (status, resp) = route("POST", "/v1/worlds", body, &state).await;
+        assert_eq!(status, 201);
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let id = value["data"]["id"].as_str().unwrap();
+
+        let cmp_body = format!(
+            r#"{{"world_id":"{}","action":{{"Move":{{"target":{{"x":1.0,"y":0.0,"z":0.0}},"speed":1.0}}}},"providers":["mock","mock"],"report_formats":["markdown","csv","json"]}}"#,
+            id
+        );
+        let (status, resp) = route("POST", "/v1/compare", &cmp_body, &state).await;
+        assert_eq!(status, 200);
+
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let artifacts = value["data"]["artifacts"].as_array().unwrap();
+        assert_eq!(artifacts.len(), 3);
+        assert_eq!(artifacts[0]["format"], "markdown");
+        assert_eq!(artifacts[1]["format"], "csv");
+        assert_eq!(artifacts[2]["format"], "json");
+    }
+
+    #[tokio::test]
+    async fn test_route_compare_rejects_mixed_report_shape() {
+        let state = test_state();
+        let body = serde_json::json!({
+            "predictions": [sample_prediction("mock", 0.25, 120)],
+            "report_format": "markdown",
+            "report_formats": ["csv"],
+        })
+        .to_string();
+
+        let (status, resp) = route("POST", "/v1/compare", &body, &state).await;
+        assert_eq!(status, 400);
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(
+            value["error"],
+            "provide either `report_format` or `report_formats`, not both"
+        );
     }
 
     #[tokio::test]

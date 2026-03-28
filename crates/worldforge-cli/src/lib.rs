@@ -16,8 +16,8 @@ use worldforge_core::action::{Action, Weather};
 use worldforge_core::error::WorldForgeError;
 use worldforge_core::guardrail::{Guardrail, GuardrailConfig};
 use worldforge_core::prediction::{
-    MultiPrediction, Plan, PlanExecution, PlanGoal, PlanGoalInput, PlanRequest, PlannerType,
-    Prediction, PredictionConfig,
+    ComparisonReportFormat, MultiPrediction, Plan, PlanExecution, PlanGoal, PlanGoalInput,
+    PlanRequest, PlannerType, Prediction, PredictionConfig,
 };
 use worldforge_core::provider::{
     EmbeddingInput, GenerationConfig, GenerationPrompt, Operation, ProviderDescriptor,
@@ -573,6 +573,12 @@ pub enum Commands {
         /// Optional path to write the comparison report as JSON.
         #[arg(long)]
         output_json: Option<PathBuf>,
+        /// Optional path to write the comparison report as Markdown.
+        #[arg(long)]
+        output_markdown: Option<PathBuf>,
+        /// Optional path to write the comparison report as CSV.
+        #[arg(long)]
+        output_csv: Option<PathBuf>,
     },
 
     /// Plan a sequence of actions to achieve a goal.
@@ -1260,6 +1266,8 @@ pub async fn run() -> Result<()> {
             guardrails_json,
             disable_guardrails,
             output_json,
+            output_markdown,
+            output_csv,
         } => {
             cmd_compare(
                 store.as_ref(),
@@ -1275,6 +1283,8 @@ pub async fn run() -> Result<()> {
                     guardrails_json: guardrails_json.as_deref(),
                     disable_guardrails,
                     output_json: output_json.as_deref(),
+                    output_markdown: output_markdown.as_deref(),
+                    output_csv: output_csv.as_deref(),
                 },
             )
             .await
@@ -1830,6 +1840,8 @@ struct CompareOptions<'a> {
     guardrails_json: Option<&'a Path>,
     disable_guardrails: bool,
     output_json: Option<&'a Path>,
+    output_markdown: Option<&'a Path>,
+    output_csv: Option<&'a Path>,
 }
 
 struct EvalOptions<'a> {
@@ -3168,6 +3180,14 @@ async fn cmd_compare(
         write_json_file(path, &multi)?;
         println!();
         println!("Saved comparison JSON: {}", path.display());
+    }
+    if let Some(path) = options.output_markdown {
+        write_text_file(path, &multi.render(ComparisonReportFormat::Markdown)?)?;
+        println!("Saved comparison Markdown: {}", path.display());
+    }
+    if let Some(path) = options.output_csv {
+        write_text_file(path, &multi.render(ComparisonReportFormat::Csv)?)?;
+        println!("Saved comparison CSV: {}", path.display());
     }
     Ok(())
 }
@@ -4904,6 +4924,8 @@ mod tests {
                 timeout_ms,
                 guardrails_json,
                 output_json,
+                output_markdown,
+                output_csv,
                 ..
             } => {
                 assert_eq!(
@@ -4918,6 +4940,8 @@ mod tests {
                 assert_eq!(timeout_ms, Some(300));
                 assert_eq!(guardrails_json, Some(PathBuf::from("/tmp/guardrails.json")));
                 assert_eq!(output_json, Some(PathBuf::from("/tmp/compare.json")));
+                assert!(output_markdown.is_none());
+                assert!(output_csv.is_none());
             }
             _ => panic!("expected Compare"),
         }
@@ -4944,6 +4968,8 @@ mod tests {
                 providers,
                 prediction_json,
                 output_json,
+                output_markdown,
+                output_csv,
                 ..
             } => {
                 assert!(world.is_none());
@@ -4957,6 +4983,8 @@ mod tests {
                     ]
                 );
                 assert_eq!(output_json, Some(PathBuf::from("/tmp/compare.json")));
+                assert!(output_markdown.is_none());
+                assert!(output_csv.is_none());
             }
             _ => panic!("expected Compare"),
         }
@@ -5840,6 +5868,8 @@ mod tests {
                 guardrails_json: None,
                 disable_guardrails: false,
                 output_json: Some(&output),
+                output_markdown: None,
+                output_csv: None,
             },
         )
         .await
@@ -5882,6 +5912,8 @@ mod tests {
                 guardrails_json: None,
                 disable_guardrails: false,
                 output_json: Some(&output),
+                output_markdown: None,
+                output_csv: None,
             },
         )
         .await
@@ -5890,6 +5922,57 @@ mod tests {
         let comparison: MultiPrediction = read_json_file(&output).unwrap();
         assert_eq!(comparison.predictions.len(), 2);
         assert_eq!(comparison.comparison.pairwise_agreements.len(), 1);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn test_cmd_compare_prediction_json_writes_markdown_and_csv() {
+        let dir =
+            std::env::temp_dir().join(format!("wf-cli-compare-artifacts-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let prediction_a = dir.join("prediction-a.json");
+        let prediction_b = dir.join("prediction-b.json");
+        let markdown = dir.join("compare.md");
+        let csv = dir.join("compare.csv");
+        write_json_file(&prediction_a, &sample_prediction("mock", 0.25, 120)).unwrap();
+        write_json_file(&prediction_b, &sample_prediction("mock-2", 0.35, 180)).unwrap();
+
+        let store = StateStoreKind::File(dir.join("state"))
+            .open()
+            .await
+            .unwrap();
+        let prediction_paths = [prediction_a, prediction_b];
+
+        cmd_compare(
+            store.as_ref(),
+            None,
+            None,
+            None,
+            None,
+            CompareOptions {
+                prediction_json: &prediction_paths,
+                steps: 1,
+                fallback_provider: None,
+                timeout_ms: None,
+                guardrails_json: None,
+                disable_guardrails: false,
+                output_json: None,
+                output_markdown: Some(&markdown),
+                output_csv: Some(&csv),
+            },
+        )
+        .await
+        .unwrap();
+
+        let markdown_content = fs::read_to_string(markdown).unwrap();
+        assert!(markdown_content.contains("# Multi-Provider Comparison"));
+        assert!(markdown_content.contains("## Provider Scores"));
+
+        let csv_content = fs::read_to_string(csv).unwrap();
+        assert!(csv_content.contains("provider,is_best,rank,quality_score"));
+        assert!(csv_content.contains("mock"));
+        assert!(csv_content.contains("mock-2"));
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -6728,7 +6811,9 @@ mod tests {
             false,
         )
         .await;
-        assert!(result.is_err());
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("NoCollisions"));
+        assert!(error.contains("collision between"));
 
         cmd_predict(
             store.as_ref(),

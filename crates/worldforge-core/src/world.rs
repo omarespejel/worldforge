@@ -683,20 +683,7 @@ impl World {
 
         let results = evaluate_guardrails(&config.guardrails, &prediction.output_state);
         if has_blocking_violation(&results) {
-            return Err(WorldForgeError::GuardrailBlocked {
-                reason: results
-                    .iter()
-                    .filter(|result| !result.passed)
-                    .map(|result| {
-                        format!(
-                            "{}: {}",
-                            result.guardrail_name,
-                            result.violation_details.as_deref().unwrap_or("violation")
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("; "),
-            });
+            return Err(blocking_guardrail_error(&results));
         }
         prediction.guardrail_results = results;
 
@@ -835,6 +822,18 @@ fn validate_prediction_modalities(
     }
 
     Ok(())
+}
+
+fn blocking_guardrail_error(results: &[crate::guardrail::GuardrailResult]) -> WorldForgeError {
+    WorldForgeError::GuardrailBlocked {
+        violations: results
+            .iter()
+            .filter(|result| {
+                !result.passed && result.severity == crate::guardrail::ViolationSeverity::Blocking
+            })
+            .cloned()
+            .collect(),
+    }
 }
 
 fn combine_fallback_errors(
@@ -3282,7 +3281,17 @@ mod tests {
 
         let error = world.execute_plan(&plan, &config).await.unwrap_err();
 
-        assert!(matches!(error, WorldForgeError::GuardrailBlocked { .. }));
+        match error {
+            WorldForgeError::GuardrailBlocked { violations } => {
+                assert_eq!(violations.len(), 1);
+                assert_eq!(violations[0].guardrail_name, "BoundaryConstraint");
+                assert_eq!(
+                    violations[0].severity,
+                    crate::guardrail::ViolationSeverity::Blocking
+                );
+            }
+            other => panic!("expected guardrail block, got {other:?}"),
+        }
         assert!(world.current_state().history.is_empty());
         assert_eq!(
             world
@@ -3454,7 +3463,17 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(matches!(error, WorldForgeError::GuardrailBlocked { .. }));
+        match error {
+            WorldForgeError::GuardrailBlocked { violations } => {
+                assert_eq!(violations.len(), 1);
+                assert_eq!(violations[0].guardrail_name, "BoundaryConstraint");
+                assert_eq!(
+                    violations[0].severity,
+                    crate::guardrail::ViolationSeverity::Blocking
+                );
+            }
+            other => panic!("expected guardrail block, got {other:?}"),
+        }
         assert!(world.current_state().history.is_empty());
         assert_eq!(
             world

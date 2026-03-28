@@ -14,9 +14,9 @@ use pyo3::types::{PyBytes, PyList, PyModule, PyString};
 
 use worldforge_core::guardrail::GuardrailConfig;
 use worldforge_core::prediction::{
-    ComparisonConsensus, GuardrailDiagnostics, MultiPrediction, ObjectDiagnostic, ObjectDrift,
-    PairwiseAgreement, PlanExecution, PlanGoal, PlanGoalInput, PlannerType, PredictionConfig,
-    ProviderScore, StateDiagnostics,
+    ComparisonConsensus, ComparisonReportFormat, GuardrailDiagnostics, MultiPrediction,
+    ObjectDiagnostic, ObjectDrift, PairwiseAgreement, PlanExecution, PlanGoal, PlanGoalInput,
+    PlannerType, PredictionConfig, ProviderScore, StateDiagnostics,
 };
 use worldforge_core::provider::{
     CostEstimate, EmbeddingInput, EmbeddingOutput, GenerationConfig, GenerationPrompt, Operation,
@@ -2528,9 +2528,56 @@ impl PyMultiPrediction {
 
     /// Serialize the comparison to JSON.
     fn to_json(&self) -> PyResult<String> {
-        serde_json::to_string(&self.inner).map_err(|e| {
-            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
-        })
+        self.inner
+            .render(ComparisonReportFormat::Json)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("render error: {e}")))
+    }
+
+    /// Render the comparison as Markdown.
+    fn to_markdown(&self) -> PyResult<String> {
+        self.inner
+            .to_markdown()
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("render error: {e}")))
+    }
+
+    /// Render the comparison as CSV.
+    fn to_csv(&self) -> PyResult<String> {
+        self.inner
+            .to_csv()
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("render error: {e}")))
+    }
+
+    /// Render one or more comparison artifacts.
+    ///
+    /// When `formats` is omitted, JSON, Markdown, and CSV are returned.
+    #[pyo3(signature = (formats=None))]
+    fn artifacts(&self, formats: Option<Vec<String>>) -> PyResult<BTreeMap<String, String>> {
+        let formats = formats.unwrap_or_else(|| {
+            vec![
+                "json".to_string(),
+                "markdown".to_string(),
+                "csv".to_string(),
+            ]
+        });
+
+        let mut parsed = Vec::with_capacity(formats.len());
+        for format in formats {
+            parsed.push(format.parse::<ComparisonReportFormat>().map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "invalid comparison report format: {e}"
+                ))
+            })?);
+        }
+
+        self.inner
+            .render_many(parsed)
+            .map(|artifacts| {
+                artifacts
+                    .into_iter()
+                    .map(|(format, content)| (format.as_str().to_string(), content))
+                    .collect()
+            })
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("render error: {e}")))
     }
 
     /// Deserialize a comparison from JSON.
@@ -7362,7 +7409,11 @@ mod tests {
             None,
             false,
         );
-        assert!(default_result.is_err());
+        let error = default_result.unwrap_err().to_string();
+        assert!(error.contains("NoCollisions"));
+        assert!(error.contains("collision between"));
+        assert!(error.contains("'left'"));
+        assert!(error.contains("'right'"));
 
         let prediction = world
             .predict(
@@ -7907,6 +7958,24 @@ mod tests {
                 <= restored.provider_scores()[0].state().output_object_count()
         );
         assert!(restored.__repr__().contains("MultiPrediction"));
+
+        let rendered_json = restored.to_json().unwrap();
+        let artifacts = restored.artifacts(None).unwrap();
+        assert_eq!(artifacts.len(), 3);
+        assert_eq!(artifacts.get("json"), Some(&rendered_json));
+        assert_eq!(
+            artifacts.get("markdown"),
+            Some(&restored.to_markdown().unwrap())
+        );
+        assert_eq!(artifacts.get("csv"), Some(&restored.to_csv().unwrap()));
+        assert!(artifacts["markdown"].contains("mock"));
+        assert!(artifacts["csv"].contains("mock"));
+
+        let markdown_only = restored
+            .artifacts(Some(vec!["markdown".to_string()]))
+            .unwrap();
+        assert_eq!(markdown_only.len(), 1);
+        assert_eq!(markdown_only.get("markdown"), artifacts.get("markdown"));
     }
 
     #[test]

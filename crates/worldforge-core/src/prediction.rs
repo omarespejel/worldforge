@@ -4,6 +4,8 @@
 //! and planning through world models.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::{self, Write};
+use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
@@ -118,6 +120,51 @@ pub struct MultiPrediction {
     pub best_prediction: usize,
     /// Detailed comparison report.
     pub comparison: ComparisonReport,
+}
+
+/// Output format for rendering a multi-provider comparison report.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ComparisonReportFormat {
+    /// Pretty-printed JSON with the full structured comparison payload.
+    #[default]
+    Json,
+    /// Human-readable Markdown with summary tables.
+    Markdown,
+    /// Deterministic CSV with one row per provider comparison.
+    Csv,
+}
+
+impl ComparisonReportFormat {
+    /// Canonical lowercase identifier for this format.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::Markdown => "markdown",
+            Self::Csv => "csv",
+        }
+    }
+}
+
+impl fmt::Display for ComparisonReportFormat {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for ComparisonReportFormat {
+    type Err = WorldForgeError;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "json" => Ok(Self::Json),
+            "markdown" | "md" => Ok(Self::Markdown),
+            "csv" => Ok(Self::Csv),
+            other => Err(WorldForgeError::InvalidState(format!(
+                "unknown comparison report format: {other}. Available: json, markdown, csv"
+            ))),
+        }
+    }
 }
 
 /// Comparison report across multiple provider predictions.
@@ -359,6 +406,54 @@ impl MultiPrediction {
                 summary,
             },
         })
+    }
+
+    /// Render the comparison using one of the supported export formats.
+    pub fn render(&self, format: ComparisonReportFormat) -> Result<String> {
+        let canonical = self.canonicalized_for_render()?;
+        match format {
+            ComparisonReportFormat::Json => render_multi_prediction_json(&canonical),
+            ComparisonReportFormat::Markdown => Ok(render_multi_prediction_markdown(&canonical)),
+            ComparisonReportFormat::Csv => Ok(render_multi_prediction_csv(&canonical)),
+        }
+    }
+
+    /// Render the comparison in multiple formats, deduplicating repeats while
+    /// preserving the first-requested order.
+    pub fn render_many<I>(&self, formats: I) -> Result<Vec<(ComparisonReportFormat, String)>>
+    where
+        I: IntoIterator<Item = ComparisonReportFormat>,
+    {
+        let mut rendered = Vec::new();
+
+        for format in formats {
+            if rendered
+                .iter()
+                .any(|(existing_format, _)| *existing_format == format)
+            {
+                continue;
+            }
+
+            rendered.push((format, self.render(format)?));
+        }
+
+        Ok(rendered)
+    }
+
+    /// Render the comparison as deterministic Markdown.
+    pub fn to_markdown(&self) -> Result<String> {
+        self.render(ComparisonReportFormat::Markdown)
+    }
+
+    /// Render the comparison as deterministic CSV.
+    pub fn to_csv(&self) -> Result<String> {
+        self.render(ComparisonReportFormat::Csv)
+    }
+
+    fn canonicalized_for_render(&self) -> Result<Self> {
+        let mut predictions = self.predictions.clone();
+        predictions.sort_by(compare_predictions_for_render);
+        Self::try_from_predictions(predictions)
     }
 }
 
@@ -913,6 +1008,293 @@ fn ordered_pair(left: ObjectId, right: ObjectId) -> (ObjectId, ObjectId) {
         (left, right)
     } else {
         (right, left)
+    }
+}
+
+fn compare_predictions_for_render(left: &Prediction, right: &Prediction) -> std::cmp::Ordering {
+    left.provider
+        .cmp(&right.provider)
+        .then_with(|| left.model.cmp(&right.model))
+        .then_with(|| left.latency_ms.cmp(&right.latency_ms))
+        .then_with(|| left.id.as_bytes().cmp(right.id.as_bytes()))
+}
+
+fn render_multi_prediction_json(prediction: &MultiPrediction) -> Result<String> {
+    serde_json::to_string_pretty(prediction)
+        .map_err(|error| WorldForgeError::SerializationError(error.to_string()))
+}
+
+fn render_multi_prediction_markdown(prediction: &MultiPrediction) -> String {
+    let best = &prediction.predictions[prediction.best_prediction];
+    let mut output = String::new();
+
+    let _ = writeln!(
+        output,
+        "# Multi-Provider Comparison: {}",
+        markdown_cell(&prediction.comparison.summary)
+    );
+    output.push('\n');
+
+    output.push_str("## Summary\n\n");
+    let _ = writeln!(
+        output,
+        "- Predictions compared: {}",
+        prediction.predictions.len()
+    );
+    let _ = writeln!(output, "- Best provider: {}", markdown_cell(&best.provider));
+    let _ = writeln!(
+        output,
+        "- Agreement score: {:.3}",
+        prediction.agreement_score
+    );
+    let _ = writeln!(
+        output,
+        "- Shared objects: {}",
+        prediction.comparison.consensus.shared_object_count
+    );
+    let _ = writeln!(
+        output,
+        "- Shared relationships: {}",
+        prediction.comparison.consensus.shared_relationship_count
+    );
+    let _ = writeln!(
+        output,
+        "- Average confidence: {:.3}",
+        prediction.comparison.consensus.average_confidence
+    );
+    let _ = writeln!(
+        output,
+        "- Average guardrail pass rate: {:.3}",
+        prediction.comparison.consensus.average_guardrail_pass_rate
+    );
+    let _ = writeln!(
+        output,
+        "- Average quality score: {:.3}",
+        prediction.comparison.consensus.average_quality_score
+    );
+    let _ = writeln!(
+        output,
+        "- Average latency: {} ms",
+        prediction.comparison.consensus.average_latency_ms
+    );
+    let _ = writeln!(
+        output,
+        "- Average pairwise position delta: {:.3}",
+        prediction
+            .comparison
+            .consensus
+            .average_pairwise_position_delta
+    );
+    let _ = writeln!(
+        output,
+        "- Summary: {}",
+        markdown_cell(&prediction.comparison.summary)
+    );
+    output.push('\n');
+
+    output.push_str("## Provider Scores\n\n");
+    if prediction.comparison.scores.is_empty() {
+        output.push_str("_No provider scores recorded._\n\n");
+    } else {
+        output.push_str("| Provider | Best | Quality | Confidence | Physics | Guardrails | Objects | Relationships | Latency (ms) | Cost (USD) |\n");
+        output.push_str("| --- | --- | ---: | ---: | ---: | --- | --- | --- | ---: | ---: |\n");
+        for score in &prediction.comparison.scores {
+            let is_best = if score.provider == best.provider {
+                "yes"
+            } else {
+                ""
+            };
+            let guardrails = format!(
+                "{}/{} ({:.3})",
+                score.guardrails.passed_count,
+                score.guardrails.evaluated_count,
+                score.guardrails.pass_rate
+            );
+            let objects = format!(
+                "{}/{}",
+                score.state.preserved_object_count, score.state.input_object_count
+            );
+            let relationships = format!(
+                "{}/{}",
+                score.state.preserved_relationship_count, score.state.input_relationship_count
+            );
+            let _ = writeln!(
+                output,
+                "| {} | {} | {:.3} | {:.3} | {:.3} | {} | {} | {} | {} | {:.4} |",
+                markdown_cell(&score.provider),
+                is_best,
+                score.quality_score,
+                score.confidence,
+                score.physics_scores.overall,
+                markdown_cell(&guardrails),
+                markdown_cell(&objects),
+                markdown_cell(&relationships),
+                score.latency_ms,
+                score.cost.usd,
+            );
+        }
+        output.push('\n');
+    }
+
+    output.push_str("## Consensus\n\n");
+    output.push_str("| Shared Objects | Shared Relationships | Avg Confidence | Avg Guardrail Pass Rate | Avg Quality | Avg Latency (ms) | Avg Pairwise Position Delta |\n");
+    output.push_str("| ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
+    let _ = writeln!(
+        output,
+        "| {} | {} | {:.3} | {:.3} | {:.3} | {} | {:.3} |",
+        prediction.comparison.consensus.shared_object_count,
+        prediction.comparison.consensus.shared_relationship_count,
+        prediction.comparison.consensus.average_confidence,
+        prediction.comparison.consensus.average_guardrail_pass_rate,
+        prediction.comparison.consensus.average_quality_score,
+        prediction.comparison.consensus.average_latency_ms,
+        prediction
+            .comparison
+            .consensus
+            .average_pairwise_position_delta,
+    );
+    output.push('\n');
+
+    output.push_str("## Pairwise Agreements\n\n");
+    if prediction.comparison.pairwise_agreements.is_empty() {
+        output
+            .push_str("_Only one prediction was provided; pairwise agreement is not available._\n");
+    } else {
+        output.push_str("| Provider A | Provider B | Agreement | Object Overlap | Relationship Overlap | Avg Position Delta | Guardrail Agreement | Physics Delta | Confidence Delta | Latency Delta (ms) |\n");
+        output.push_str("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
+        for pair in &prediction.comparison.pairwise_agreements {
+            let _ = writeln!(
+                output,
+                "| {} | {} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {} |",
+                markdown_cell(&pair.provider_a),
+                markdown_cell(&pair.provider_b),
+                pair.agreement_score,
+                pair.object_overlap_rate,
+                pair.relationship_overlap_rate,
+                pair.average_position_delta,
+                pair.guardrail_agreement_rate,
+                pair.physics_score_delta,
+                pair.confidence_delta,
+                pair.latency_delta_ms,
+            );
+        }
+    }
+
+    output
+}
+
+fn render_multi_prediction_csv(prediction: &MultiPrediction) -> String {
+    let mut output = String::new();
+    output.push_str(comparison_csv_header());
+    output.push('\n');
+
+    let best_provider = prediction
+        .predictions
+        .get(prediction.best_prediction)
+        .map(|prediction| prediction.provider.as_str())
+        .unwrap_or_default();
+    let best_prediction_index = prediction.best_prediction.to_string();
+    let agreement_score = format!("{:.3}", prediction.agreement_score);
+    let shared_object_count = prediction
+        .comparison
+        .consensus
+        .shared_object_count
+        .to_string();
+    let shared_relationship_count = prediction
+        .comparison
+        .consensus
+        .shared_relationship_count
+        .to_string();
+    let average_confidence = format!("{:.3}", prediction.comparison.consensus.average_confidence);
+    let average_guardrail_pass_rate = format!(
+        "{:.3}",
+        prediction.comparison.consensus.average_guardrail_pass_rate
+    );
+    let average_quality_score = format!(
+        "{:.3}",
+        prediction.comparison.consensus.average_quality_score
+    );
+    let average_latency_ms = prediction
+        .comparison
+        .consensus
+        .average_latency_ms
+        .to_string();
+    let average_pairwise_position_delta = format!(
+        "{:.3}",
+        prediction
+            .comparison
+            .consensus
+            .average_pairwise_position_delta
+    );
+    let summary = csv_cell(&prediction.comparison.summary);
+
+    for (index, score) in prediction.comparison.scores.iter().enumerate() {
+        let row = vec![
+            csv_cell(&score.provider),
+            (score.provider == best_provider).to_string(),
+            (index + 1).to_string(),
+            csv_cell(&format!("{:.3}", score.quality_score)),
+            csv_cell(&format!("{:.3}", score.confidence)),
+            csv_cell(&format!("{:.3}", score.physics_scores.overall)),
+            csv_cell(&format!("{:.3}", score.physics_scores.object_permanence)),
+            csv_cell(&format!("{:.3}", score.physics_scores.gravity_compliance)),
+            csv_cell(&format!("{:.3}", score.physics_scores.collision_accuracy)),
+            csv_cell(&format!("{:.3}", score.physics_scores.spatial_consistency)),
+            csv_cell(&format!("{:.3}", score.physics_scores.temporal_consistency)),
+            score.latency_ms.to_string(),
+            csv_cell(&format!("{:.4}", score.cost.usd)),
+            csv_cell(&format!("{:.4}", score.cost.credits)),
+            score.cost.estimated_latency_ms.to_string(),
+            csv_cell(&format!("{:.3}", score.guardrails.pass_rate)),
+            score.guardrails.passed_count.to_string(),
+            score.guardrails.evaluated_count.to_string(),
+            csv_cell(&format!("{:.3}", score.state.object_preservation_rate)),
+            csv_cell(&format!(
+                "{:.3}",
+                score.state.relationship_preservation_rate
+            )),
+            csv_cell(&format!("{:.3}", score.state.average_position_shift)),
+            csv_cell(&format!("{:.3}", score.state.max_position_shift)),
+            score.state.input_object_count.to_string(),
+            score.state.output_object_count.to_string(),
+            score.state.input_relationship_count.to_string(),
+            score.state.output_relationship_count.to_string(),
+            csv_cell(&prediction.comparison.summary),
+            csv_cell(best_provider),
+            best_prediction_index.clone(),
+            agreement_score.clone(),
+            shared_object_count.clone(),
+            shared_relationship_count.clone(),
+            average_confidence.clone(),
+            average_guardrail_pass_rate.clone(),
+            average_quality_score.clone(),
+            average_latency_ms.clone(),
+            average_pairwise_position_delta.clone(),
+            summary.clone(),
+        ];
+        output.push_str(&row.join(","));
+        output.push('\n');
+    }
+
+    output
+}
+
+fn comparison_csv_header() -> &'static str {
+    "provider,is_best,rank,quality_score,confidence,physics_overall,physics_object_permanence,physics_gravity_compliance,physics_collision_accuracy,physics_spatial_consistency,physics_temporal_consistency,latency_ms,cost_usd,cost_credits,cost_estimated_latency_ms,guardrail_pass_rate,guardrails_passed,guardrails_evaluated,object_preservation_rate,relationship_preservation_rate,average_position_shift,max_position_shift,input_object_count,output_object_count,input_relationship_count,output_relationship_count,summary,best_provider,best_prediction_index,agreement_score,shared_object_count,shared_relationship_count,average_confidence,average_guardrail_pass_rate,average_quality_score,average_latency_ms,average_pairwise_position_delta,comparison_summary"
+}
+
+fn markdown_cell(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('|', "\\|")
+        .replace('\n', "<br>")
+}
+
+fn csv_cell(value: &str) -> String {
+    if value.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
     }
 }
 
@@ -1615,6 +1997,82 @@ mod tests {
         let error = MultiPrediction::try_from_predictions(Vec::new()).unwrap_err();
 
         assert!(matches!(error, WorldForgeError::InvalidState(_)));
+    }
+
+    #[test]
+    fn test_comparison_report_format_roundtrip() {
+        assert_eq!(ComparisonReportFormat::Json.as_str(), "json");
+        assert_eq!(ComparisonReportFormat::Markdown.as_str(), "markdown");
+        assert_eq!(ComparisonReportFormat::Csv.as_str(), "csv");
+        assert_eq!(
+            ComparisonReportFormat::from_str("md").unwrap(),
+            ComparisonReportFormat::Markdown
+        );
+
+        let json = serde_json::to_string(&ComparisonReportFormat::Csv).unwrap();
+        let restored: ComparisonReportFormat = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored, ComparisonReportFormat::Csv);
+    }
+
+    #[test]
+    fn test_multi_prediction_render_is_deterministic_and_deduplicates_formats() {
+        let first = diagnostic_prediction("provider-a", 0.52, 90, 0.20, true, false, true);
+        let second = diagnostic_prediction("provider-b", 0.81, 110, 0.25, true, false, true);
+        let third = diagnostic_prediction("provider-c", 0.73, 70, 0.20, false, true, false);
+
+        let forward = MultiPrediction::try_from_predictions(vec![
+            first.clone(),
+            second.clone(),
+            third.clone(),
+        ])
+        .unwrap();
+        let reverse = MultiPrediction::try_from_predictions(vec![third, second, first]).unwrap();
+
+        let json = forward.render(ComparisonReportFormat::Json).unwrap();
+        let markdown = forward.to_markdown().unwrap();
+        let csv = forward.to_csv().unwrap();
+
+        assert_eq!(json, reverse.render(ComparisonReportFormat::Json).unwrap());
+        assert_eq!(markdown, reverse.to_markdown().unwrap());
+        assert_eq!(csv, reverse.to_csv().unwrap());
+
+        let rendered = forward
+            .render_many([
+                ComparisonReportFormat::Markdown,
+                ComparisonReportFormat::Csv,
+                ComparisonReportFormat::Markdown,
+                ComparisonReportFormat::Json,
+                ComparisonReportFormat::Csv,
+            ])
+            .unwrap();
+
+        assert_eq!(
+            rendered
+                .iter()
+                .map(|(format, _)| *format)
+                .collect::<Vec<_>>(),
+            vec![
+                ComparisonReportFormat::Markdown,
+                ComparisonReportFormat::Csv,
+                ComparisonReportFormat::Json,
+            ]
+        );
+        assert_eq!(rendered[0].1, markdown);
+        assert_eq!(rendered[1].1, csv);
+        assert_eq!(rendered[2].1, json);
+        assert!(markdown.contains("## Summary"));
+        assert!(markdown.contains("## Provider Scores"));
+        assert!(markdown.contains("## Consensus"));
+        assert!(markdown.contains("## Pairwise Agreements"));
+        assert!(csv
+            .lines()
+            .next()
+            .unwrap()
+            .starts_with("provider,is_best,rank"));
+        assert!(csv.contains("provider-a"));
+        assert!(csv.contains("provider-b"));
+        assert!(csv.contains("provider-c"));
     }
 
     mod proptests {

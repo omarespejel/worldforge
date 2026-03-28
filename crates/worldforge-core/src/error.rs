@@ -2,6 +2,7 @@
 //!
 //! All fallible operations return `Result<T, WorldForgeError>`.
 
+use crate::guardrail::GuardrailResult;
 use crate::types::WorldId;
 use serde::{Deserialize, Serialize};
 
@@ -63,8 +64,14 @@ pub enum WorldForgeError {
     GuardrailViolation { guardrail: String, details: String },
 
     /// A blocking guardrail prevented the operation.
-    #[error("guardrail blocked operation: {reason}")]
-    GuardrailBlocked { reason: String },
+    #[error(
+        "guardrail blocked operation: {}",
+        format_guardrail_violations(.violations)
+    )]
+    GuardrailBlocked {
+        /// Blocking guardrail results that caused the operation to be rejected.
+        violations: Vec<GuardrailResult>,
+    },
 
     // -- Planning errors --
     /// Planning failed.
@@ -101,6 +108,24 @@ pub enum WorldForgeError {
 /// Convenience alias for WorldForge results.
 pub type Result<T> = std::result::Result<T, WorldForgeError>;
 
+fn format_guardrail_violations(violations: &[GuardrailResult]) -> String {
+    if violations.is_empty() {
+        return "blocking violation".to_string();
+    }
+
+    violations
+        .iter()
+        .map(|result| {
+            let details = result
+                .violation_details
+                .as_deref()
+                .unwrap_or("violation detected");
+            format!("{}: {}", result.guardrail_name, details)
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,6 +141,21 @@ mod tests {
         let e = WorldForgeError::ProviderTimeout {
             provider: "cosmos".to_string(),
             timeout_ms: 5000,
+        };
+        let json = serde_json::to_string(&e).unwrap();
+        let e2: WorldForgeError = serde_json::from_str(&json).unwrap();
+        assert_eq!(e.to_string(), e2.to_string());
+    }
+
+    #[test]
+    fn test_guardrail_blocked_error_serialization_roundtrip() {
+        let e = WorldForgeError::GuardrailBlocked {
+            violations: vec![GuardrailResult {
+                guardrail_name: "NoCollisions".to_string(),
+                passed: false,
+                violation_details: Some("collision between 'left' and 'right'".to_string()),
+                severity: crate::guardrail::ViolationSeverity::Blocking,
+            }],
         };
         let json = serde_json::to_string(&e).unwrap();
         let e2: WorldForgeError = serde_json::from_str(&json).unwrap();
@@ -138,6 +178,14 @@ mod tests {
                     timeout_ms: t,
                 }),
                 ".*".prop_map(WorldForgeError::ProviderAuthError),
+                (".*", ".*").prop_map(|(name, details)| WorldForgeError::GuardrailBlocked {
+                    violations: vec![GuardrailResult {
+                        guardrail_name: name,
+                        passed: false,
+                        violation_details: Some(details),
+                        severity: crate::guardrail::ViolationSeverity::Blocking,
+                    }],
+                }),
                 ".*".prop_map(WorldForgeError::SerializationError),
                 ".*".prop_map(WorldForgeError::NetworkError),
                 ".*".prop_map(WorldForgeError::InternalError),

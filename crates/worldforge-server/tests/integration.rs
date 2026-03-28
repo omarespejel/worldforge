@@ -1236,6 +1236,58 @@ async fn test_live_http_patch_object_persists_position_updates() {
 }
 
 #[tokio::test]
+async fn test_live_http_predict_guardrail_block_returns_violation_details() {
+    let server = spawn_test_server().await;
+    let world_id = create_test_world(server.address, "guardrail_world").await;
+
+    let _ = create_test_object(
+        server.address,
+        &world_id,
+        serde_json::json!({
+            "name": "left",
+            "position": { "x": 0.0, "y": 0.0, "z": 0.0 },
+            "bbox": {
+                "min": { "x": 0.0, "y": 0.0, "z": 0.0 },
+                "max": { "x": 1.0, "y": 1.0, "z": 1.0 }
+            }
+        }),
+    )
+    .await;
+    let _ = create_test_object(
+        server.address,
+        &world_id,
+        serde_json::json!({
+            "name": "right",
+            "position": { "x": 0.0, "y": 0.0, "z": 0.0 },
+            "bbox": {
+                "min": { "x": 0.5, "y": 0.5, "z": 0.5 },
+                "max": { "x": 1.5, "y": 1.5, "z": 1.5 }
+            }
+        }),
+    )
+    .await;
+
+    let (status, response) = http_request(
+        server.address,
+        "POST",
+        &format!("/v1/worlds/{world_id}/predict"),
+        r#"{"action":{"SetWeather":{"weather":"Rain"}}}"#,
+    )
+    .await;
+
+    assert_eq!(status, 409);
+    assert!(response["error"].as_str().unwrap().contains("NoCollisions"));
+    assert_eq!(
+        response["error_details"]["violations"][0]["guardrail_name"],
+        "NoCollisions"
+    );
+    assert_eq!(
+        response["error_details"]["violations"][0]["severity"],
+        "Blocking"
+    );
+}
+
+#[tokio::test]
 async fn test_live_http_patch_object_validation_errors() {
     let server = spawn_test_server().await;
     let world_id = create_test_world(server.address, "patch_errors").await;
@@ -1385,6 +1437,34 @@ async fn test_live_http_compare_from_prediction_payloads() {
             .len(),
         2
     );
+}
+
+#[tokio::test]
+async fn test_live_http_compare_renders_markdown_report() {
+    let server = spawn_test_server().await;
+    let world_id = create_test_world(server.address, "compare_markdown").await;
+
+    let compare_body = serde_json::json!({
+        "world_id": world_id,
+        "action": {
+            "Move": {
+                "target": { "x": 0.25, "y": 0.0, "z": 0.0 },
+                "speed": 1.0
+            }
+        },
+        "providers": ["mock", "mock"],
+        "report_format": "markdown",
+    })
+    .to_string();
+    let (status, response) =
+        http_request(server.address, "POST", "/v1/compare", &compare_body).await;
+
+    assert_eq!(status, 200);
+    assert_eq!(response["data"]["format"], "markdown");
+    assert!(response["data"]["content"]
+        .as_str()
+        .unwrap()
+        .contains("# Multi-Provider Comparison"));
 }
 
 #[tokio::test]
