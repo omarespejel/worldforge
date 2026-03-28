@@ -17,7 +17,7 @@ use worldforge_core::error::WorldForgeError;
 use worldforge_core::guardrail::{Guardrail, GuardrailConfig};
 use worldforge_core::prediction::{
     ComparisonReportFormat, MultiPrediction, Plan, PlanExecution, PlanGoal, PlanGoalInput,
-    PlanRequest, PlannerType, Prediction, PredictionConfig,
+    PlanRequest, PlannerOptions, PlannerType, Prediction, PredictionConfig,
 };
 use worldforge_core::provider::{
     EmbeddingInput, GenerationConfig, GenerationPrompt, Operation, ProviderDescriptor,
@@ -602,6 +602,30 @@ pub enum Commands {
         /// Planning algorithm (sampling, cem, mpc, gradient).
         #[arg(long, default_value = "sampling")]
         planner: String,
+        /// Optional sample count for sampling or MPC planners.
+        #[arg(long)]
+        num_samples: Option<u32>,
+        /// Optional top-k survivor count for the sampling planner.
+        #[arg(long)]
+        top_k: Option<u32>,
+        /// Optional population size for CEM.
+        #[arg(long)]
+        population_size: Option<u32>,
+        /// Optional elite fraction for CEM.
+        #[arg(long)]
+        elite_fraction: Option<f32>,
+        /// Optional iteration count for CEM or gradient planning.
+        #[arg(long)]
+        num_iterations: Option<u32>,
+        /// Optional learning rate for gradient planning.
+        #[arg(long)]
+        learning_rate: Option<f32>,
+        /// Optional horizon for MPC.
+        #[arg(long)]
+        horizon: Option<u32>,
+        /// Optional replanning interval for MPC.
+        #[arg(long)]
+        replanning_interval: Option<u32>,
         /// Planning timeout in seconds.
         #[arg(long, default_value = "30")]
         timeout: f64,
@@ -694,6 +718,30 @@ pub enum Commands {
         /// Planning algorithm when generating a plan for guardrail verification.
         #[arg(long, default_value = "sampling")]
         planner: String,
+        /// Optional sample count for sampling or MPC planners.
+        #[arg(long)]
+        num_samples: Option<u32>,
+        /// Optional top-k survivor count for the sampling planner.
+        #[arg(long)]
+        top_k: Option<u32>,
+        /// Optional population size for CEM.
+        #[arg(long)]
+        population_size: Option<u32>,
+        /// Optional elite fraction for CEM.
+        #[arg(long)]
+        elite_fraction: Option<f32>,
+        /// Optional iteration count for CEM or gradient planning.
+        #[arg(long)]
+        num_iterations: Option<u32>,
+        /// Optional learning rate for gradient planning.
+        #[arg(long)]
+        learning_rate: Option<f32>,
+        /// Optional horizon for MPC.
+        #[arg(long)]
+        horizon: Option<u32>,
+        /// Optional replanning interval for MPC.
+        #[arg(long)]
+        replanning_interval: Option<u32>,
         /// Planning timeout in seconds when generating a plan for guardrail verification.
         #[arg(long, default_value = "30")]
         timeout: f64,
@@ -1295,6 +1343,14 @@ pub async fn run() -> Result<()> {
             goal_json,
             max_steps,
             planner,
+            num_samples,
+            top_k,
+            population_size,
+            elite_fraction,
+            num_iterations,
+            learning_rate,
+            horizon,
+            replanning_interval,
             timeout,
             provider,
             fallback_provider,
@@ -1310,6 +1366,16 @@ pub async fn run() -> Result<()> {
                 PlanOptions {
                     max_steps,
                     planner_name: &planner,
+                    planner_options: PlannerOptions {
+                        num_samples,
+                        top_k,
+                        population_size,
+                        elite_fraction,
+                        num_iterations,
+                        learning_rate,
+                        horizon,
+                        replanning_interval,
+                    },
                     timeout,
                     provider: &provider,
                     fallback_provider: fallback_provider.as_deref(),
@@ -1363,6 +1429,14 @@ pub async fn run() -> Result<()> {
             goal_json,
             max_steps,
             planner,
+            num_samples,
+            top_k,
+            population_size,
+            elite_fraction,
+            num_iterations,
+            learning_rate,
+            horizon,
+            replanning_interval,
             timeout,
             provider,
             fallback_provider,
@@ -1385,6 +1459,16 @@ pub async fn run() -> Result<()> {
                     goal_json: goal_json.as_deref(),
                     max_steps,
                     planner_name: &planner,
+                    planner_options: PlannerOptions {
+                        num_samples,
+                        top_k,
+                        population_size,
+                        elite_fraction,
+                        num_iterations,
+                        learning_rate,
+                        horizon,
+                        replanning_interval,
+                    },
                     timeout,
                     provider: provider.as_deref(),
                     fallback_provider: fallback_provider.as_deref(),
@@ -1810,6 +1894,7 @@ struct ReasonOptions<'a> {
 struct PlanOptions<'a> {
     max_steps: u32,
     planner_name: &'a str,
+    planner_options: PlannerOptions,
     timeout: f64,
     provider: &'a str,
     fallback_provider: Option<&'a str>,
@@ -1867,6 +1952,7 @@ struct VerifyOptions<'a> {
     goal_json: Option<&'a Path>,
     max_steps: u32,
     planner_name: &'a str,
+    planner_options: PlannerOptions,
     timeout: f64,
     provider: Option<&'a str>,
     fallback_provider: Option<&'a str>,
@@ -2053,31 +2139,13 @@ fn load_eval_suite(suite_name: Option<&str>, suite_json: Option<&Path>) -> Resul
     }
 }
 
-fn planner_from_name(planner_name: &str, max_steps: u32) -> Result<PlannerType> {
-    match planner_name {
-        "sampling" => Ok(PlannerType::Sampling {
-            num_samples: 32,
-            top_k: 5,
-        }),
-        "cem" => Ok(PlannerType::CEM {
-            population_size: 64,
-            elite_fraction: 0.1,
-            num_iterations: 5,
-        }),
-        "mpc" => Ok(PlannerType::MPC {
-            horizon: max_steps,
-            num_samples: 32,
-            replanning_interval: 1,
-        }),
-        "gradient" => Ok(PlannerType::Gradient {
-            learning_rate: 0.01,
-            num_iterations: 100,
-        }),
-        "provider-native" | "provider_native" | "native" => Ok(PlannerType::ProviderNative),
-        other => anyhow::bail!(
-            "unknown planner: {other}. Available: sampling, cem, mpc, gradient, provider-native"
-        ),
-    }
+fn planner_from_name(
+    planner_name: &str,
+    max_steps: u32,
+    planner_options: PlannerOptions,
+) -> Result<PlannerType> {
+    PlannerType::from_name(planner_name, max_steps, planner_options)
+        .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 fn build_operation(kind: EstimateOperationKind, options: &EstimateOptions) -> Operation {
@@ -3335,7 +3403,11 @@ async fn cmd_plan(
         require_provider(&registry, fallback_provider)?;
     }
     let world = worldforge_core::world::World::new(state.clone(), options.provider, registry);
-    let planner = planner_from_name(options.planner_name, options.max_steps)?;
+    let planner = planner_from_name(
+        options.planner_name,
+        options.max_steps,
+        options.planner_options,
+    )?;
     let guardrails = resolve_guardrails(
         read_guardrails(options.guardrails_json)?,
         options.disable_guardrails,
@@ -3545,7 +3617,11 @@ async fn cmd_verify(
                         read_guardrails(options.guardrails_json)?,
                         options.disable_guardrails,
                     ),
-                    planner: planner_from_name(options.planner_name, options.max_steps)?,
+                    planner: planner_from_name(
+                        options.planner_name,
+                        options.max_steps,
+                        options.planner_options,
+                    )?,
                     timeout_seconds: options.timeout,
                     fallback_provider: options.fallback_provider.map(ToOwned::to_owned),
                 };
@@ -5618,6 +5694,55 @@ mod tests {
     }
 
     #[test]
+    fn test_cli_parse_plan_command_with_planner_tuning_flags() {
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "plan",
+            "--world",
+            "123e4567-e89b-12d3-a456-426614174000",
+            "--goal",
+            "spawn cube",
+            "--planner",
+            "cem",
+            "--population-size",
+            "12",
+            "--elite-fraction",
+            "0.25",
+            "--num-iterations",
+            "3",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Plan {
+                planner,
+                population_size,
+                elite_fraction,
+                num_iterations,
+                ..
+            } => {
+                assert_eq!(planner, "cem");
+                assert_eq!(population_size, Some(12));
+                assert_eq!(elite_fraction, Some(0.25));
+                assert_eq!(num_iterations, Some(3));
+            }
+            _ => panic!("expected Plan"),
+        }
+    }
+
+    #[test]
+    fn test_planner_from_name_uses_shared_core_defaults() {
+        let planner = planner_from_name("gradient", 10, PlannerOptions::default()).unwrap();
+        assert!(matches!(
+            planner,
+            PlannerType::Gradient {
+                learning_rate,
+                num_iterations: 24
+            } if (learning_rate - 0.25).abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
     fn test_cli_parse_execute_plan_command() {
         let cli = Cli::try_parse_from([
             "worldforge",
@@ -6418,6 +6543,7 @@ mod tests {
             PlanOptions {
                 max_steps: 4,
                 planner_name: "sampling",
+                planner_options: PlannerOptions::default(),
                 timeout: 10.0,
                 provider: "mock",
                 fallback_provider: None,
@@ -6502,6 +6628,7 @@ mod tests {
             PlanOptions {
                 max_steps: 4,
                 planner_name: "sampling",
+                planner_options: PlannerOptions::default(),
                 timeout: 10.0,
                 provider: "mock",
                 fallback_provider: None,
@@ -6595,6 +6722,7 @@ mod tests {
             PlanOptions {
                 max_steps: 4,
                 planner_name: "sampling",
+                planner_options: PlannerOptions::default(),
                 timeout: 10.0,
                 provider: "mock",
                 fallback_provider: None,
@@ -6641,6 +6769,7 @@ mod tests {
             PlanOptions {
                 max_steps: 4,
                 planner_name: "provider-native",
+                planner_options: PlannerOptions::default(),
                 timeout: 10.0,
                 provider: "missing",
                 fallback_provider: Some("mock"),
@@ -7382,6 +7511,7 @@ mod tests {
                 goal_json: None,
                 max_steps: 4,
                 planner_name: "sampling",
+                planner_options: PlannerOptions::default(),
                 timeout: 10.0,
                 provider: Some("mock"),
                 fallback_provider: None,
@@ -7433,6 +7563,7 @@ mod tests {
                 goal_json: None,
                 max_steps: 4,
                 planner_name: "sampling",
+                planner_options: PlannerOptions::default(),
                 timeout: 10.0,
                 provider: None,
                 fallback_provider: None,
@@ -7474,6 +7605,7 @@ mod tests {
             PlanOptions {
                 max_steps: 4,
                 planner_name: "sampling",
+                planner_options: PlannerOptions::default(),
                 timeout: 10.0,
                 provider: "mock",
                 fallback_provider: None,
@@ -7502,6 +7634,7 @@ mod tests {
                 goal_json: None,
                 max_steps: 4,
                 planner_name: "sampling",
+                planner_options: PlannerOptions::default(),
                 timeout: 10.0,
                 provider: None,
                 fallback_provider: None,
@@ -7557,6 +7690,7 @@ mod tests {
                 goal_json: None,
                 max_steps: 4,
                 planner_name: "sampling",
+                planner_options: PlannerOptions::default(),
                 timeout: 10.0,
                 provider: Some("missing"),
                 fallback_provider: Some("mock"),

@@ -16,7 +16,7 @@ use worldforge_core::action::Action;
 use worldforge_core::error::WorldForgeError;
 use worldforge_core::guardrail::{Guardrail, GuardrailConfig};
 use worldforge_core::prediction::{
-    ComparisonReportFormat, Plan, PlanGoal, PlanGoalInput, PlannerType, Prediction,
+    ComparisonReportFormat, Plan, PlanGoal, PlanGoalInput, PlannerOptions, PlannerType, Prediction,
     PredictionConfig,
 };
 use worldforge_core::provider::{
@@ -437,67 +437,41 @@ struct ReasonRequest {
 }
 
 fn planner_from_request(request: &PlanRequest) -> std::result::Result<PlannerType, String> {
-    match request.planner.as_str() {
-        "sampling" => Ok(PlannerType::Sampling {
-            num_samples: request.num_samples.unwrap_or(32).max(1),
-            top_k: request.top_k.unwrap_or(5).max(1),
-        }),
-        "cem" => Ok(PlannerType::CEM {
-            population_size: request.population_size.unwrap_or(64).max(4),
-            elite_fraction: request.elite_fraction.unwrap_or(0.2).clamp(0.05, 1.0),
-            num_iterations: request.num_iterations.unwrap_or(5).max(1),
-        }),
-        "mpc" => Ok(PlannerType::MPC {
-            horizon: request
-                .horizon
-                .unwrap_or(request.max_steps)
-                .max(1)
-                .min(request.max_steps.max(1)),
-            num_samples: request.num_samples.unwrap_or(32).max(4),
-            replanning_interval: request.replanning_interval.unwrap_or(1).max(1),
-        }),
-        "gradient" => Ok(PlannerType::Gradient {
-            learning_rate: request.learning_rate.unwrap_or(0.25).clamp(0.01, 1.0),
-            num_iterations: request.num_iterations.unwrap_or(24).max(1),
-        }),
-        "provider-native" | "provider_native" | "native" => Ok(PlannerType::ProviderNative),
-        other => Err(format!(
-            "unknown planner: {other}. Available: sampling, cem, mpc, gradient, provider-native"
-        )),
-    }
+    PlannerType::from_name(
+        &request.planner,
+        request.max_steps,
+        PlannerOptions {
+            num_samples: request.num_samples,
+            top_k: request.top_k,
+            population_size: request.population_size,
+            elite_fraction: request.elite_fraction,
+            num_iterations: request.num_iterations,
+            learning_rate: request.learning_rate,
+            horizon: request.horizon,
+            replanning_interval: request.replanning_interval,
+        },
+    )
+    .map_err(|e| e.to_string())
 }
 
 fn planner_from_verify_request(
     request: &VerifyRequest,
 ) -> std::result::Result<PlannerType, String> {
-    match request.planner.as_str() {
-        "sampling" => Ok(PlannerType::Sampling {
-            num_samples: request.num_samples.unwrap_or(32).max(1),
-            top_k: request.top_k.unwrap_or(5).max(1),
-        }),
-        "cem" => Ok(PlannerType::CEM {
-            population_size: request.population_size.unwrap_or(64).max(4),
-            elite_fraction: request.elite_fraction.unwrap_or(0.2).clamp(0.05, 1.0),
-            num_iterations: request.num_iterations.unwrap_or(5).max(1),
-        }),
-        "mpc" => Ok(PlannerType::MPC {
-            horizon: request
-                .horizon
-                .unwrap_or(request.max_steps)
-                .max(1)
-                .min(request.max_steps.max(1)),
-            num_samples: request.num_samples.unwrap_or(32).max(4),
-            replanning_interval: request.replanning_interval.unwrap_or(1).max(1),
-        }),
-        "gradient" => Ok(PlannerType::Gradient {
-            learning_rate: request.learning_rate.unwrap_or(0.25).clamp(0.01, 1.0),
-            num_iterations: request.num_iterations.unwrap_or(24).max(1),
-        }),
-        "provider-native" | "provider_native" | "native" => Ok(PlannerType::ProviderNative),
-        other => Err(format!(
-            "unknown planner: {other}. Available: sampling, cem, mpc, gradient, provider-native"
-        )),
-    }
+    PlannerType::from_name(
+        &request.planner,
+        request.max_steps,
+        PlannerOptions {
+            num_samples: request.num_samples,
+            top_k: request.top_k,
+            population_size: request.population_size,
+            elite_fraction: request.elite_fraction,
+            num_iterations: request.num_iterations,
+            learning_rate: request.learning_rate,
+            horizon: request.horizon,
+            replanning_interval: request.replanning_interval,
+        },
+    )
+    .map_err(|e| e.to_string())
 }
 
 fn build_plan_request(
@@ -4413,6 +4387,43 @@ mod tests {
             value["data"]["verification_proof"]["proof_type"]["GuardrailCompliance"]["all_passed"],
             true
         );
+    }
+
+    #[test]
+    fn test_planner_from_request_uses_shared_defaults() {
+        let request: PlanRequest = serde_json::from_value(serde_json::json!({
+            "goal": "spawn cube"
+        }))
+        .unwrap();
+
+        let planner = planner_from_request(&request).unwrap();
+        assert!(matches!(
+            planner,
+            PlannerType::Sampling {
+                num_samples: 32,
+                top_k: 5
+            }
+        ));
+    }
+
+    #[test]
+    fn test_planner_from_verify_request_clamps_shared_tuning() {
+        let request: VerifyRequest = serde_json::from_value(serde_json::json!({
+            "proof_type": "guardrail",
+            "planner": "gradient",
+            "learning_rate": 9.0,
+            "num_iterations": 0
+        }))
+        .unwrap();
+
+        let planner = planner_from_verify_request(&request).unwrap();
+        assert!(matches!(
+            planner,
+            PlannerType::Gradient {
+                learning_rate,
+                num_iterations: 1
+            } if (learning_rate - 1.0).abs() < f32::EPSILON
+        ));
     }
 
     #[tokio::test]

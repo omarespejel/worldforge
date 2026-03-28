@@ -466,6 +466,7 @@ cargo run -p worldforge-cli -- compare --prediction-json runs/mock.json --predic
 cargo run -p worldforge-cli -- compare --world-snapshot snapshots/world.msgpack --action "move 1 0 0" --providers mock,runway --output-json reports/compare-from-snapshot.json
 cargo run -p worldforge-cli -- compare --world-snapshot snapshots/world.msgpack --action "move 1 0 0" --providers mock,runway --output-json reports/compare.json --output-markdown reports/compare.md --output-csv reports/compare.csv
 cargo run -p worldforge-cli -- plan --world <id> --goal "spawn cube" --planner cem
+cargo run -p worldforge-cli -- plan --world <id> --goal "spawn cube" --planner cem --population-size 12 --elite-fraction 0.25 --num-iterations 3
 cargo run -p worldforge-cli -- plan --world <id> --goal "spawn cube" --planner cem --guardrails-json guardrails.json --output-json plans/generated.json
 cargo run -p worldforge-cli -- plan --world <id> --goal-json goals/object-at.json --planner sampling --output-json plans/object-at.json
 cargo run -p worldforge-cli -- execute-plan --world <id> --plan-json plans/generated.json --output-json plans/executed.json
@@ -677,7 +678,11 @@ are implemented. Prediction fallback and timeout handling are wired through the
 core orchestration layer and exposed in the CLI, REST server, and Python API.
 Planning now supports distinct sampling, CEM, MPC, gradient, and provider-native
 execution paths in the core, with planner selection exposed across the CLI,
-REST server, and Python bindings. Provider-native planning now dispatches
+REST server, and Python bindings. Planner-specific tuning knobs such as
+`num_samples`, `population_size`, `elite_fraction`, `num_iterations`,
+`learning_rate`, `horizon`, and `replanning_interval` are normalized through
+shared core logic so the same planner request behaves consistently across all
+three surfaces. Provider-native planning now dispatches
 through an explicit provider hook instead of aliasing core heuristics, with the
 local JEPA adapter and the full-stack Cosmos and Runway adapters supplying
 deterministic adapter-native plans and storyboard previews on top of

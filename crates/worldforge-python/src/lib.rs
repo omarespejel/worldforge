@@ -16,7 +16,7 @@ use worldforge_core::guardrail::GuardrailConfig;
 use worldforge_core::prediction::{
     ComparisonConsensus, ComparisonReportFormat, GuardrailDiagnostics, MultiPrediction,
     ObjectDiagnostic, ObjectDrift, PairwiseAgreement, PlanExecution, PlanGoal, PlanGoalInput,
-    PlannerType, PredictionConfig, ProviderScore, StateDiagnostics,
+    PlannerOptions, PlannerType, PredictionConfig, ProviderScore, StateDiagnostics,
 };
 use worldforge_core::provider::{
     CostEstimate, EmbeddingInput, EmbeddingOutput, GenerationConfig, GenerationPrompt, Operation,
@@ -474,30 +474,21 @@ fn planner_from_args(
     horizon: Option<u32>,
     replanning_interval: Option<u32>,
 ) -> PyResult<PlannerType> {
-    match planner {
-        "sampling" => Ok(PlannerType::Sampling {
-            num_samples: num_samples.unwrap_or(32).max(1),
-            top_k: top_k.unwrap_or(5).max(1),
-        }),
-        "cem" => Ok(PlannerType::CEM {
-            population_size: population_size.unwrap_or(64).max(4),
-            elite_fraction: elite_fraction.unwrap_or(0.2).clamp(0.05, 1.0),
-            num_iterations: num_iterations.unwrap_or(5).max(1),
-        }),
-        "mpc" => Ok(PlannerType::MPC {
-            horizon: horizon.unwrap_or(max_steps).max(1).min(max_steps.max(1)),
-            num_samples: num_samples.unwrap_or(32).max(4),
-            replanning_interval: replanning_interval.unwrap_or(1).max(1),
-        }),
-        "gradient" => Ok(PlannerType::Gradient {
-            learning_rate: learning_rate.unwrap_or(0.25).clamp(0.01, 1.0),
-            num_iterations: num_iterations.unwrap_or(24).max(1),
-        }),
-        "provider-native" | "provider_native" | "native" => Ok(PlannerType::ProviderNative),
-        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "unknown planner: {other}. Available: sampling, cem, mpc, gradient, provider-native"
-        ))),
-    }
+    PlannerType::from_name(
+        planner,
+        max_steps,
+        PlannerOptions {
+            num_samples,
+            top_k,
+            population_size,
+            elite_fraction,
+            num_iterations,
+            learning_rate,
+            horizon,
+            replanning_interval,
+        },
+    )
+    .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
 }
 
 fn operation_from_args(
@@ -8609,6 +8600,22 @@ mod tests {
 
         assert!(plan.action_count() > 0);
         assert_eq!(plan.iterations_used(), 3);
+    }
+
+    #[test]
+    fn test_planner_from_args_uses_shared_core_defaults() {
+        let planner = planner_from_args(
+            "gradient", 10, None, None, None, None, None, None, None, None,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            planner,
+            PlannerType::Gradient {
+                learning_rate,
+                num_iterations: 24
+            } if (learning_rate - 0.25).abs() < f32::EPSILON
+        ));
     }
 
     #[test]

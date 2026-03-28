@@ -1372,6 +1372,27 @@ pub enum PlanGoalSpec {
     },
 }
 
+/// Optional planner-specific tuning knobs shared across API surfaces.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct PlannerOptions {
+    /// Override for random-sampling or MPC sample counts.
+    pub num_samples: Option<u32>,
+    /// Override for the number of top trajectories retained by the sampling planner.
+    pub top_k: Option<u32>,
+    /// Override for CEM population size.
+    pub population_size: Option<u32>,
+    /// Override for the CEM elite fraction.
+    pub elite_fraction: Option<f32>,
+    /// Override for planner iteration counts.
+    pub num_iterations: Option<u32>,
+    /// Override for gradient-based planning learning rate.
+    pub learning_rate: Option<f32>,
+    /// Override for the MPC horizon.
+    pub horizon: Option<u32>,
+    /// Override for the MPC replanning interval.
+    pub replanning_interval: Option<u32>,
+}
+
 /// Planning algorithm.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PlannerType {
@@ -1396,6 +1417,43 @@ pub enum PlannerType {
     },
     /// Use the provider's native planner.
     ProviderNative,
+}
+
+impl PlannerType {
+    /// Build a planner from a public planner identifier and optional tuning knobs.
+    pub fn from_name(name: &str, max_steps: u32, options: PlannerOptions) -> Result<Self> {
+        let normalized = name.trim().to_ascii_lowercase();
+        let effective_max_steps = max_steps.max(1);
+
+        match normalized.as_str() {
+            "sampling" => Ok(Self::Sampling {
+                num_samples: options.num_samples.unwrap_or(32).max(1),
+                top_k: options.top_k.unwrap_or(5).max(1),
+            }),
+            "cem" => Ok(Self::CEM {
+                population_size: options.population_size.unwrap_or(64).max(4),
+                elite_fraction: options.elite_fraction.unwrap_or(0.2).clamp(0.05, 1.0),
+                num_iterations: options.num_iterations.unwrap_or(5).max(1),
+            }),
+            "mpc" => Ok(Self::MPC {
+                horizon: options
+                    .horizon
+                    .unwrap_or(effective_max_steps)
+                    .max(1)
+                    .min(effective_max_steps),
+                num_samples: options.num_samples.unwrap_or(32).max(4),
+                replanning_interval: options.replanning_interval.unwrap_or(1).max(1),
+            }),
+            "gradient" => Ok(Self::Gradient {
+                learning_rate: options.learning_rate.unwrap_or(0.25).clamp(0.01, 1.0),
+                num_iterations: options.num_iterations.unwrap_or(24).max(1),
+            }),
+            "provider-native" | "provider_native" | "native" => Ok(Self::ProviderNative),
+            other => Err(WorldForgeError::InvalidState(format!(
+                "unknown planner: {other}. Available: sampling, cem, mpc, gradient, provider-native"
+            ))),
+        }
+    }
 }
 
 impl PredictionConfig {
@@ -1857,6 +1915,96 @@ mod tests {
             PlanGoal::GoalImage(image) => assert_eq!(image.shape, vec![8, 12]),
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn test_planner_type_from_name_uses_shared_defaults() {
+        let sampling = PlannerType::from_name("sampling", 10, PlannerOptions::default()).unwrap();
+        assert!(matches!(
+            sampling,
+            PlannerType::Sampling {
+                num_samples: 32,
+                top_k: 5
+            }
+        ));
+
+        let cem = PlannerType::from_name("cem", 10, PlannerOptions::default()).unwrap();
+        assert!(matches!(
+            cem,
+            PlannerType::CEM {
+                population_size: 64,
+                elite_fraction,
+                num_iterations: 5
+            } if (elite_fraction - 0.2).abs() < f32::EPSILON
+        ));
+
+        let gradient = PlannerType::from_name("gradient", 10, PlannerOptions::default()).unwrap();
+        assert!(matches!(
+            gradient,
+            PlannerType::Gradient {
+                learning_rate,
+                num_iterations: 24
+            } if (learning_rate - 0.25).abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
+    fn test_planner_type_from_name_clamps_tuning_values() {
+        let planner = PlannerType::from_name(
+            "mpc",
+            6,
+            PlannerOptions {
+                horizon: Some(20),
+                num_samples: Some(1),
+                replanning_interval: Some(0),
+                ..PlannerOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert!(matches!(
+            planner,
+            PlannerType::MPC {
+                horizon: 6,
+                num_samples: 4,
+                replanning_interval: 1
+            }
+        ));
+
+        let gradient = PlannerType::from_name(
+            "gradient",
+            6,
+            PlannerOptions {
+                learning_rate: Some(9.0),
+                num_iterations: Some(0),
+                ..PlannerOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert!(matches!(
+            gradient,
+            PlannerType::Gradient {
+                learning_rate,
+                num_iterations: 1
+            } if (learning_rate - 1.0).abs() < f32::EPSILON
+        ));
+    }
+
+    #[test]
+    fn test_planner_type_from_name_accepts_native_aliases() {
+        for alias in ["provider-native", "provider_native", "native"] {
+            let planner = PlannerType::from_name(alias, 4, PlannerOptions::default()).unwrap();
+            assert!(matches!(planner, PlannerType::ProviderNative));
+        }
+    }
+
+    #[test]
+    fn test_planner_type_from_name_rejects_unknown_planners() {
+        let error = PlannerType::from_name("beam-search", 10, PlannerOptions::default())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("unknown planner: beam-search"));
     }
 
     #[test]
