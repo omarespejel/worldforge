@@ -39,9 +39,9 @@ pub struct ProviderCapabilities {
     pub fps_range: (f32, f32),
     /// Supported action space types.
     pub supported_action_spaces: Vec<ActionSpaceType>,
-    /// Whether depth maps are supported.
+    /// Whether the provider can return depth maps in generated or predicted output.
     pub supports_depth: bool,
-    /// Whether semantic segmentation is supported.
+    /// Whether the provider can return semantic segmentation in generated or predicted output.
     pub supports_segmentation: bool,
     /// Whether planning is supported natively.
     pub supports_planning: bool,

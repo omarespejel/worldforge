@@ -16,8 +16,8 @@ use crate::prediction::{
     MultiPrediction, Plan, PlanExecution, PlanRequest, PlannerType, Prediction, PredictionConfig,
 };
 use crate::provider::{
-    GenerationConfig, GenerationPrompt, Operation, ProviderRegistry, ReasoningInput,
-    ReasoningOutput, SpatialControls, TransferConfig, WorldModelProvider,
+    GenerationConfig, GenerationPrompt, Operation, ProviderCapabilities, ProviderRegistry,
+    ReasoningInput, ReasoningOutput, SpatialControls, TransferConfig, WorldModelProvider,
 };
 use crate::scene::{SceneObject, SceneObjectPatch};
 use crate::state::{PredictionSummary, WorldState};
@@ -672,6 +672,7 @@ impl World {
         provider_name: &str,
     ) -> Result<Prediction> {
         let provider = self.registry.get(provider_name)?;
+        validate_prediction_modalities(provider_name, &provider.capabilities(), config)?;
 
         if let Some(timeout_ms) = config.max_latency_ms {
             tokio::time::timeout(
@@ -751,16 +752,50 @@ impl World {
                     .await
                 {
                     Ok(prediction) => Ok(prediction),
-                    Err(fallback_error) => Err(combine_fallback_errors(
-                        provider_name,
-                        fallback_provider,
-                        primary_error,
-                        fallback_error,
-                    )),
+                    Err(fallback_error) => {
+                        if matches!(
+                            &primary_error,
+                            WorldForgeError::UnsupportedCapability { .. }
+                        ) && matches!(
+                            &fallback_error,
+                            WorldForgeError::UnsupportedCapability { .. }
+                        ) {
+                            return Err(primary_error);
+                        }
+
+                        Err(combine_fallback_errors(
+                            provider_name,
+                            fallback_provider,
+                            primary_error,
+                            fallback_error,
+                        ))
+                    }
                 }
             }
         }
     }
+}
+
+fn validate_prediction_modalities(
+    provider_name: &str,
+    capabilities: &ProviderCapabilities,
+    config: &PredictionConfig,
+) -> Result<()> {
+    if config.return_depth && !capabilities.supports_depth {
+        return Err(WorldForgeError::UnsupportedCapability {
+            provider: provider_name.to_string(),
+            capability: "depth".to_string(),
+        });
+    }
+
+    if config.return_segmentation && !capabilities.supports_segmentation {
+        return Err(WorldForgeError::UnsupportedCapability {
+            provider: provider_name.to_string(),
+            capability: "segmentation".to_string(),
+        });
+    }
+
+    Ok(())
 }
 
 fn combine_fallback_errors(
@@ -3459,6 +3494,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_predict_rejects_unsupported_depth_request() {
+        let state = WorldState::new("depth", "primary");
+        let registry = std::sync::Arc::new({
+            let mut registry = ProviderRegistry::new();
+            registry.register(Box::new(SuccessfulProvider::new("primary")));
+            registry
+        });
+        let mut world = World::new(state, "primary", registry);
+        let action = Action::Move {
+            target: crate::types::Position::default(),
+            speed: 1.0,
+        };
+        let config = PredictionConfig {
+            return_depth: true,
+            ..PredictionConfig::default()
+        };
+
+        let error = world.predict(&action, &config).await.unwrap_err();
+        assert!(matches!(
+            error,
+            WorldForgeError::UnsupportedCapability { provider, capability }
+                if provider == "primary" && capability == "depth"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_predict_uses_fallback_provider_when_primary_lacks_depth_support() {
+        let state = WorldState::new("depth-fallback", "primary");
+        let mut fallback_capabilities = test_capabilities(false);
+        fallback_capabilities.supports_depth = true;
+        let registry = std::sync::Arc::new({
+            let mut registry = ProviderRegistry::new();
+            registry.register(Box::new(SuccessfulProvider::new("primary")));
+            registry.register(Box::new(SuccessfulProvider::with_capabilities(
+                "fallback",
+                fallback_capabilities,
+            )));
+            registry
+        });
+        let mut world = World::new(state, "primary", registry);
+        let action = Action::Move {
+            target: crate::types::Position::default(),
+            speed: 1.0,
+        };
+        let config = PredictionConfig {
+            return_depth: true,
+            fallback_provider: Some("fallback".to_string()),
+            ..PredictionConfig::default()
+        };
+
+        let prediction = world.predict(&action, &config).await.unwrap();
+
+        assert_eq!(prediction.provider, "fallback");
+        assert_eq!(world.current_state().history.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_predict_rejects_unsupported_segmentation_request() {
+        let state = WorldState::new("segmentation", "primary");
+        let registry = std::sync::Arc::new({
+            let mut registry = ProviderRegistry::new();
+            registry.register(Box::new(SuccessfulProvider::new("primary")));
+            registry
+        });
+        let mut world = World::new(state, "primary", registry);
+        let action = Action::Move {
+            target: crate::types::Position::default(),
+            speed: 1.0,
+        };
+        let config = PredictionConfig {
+            return_segmentation: true,
+            ..PredictionConfig::default()
+        };
+
+        let error = world.predict(&action, &config).await.unwrap_err();
+        assert!(matches!(
+            error,
+            WorldForgeError::UnsupportedCapability { provider, capability }
+                if provider == "primary" && capability == "segmentation"
+        ));
+    }
+
+    #[tokio::test]
     async fn test_predict_records_guardrail_results() {
         let state = WorldState::new("guardrails", "mock");
         let registry = std::sync::Arc::new({
@@ -4069,12 +4187,18 @@ mod tests {
     #[derive(Debug, Clone)]
     struct SuccessfulProvider {
         name: String,
+        capabilities: ProviderCapabilities,
     }
 
     impl SuccessfulProvider {
         fn new(name: &str) -> Self {
+            Self::with_capabilities(name, test_capabilities(false))
+        }
+
+        fn with_capabilities(name: &str, capabilities: ProviderCapabilities) -> Self {
             Self {
                 name: name.to_string(),
+                capabilities,
             }
         }
     }
@@ -4615,7 +4739,7 @@ mod tests {
         }
 
         fn capabilities(&self) -> ProviderCapabilities {
-            test_capabilities(false)
+            self.capabilities.clone()
         }
 
         async fn predict(

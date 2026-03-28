@@ -1688,8 +1688,8 @@ impl WorldModelProvider for GenieProvider {
             max_resolution: MAX_RESOLUTION,
             fps_range: (MIN_GENERATION_FPS, MAX_GENERATION_FPS),
             supported_action_spaces: vec![ActionSpaceType::Discrete, ActionSpaceType::Language],
-            supports_depth: false,
-            supports_segmentation: false,
+            supports_depth: true,
+            supports_segmentation: true,
             supports_planning: true,
             latency_profile: LatencyProfile {
                 p50_ms: 220,
@@ -2516,6 +2516,8 @@ mod tests {
         assert!(caps.generate);
         assert!(caps.reason);
         assert!(caps.transfer);
+        assert!(caps.supports_depth);
+        assert!(caps.supports_segmentation);
         assert!(caps.supports_planning);
         assert_eq!(caps.max_resolution, (256, 256));
         assert_eq!(caps.fps_range, (6.0, 12.0));
@@ -2570,6 +2572,12 @@ mod tests {
                     .estimated_latency_ms
         );
         assert!(prediction.video.is_some());
+        let video = prediction.video.as_ref().unwrap();
+        assert!(video.frames.iter().all(|frame| frame.depth.is_some()));
+        assert!(video
+            .frames
+            .iter()
+            .all(|frame| frame.segmentation.is_some()));
         assert!(prediction.guardrail_results.is_empty());
         assert_eq!(prediction.output_state.time.step, 4);
     }

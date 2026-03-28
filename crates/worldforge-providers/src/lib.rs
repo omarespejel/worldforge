@@ -9,7 +9,7 @@
 //! - [`cosmos`] — NVIDIA Cosmos (Predict, Transfer, Reason, Embed)
 //! - [`runway`] — Runway GWM (Worlds, Robotics, Avatars)
 //! - [`jepa`] — Meta JEPA (local deterministic inference, ZK-compatible)
-//! - [`genie`] — Google Genie (deterministic local surrogate for prediction, reasoning, transfer, and native planning)
+//! - [`genie`] — Google Genie (deterministic local surrogate for prediction, reasoning, transfer, depth/segmentation outputs, and native planning)
 //! - [`marble`] — Experimental deterministic local surrogate for Marble with native planning
 //! - [`native_planning`] — shared deterministic adapter-native planning helper
 
@@ -53,8 +53,8 @@ use worldforge_core::WorldForge;
 /// `"runway"` name, and adds Cosmos-backed reasoning when both provider
 /// credentials are available.
 /// The Genie surrogate currently supports `predict`, `generate`, `reason`,
-/// `transfer`, and provider-native planning through the local deterministic
-/// backend.
+/// `transfer`, depth/segmentation prediction outputs, and provider-native
+/// planning through the local deterministic backend.
 /// Marble is an experimental deterministic local surrogate that registers by
 /// default and exposes prediction, generation, reasoning, planning, transfer,
 /// and embedding capabilities without a remote transport.
@@ -313,6 +313,19 @@ mod tests {
             .find_by_capability("embed")
             .iter()
             .any(|provider| provider.name() == "marble"));
+    }
+
+    #[test]
+    fn test_auto_detect_registers_genie_depth_outputs() {
+        let registry = auto_detect();
+        let capabilities = registry.get("genie").unwrap().capabilities();
+
+        assert!(capabilities.predict);
+        assert!(capabilities.generate);
+        assert!(capabilities.reason);
+        assert!(capabilities.transfer);
+        assert!(capabilities.supports_depth);
+        assert!(capabilities.supports_segmentation);
     }
 
     #[test]

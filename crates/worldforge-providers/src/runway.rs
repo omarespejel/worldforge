@@ -744,10 +744,7 @@ impl WorldModelProvider for RunwayProvider {
             max_resolution: (1920, 1080),
             fps_range: (12.0, 30.0),
             supported_action_spaces: self.capabilities_action_spaces(),
-            supports_depth: self
-                .enabled_models()
-                .iter()
-                .any(|model| matches!(model, RunwayModel::Gwm1Worlds)),
+            supports_depth: false,
             supports_segmentation: false,
             supports_planning: true,
             latency_profile: self.latency_profile_for_models(),
@@ -1244,7 +1241,8 @@ mod tests {
         assert!(caps.generate);
         assert!(caps.transfer);
         assert!(caps.multi_view);
-        assert!(caps.supports_depth);
+        assert!(!caps.supports_depth);
+        assert!(!caps.supports_segmentation);
     }
 
     #[test]
@@ -1256,6 +1254,7 @@ mod tests {
         assert!(!caps.transfer);
         assert!(!caps.multi_view);
         assert!(!caps.supports_depth);
+        assert!(!caps.supports_segmentation);
     }
 
     #[test]
@@ -1268,7 +1267,8 @@ mod tests {
         assert!(!caps.reason);
         assert!(caps.action_conditioned);
         assert!(caps.multi_view);
-        assert!(caps.supports_depth);
+        assert!(!caps.supports_depth);
+        assert!(!caps.supports_segmentation);
         assert!(caps
             .supported_action_spaces
             .contains(&ActionSpaceType::Continuous));

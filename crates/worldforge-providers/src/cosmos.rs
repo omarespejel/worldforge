@@ -1127,7 +1127,7 @@ impl WorldModelProvider for CosmosProvider {
             } else {
                 Vec::new()
             },
-            supports_depth: predict || transfer,
+            supports_depth: false,
             supports_segmentation: false,
             supports_planning: true,
             latency_profile: LatencyProfile {
@@ -1627,6 +1627,8 @@ mod tests {
         assert!(caps.generate);
         assert!(!caps.reason); // Predict model doesn't support reasoning
         assert!(!caps.transfer);
+        assert!(!caps.supports_depth);
+        assert!(!caps.supports_segmentation);
     }
 
     #[test]
@@ -1669,6 +1671,8 @@ mod tests {
         assert!(caps.reason);
         assert!(caps.transfer);
         assert!(caps.embed);
+        assert!(!caps.supports_depth);
+        assert!(!caps.supports_segmentation);
     }
 
     #[test]
