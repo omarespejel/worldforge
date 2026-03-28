@@ -1072,6 +1072,7 @@ fn test_state_history_evolution() {
                 physics_score: 0.85,
                 latency_ms: 100 + i * 10,
                 model: None,
+                provenance: None,
             }),
             provider: "mock".to_string(),
             snapshot: None,

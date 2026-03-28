@@ -1199,7 +1199,15 @@ mod tests {
             VerificationBackend::Mock,
         ] {
             let json = serde_json::to_string(&backend).unwrap();
-            let deserialized: VerificationBackend = serde_json::from_str(&json).unwrap();
+            let serialized: String = serde_json::from_str(&json).unwrap();
+            assert_eq!(serialized.to_ascii_lowercase(), backend.as_str());
+
+            let legacy_json = match backend {
+                VerificationBackend::Ezkl => "\"Ezkl\"",
+                VerificationBackend::Stark => "\"Stark\"",
+                VerificationBackend::Mock => "\"Mock\"",
+            };
+            let deserialized: VerificationBackend = serde_json::from_str(legacy_json).unwrap();
             assert_eq!(deserialized, backend);
         }
     }

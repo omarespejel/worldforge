@@ -4269,7 +4269,13 @@ mod tests {
         assert_eq!(status, 200);
 
         let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
-        assert_eq!(value["data"]["verification_proof"]["backend"], "Mock");
+        assert_eq!(
+            value["data"]["verification_proof"]["backend"]
+                .as_str()
+                .unwrap()
+                .to_ascii_lowercase(),
+            "mock"
+        );
         assert_eq!(
             value["data"]["verification_proof"]["proof_type"]["GuardrailCompliance"]["all_passed"],
             true
@@ -5062,7 +5068,13 @@ mod tests {
         assert_eq!(status, 200);
         let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert_eq!(value["data"]["verification"]["valid"], true);
-        assert_eq!(value["data"]["proof"]["backend"], "Mock");
+        assert_eq!(
+            value["data"]["proof"]["backend"]
+                .as_str()
+                .unwrap()
+                .to_ascii_lowercase(),
+            "mock"
+        );
     }
 
     #[tokio::test]

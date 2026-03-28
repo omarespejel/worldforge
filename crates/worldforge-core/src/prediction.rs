@@ -1197,6 +1197,7 @@ mod tests {
                 credits: 1.0,
                 estimated_latency_ms: latency_ms,
             },
+            provenance: None,
             guardrail_results: Vec::new(),
             timestamp: chrono::Utc::now(),
         }
@@ -1337,6 +1338,7 @@ mod tests {
                 credits: if add_cube { 1.5 } else { 1.0 },
                 estimated_latency_ms: latency_ms,
             },
+            provenance: None,
             guardrail_results: vec![GuardrailResult {
                 guardrail_name: "NoCollisions".to_string(),
                 passed: guardrail_passed,

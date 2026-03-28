@@ -1508,7 +1508,13 @@ async fn test_live_http_verify_proof_endpoint() {
 
     assert_eq!(status, 200);
     assert_eq!(response["data"]["verification"]["valid"], true);
-    assert_eq!(response["data"]["proof"]["backend"], "Mock");
+    assert_eq!(
+        response["data"]["proof"]["backend"]
+            .as_str()
+            .unwrap()
+            .to_ascii_lowercase(),
+        "mock"
+    );
 }
 
 #[tokio::test]
@@ -1562,7 +1568,7 @@ async fn test_live_http_verify_latest_inference_uses_archived_prediction_model()
     let task = tokio::spawn(server.run());
 
     let body = serde_json::json!({
-        "backend": "Mock",
+        "backend": "mock",
         "proof_type": "inference",
         "prediction": prediction,
     })

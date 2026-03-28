@@ -6,7 +6,8 @@
 
 use std::str::FromStr;
 
-use serde::{Deserialize, Serialize};
+use serde::de::{self, Visitor};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::error::WorldForgeError;
 
@@ -43,7 +44,7 @@ pub enum ZkProofType {
 }
 
 /// Backend used for proof generation and verification.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerificationBackend {
     /// EZKL for ML model inference proofs.
     Ezkl,
@@ -61,6 +62,41 @@ impl VerificationBackend {
             Self::Stark => "stark",
             Self::Mock => "mock",
         }
+    }
+}
+
+impl Serialize for VerificationBackend {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for VerificationBackend {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct BackendVisitor;
+
+        impl<'de> Visitor<'de> for BackendVisitor {
+            type Value = VerificationBackend;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a verification backend string")
+            }
+
+            fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                value.parse::<VerificationBackend>().map_err(E::custom)
+            }
+        }
+
+        deserializer.deserialize_str(BackendVisitor)
     }
 }
 
@@ -127,5 +163,28 @@ mod tests {
     fn test_verification_backend_parse_rejects_unknown_value() {
         let error = "invalid".parse::<VerificationBackend>().unwrap_err();
         assert!(error.to_string().contains("unknown verification backend"));
+    }
+
+    #[test]
+    fn test_verification_backend_serializes_lowercase() {
+        let json = serde_json::to_string(&VerificationBackend::Mock).unwrap();
+        assert_eq!(json, r#""mock""#);
+
+        let json = serde_json::to_string(&VerificationBackend::Ezkl).unwrap();
+        assert_eq!(json, r#""ezkl""#);
+
+        let json = serde_json::to_string(&VerificationBackend::Stark).unwrap();
+        assert_eq!(json, r#""stark""#);
+    }
+
+    #[test]
+    fn test_verification_backend_deserializes_legacy_capitalized_values() {
+        let mock: VerificationBackend = serde_json::from_str(r#""Mock""#).unwrap();
+        let ezkl: VerificationBackend = serde_json::from_str(r#""Ezkl""#).unwrap();
+        let stark: VerificationBackend = serde_json::from_str(r#""Stark""#).unwrap();
+
+        assert_eq!(mock, VerificationBackend::Mock);
+        assert_eq!(ezkl, VerificationBackend::Ezkl);
+        assert_eq!(stark, VerificationBackend::Stark);
     }
 }

@@ -2946,6 +2946,7 @@ mod tests {
                 physics_scores,
                 latency_ms: 1,
                 cost: CostEstimate::default(),
+                provenance: None,
                 guardrail_results: Vec::new(),
                 timestamp: chrono::Utc::now(),
             })
@@ -3052,6 +3053,7 @@ mod tests {
                 },
                 latency_ms: 1,
                 cost: CostEstimate::default(),
+                provenance: None,
                 guardrail_results: Vec::new(),
                 timestamp: chrono::Utc::now(),
             })
@@ -3163,6 +3165,7 @@ mod tests {
                 },
                 latency_ms: self.delay_ms,
                 cost: CostEstimate::default(),
+                provenance: None,
                 guardrail_results: Vec::new(),
                 timestamp: chrono::Utc::now(),
             })

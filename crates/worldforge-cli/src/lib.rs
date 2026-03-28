@@ -7528,7 +7528,7 @@ mod tests {
 
         let report: serde_json::Value = read_json_file(&report_path).unwrap();
         assert_eq!(report["verification"]["valid"], true);
-        assert_eq!(report["proof"]["backend"], "Mock");
+        assert_eq!(report["proof"]["backend"], "mock");
 
         let _ = fs::remove_dir_all(dir);
     }

@@ -9285,7 +9285,7 @@ mod tests {
     fn test_zkproof_json_roundtrip() {
         let proof = prove_inference(b"m", b"i", b"o").unwrap();
         let json = proof.to_json().unwrap();
-        assert!(json.contains("Mock"));
+        assert!(json.contains("mock"));
 
         let restored = PyZkProof::from_json(&json).unwrap();
         let (valid, _) = restored.verify().unwrap();

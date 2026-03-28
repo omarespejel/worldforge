@@ -239,6 +239,11 @@ assert guardrail_report.current_verification.valid
 world.predict(Action.move_to(0.35, 0.8, 0.0), steps=2)
 inference_bundle = world.prove_latest_inference_bundle()
 assert inference_bundle.verify().current_verification.valid
+
+# Archived predictions can be reloaded and verified offline later
+archived_prediction = Prediction.from_json(prediction.to_json())
+archived_bundle = archived_prediction.prove_inference_bundle("mock")
+assert archived_bundle.verify().current_verification.valid
 ```
 
 Custom `EvalSuite` JSON can embed its default providers. The Python, CLI, and
@@ -465,6 +470,7 @@ cargo run -p worldforge-cli -- reason --world <id> --query "Will the mug fall if
 cargo run -p worldforge-cli -- verify --backend stark --proof-type guardrail --plan-json plans/generated.json --output-json proofs/guardrail.json
 cargo run -p worldforge-cli -- verify --proof-type guardrail --world <id> --goal-json goals/object-at.json --output-json proofs/object-at-guardrail.json
 cargo run -p worldforge-cli -- verify --proof-type inference --input-state-json states/before.json --output-state-json states/after.json --provider mock
+cargo run -p worldforge-cli -- verify --proof-type inference --prediction-json runs/mock.json --output-json proofs/inference-from-prediction.json
 cargo run -p worldforge-cli -- verify-proof --guardrail-bundle-json proofs/guardrail.json --output-json proofs/guardrail-report.json
 cargo run -p worldforge-cli -- verify-proof --proof-json proofs/raw-proof.json
 cargo run -p worldforge-cli -- eval --list-suites
@@ -584,9 +590,18 @@ curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/verify \
   -H 'content-type: application/json' \
   -d '{"proof_type":"guardrail","goal":{"type":"condition","condition":{"ObjectAt":{"object":"<object-id>","position":{"x":1.0,"y":0.8,"z":0.0},"tolerance":0.05}}},"guardrails":[{"guardrail":"NoCollisions","blocking":true}]}'
 
+curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/verify \
+  -H 'content-type: application/json' \
+  -d @proofs/inference-from-prediction-request.json
+
 curl -X POST http://127.0.0.1:8080/v1/verify/proof \
   -H 'content-type: application/json' \
   -d @proofs/verify-request.json
+
+For inference verification, submit exactly one of `prediction`, both
+`input_state` and `output_state`, or neither to reuse the latest archived world
+transition. Verification backends are serialized as lowercase strings:
+`mock`, `ezkl`, and `stark`.
 
 curl -X POST http://127.0.0.1:8080/v1/worlds/<world-id>/reason \
   -H 'content-type: application/json' \
@@ -703,7 +718,9 @@ compatibility paths. Cross-provider comparison now reuses the same guardrail
 and fallback pipeline as single-provider prediction, with comparison config
 exposed in the CLI, REST server, and Python bindings. The CLI and REST API can
 also compare previously captured `Prediction` payloads directly, so expensive
-provider runs can be analyzed offline without replaying inference. Evaluation now supports
+provider runs can be analyzed offline without replaying inference, and archived
+predictions now carry provenance into reusable inference-verification bundles
+across the verify crate, CLI, REST server, and Python bindings. Evaluation now supports
 built-in suite discovery, JSON-defined custom suites, suite-level default
 providers, provider selection, and aggregated leaderboard, provider, scenario,
 and dimension rollups. When a suite declares `providers`, the CLI, REST API,
