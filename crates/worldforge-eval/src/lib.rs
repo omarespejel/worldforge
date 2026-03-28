@@ -2022,7 +2022,8 @@ fn spatial_reasoning_score(
         .expected_outcomes
         .iter()
         .filter_map(|expected| match expected {
-            ExpectedOutcome::ObjectPosition { .. } | ExpectedOutcome::FinalStateCondition { .. } => {
+            ExpectedOutcome::ObjectPosition { .. }
+            | ExpectedOutcome::FinalStateCondition { .. } => {
                 non_threshold_outcome_score(expected, final_state)
             }
             _ => None,
@@ -3810,11 +3811,8 @@ mod tests {
             dimensions: vec![EvalDimension::ActionPredictionAccuracy],
             providers: vec![],
         };
-        let provider = VisualFixtureProvider::new(
-            "action-fallback",
-            output_state,
-            visual_fixture_clip(),
-        );
+        let provider =
+            VisualFixtureProvider::new("action-fallback", output_state, visual_fixture_clip());
 
         let report = suite
             .run(&[&provider as &dyn WorldModelProvider])
