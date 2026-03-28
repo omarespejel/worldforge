@@ -390,6 +390,40 @@ impl WorldForge {
         Ok(World::new(state, provider_name, Arc::clone(&self.registry)))
     }
 
+    /// Fork a persisted world from the configured state store and save the branch.
+    ///
+    /// If `history_index` is provided, the fork starts from that recorded
+    /// checkpoint; otherwise it forks the world's current materialized state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the world cannot be loaded, the requested history
+    /// checkpoint is unavailable, the forked provider is not registered, or
+    /// the branch cannot be saved.
+    pub async fn fork_world(
+        &self,
+        id: &crate::types::WorldId,
+        history_index: Option<usize>,
+        name_override: Option<&str>,
+    ) -> Result<World> {
+        let state = self.load_state(id).await?;
+        let forked = match history_index {
+            Some(index) => state.fork_from_history(index, name_override)?,
+            None => state.fork(name_override)?,
+        };
+        let provider_name = forked.current_state_provider();
+        self.registry.get(&provider_name)?;
+
+        let store = self.state_store()?;
+        store.save(&forked).await?;
+
+        Ok(World::new(
+            forked,
+            provider_name,
+            Arc::clone(&self.registry),
+        ))
+    }
+
     /// List the IDs of all saved worlds in the configured state store.
     pub async fn list_worlds(&self) -> Result<Vec<crate::types::WorldId>> {
         let store = self.state_store()?;
@@ -469,6 +503,95 @@ mod tests {
         );
         assert_eq!(world.current_state().history.len(), 1);
         assert!(!world.current_state().scene.objects.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_fork_world_persists_branch() {
+        let dir = std::env::temp_dir().join(format!("worldforge-fork-{}", uuid::Uuid::new_v4()));
+        let store = crate::state::StateStoreKind::File(dir)
+            .open()
+            .await
+            .unwrap();
+        let mut wf = WorldForge::with_state_store(store);
+        wf.register_provider(Box::new(EmbedProvider)).unwrap();
+
+        let mut world = wf.create_world("source world", "embedder").unwrap();
+        world.state.ensure_history_initialized("embedder").unwrap();
+        world.state.metadata.description = "source description".to_string();
+        world.state.time = crate::types::SimTime {
+            step: 1,
+            seconds: 1.0,
+            dt: 1.0,
+        };
+        world
+            .state
+            .record_current_state(None, None, "embedder")
+            .unwrap();
+        let source_id = world.id();
+        wf.save_world(&world).await.unwrap();
+
+        let forked = wf
+            .fork_world(&source_id, None, Some("branch world"))
+            .await
+            .unwrap();
+
+        assert_ne!(forked.id(), source_id);
+        assert_eq!(forked.current_state().metadata.name, "branch world");
+        assert_eq!(forked.current_state().history.len(), 1);
+
+        let persisted = wf.load_state(&forked.id()).await.unwrap();
+        assert_eq!(persisted.metadata.name, "branch world");
+        assert_eq!(persisted.history.len(), 1);
+        assert_eq!(persisted.current_state_provider(), "embedder");
+    }
+
+    #[tokio::test]
+    async fn test_fork_world_uses_history_checkpoint() {
+        let dir =
+            std::env::temp_dir().join(format!("worldforge-fork-history-{}", uuid::Uuid::new_v4()));
+        let store = crate::state::StateStoreKind::File(dir)
+            .open()
+            .await
+            .unwrap();
+        let mut wf = WorldForge::with_state_store(store);
+        wf.register_provider(Box::new(EmbedProvider)).unwrap();
+
+        let mut world = wf.create_world("history source", "embedder").unwrap();
+        world.state.ensure_history_initialized("embedder").unwrap();
+        world.state.time = crate::types::SimTime {
+            step: 1,
+            seconds: 1.0,
+            dt: 1.0,
+        };
+        world.state.metadata.name = "checkpoint".to_string();
+        world
+            .state
+            .record_current_state(None, None, "embedder")
+            .unwrap();
+        world.state.time = crate::types::SimTime {
+            step: 2,
+            seconds: 2.0,
+            dt: 1.0,
+        };
+        world.state.metadata.name = "latest".to_string();
+        world
+            .state
+            .record_current_state(None, None, "embedder")
+            .unwrap();
+        let source_id = world.id();
+        wf.save_world(&world).await.unwrap();
+
+        let forked = wf.fork_world(&source_id, Some(1), None).await.unwrap();
+
+        assert_ne!(forked.id(), source_id);
+        assert_eq!(forked.current_state().metadata.name, "checkpoint Fork");
+        assert_eq!(forked.current_state().time.step, 1);
+        assert_eq!(forked.current_state().history.len(), 1);
+
+        let persisted = wf.load_state(&forked.id()).await.unwrap();
+        assert_eq!(persisted.metadata.name, "checkpoint Fork");
+        assert_eq!(persisted.time.step, 1);
+        assert_eq!(persisted.history.len(), 1);
     }
 
     #[test]

@@ -262,6 +262,18 @@ fn normalize_imported_state(
     Ok(())
 }
 
+fn fork_world_state(
+    source: &WorldState,
+    history_index: Option<usize>,
+    name_override: Option<&str>,
+) -> PyResult<WorldState> {
+    match history_index {
+        Some(index) => source.fork_from_history(index, name_override),
+        None => source.fork(name_override),
+    }
+    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("failed to fork world: {e}")))
+}
+
 fn parse_guardrails_json(guardrails_json: Option<&str>) -> PyResult<Vec<GuardrailConfig>> {
     guardrails_json
         .map(|json| {
@@ -1387,6 +1399,13 @@ impl PyWorld {
             ))
         })?;
         Ok(world_from_state(state, Arc::clone(&self.registry)))
+    }
+
+    /// Fork this world into a new detached branch.
+    #[pyo3(signature = (history_index=None, name=None))]
+    fn fork(&self, history_index: Option<usize>, name: Option<&str>) -> PyResult<Self> {
+        let world = fork_world_state(&self.world.state, history_index, name)?;
+        Ok(world_from_state(world, Arc::clone(&self.registry)))
     }
 
     /// Restore this world in place to a specific history checkpoint.
@@ -3755,6 +3774,31 @@ impl PyWorldForge {
                 pyo3::exceptions::PyRuntimeError::new_err(format!("failed to load world: {e}"))
             })?;
         Ok(PyWorld { world, registry })
+    }
+
+    /// Fork a persisted world into a new branch and save the branch.
+    #[pyo3(signature = (world_id, history_index=None, name=None))]
+    fn fork_world(
+        &self,
+        world_id: &str,
+        history_index: Option<usize>,
+        name: Option<&str>,
+    ) -> PyResult<PyWorld> {
+        let id = parse_world_id(world_id)?;
+        let rt = new_runtime()?;
+        let registry = self.inner.registry_arc();
+        let source = rt
+            .block_on(self.inner.load_world_from_store(&id))
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("failed to load world: {e}"))
+            })?;
+        let world = fork_world_state(&source.state, history_index, name).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("failed to fork world: {e}"))
+        })?;
+        rt.block_on(self.inner.save_state(&world)).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("failed to save world: {e}"))
+        })?;
+        Ok(world_from_state(world, registry))
     }
 
     /// Export a persisted world snapshot.
@@ -6841,6 +6885,41 @@ mod tests {
     }
 
     #[test]
+    fn test_world_fork_rebases_current_state_with_fresh_history() {
+        let world = PyWorld::new("fork_world", "mock");
+        let forked = world.fork(None, None).unwrap();
+
+        assert_ne!(forked.id(), world.id());
+        assert_eq!(forked.name(), "fork_world Fork");
+        assert_eq!(forked.history_length(), 1);
+        assert_eq!(world.name(), "fork_world");
+        assert_eq!(world.history_length(), 0);
+    }
+
+    #[test]
+    fn test_world_fork_from_history_uses_checkpoint_state() {
+        let mut world = PyWorld::new("fork_world", "mock");
+        world
+            .predict(
+                &PyAction::move_to(1.0, 0.0, 0.0, 1.0),
+                1,
+                None,
+                None,
+                false,
+                None,
+                true,
+            )
+            .unwrap();
+        let forked = world.fork(Some(0), None).unwrap();
+
+        assert_ne!(forked.id(), world.id());
+        assert_eq!(forked.name(), "fork_world Fork");
+        assert_eq!(forked.step(), 0);
+        assert_eq!(forked.history_length(), 1);
+        assert_eq!(world.history_length(), 2);
+    }
+
+    #[test]
     fn test_world_compare_returns_multi_prediction() {
         let mut world = PyWorld::new("compare_world", "mock");
         world
@@ -7383,6 +7462,44 @@ mod tests {
         assert_eq!(world.description(), "A kitchen with a mug");
         assert!(world.object_count() >= 2);
         assert_eq!(world.history_length(), 1);
+    }
+
+    #[test]
+    fn test_worldforge_fork_world_loads_checkpoint_and_persists_branch() {
+        let wf = test_worldforge();
+        let mut world = PyWorld::new("fork_worldforge_source", "mock");
+        world
+            .predict(
+                &PyAction::move_to(1.0, 0.0, 0.0, 1.0),
+                1,
+                None,
+                None,
+                false,
+                None,
+                true,
+            )
+            .unwrap();
+
+        let source_id = world.id();
+        assert_eq!(world.history_length(), 2);
+        wf.save_world(&world).unwrap();
+
+        let forked = wf
+            .fork_world(&source_id, Some(0), Some("checkpoint-branch"))
+            .unwrap();
+        assert_ne!(forked.id(), source_id);
+        assert_eq!(forked.name(), "checkpoint-branch");
+        assert_eq!(forked.step(), 0);
+        assert_eq!(forked.history_length(), 1);
+
+        let source = wf.load_world(&source_id).unwrap();
+        assert_eq!(source.name(), "fork_worldforge_source");
+        assert_eq!(source.history_length(), 2);
+
+        let persisted_branch = wf.load_world(&forked.id()).unwrap();
+        assert_eq!(persisted_branch.name(), "checkpoint-branch");
+        assert_eq!(persisted_branch.step(), 0);
+        assert_eq!(persisted_branch.history_length(), 1);
     }
 
     #[test]

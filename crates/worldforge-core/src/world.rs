@@ -628,6 +628,44 @@ impl World {
         Ok(())
     }
 
+    /// Fork the current world into a new branch with a fresh identity.
+    ///
+    /// The fork preserves the materialized state and starts with a single
+    /// checkpoint rooted at the branch point.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WorldForgeError::InvalidState` if the forked provider is no
+    /// longer registered or if the forked state cannot be recorded.
+    pub fn fork(&self, name_override: Option<&str>) -> Result<Self> {
+        let state = self.state.fork(name_override)?;
+        let provider = state.current_state_provider();
+        self.registry.get(&provider)?;
+        Ok(Self::new(
+            state,
+            provider,
+            std::sync::Arc::clone(&self.registry),
+        ))
+    }
+
+    /// Fork a recorded history checkpoint into a new world branch.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WorldForgeError::InvalidState` if the checkpoint cannot be
+    /// reconstructed, the forked provider is not registered, or the forked
+    /// state cannot be recorded.
+    pub fn fork_from_history(&self, index: usize, name_override: Option<&str>) -> Result<Self> {
+        let state = self.state.fork_from_history(index, name_override)?;
+        let provider = state.current_state_provider();
+        self.registry.get(&provider)?;
+        Ok(Self::new(
+            state,
+            provider,
+            std::sync::Arc::clone(&self.registry),
+        ))
+    }
+
     async fn predict_from_state(
         &self,
         state: &WorldState,
@@ -4144,6 +4182,81 @@ mod tests {
         assert_eq!(world.current_state().metadata.name, "restore-world-step-1");
         assert_eq!(world.current_state().history.len(), 2);
         assert_eq!(world.default_provider, "backup");
+    }
+
+    #[test]
+    fn test_world_fork_creates_branch_with_fresh_history() {
+        let mut registry = ProviderRegistry::new();
+        registry.register(Box::new(SuccessfulProvider::with_capabilities(
+            "mock",
+            test_capabilities(false),
+        )));
+        let registry = std::sync::Arc::new(registry);
+        let mut world = World::new(WorldState::new("branch-source", "mock"), "mock", registry);
+        world.state.ensure_history_initialized("mock").unwrap();
+        world.state.metadata.name = "branch-source".to_string();
+        world.state.metadata.description = "branch description".to_string();
+        world.state.time = SimTime {
+            step: 2,
+            seconds: 1.0,
+            dt: 0.5,
+        };
+        world
+            .state
+            .record_current_state(None, None, "mock")
+            .unwrap();
+
+        let forked = world.fork(None).unwrap();
+
+        assert_ne!(forked.id(), world.id());
+        assert_eq!(forked.default_provider, "mock");
+        assert_eq!(forked.current_state().metadata.name, "branch-source Fork");
+        assert_eq!(forked.current_state().history.len(), 1);
+        assert_eq!(forked.current_state().time, world.current_state().time);
+    }
+
+    #[test]
+    fn test_world_fork_from_history_uses_checkpoint() {
+        let mut registry = ProviderRegistry::new();
+        registry.register(Box::new(SuccessfulProvider::with_capabilities(
+            "mock",
+            test_capabilities(false),
+        )));
+        let registry = std::sync::Arc::new(registry);
+        let mut world = World::new(WorldState::new("history-branch", "mock"), "mock", registry);
+        world.state.ensure_history_initialized("mock").unwrap();
+
+        world.state.time = SimTime {
+            step: 1,
+            seconds: 0.5,
+            dt: 0.5,
+        };
+        world.state.metadata.name = "checkpoint".to_string();
+        world
+            .state
+            .record_current_state(None, None, "mock")
+            .unwrap();
+
+        world.state.time = SimTime {
+            step: 2,
+            seconds: 1.0,
+            dt: 0.5,
+        };
+        world.state.metadata.name = "latest".to_string();
+        world
+            .state
+            .record_current_state(None, None, "mock")
+            .unwrap();
+
+        let forked = world
+            .fork_from_history(1, Some("history-branch-copy"))
+            .unwrap();
+
+        assert_ne!(forked.id(), world.id());
+        assert_eq!(forked.current_state().metadata.name, "history-branch-copy");
+        assert_eq!(forked.current_state().time.step, 1);
+        assert_eq!(forked.current_state().history.len(), 1);
+        assert_eq!(forked.default_provider, "mock");
     }
 
     #[derive(Debug, Clone)]

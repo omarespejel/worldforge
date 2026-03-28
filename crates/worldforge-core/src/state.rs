@@ -205,6 +205,34 @@ impl WorldState {
         seed_world_state_from_prompt(prompt, &provider, name_override)
     }
 
+    /// Fork this world state into a new world with a fresh identity.
+    ///
+    /// The fork preserves the materialized world contents and creates a new,
+    /// self-consistent history rooted at the fork point.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WorldForgeError::SerializationError` if the forked state
+    /// cannot be hashed for history tracking.
+    pub fn fork(&self, name_override: Option<&str>) -> Result<Self> {
+        self.fork_with_snapshot(self.snapshot(), name_override)
+    }
+
+    /// Fork a historical checkpoint into a new world with a fresh identity.
+    ///
+    /// The fork preserves the materialized checkpoint state and creates a new,
+    /// self-consistent history rooted at the checkpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WorldForgeError::InvalidState` if the checkpoint cannot be
+    /// reconstructed or `WorldForgeError::SerializationError` if the forked
+    /// state cannot be hashed for history tracking.
+    pub fn fork_from_history(&self, index: usize, name_override: Option<&str>) -> Result<Self> {
+        let checkpoint = self.history_state(index)?;
+        checkpoint.fork(name_override)
+    }
+
     /// Return the provider most likely responsible for the current state snapshot.
     pub fn current_state_provider(&self) -> String {
         self.history
@@ -345,6 +373,43 @@ impl WorldState {
     pub fn restore_history(&mut self, index: usize) -> Result<()> {
         *self = self.history_state(index)?;
         Ok(())
+    }
+
+    fn fork_with_snapshot(
+        &self,
+        snapshot: HistorySnapshot,
+        name_override: Option<&str>,
+    ) -> Result<Self> {
+        let provider = self.current_state_provider();
+        let mut forked = Self {
+            id: uuid::Uuid::new_v4(),
+            time: snapshot.time,
+            scene: snapshot.scene,
+            history: StateHistory {
+                states: VecDeque::new(),
+                max_entries: self.history.max_entries,
+                compression: self.history.compression,
+            },
+            metadata: snapshot.metadata,
+        };
+        forked.metadata.name = derive_fork_name(&forked.metadata.name, name_override);
+        forked.metadata.created_by = provider.clone();
+        forked.metadata.created_at = chrono::Utc::now();
+        forked.record_current_state(None, None, provider)?;
+        Ok(forked)
+    }
+}
+
+fn derive_fork_name(source_name: &str, name_override: Option<&str>) -> String {
+    if let Some(name) = name_override.map(str::trim).filter(|name| !name.is_empty()) {
+        return name.to_string();
+    }
+
+    let source_name = source_name.trim();
+    if source_name.is_empty() {
+        "Forked World".to_string()
+    } else {
+        format!("{source_name} Fork")
     }
 }
 
@@ -2027,6 +2092,70 @@ mod tests {
         assert_eq!(state.time.step, 0);
         assert_eq!(state.metadata.name, "restore-in-place");
         assert_eq!(state.history.len(), 1);
+    }
+
+    #[test]
+    fn test_world_state_fork_creates_fresh_history() {
+        let mut state = WorldState::new("source", "primary");
+        state.ensure_history_initialized("primary").unwrap();
+        state.metadata.description = "original description".to_string();
+        state.metadata.tags.push("tagged".to_string());
+        state.time = SimTime {
+            step: 3,
+            seconds: 1.5,
+            dt: 0.5,
+        };
+        state.metadata.name = "source world".to_string();
+        state.record_current_state(None, None, "primary").unwrap();
+
+        let forked = state.fork(None).unwrap();
+
+        assert_ne!(forked.id, state.id);
+        assert_eq!(forked.metadata.name, "source world Fork");
+        assert_eq!(forked.metadata.description, state.metadata.description);
+        assert_eq!(forked.metadata.tags, state.metadata.tags);
+        assert_eq!(forked.metadata.created_by, "primary");
+        assert!(forked.metadata.created_at >= state.metadata.created_at);
+        assert_eq!(forked.time, state.time);
+        assert_eq!(forked.scene.objects.len(), state.scene.objects.len());
+        assert_eq!(forked.history.len(), 1);
+        let latest = forked.history.latest().unwrap();
+        assert_eq!(latest.provider, "primary");
+        assert_eq!(latest.time, forked.time);
+        assert!(latest.snapshot.is_some());
+    }
+
+    #[test]
+    fn test_world_state_fork_from_history_uses_checkpoint_state() {
+        let mut state = WorldState::new("source", "primary");
+        state.ensure_history_initialized("primary").unwrap();
+
+        state.time = SimTime {
+            step: 1,
+            seconds: 0.5,
+            dt: 0.5,
+        };
+        state.metadata.name = "checkpoint".to_string();
+        state.metadata.description = "checkpoint description".to_string();
+        state.record_current_state(None, None, "secondary").unwrap();
+
+        state.time = SimTime {
+            step: 2,
+            seconds: 1.0,
+            dt: 0.5,
+        };
+        state.metadata.name = "latest".to_string();
+        state.record_current_state(None, None, "tertiary").unwrap();
+
+        let forked = state.fork_from_history(1, Some("branch-a")).unwrap();
+
+        assert_ne!(forked.id, state.id);
+        assert_eq!(forked.metadata.name, "branch-a");
+        assert_eq!(forked.metadata.description, "checkpoint description");
+        assert_eq!(forked.metadata.created_by, "secondary");
+        assert_eq!(forked.time.step, 1);
+        assert_eq!(forked.history.len(), 1);
+        assert_eq!(forked.history.latest().unwrap().provider, "secondary");
     }
 
     #[test]

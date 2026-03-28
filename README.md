@@ -200,6 +200,15 @@ checkpoint = world.history_state(0)
 assert checkpoint.step == 0
 world.restore_history(0)
 assert world.step == 0
+
+# Branch a new scenario from that checkpoint
+branch = world.fork(history_index=0, name="kitchen-counter-branch")
+assert branch.id != world.id
+assert branch.history_length == 1
+
+saved_branch = wf.fork_world(world.id, history_index=0, name="kitchen-counter-branch")
+assert saved_branch.name == branch.name
+assert saved_branch.history_length == 1
 ```
 
 The Python package also exposes `worldforge.providers`, `worldforge.eval`, and

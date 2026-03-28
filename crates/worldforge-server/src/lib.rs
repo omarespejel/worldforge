@@ -25,7 +25,7 @@ use worldforge_core::provider::{
 use worldforge_core::scene::{PhysicsProperties, SceneObject, SceneObjectPatch};
 use worldforge_core::state::{
     deserialize_world_state, serialize_world_state, DynStateStore, S3Config, StateFileFormat,
-    StateStoreKind, WorldState,
+    StateHistory, StateStoreKind, WorldState,
 };
 use worldforge_core::types::{
     BBox, Mesh, Pose, Position, Rotation, Tensor, Velocity, VideoClip, WorldId,
@@ -246,6 +246,17 @@ struct ImportWorldRequest {
     /// Assign a new world ID before persisting the snapshot.
     #[serde(default)]
     new_id: bool,
+    /// Optional replacement world name.
+    #[serde(default)]
+    name: Option<String>,
+}
+
+/// JSON request body for forking a persisted world.
+#[derive(Debug, Deserialize)]
+struct ForkWorldRequest {
+    /// Optional zero-based history checkpoint index to fork from.
+    #[serde(default)]
+    history_index: Option<usize>,
     /// Optional replacement world name.
     #[serde(default)]
     name: Option<String>,
@@ -1028,6 +1039,51 @@ fn resolve_world_provider(state: &WorldState, requested: Option<&str>) -> String
         .unwrap_or_else(|| state.current_state_provider())
 }
 
+fn default_fork_name(source_name: &str, name_override: Option<&str>) -> String {
+    if let Some(name) = name_override.map(str::trim).filter(|name| !name.is_empty()) {
+        return name.to_string();
+    }
+
+    let source_name = source_name.trim();
+    if source_name.is_empty() {
+        "Forked World".to_string()
+    } else {
+        format!("{source_name} Fork")
+    }
+}
+
+fn fork_world_state(
+    source: &WorldState,
+    history_index: Option<usize>,
+    name_override: Option<&str>,
+) -> Result<WorldState, String> {
+    let source = match history_index {
+        Some(index) => source
+            .history_state(index)
+            .map_err(|error| error.to_string())?,
+        None => source.clone(),
+    };
+    let provider = source.current_state_provider();
+    let mut forked = WorldState {
+        id: uuid::Uuid::new_v4(),
+        time: source.time,
+        scene: source.scene,
+        history: StateHistory {
+            states: std::collections::VecDeque::new(),
+            max_entries: source.history.max_entries,
+            compression: source.history.compression,
+        },
+        metadata: source.metadata,
+    };
+    forked.metadata.name = default_fork_name(&forked.metadata.name, name_override);
+    forked.metadata.created_by = provider.clone();
+    forked.metadata.created_at = chrono::Utc::now();
+    forked
+        .record_current_state(None, None, provider)
+        .map_err(|error| error.to_string())?;
+    Ok(forked)
+}
+
 fn build_scene_object(request: CreateObjectRequest) -> SceneObject {
     let mut object = SceneObject::new(
         request.name,
@@ -1244,6 +1300,7 @@ enum RouteKind {
     ProviderTransfer,
     WorldHistory,
     WorldRestore,
+    WorldFork,
     WorldObjects,
     WorldObject,
     WorldItem,
@@ -1276,6 +1333,7 @@ impl RouteKind {
             Self::ProviderTransfer => &["POST"],
             Self::WorldHistory => &["GET", "HEAD"],
             Self::WorldRestore => &["POST"],
+            Self::WorldFork => &["POST"],
             Self::WorldObjects => &["GET", "HEAD", "POST"],
             Self::WorldObject => &["GET", "HEAD", "PATCH", "DELETE"],
             Self::WorldItem => &["GET", "HEAD", "DELETE"],
@@ -1318,6 +1376,7 @@ fn classify_route_kind(path: &str) -> RouteKind {
         ["v1", "worlds", _, "export"] => RouteKind::WorldExport,
         ["v1", "worlds", _, "history"] => RouteKind::WorldHistory,
         ["v1", "worlds", _, "restore"] => RouteKind::WorldRestore,
+        ["v1", "worlds", _, "fork"] => RouteKind::WorldFork,
         ["v1", "worlds", _, "objects", _] => RouteKind::WorldObject,
         ["v1", "worlds", _, "objects"] => RouteKind::WorldObjects,
         ["v1", "worlds", _, "predict"] => RouteKind::WorldPredict,
@@ -1618,6 +1677,48 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
             }
             Err(e) => (400, error_response(&format!("invalid request: {e}"))),
         },
+
+        // POST /v1/worlds/{id}/fork
+        ("POST", p) if p.starts_with("/v1/worlds/") && p.ends_with("/fork") => {
+            let id_str = p
+                .strip_prefix("/v1/worlds/")
+                .and_then(|value| value.strip_suffix("/fork"))
+                .unwrap_or("");
+            match id_str.parse::<WorldId>() {
+                Ok(id) => match serde_json::from_str::<ForkWorldRequest>(body) {
+                    Ok(req) => match state.store.load(&id).await {
+                        Ok(source) => {
+                            match fork_world_state(&source, req.history_index, req.name.as_deref())
+                            {
+                                Ok(forked) => {
+                                    let fork_id = forked.id;
+                                    match state.store.save(&forked).await {
+                                        Ok(()) => {
+                                            state
+                                                .worlds
+                                                .write()
+                                                .await
+                                                .insert(fork_id, forked.clone());
+                                            (201, ApiResponse::ok(forked))
+                                        }
+                                        Err(error) => (
+                                            500,
+                                            error_response(&format!(
+                                                "failed to save world: {error}"
+                                            )),
+                                        ),
+                                    }
+                                }
+                                Err(error) => (400, error_response(&error)),
+                            }
+                        }
+                        Err(error) => (404, error_response(&error.to_string())),
+                    },
+                    Err(error) => (400, error_response(&format!("invalid request: {error}"))),
+                },
+                Err(_) => (400, error_response("invalid world ID")),
+            }
+        }
 
         // GET /v1/worlds/{id}/export
         ("GET", p) if p.starts_with("/v1/worlds/") && p.ends_with("/export") => {
@@ -3273,6 +3374,106 @@ mod tests {
         let cache = state.worlds.read().await;
         assert!(cache.contains_key(&imported_id));
         assert!(!cache.contains_key(&original_id));
+    }
+
+    #[tokio::test]
+    async fn test_route_fork_world_current_state_rebases_history() {
+        let state = test_state();
+        let source = sample_export_state("fork-source");
+        let source_id = source.id;
+        state.store.save(&source).await.unwrap();
+
+        let body = serde_json::json!({
+            "name": "branched-world",
+        });
+
+        let (status, resp) = route(
+            "POST",
+            &format!("/v1/worlds/{source_id}/fork"),
+            &body.to_string(),
+            &state,
+        )
+        .await;
+        assert_eq!(status, 201);
+
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let forked_id = value["data"]["id"]
+            .as_str()
+            .unwrap()
+            .parse::<WorldId>()
+            .unwrap();
+        assert_ne!(forked_id, source_id);
+        assert_eq!(value["data"]["metadata"]["name"], "branched-world");
+        assert_eq!(
+            value["data"]["history"]["states"].as_array().unwrap().len(),
+            1
+        );
+        assert_eq!(
+            value["data"]["metadata"]["description"],
+            "portable snapshot"
+        );
+
+        let source_after = state.store.load(&source_id).await.unwrap();
+        assert_eq!(source_after.id, source_id);
+        assert_eq!(source_after.history.len(), 1);
+
+        let forked = state.store.load(&forked_id).await.unwrap();
+        assert_eq!(forked.metadata.name, "branched-world");
+        assert_eq!(forked.history.len(), 1);
+        assert_eq!(forked.metadata.description, "portable snapshot");
+    }
+
+    #[tokio::test]
+    async fn test_route_fork_world_from_history_checkpoint_rebases_history() {
+        let state = test_state();
+        let id = seed_world(&state, "fork-history-world", "mock").await;
+        let predict_body =
+            r#"{"action":{"SetWeather":{"weather":"Rain"}},"disable_guardrails":true}"#;
+
+        let (status, _) = route(
+            "POST",
+            &format!("/v1/worlds/{id}/predict"),
+            predict_body,
+            &state,
+        )
+        .await;
+        assert_eq!(status, 200);
+
+        let body = serde_json::json!({
+            "history_index": 0,
+            "name": "checkpoint-branch",
+        });
+
+        let (status, resp) = route(
+            "POST",
+            &format!("/v1/worlds/{id}/fork"),
+            &body.to_string(),
+            &state,
+        )
+        .await;
+        assert_eq!(status, 201);
+
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let forked_id = value["data"]["id"]
+            .as_str()
+            .unwrap()
+            .parse::<WorldId>()
+            .unwrap();
+        assert_ne!(forked_id, id);
+        assert_eq!(value["data"]["metadata"]["name"], "checkpoint-branch");
+        assert_eq!(value["data"]["time"]["step"], 0);
+        assert_eq!(
+            value["data"]["history"]["states"].as_array().unwrap().len(),
+            1
+        );
+
+        let source = state.store.load(&id).await.unwrap();
+        assert_eq!(source.history.len(), 2);
+
+        let forked = state.store.load(&forked_id).await.unwrap();
+        assert_eq!(forked.metadata.name, "checkpoint-branch");
+        assert_eq!(forked.time.step, 0);
+        assert_eq!(forked.history.len(), 1);
     }
 
     #[tokio::test]

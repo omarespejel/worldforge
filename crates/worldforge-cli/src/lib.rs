@@ -27,7 +27,8 @@ use worldforge_core::provider::{
 use worldforge_core::scene::{PhysicsProperties, SceneObject, SceneObjectPatch};
 use worldforge_core::state::{
     deserialize_world_state, infer_state_file_format, serialize_world_state, DynStateStore,
-    S3Config, StateFileFormat as CoreStateFileFormat, StateStore, StateStoreKind, WorldState,
+    S3Config, StateFileFormat as CoreStateFileFormat, StateHistory, StateStore, StateStoreKind,
+    WorldState,
 };
 use worldforge_core::types::{BBox, Pose, Position, Rotation, Vec3, Velocity, VideoClip};
 use worldforge_eval::{EvalReportFormat, EvalSuite};
@@ -392,6 +393,19 @@ pub enum Commands {
         /// Optional path to write the restored world JSON payload.
         #[arg(long)]
         output_json: Option<PathBuf>,
+    },
+
+    /// Fork a persisted world into a new branch.
+    Fork {
+        /// World ID.
+        #[arg(long)]
+        world: String,
+        /// Optional zero-based history checkpoint index to fork from.
+        #[arg(long)]
+        history_index: Option<usize>,
+        /// Optional replacement world name.
+        #[arg(long)]
+        name: Option<String>,
     },
 
     /// Delete a world.
@@ -1039,6 +1053,13 @@ pub async fn run() -> Result<()> {
             )
             .await
         }
+        Commands::Fork {
+            world,
+            history_index,
+            name,
+        } => cmd_fork(store.as_ref(), &world, history_index, name.as_deref())
+            .await
+            .map(|_| ()),
         Commands::Delete { world } => cmd_delete(store.as_ref(), &world).await,
         Commands::Export {
             world,
@@ -2674,6 +2695,76 @@ async fn cmd_restore(
         state.history.len()
     );
     Ok(())
+}
+
+async fn cmd_fork(
+    store: &(impl StateStore + ?Sized),
+    world_id: &str,
+    history_index: Option<usize>,
+    name: Option<&str>,
+) -> Result<WorldState> {
+    let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
+    let source = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let forked = fork_world_state(&source, history_index, name)?;
+    store
+        .save(&forked)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    println!("Forked world:");
+    println!("  Source: {}", source.id);
+    println!("  Fork: {}", forked.id);
+    println!("  Name: {}", forked.metadata.name);
+    println!("  Provider: {}", forked.metadata.created_by);
+    println!("  Time step: {}", forked.time.step);
+    println!("  History entries: {}", forked.history.len());
+
+    Ok(forked)
+}
+
+fn default_fork_name(source_name: &str, name_override: Option<&str>) -> String {
+    if let Some(name) = name_override.map(str::trim).filter(|name| !name.is_empty()) {
+        return name.to_string();
+    }
+
+    let source_name = source_name.trim();
+    if source_name.is_empty() {
+        "Forked World".to_string()
+    } else {
+        format!("{source_name} Fork")
+    }
+}
+
+fn fork_world_state(
+    source: &WorldState,
+    history_index: Option<usize>,
+    name_override: Option<&str>,
+) -> Result<WorldState> {
+    let source = match history_index {
+        Some(index) => source
+            .history_state(index)
+            .map_err(|e| anyhow::anyhow!("{e}"))?,
+        None => source.clone(),
+    };
+    let provider = source.current_state_provider();
+    let mut forked = WorldState {
+        id: uuid::Uuid::new_v4(),
+        time: source.time,
+        scene: source.scene,
+        history: StateHistory {
+            states: std::collections::VecDeque::new(),
+            max_entries: source.history.max_entries,
+            compression: source.history.compression,
+        },
+        metadata: source.metadata,
+    };
+    forked.metadata.name = default_fork_name(&forked.metadata.name, name_override);
+    forked.metadata.created_by = provider.clone();
+    forked.metadata.created_at = chrono::Utc::now();
+    forked
+        .record_current_state(None, None, provider)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    Ok(forked)
 }
 
 async fn cmd_delete(store: &(impl StateStore + ?Sized), world_id: &str) -> Result<()> {
@@ -4492,6 +4583,34 @@ mod tests {
                 assert_eq!(output_json, Some(PathBuf::from("/tmp/restored.json")));
             }
             _ => panic!("expected Restore"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_fork_command() {
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "fork",
+            "--world",
+            "123e4567-e89b-12d3-a456-426614174000",
+            "--history-index",
+            "1",
+            "--name",
+            "branched-world",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Fork {
+                world,
+                history_index,
+                name,
+            } => {
+                assert_eq!(world, "123e4567-e89b-12d3-a456-426614174000");
+                assert_eq!(history_index, Some(1));
+                assert_eq!(name.as_deref(), Some("branched-world"));
+            }
+            _ => panic!("expected Fork"),
         }
     }
 
@@ -6816,6 +6935,74 @@ mod tests {
         assert_eq!(persisted.id, source_id);
         assert_eq!(persisted.metadata.name, "msgpack-source");
         assert_eq!(persisted.scene.objects.len(), exported.scene.objects.len());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn test_cmd_fork_current_state_rebases_history_and_persists_new_world() {
+        let dir = std::env::temp_dir().join(format!("wf-cli-fork-{}", uuid::Uuid::new_v4()));
+        let store = StateStoreKind::File(dir.join("store"))
+            .open()
+            .await
+            .unwrap();
+        let source = sample_snapshot_state("fork-source");
+        let source_id = source.id;
+        store.save(&source).await.unwrap();
+
+        let forked = cmd_fork(
+            store.as_ref(),
+            &source_id.to_string(),
+            None,
+            Some("branched-world"),
+        )
+        .await
+        .unwrap();
+
+        assert_ne!(forked.id, source_id);
+        assert_eq!(forked.metadata.name, "branched-world");
+        assert_eq!(forked.history.len(), 1);
+        assert_eq!(forked.metadata.description, source.metadata.description);
+
+        let persisted = store.load(&forked.id).await.unwrap();
+        assert_eq!(persisted.id, forked.id);
+        assert_eq!(persisted.metadata.name, "branched-world");
+        assert_eq!(persisted.history.len(), 1);
+
+        let original = store.load(&source_id).await.unwrap();
+        assert_eq!(original.id, source_id);
+        assert_eq!(original.metadata.name, "fork-source");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn test_cmd_fork_history_checkpoint_uses_core_fork_semantics() {
+        let dir =
+            std::env::temp_dir().join(format!("wf-cli-fork-history-{}", uuid::Uuid::new_v4()));
+        let store = StateStoreKind::File(dir.join("store"))
+            .open()
+            .await
+            .unwrap();
+        let mut source = sample_snapshot_state("fork-history-source");
+        source.ensure_history_initialized("mock").unwrap();
+        source.time.step = 2;
+        source.metadata.name = "checkpoint".to_string();
+        source.record_current_state(None, None, "mock").unwrap();
+        source.time.step = 3;
+        source.metadata.name = "latest".to_string();
+        source.record_current_state(None, None, "mock").unwrap();
+        let source_id = source.id;
+        store.save(&source).await.unwrap();
+
+        let forked = cmd_fork(store.as_ref(), &source_id.to_string(), Some(1), None)
+            .await
+            .unwrap();
+
+        assert_ne!(forked.id, source_id);
+        assert_eq!(forked.metadata.name, "checkpoint Fork");
+        assert_eq!(forked.time.step, 2);
+        assert_eq!(forked.history.len(), 1);
 
         let _ = fs::remove_dir_all(dir);
     }
