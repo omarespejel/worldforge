@@ -9,7 +9,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use worldforge_core::action::{Action, ActionSpaceType};
+use worldforge_core::action::{Action, ActionSpaceType, ActionTranslator};
 use worldforge_core::error::{Result, WorldForgeError};
 use worldforge_core::prediction::{PhysicsScores, Plan, PlanRequest, Prediction, PredictionConfig};
 use worldforge_core::provider::{
@@ -1142,6 +1142,20 @@ impl worldforge_core::action::ActionTranslator for RunwayActionTranslator {
 
     fn supported_actions(&self) -> Vec<ActionSpaceType> {
         vec![ActionSpaceType::Continuous, ActionSpaceType::Discrete]
+    }
+}
+
+impl ActionTranslator for RunwayProvider {
+    fn translate(&self, action: &Action) -> Result<worldforge_core::action::ProviderAction> {
+        let command = Self::action_to_robot_command(action);
+        Ok(worldforge_core::action::ProviderAction {
+            provider: self.name().to_string(),
+            data: command,
+        })
+    }
+
+    fn supported_actions(&self) -> Vec<ActionSpaceType> {
+        self.capabilities().supported_action_spaces
     }
 }
 

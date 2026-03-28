@@ -21,11 +21,15 @@ pub mod mock;
 mod native_planning;
 pub mod runway;
 
+/// Backward-compatible Cosmos action translator helper.
+pub use cosmos::CosmosActionTranslator;
 pub use cosmos::CosmosProvider;
 pub use genie::GenieProvider;
 pub use jepa::{JepaBackend, JepaModelManifest, JepaProvider};
 pub use marble::MarbleProvider;
 pub use mock::MockProvider;
+/// Backward-compatible Runway action translator helper.
+pub use runway::RunwayActionTranslator;
 pub use runway::RunwayProvider;
 
 use std::path::PathBuf;
