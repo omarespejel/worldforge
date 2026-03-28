@@ -141,15 +141,31 @@ fn resolve_s3_config(config: &ServerConfig) -> anyhow::Result<S3Config> {
     let bucket = config.state_s3_bucket.as_deref().ok_or_else(|| {
         anyhow::anyhow!("--state-s3-bucket is required when state_backend is set to s3")
     })?;
-    let region = config.state_s3_region.as_deref().ok_or_else(|| {
-        anyhow::anyhow!("--state-s3-region is required when state_backend is set to s3")
-    })?;
-    let access_key_id = config.state_s3_access_key_id.as_deref().ok_or_else(|| {
-        anyhow::anyhow!("--state-s3-access-key-id is required when state_backend is set to s3")
-    })?;
+    let region = config
+        .state_s3_region
+        .as_deref()
+        .and_then(non_empty_value)
+        .map(str::to_owned)
+        .or_else(|| env_non_empty("AWS_REGION"))
+        .or_else(|| env_non_empty("AWS_DEFAULT_REGION"))
+        .ok_or_else(|| {
+            anyhow::anyhow!("--state-s3-region is required when state_backend is set to s3")
+        })?;
+    let access_key_id = config
+        .state_s3_access_key_id
+        .as_deref()
+        .and_then(non_empty_value)
+        .map(str::to_owned)
+        .or_else(|| env_non_empty("AWS_ACCESS_KEY_ID"))
+        .ok_or_else(|| {
+            anyhow::anyhow!("--state-s3-access-key-id is required when state_backend is set to s3")
+        })?;
     let secret_access_key = config
         .state_s3_secret_access_key
         .as_deref()
+        .and_then(non_empty_value)
+        .map(str::to_owned)
+        .or_else(|| env_non_empty("AWS_SECRET_ACCESS_KEY"))
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "--state-s3-secret-access-key is required when state_backend is set to s3"
@@ -158,12 +174,29 @@ fn resolve_s3_config(config: &ServerConfig) -> anyhow::Result<S3Config> {
 
     Ok(S3Config {
         bucket: bucket.to_string(),
-        region: region.to_string(),
+        region,
         endpoint: config.state_s3_endpoint.clone(),
-        access_key_id: access_key_id.to_string(),
-        secret_access_key: secret_access_key.to_string(),
-        session_token: config.state_s3_session_token.clone(),
+        access_key_id,
+        secret_access_key,
+        session_token: config
+            .state_s3_session_token
+            .as_deref()
+            .and_then(non_empty_value)
+            .map(str::to_owned)
+            .or_else(|| env_non_empty("AWS_SESSION_TOKEN")),
         prefix: config.state_s3_prefix.clone().unwrap_or_default(),
+    })
+}
+
+fn non_empty_value(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then_some(trimmed)
+}
+
+fn env_non_empty(name: &str) -> Option<String> {
+    std::env::var(name).ok().and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
     })
 }
 
@@ -587,6 +620,7 @@ struct ParsedRequest {
     method: String,
     path: String,
     body: String,
+    close_connection: bool,
 }
 
 #[derive(Debug)]
@@ -596,6 +630,7 @@ struct WireResponse {
     body: String,
     headers: Vec<(&'static str, String)>,
     content_length: Option<usize>,
+    close_connection: bool,
 }
 
 impl WireResponse {
@@ -606,6 +641,7 @@ impl WireResponse {
             body,
             headers: Vec::new(),
             content_length: None,
+            close_connection: false,
         }
     }
 
@@ -617,6 +653,11 @@ impl WireResponse {
     fn without_body(mut self) -> Self {
         self.content_length = Some(self.body.len());
         self.body.clear();
+        self
+    }
+
+    fn with_connection_close(mut self) -> Self {
+        self.close_connection = true;
         self
     }
 }
@@ -1285,46 +1326,69 @@ pub async fn serve(config: ServerConfig, registry: Arc<ProviderRegistry>) -> any
 }
 
 async fn handle_connection(
-    mut stream: tokio::net::TcpStream,
+    stream: tokio::net::TcpStream,
     state: Arc<AppState>,
 ) -> anyhow::Result<()> {
-    let (reader, mut writer) = stream.split();
+    let (reader, mut writer) = stream.into_split();
     let mut buf_reader = BufReader::new(reader);
-    let request = match read_request(&mut buf_reader).await {
-        Ok(request) => request,
-        Err(response) => {
-            send_response(&mut writer, response).await?;
-            return Ok(());
-        }
-    };
 
-    let response = dispatch_request(&request, &state).await;
-    send_response(&mut writer, response).await?;
+    loop {
+        let request = match read_request(&mut buf_reader).await {
+            Ok(Some(request)) => request,
+            Ok(None) => break,
+            Err(response) => {
+                send_response(&mut writer, response.with_connection_close()).await?;
+                break;
+            }
+        };
+
+        let should_close = request.close_connection;
+        let mut response = dispatch_request(&request, &state).await;
+        if should_close {
+            response = response.with_connection_close();
+        }
+        send_response(&mut writer, response).await?;
+
+        if should_close {
+            break;
+        }
+    }
+
     Ok(())
 }
 
 async fn read_request(
     reader: &mut (impl AsyncBufReadExt + AsyncReadExt + Unpin),
-) -> std::result::Result<ParsedRequest, WireResponse> {
+) -> std::result::Result<Option<ParsedRequest>, WireResponse> {
     const MAX_BODY_SIZE: usize = 4 * 1024 * 1024; // 4 MiB
     const MAX_HEADER_COUNT: usize = 64;
 
     let mut request_line = String::new();
-    reader
+    let bytes_read = reader
         .read_line(&mut request_line)
         .await
         .map_err(|_| WireResponse::json(400, error_response("bad request")))?;
+    if bytes_read == 0 && request_line.is_empty() {
+        return Ok(None);
+    }
 
-    let (method, path) = parse_request_line(&request_line)?;
+    let (method, path, version) = parse_request_line(&request_line)?;
 
-    let mut content_length = 0usize;
+    let mut content_length: Option<usize> = None;
+    let mut transfer_encoding_chunked = false;
+    let mut connection_close = matches!(version, HttpVersion::Http10);
+    let mut connection_close_header = false;
+    let mut connection_keep_alive = false;
     let mut header_count = 0usize;
     loop {
         let mut line = String::new();
-        reader
+        let bytes_read = reader
             .read_line(&mut line)
             .await
             .map_err(|_| WireResponse::json(400, error_response("bad request")))?;
+        if bytes_read == 0 {
+            return Err(WireResponse::json(400, error_response("bad request")));
+        }
         if line.trim().is_empty() {
             break;
         }
@@ -1338,38 +1402,184 @@ async fn read_request(
             return Err(WireResponse::json(400, error_response("malformed header")));
         };
 
-        if name.trim().eq_ignore_ascii_case("content-length") {
-            content_length = value.trim().parse::<usize>().map_err(|_| {
+        let header_name = name.trim();
+        let header_value = value.trim();
+        if header_name.eq_ignore_ascii_case("content-length") {
+            if transfer_encoding_chunked || content_length.is_some() {
+                return Err(WireResponse::json(
+                    400,
+                    error_response("conflicting request body framing"),
+                ));
+            }
+            content_length = Some(header_value.parse::<usize>().map_err(|_| {
                 WireResponse::json(400, error_response("invalid content-length header"))
-            })?;
+            })?);
+        } else if header_name.eq_ignore_ascii_case("transfer-encoding") {
+            if content_length.is_some() || transfer_encoding_chunked {
+                return Err(WireResponse::json(
+                    400,
+                    error_response("conflicting request body framing"),
+                ));
+            }
+
+            let mut saw_chunked = false;
+            for token in header_value.split(',') {
+                let token = token.trim();
+                if token.eq_ignore_ascii_case("chunked") {
+                    saw_chunked = true;
+                } else if !token.is_empty() {
+                    return Err(WireResponse::json(
+                        400,
+                        error_response("unsupported transfer-encoding"),
+                    ));
+                }
+            }
+
+            if !saw_chunked {
+                return Err(WireResponse::json(
+                    400,
+                    error_response("unsupported transfer-encoding"),
+                ));
+            }
+            transfer_encoding_chunked = true;
+        } else if header_name.eq_ignore_ascii_case("connection") {
+            for token in header_value.split(',') {
+                let token = token.trim();
+                if token.eq_ignore_ascii_case("close") {
+                    connection_close_header = true;
+                    connection_close = true;
+                } else if token.eq_ignore_ascii_case("keep-alive") {
+                    connection_keep_alive = true;
+                }
+            }
         }
     }
 
-    if content_length > MAX_BODY_SIZE {
-        return Err(WireResponse::json(
-            413,
-            error_response("request body too large"),
-        ));
+    if connection_keep_alive && !connection_close_header {
+        connection_close = false;
     }
 
-    let mut body = vec![0u8; content_length];
-    if content_length > 0 {
-        reader
-            .read_exact(&mut body)
-            .await
-            .map_err(|_| WireResponse::json(400, error_response("bad request")))?;
-    }
+    let body = if transfer_encoding_chunked {
+        read_chunked_body(reader, MAX_BODY_SIZE).await?
+    } else {
+        let content_length = content_length.unwrap_or(0);
+        if content_length > MAX_BODY_SIZE {
+            return Err(WireResponse::json(
+                413,
+                error_response("request body too large"),
+            ));
+        }
 
-    Ok(ParsedRequest {
+        let mut body = vec![0u8; content_length];
+        if content_length > 0 {
+            reader
+                .read_exact(&mut body)
+                .await
+                .map_err(|_| WireResponse::json(400, error_response("bad request")))?;
+        }
+        body
+    };
+
+    Ok(Some(ParsedRequest {
         method,
         path,
         body: String::from_utf8_lossy(&body).into_owned(),
-    })
+        close_connection: connection_close,
+    }))
 }
 
-fn parse_request_line(line: &str) -> std::result::Result<(String, String), WireResponse> {
+async fn read_chunked_body(
+    reader: &mut (impl AsyncBufReadExt + AsyncReadExt + Unpin),
+    max_body_size: usize,
+) -> std::result::Result<Vec<u8>, WireResponse> {
+    let mut body = Vec::new();
+    let mut too_large = false;
+
+    loop {
+        let mut line = String::new();
+        let bytes_read = reader
+            .read_line(&mut line)
+            .await
+            .map_err(|_| WireResponse::json(400, error_response("bad request")))?;
+        if bytes_read == 0 {
+            return Err(WireResponse::json(400, error_response("bad request")));
+        }
+
+        let line = line.trim_end_matches(['\r', '\n']);
+        let size_field = line.split_once(';').map(|(size, _)| size).unwrap_or(line);
+        if size_field.is_empty() {
+            return Err(WireResponse::json(400, error_response("bad request")));
+        }
+
+        let chunk_size = usize::from_str_radix(size_field, 16)
+            .map_err(|_| WireResponse::json(400, error_response("invalid chunked body framing")))?;
+        if chunk_size == 0 {
+            loop {
+                let mut trailer = String::new();
+                let bytes_read = reader
+                    .read_line(&mut trailer)
+                    .await
+                    .map_err(|_| WireResponse::json(400, error_response("bad request")))?;
+                if bytes_read == 0 {
+                    return Err(WireResponse::json(400, error_response("bad request")));
+                }
+                if trailer.trim().is_empty() {
+                    break;
+                }
+            }
+            if too_large {
+                return Err(WireResponse::json(
+                    413,
+                    error_response("request body too large"),
+                ));
+            }
+            break;
+        }
+
+        let mut chunk = vec![0u8; chunk_size];
+        reader
+            .read_exact(&mut chunk)
+            .await
+            .map_err(|_| WireResponse::json(400, error_response("bad request")))?;
+
+        let mut crlf = [0u8; 2];
+        reader
+            .read_exact(&mut crlf)
+            .await
+            .map_err(|_| WireResponse::json(400, error_response("bad request")))?;
+        if crlf != *b"\r\n" {
+            return Err(WireResponse::json(
+                400,
+                error_response("invalid chunked body framing"),
+            ));
+        }
+
+        if too_large {
+            continue;
+        }
+
+        if body.len().saturating_add(chunk_size) > max_body_size {
+            too_large = true;
+            continue;
+        }
+
+        body.extend_from_slice(&chunk);
+    }
+
+    Ok(body)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HttpVersion {
+    Http10,
+    Http11,
+}
+
+fn parse_request_line(
+    line: &str,
+) -> std::result::Result<(String, String, HttpVersion), WireResponse> {
     let line = line.trim_end_matches(['\r', '\n']);
-    let mut parts = line.split(' ');
+    let mut parts = line.split_whitespace();
     let Some(method) = parts.next() else {
         return Err(WireResponse::json(400, error_response("bad request")));
     };
@@ -1390,7 +1600,13 @@ fn parse_request_line(line: &str) -> std::result::Result<(String, String), WireR
         return Err(WireResponse::json(400, error_response("bad request")));
     }
 
-    Ok((method.to_string(), path.to_string()))
+    let version = match version {
+        "HTTP/1.0" => HttpVersion::Http10,
+        "HTTP/1.1" => HttpVersion::Http11,
+        _ => unreachable!(),
+    };
+
+    Ok((method.to_string(), path.to_string(), version))
 }
 
 fn split_path_and_query(path: &str) -> (&str, Option<&str>) {
@@ -1455,6 +1671,7 @@ fn hex_value(byte: u8) -> Option<u8> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RouteKind {
+    ApiIndex,
     VerifyProof,
     ProvidersCollection,
     ProviderDescriptor,
@@ -1490,6 +1707,7 @@ enum RouteKind {
 impl RouteKind {
     fn allowed_methods(self) -> &'static [&'static str] {
         match self {
+            Self::ApiIndex => &["GET", "HEAD"],
             Self::VerifyProof => &["POST"],
             Self::ProvidersCollection => &["GET", "HEAD"],
             Self::ProviderDescriptor => &["GET", "HEAD"],
@@ -1535,6 +1753,7 @@ fn classify_route_kind(path: &str) -> RouteKind {
         .collect();
 
     match segments.as_slice() {
+        ["v1"] => RouteKind::ApiIndex,
         ["v1", "verify", "proof"] => RouteKind::VerifyProof,
         ["v1", "providers"] => RouteKind::ProvidersCollection,
         ["v1", "providers", _, "health"] => RouteKind::ProviderHealth,
@@ -1604,6 +1823,122 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
     let path = path.trim_end_matches('/');
 
     match (method, path) {
+        // GET /v1
+        ("GET", "/v1") => (
+            200,
+            ApiResponse::ok(serde_json::json!({
+                "service": "WorldForge REST API",
+                "version": "v1",
+                "routes": [
+                    {
+                        "path": "/v1/providers",
+                        "methods": ["GET", "HEAD"],
+                        "summary": "List providers and filter by capability or health",
+                    },
+                    {
+                        "path": "/v1/providers/{name}",
+                        "methods": ["GET", "HEAD"],
+                        "summary": "Describe a provider",
+                    },
+                    {
+                        "path": "/v1/providers/{name}/health",
+                        "methods": ["GET", "HEAD"],
+                        "summary": "Run a provider health check",
+                    },
+                    {
+                        "path": "/v1/providers/{name}/estimate",
+                        "methods": ["POST"],
+                        "summary": "Estimate provider operation cost",
+                    },
+                    {
+                        "path": "/v1/evals/suites",
+                        "methods": ["GET", "HEAD"],
+                        "summary": "List built-in evaluation suites",
+                    },
+                    {
+                        "path": "/v1/evals/run",
+                        "methods": ["POST"],
+                        "summary": "Run an evaluation suite",
+                    },
+                    {
+                        "path": "/v1/worlds",
+                        "methods": ["GET", "HEAD", "POST"],
+                        "summary": "List or create worlds",
+                    },
+                    {
+                        "path": "/v1/worlds/import",
+                        "methods": ["POST"],
+                        "summary": "Import a world snapshot",
+                    },
+                    {
+                        "path": "/v1/worlds/{id}",
+                        "methods": ["GET", "HEAD", "DELETE"],
+                        "summary": "Inspect or delete a world",
+                    },
+                    {
+                        "path": "/v1/worlds/{id}/predict",
+                        "methods": ["POST"],
+                        "summary": "Predict the next world state",
+                    },
+                    {
+                        "path": "/v1/worlds/{id}/plan",
+                        "methods": ["POST"],
+                        "summary": "Plan actions toward a goal",
+                    },
+                    {
+                        "path": "/v1/worlds/{id}/execute-plan",
+                        "methods": ["POST"],
+                        "summary": "Execute a stored or inline plan",
+                    },
+                    {
+                        "path": "/v1/worlds/{id}/evaluate",
+                        "methods": ["POST"],
+                        "summary": "Evaluate a world against a suite",
+                    },
+                    {
+                        "path": "/v1/worlds/{id}/verify",
+                        "methods": ["POST"],
+                        "summary": "Generate verification artifacts",
+                    },
+                    {
+                        "path": "/v1/worlds/{id}/history",
+                        "methods": ["GET", "HEAD"],
+                        "summary": "Inspect world history",
+                    },
+                    {
+                        "path": "/v1/worlds/{id}/plans",
+                        "methods": ["GET", "HEAD"],
+                        "summary": "List stored plans",
+                    },
+                    {
+                        "path": "/v1/worlds/{id}/plans/{plan_id}",
+                        "methods": ["GET", "HEAD", "DELETE"],
+                        "summary": "Inspect or delete a stored plan",
+                    },
+                    {
+                        "path": "/v1/worlds/{id}/objects",
+                        "methods": ["GET", "HEAD", "POST"],
+                        "summary": "List or add objects",
+                    },
+                    {
+                        "path": "/v1/worlds/{id}/objects/{object_id}",
+                        "methods": ["GET", "HEAD", "PATCH", "DELETE"],
+                        "summary": "Inspect, update, or remove an object",
+                    },
+                    {
+                        "path": "/v1/compare",
+                        "methods": ["POST"],
+                        "summary": "Compare predictions across providers",
+                    },
+                    {
+                        "path": "/v1/verify/proof",
+                        "methods": ["POST"],
+                        "summary": "Verify proofs and bundles",
+                    },
+                ],
+            })),
+        ),
+
         // POST /v1/verify/proof
         ("POST", "/v1/verify/proof") => match serde_json::from_str::<VerifyProofRequest>(body) {
             Ok(req) => {
@@ -3112,8 +3447,16 @@ async fn send_response(
     };
     let content_length = response.content_length.unwrap_or(response.body.len());
     let mut raw = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n",
-        response.status, status_text, response.content_type, content_length
+        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: {}\r\n",
+        response.status,
+        status_text,
+        response.content_type,
+        content_length,
+        if response.close_connection {
+            "close"
+        } else {
+            "keep-alive"
+        }
     );
     for (name, value) in response.headers {
         raw.push_str(name);
@@ -3130,12 +3473,50 @@ async fn send_response(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Mutex, OnceLock};
+
     use super::*;
     use worldforge_core::prediction::StoredPlanRecord;
     use worldforge_core::state::FileStateStore;
     use worldforge_core::types::{DType, Device, TensorData};
     use worldforge_providers::MockProvider;
     use worldforge_verify::{MockVerifier, ZkVerifier};
+
+    fn env_mutex() -> &'static Mutex<()> {
+        static ENV_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+        ENV_MUTEX.get_or_init(|| Mutex::new(()))
+    }
+
+    fn with_env_vars<F>(vars: &[(&str, Option<&str>)], test: F)
+    where
+        F: FnOnce(),
+    {
+        let _guard = env_mutex().lock().unwrap();
+        let saved: Vec<_> = vars
+            .iter()
+            .map(|(name, _)| ((*name).to_string(), std::env::var(name).ok()))
+            .collect();
+
+        for (name, value) in vars {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(test));
+
+        for (name, value) in saved {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(&name),
+            }
+        }
+
+        if let Err(panic) = result {
+            std::panic::resume_unwind(panic);
+        }
+    }
 
     fn test_state() -> Arc<AppState> {
         test_state_with_provider("mock")
@@ -3507,6 +3888,82 @@ mod tests {
                 },
                 format: StateFileFormat::Json,
             }
+        );
+    }
+
+    #[test]
+    fn test_server_config_resolves_s3_store_from_aws_env_fallbacks() {
+        with_env_vars(
+            &[
+                ("AWS_REGION", Some("us-west-2")),
+                ("AWS_DEFAULT_REGION", None),
+                ("AWS_ACCESS_KEY_ID", Some("env-access")),
+                ("AWS_SECRET_ACCESS_KEY", Some("env-secret")),
+                ("AWS_SESSION_TOKEN", Some("env-session")),
+            ],
+            || {
+                let config = ServerConfig {
+                    state_backend: "s3".to_string(),
+                    state_s3_bucket: Some("worldforge-states".to_string()),
+                    ..ServerConfig::default()
+                };
+
+                assert_eq!(
+                    config.resolve_state_store_kind().unwrap(),
+                    StateStoreKind::S3 {
+                        config: S3Config {
+                            bucket: "worldforge-states".to_string(),
+                            region: "us-west-2".to_string(),
+                            endpoint: None,
+                            access_key_id: "env-access".to_string(),
+                            secret_access_key: "env-secret".to_string(),
+                            session_token: Some("env-session".to_string()),
+                            prefix: String::new(),
+                        },
+                        format: StateFileFormat::Json,
+                    }
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn test_server_config_explicit_s3_values_override_aws_env_fallbacks() {
+        with_env_vars(
+            &[
+                ("AWS_REGION", Some("us-west-2")),
+                ("AWS_DEFAULT_REGION", Some("eu-west-1")),
+                ("AWS_ACCESS_KEY_ID", Some("env-access")),
+                ("AWS_SECRET_ACCESS_KEY", Some("env-secret")),
+                ("AWS_SESSION_TOKEN", Some("env-session")),
+            ],
+            || {
+                let config = ServerConfig {
+                    state_backend: "s3".to_string(),
+                    state_s3_bucket: Some("worldforge-states".to_string()),
+                    state_s3_region: Some("us-east-1".to_string()),
+                    state_s3_access_key_id: Some("cli-access".to_string()),
+                    state_s3_secret_access_key: Some("cli-secret".to_string()),
+                    state_s3_session_token: Some("cli-session".to_string()),
+                    ..ServerConfig::default()
+                };
+
+                assert_eq!(
+                    config.resolve_state_store_kind().unwrap(),
+                    StateStoreKind::S3 {
+                        config: S3Config {
+                            bucket: "worldforge-states".to_string(),
+                            region: "us-east-1".to_string(),
+                            endpoint: None,
+                            access_key_id: "cli-access".to_string(),
+                            secret_access_key: "cli-secret".to_string(),
+                            session_token: Some("cli-session".to_string()),
+                            prefix: String::new(),
+                        },
+                        format: StateFileFormat::Json,
+                    }
+                );
+            },
         );
     }
 

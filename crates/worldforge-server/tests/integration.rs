@@ -521,6 +521,112 @@ async fn test_live_http_rejects_too_many_headers() {
 }
 
 #[tokio::test]
+async fn test_live_http_reuses_keep_alive_connection_across_requests() {
+    let server = spawn_test_server().await;
+    let mut stream = raw_http_connection(server.address).await;
+
+    let create_request = build_http_request_with_connection(
+        "POST",
+        "/v1/worlds",
+        &[("Content-Type", "application/json")],
+        r#"{"name":"keepalive-world","provider":"mock"}"#,
+        Some("keep-alive"),
+    );
+    send_http_request(&mut stream, &create_request).await;
+
+    let create_response = read_http_response(&mut stream).await;
+    assert_eq!(create_response.status, 201);
+    let created: Value = serde_json::from_str(&create_response.body).unwrap();
+    let world_id = created["data"]["id"].as_str().unwrap().to_string();
+
+    let follow_up_request = build_http_request_with_connection(
+        "GET",
+        &format!("/v1/worlds/{world_id}"),
+        &[],
+        "",
+        Some("keep-alive"),
+    );
+    send_http_request(&mut stream, &follow_up_request).await;
+
+    let follow_up_response = read_http_response(&mut stream).await;
+    assert_eq!(follow_up_response.status, 200);
+    let world: Value = serde_json::from_str(&follow_up_response.body).unwrap();
+    assert_eq!(world["data"]["id"], world_id);
+}
+
+#[tokio::test]
+async fn test_live_http_accepts_chunked_post_body() {
+    let server = spawn_test_server().await;
+    let mut stream = raw_http_connection(server.address).await;
+
+    let body = serde_json::json!({
+        "name": "chunked-world",
+        "provider": "mock",
+    })
+    .to_string();
+    let request = build_chunked_http_request(
+        "POST",
+        "/v1/worlds",
+        &[("Content-Type", "application/json")],
+        &body,
+        Some("close"),
+    );
+    send_http_request(&mut stream, &request).await;
+
+    let response = read_http_response(&mut stream).await;
+    assert_eq!(response.status, 201);
+
+    let payload: Value = serde_json::from_str(&response.body).unwrap();
+    assert_eq!(payload["success"], true);
+    assert_eq!(payload["data"]["name"], "chunked-world");
+}
+
+#[tokio::test]
+async fn test_live_http_rejects_oversized_chunked_post_body() {
+    let server = spawn_test_server().await;
+    let mut stream = raw_http_connection(server.address).await;
+
+    let oversized_payload = format!(
+        r#"{{"name":"oversized-chunked-world","provider":"mock","padding":"{}"}}"#,
+        "a".repeat(4 * 1024 * 1024 + 1)
+    );
+    let request = build_chunked_http_request(
+        "POST",
+        "/v1/worlds",
+        &[("Content-Type", "application/json")],
+        &oversized_payload,
+        Some("close"),
+    );
+    send_http_request(&mut stream, &request).await;
+
+    let response = read_http_response(&mut stream).await;
+    assert_eq!(response.status, 413);
+
+    let payload: Value = serde_json::from_str(&response.body).unwrap();
+    assert_eq!(payload["success"], false);
+    assert!(payload["error"]
+        .as_str()
+        .unwrap()
+        .contains("request body too large"));
+}
+
+#[tokio::test]
+async fn test_live_http_exposes_api_index_at_v1() {
+    let server = spawn_test_server().await;
+    let request = build_http_request("GET", "/v1", &[], "");
+
+    let response = raw_http_response(server.address, &request).await;
+    assert_eq!(response.status, 200);
+
+    let payload: Value = serde_json::from_str(&response.body).unwrap();
+    assert!(payload["success"].as_bool().unwrap());
+    let data = payload["data"].to_string();
+    assert!(data.contains("/v1/worlds"));
+    assert!(data.contains("/v1/providers"));
+    assert!(data.contains("/v1/evals"));
+}
+
+#[tokio::test]
 async fn test_live_http_reports_405_for_known_path_wrong_method() {
     let server = spawn_test_server().await;
     let request = build_http_request("PATCH", "/v1/providers", &[], "");
@@ -742,11 +848,75 @@ async fn raw_http_response(address: SocketAddr, request: &str) -> RawHttpRespons
     parse_raw_http_response(&response)
 }
 
+async fn raw_http_connection(address: SocketAddr) -> TcpStream {
+    TcpStream::connect(address).await.unwrap()
+}
+
+async fn send_http_request(stream: &mut TcpStream, request: &str) {
+    stream.write_all(request.as_bytes()).await.unwrap();
+    stream.flush().await.unwrap();
+}
+
+async fn read_http_response(stream: &mut TcpStream) -> RawHttpResponse {
+    let mut header_bytes = Vec::new();
+    let mut byte = [0u8; 1];
+
+    loop {
+        let read = stream.read(&mut byte).await.unwrap();
+        assert!(read > 0, "unexpected EOF while reading HTTP response");
+        header_bytes.push(byte[0]);
+        if header_bytes.ends_with(b"\r\n\r\n") {
+            break;
+        }
+    }
+
+    let header_text = String::from_utf8(header_bytes).unwrap();
+    let mut lines = header_text.lines();
+    let status = lines
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse().ok())
+        .unwrap_or(0);
+
+    let headers = lines
+        .filter_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            Some((name.trim().to_ascii_lowercase(), value.trim().to_string()))
+        })
+        .collect::<HashMap<_, _>>();
+
+    let content_length = headers
+        .get("content-length")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+
+    let mut body = vec![0u8; content_length];
+    if content_length > 0 {
+        stream.read_exact(&mut body).await.unwrap();
+    }
+
+    RawHttpResponse {
+        status,
+        headers,
+        body: String::from_utf8(body).unwrap_or_default(),
+    }
+}
+
 fn build_http_request(
     method: &str,
     path: &str,
     extra_headers: &[(&str, &str)],
     body: &str,
+) -> String {
+    build_http_request_with_connection(method, path, extra_headers, body, Some("close"))
+}
+
+fn build_http_request_with_connection(
+    method: &str,
+    path: &str,
+    extra_headers: &[(&str, &str)],
+    body: &str,
+    connection: Option<&str>,
 ) -> String {
     let has_content_length = extra_headers
         .iter()
@@ -764,9 +934,56 @@ fn build_http_request(
         request.push_str(&format!("Content-Length: {}\r\n", body.len()));
     }
 
-    request.push_str("Connection: close\r\n\r\n");
+    if let Some(connection) = connection {
+        request.push_str("Connection: ");
+        request.push_str(connection);
+        request.push_str("\r\n");
+    }
+
+    request.push_str("\r\n");
     request.push_str(body);
     request
+}
+
+fn build_chunked_http_request(
+    method: &str,
+    path: &str,
+    extra_headers: &[(&str, &str)],
+    body: &str,
+    connection: Option<&str>,
+) -> String {
+    let mut request = format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\n");
+
+    for (name, value) in extra_headers {
+        request.push_str(name);
+        request.push_str(": ");
+        request.push_str(value);
+        request.push_str("\r\n");
+    }
+
+    request.push_str("Transfer-Encoding: chunked\r\n");
+    if let Some(connection) = connection {
+        request.push_str("Connection: ");
+        request.push_str(connection);
+        request.push_str("\r\n");
+    }
+
+    request.push_str("\r\n");
+    request.push_str(&encode_chunked_body(body));
+    request
+}
+
+fn encode_chunked_body(body: &str) -> String {
+    const CHUNK_SIZE: usize = 16 * 1024;
+
+    let mut encoded = String::new();
+    for chunk in body.as_bytes().chunks(CHUNK_SIZE) {
+        encoded.push_str(&format!("{:X}\r\n", chunk.len()));
+        encoded.push_str(std::str::from_utf8(chunk).unwrap());
+        encoded.push_str("\r\n");
+    }
+    encoded.push_str("0\r\n\r\n");
+    encoded
 }
 
 fn parse_raw_http_response(response: &str) -> RawHttpResponse {
