@@ -620,10 +620,87 @@ async fn test_live_http_exposes_api_index_at_v1() {
 
     let payload: Value = serde_json::from_str(&response.body).unwrap();
     assert!(payload["success"].as_bool().unwrap());
-    let data = payload["data"].to_string();
-    assert!(data.contains("/v1/worlds"));
-    assert!(data.contains("/v1/providers"));
-    assert!(data.contains("/v1/evals"));
+    let routes = payload["data"]["routes"].as_array().unwrap();
+
+    let route_map: HashMap<&str, Vec<&str>> = routes
+        .iter()
+        .map(|route| {
+            let path = route["path"].as_str().unwrap();
+            let methods = route["methods"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|method| method.as_str().unwrap())
+                .collect();
+            (path, methods)
+        })
+        .collect();
+
+    let expected_routes: [(&str, &[&str]); 19] = [
+        ("/v1/openapi.json", &["GET", "HEAD"]),
+        ("/v1/providers", &["GET", "HEAD"]),
+        ("/v1/providers/{name}", &["GET", "HEAD"]),
+        ("/v1/providers/{name}/generate", &["POST"]),
+        ("/v1/providers/{name}/embed", &["POST"]),
+        ("/v1/providers/{name}/reason", &["POST"]),
+        ("/v1/providers/{name}/transfer", &["POST"]),
+        ("/v1/evals/suites", &["GET", "HEAD"]),
+        ("/v1/worlds", &["GET", "HEAD", "POST"]),
+        ("/v1/worlds/import", &["POST"]),
+        ("/v1/worlds/{id}/export", &["GET", "HEAD"]),
+        ("/v1/worlds/{id}/restore", &["POST"]),
+        ("/v1/worlds/{id}/fork", &["POST"]),
+        ("/v1/worlds/{id}/predict", &["POST"]),
+        ("/v1/worlds/{id}/reason", &["POST"]),
+        ("/v1/worlds/{id}/plan", &["POST"]),
+        ("/v1/worlds/{id}/verify", &["POST"]),
+        ("/v1/compare", &["POST"]),
+        ("/v1/verify/proof", &["POST"]),
+    ];
+
+    for (path, methods) in expected_routes {
+        let actual_methods = route_map
+            .get(path)
+            .unwrap_or_else(|| panic!("missing route from /v1 index: {path}"));
+        assert_eq!(actual_methods, &methods);
+    }
+}
+
+#[tokio::test]
+async fn test_live_http_exposes_openapi_contract_document() {
+    let server = spawn_test_server().await;
+    let request = build_http_request("GET", "/v1/openapi.json", &[], "");
+
+    let response = raw_http_response(server.address, &request).await;
+    assert_eq!(response.status, 200);
+
+    let payload: Value = serde_json::from_str(&response.body).unwrap();
+    assert_eq!(payload["openapi"], "3.1.0");
+    assert_eq!(payload["info"]["title"], "WorldForge REST API");
+    let paths = payload["paths"].as_object().unwrap();
+
+    for path in [
+        "/v1/openapi.json",
+        "/v1/providers",
+        "/v1/providers/{name}/generate",
+        "/v1/providers/{name}/embed",
+        "/v1/providers/{name}/reason",
+        "/v1/providers/{name}/transfer",
+        "/v1/evals/suites",
+        "/v1/worlds",
+        "/v1/worlds/{id}/export",
+        "/v1/worlds/{id}/restore",
+        "/v1/worlds/{id}/fork",
+        "/v1/worlds/{id}/predict",
+        "/v1/worlds/{id}/reason",
+        "/v1/compare",
+        "/v1/verify/proof",
+    ] {
+        assert!(
+            paths.contains_key(path),
+            "missing path from openapi contract: {path}"
+        );
+    }
 }
 
 #[tokio::test]

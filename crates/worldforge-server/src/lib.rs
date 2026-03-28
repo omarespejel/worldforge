@@ -1774,6 +1774,46 @@ const ROUTE_CATALOG: &[RouteDocumentation] = &[
         }),
     },
     RouteDocumentation {
+        path: "/v1/providers/{name}/generate",
+        methods: POST_METHODS,
+        summary: "Generate a clip directly from a prompt",
+        query_parameters: EMPTY_QUERY_PARAMETERS,
+        request_body: Some(RouteRequestBodyDoc {
+            methods: POST_METHODS,
+            description: "Generate a clip from a prompt using the selected provider.",
+        }),
+    },
+    RouteDocumentation {
+        path: "/v1/providers/{name}/embed",
+        methods: POST_METHODS,
+        summary: "Build an embedding from text and/or video",
+        query_parameters: EMPTY_QUERY_PARAMETERS,
+        request_body: Some(RouteRequestBodyDoc {
+            methods: POST_METHODS,
+            description: "Embed text, video, or both with the selected provider.",
+        }),
+    },
+    RouteDocumentation {
+        path: "/v1/providers/{name}/reason",
+        methods: POST_METHODS,
+        summary: "Reason over world state or video input",
+        query_parameters: EMPTY_QUERY_PARAMETERS,
+        request_body: Some(RouteRequestBodyDoc {
+            methods: POST_METHODS,
+            description: "Ask a provider to reason about state, video, or both.",
+        }),
+    },
+    RouteDocumentation {
+        path: "/v1/providers/{name}/transfer",
+        methods: POST_METHODS,
+        summary: "Transfer spatial controls onto a clip",
+        query_parameters: EMPTY_QUERY_PARAMETERS,
+        request_body: Some(RouteRequestBodyDoc {
+            methods: POST_METHODS,
+            description: "Transfer spatial controls onto a source clip.",
+        }),
+    },
+    RouteDocumentation {
         path: "/v1/evals/suites",
         methods: GET_HEAD_METHODS,
         summary: "List built-in evaluation suites",
@@ -2018,13 +2058,27 @@ fn openapi_document() -> serde_json::Value {
         "paths": paths,
         "components": {
             "schemas": {
-                "GenericObject": {
+                "ApiEnvelope": {
                     "type": "object",
-                    "additionalProperties": true,
+                    "required": ["success"],
+                    "properties": {
+                        "success": { "type": "boolean" },
+                        "data": {
+                            "description": "Route-specific response payload.",
+                        },
+                        "error": {
+                            "type": ["string", "null"],
+                        },
+                        "error_details": {
+                            "type": ["object", "null"],
+                            "additionalProperties": true,
+                        },
+                    },
                 },
-                "GenericArray": {
-                    "type": "array",
-                    "items": { "type": "object" },
+                "OpenApiDocument": {
+                    "type": "object",
+                    "description": "OpenAPI 3.1 document rendered directly by the server.",
+                    "additionalProperties": true,
                 },
                 "ErrorResponse": {
                     "type": "object",
@@ -2173,27 +2227,15 @@ fn sanitize_openapi_token(token: &str) -> String {
 }
 
 fn openapi_response_schema(path: &str, method: &str) -> serde_json::Value {
-    if (method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD"))
-        && matches!(
-            path,
-            "/v1/providers"
-                | "/v1/evals/suites"
-                | "/v1/worlds"
-                | "/v1/worlds/{id}/history"
-                | "/v1/worlds/{id}/plans"
-                | "/v1/worlds/{id}/objects"
-        )
-    {
+    if path == "/v1/openapi.json" {
         return serde_json::json!({
-            "type": "array",
-            "items": { "type": "object" },
+            "type": "object",
+            "additionalProperties": true,
         });
     }
 
-    serde_json::json!({
-        "type": "object",
-        "additionalProperties": true,
-    })
+    let _ = method;
+    serde_json::json!({ "$ref": "#/components/schemas/ApiEnvelope" })
 }
 
 fn openapi_success_status(path: &str, method: &str) -> u16 {
@@ -4587,12 +4629,21 @@ mod tests {
             .collect();
 
         for (path, methods) in [
+            ("/v1/openapi.json", &["GET", "HEAD"][..]),
             ("/v1/providers", &["GET", "HEAD"][..]),
             ("/v1/providers/{name}", &["GET", "HEAD"][..]),
+            ("/v1/providers/{name}/generate", &["POST"][..]),
+            ("/v1/providers/{name}/embed", &["POST"][..]),
+            ("/v1/providers/{name}/reason", &["POST"][..]),
+            ("/v1/providers/{name}/transfer", &["POST"][..]),
             ("/v1/evals/suites", &["GET", "HEAD"][..]),
             ("/v1/worlds", &["GET", "HEAD", "POST"][..]),
             ("/v1/worlds/import", &["POST"][..]),
+            ("/v1/worlds/{id}/export", &["GET", "HEAD"][..]),
+            ("/v1/worlds/{id}/restore", &["POST"][..]),
+            ("/v1/worlds/{id}/fork", &["POST"][..]),
             ("/v1/worlds/{id}/predict", &["POST"][..]),
+            ("/v1/worlds/{id}/reason", &["POST"][..]),
             ("/v1/worlds/{id}/plan", &["POST"][..]),
             ("/v1/worlds/{id}/verify", &["POST"][..]),
             ("/v1/compare", &["POST"][..]),
@@ -4647,6 +4698,10 @@ mod tests {
         let paths = value["paths"].as_object().unwrap();
         assert_eq!(paths.len(), route_catalog().len());
         assert!(paths.contains_key("/v1/providers"));
+        assert!(paths.contains_key("/v1/providers/{name}/generate"));
+        assert!(paths.contains_key("/v1/providers/{name}/embed"));
+        assert!(paths.contains_key("/v1/providers/{name}/reason"));
+        assert!(paths.contains_key("/v1/providers/{name}/transfer"));
         assert!(paths.contains_key("/v1/worlds"));
         assert!(paths.contains_key("/v1/worlds/{id}/fork"));
         assert!(paths.contains_key("/v1/worlds/{id}/restore"));
@@ -4672,6 +4727,10 @@ mod tests {
             world_create["responses"]["201"]["description"],
             "Successful response"
         );
+        assert_eq!(
+            world_create["responses"]["201"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/ApiEnvelope"
+        );
 
         let export = &paths["/v1/worlds/{id}/export"]["get"];
         let export_params = export["parameters"].as_array().unwrap();
@@ -4694,6 +4753,12 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Fork the world"));
+
+        let generate = &paths["/v1/providers/{name}/generate"]["post"];
+        assert!(generate["requestBody"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("Generate a clip"));
     }
 
     #[tokio::test]
