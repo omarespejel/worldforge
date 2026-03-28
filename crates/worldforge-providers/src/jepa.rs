@@ -19,7 +19,10 @@ use std::time::Instant;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use worldforge_core::action::{evaluate_condition, Action, ActionSpaceType, Condition, Weather};
+use worldforge_core::action::{
+    evaluate_condition, Action, ActionSpaceType, ActionTranslator, Condition, ProviderAction,
+    Weather,
+};
 use worldforge_core::error::{Result, WorldForgeError};
 use worldforge_core::goal_image;
 use worldforge_core::guardrail::{evaluate_guardrails, has_blocking_violation};
@@ -233,6 +236,222 @@ impl JepaProvider {
             asset_fingerprint: Some(assets.fingerprint),
             backend: Some(self.backend.as_str().to_string()),
         }
+    }
+
+    fn action_payload(&self, action: &Action) -> serde_json::Value {
+        serde_json::json!({
+            "kind": "jepa_latent_action",
+            "model_family": "jepa",
+            "backend": self.backend.as_str(),
+            "space": "continuous",
+            "control": self.control_payload(action),
+        })
+    }
+
+    fn control_payload(&self, action: &Action) -> serde_json::Value {
+        match action {
+            Action::Move { target, speed } => serde_json::json!({
+                "primitive": "move",
+                "target": self.position_payload(target),
+                "speed": speed,
+                "motion_profile": "latent_interpolation",
+            }),
+            Action::Grasp { object, grip_force } => serde_json::json!({
+                "primitive": "grasp",
+                "object": object,
+                "grip_force": grip_force,
+                "manipulation": "object_attachment",
+            }),
+            Action::Release { object } => serde_json::json!({
+                "primitive": "release",
+                "object": object,
+                "manipulation": "detach",
+            }),
+            Action::Push {
+                object,
+                direction,
+                force,
+            } => serde_json::json!({
+                "primitive": "push",
+                "object": object,
+                "direction": self.vec3_payload(direction),
+                "force": force,
+                "motion_profile": "impulse",
+            }),
+            Action::Rotate {
+                object,
+                axis,
+                angle,
+            } => serde_json::json!({
+                "primitive": "rotate",
+                "object": object,
+                "axis": self.vec3_payload(axis),
+                "angle": angle,
+                "motion_profile": "orientation_delta",
+            }),
+            Action::Place { object, target } => serde_json::json!({
+                "primitive": "place",
+                "object": object,
+                "target": self.position_payload(target),
+                "motion_profile": "settle",
+            }),
+            Action::CameraMove { delta } => serde_json::json!({
+                "primitive": "camera_move",
+                "delta": self.pose_payload(delta),
+                "motion_profile": "sensor_frame",
+            }),
+            Action::CameraLookAt { target } => serde_json::json!({
+                "primitive": "camera_look_at",
+                "target": self.position_payload(target),
+                "motion_profile": "sensor_frame",
+            }),
+            Action::Navigate { waypoints } => serde_json::json!({
+                "primitive": "navigate",
+                "waypoints": waypoints
+                    .iter()
+                    .map(|waypoint| self.position_payload(waypoint))
+                    .collect::<Vec<_>>(),
+                "motion_profile": "route_following",
+            }),
+            Action::Teleport { destination } => serde_json::json!({
+                "primitive": "teleport",
+                "destination": self.pose_payload(destination),
+                "motion_profile": "instant_reposition",
+            }),
+            Action::SetWeather { weather } => serde_json::json!({
+                "primitive": "set_weather",
+                "weather": weather,
+                "scene_bias": "environmental",
+            }),
+            Action::SetLighting { time_of_day } => serde_json::json!({
+                "primitive": "set_lighting",
+                "time_of_day": time_of_day,
+                "scene_bias": "environmental",
+            }),
+            Action::SpawnObject { template, pose } => serde_json::json!({
+                "primitive": "spawn_object",
+                "template": template,
+                "pose": self.pose_payload(pose),
+                "scene_bias": "object_creation",
+            }),
+            Action::RemoveObject { object } => serde_json::json!({
+                "primitive": "remove_object",
+                "object": object,
+                "scene_bias": "object_removal",
+            }),
+            Action::Sequence(actions) => serde_json::json!({
+                "primitive": "sequence",
+                "steps": actions
+                    .iter()
+                    .map(|nested| self.action_payload(nested))
+                    .collect::<Vec<_>>(),
+            }),
+            Action::Parallel(actions) => serde_json::json!({
+                "primitive": "parallel",
+                "steps": actions
+                    .iter()
+                    .map(|nested| self.action_payload(nested))
+                    .collect::<Vec<_>>(),
+            }),
+            Action::Conditional {
+                condition,
+                then,
+                otherwise,
+            } => serde_json::json!({
+                "primitive": "conditional",
+                "condition": self.condition_payload(condition),
+                "then": self.action_payload(then),
+                "otherwise": otherwise.as_deref().map(|nested| self.action_payload(nested)),
+            }),
+            Action::Raw { provider, data } => serde_json::json!({
+                "primitive": "provider_raw",
+                "provider": provider,
+                "payload": data,
+            }),
+        }
+    }
+
+    fn condition_payload(&self, condition: &Condition) -> serde_json::Value {
+        match condition {
+            Condition::ObjectAt {
+                object,
+                position,
+                tolerance,
+            } => serde_json::json!({
+                "kind": "object_at",
+                "object": object,
+                "position": self.position_payload(position),
+                "tolerance": tolerance,
+            }),
+            Condition::ObjectsTouching { a, b } => serde_json::json!({
+                "kind": "objects_touching",
+                "a": a,
+                "b": b,
+            }),
+            Condition::ObjectExists { object } => serde_json::json!({
+                "kind": "object_exists",
+                "object": object,
+            }),
+            Condition::And(conditions) => serde_json::json!({
+                "kind": "and",
+                "conditions": conditions
+                    .iter()
+                    .map(|nested| self.condition_payload(nested))
+                    .collect::<Vec<_>>(),
+            }),
+            Condition::Or(conditions) => serde_json::json!({
+                "kind": "or",
+                "conditions": conditions
+                    .iter()
+                    .map(|nested| self.condition_payload(nested))
+                    .collect::<Vec<_>>(),
+            }),
+            Condition::Not(inner) => serde_json::json!({
+                "kind": "not",
+                "condition": self.condition_payload(inner),
+            }),
+        }
+    }
+
+    fn position_payload(&self, position: &Position) -> serde_json::Value {
+        serde_json::json!({
+            "x": position.x,
+            "y": position.y,
+            "z": position.z,
+        })
+    }
+
+    fn vec3_payload(&self, vector: &Vec3) -> serde_json::Value {
+        serde_json::json!({
+            "x": vector.x,
+            "y": vector.y,
+            "z": vector.z,
+        })
+    }
+
+    fn pose_payload(&self, pose: &Pose) -> serde_json::Value {
+        serde_json::json!({
+            "position": self.position_payload(&pose.position),
+            "rotation": {
+                "w": pose.rotation.w,
+                "x": pose.rotation.x,
+                "y": pose.rotation.y,
+                "z": pose.rotation.z,
+            },
+        })
+    }
+}
+
+impl ActionTranslator for JepaProvider {
+    fn translate(&self, action: &Action) -> Result<ProviderAction> {
+        Ok(ProviderAction {
+            provider: self.name().to_string(),
+            data: self.action_payload(action),
+        })
+    }
+
+    fn supported_actions(&self) -> Vec<ActionSpaceType> {
+        vec![ActionSpaceType::Continuous]
     }
 }
 
@@ -2226,6 +2445,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
+    use worldforge_core::action::{ActionSpaceType, ActionTranslator};
     use worldforge_core::types::{Frame, Pose, SimTime};
 
     fn manifest_json(model_name: &str) -> String {
@@ -2391,6 +2611,52 @@ mod tests {
             let roundtrip: JepaBackend = serde_json::from_str(&json).unwrap();
             assert_eq!(backend, roundtrip);
         }
+    }
+
+    #[test]
+    fn test_jepa_action_translator_uses_continuous_latent_payloads() {
+        let provider = JepaProvider::new("/tmp/does-not-matter", JepaBackend::Burn);
+
+        assert_eq!(
+            provider.supported_actions(),
+            vec![ActionSpaceType::Continuous]
+        );
+
+        let action = Action::Sequence(vec![
+            Action::Move {
+                target: Position {
+                    x: 1.0,
+                    y: 2.0,
+                    z: 3.0,
+                },
+                speed: 0.75,
+            },
+            Action::SetWeather {
+                weather: Weather::Rain,
+            },
+        ]);
+
+        let translated = provider.translate(&action).unwrap();
+        assert_eq!(translated.provider, "jepa");
+        assert_eq!(translated.data["kind"], "jepa_latent_action");
+        assert_eq!(translated.data["backend"], "burn");
+        assert_eq!(translated.data["space"], "continuous");
+        assert_eq!(translated.data["control"]["primitive"], "sequence");
+        assert_eq!(
+            translated.data["control"]["steps"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            translated.data["control"]["steps"][0]["control"]["primitive"],
+            "move"
+        );
+        assert_eq!(
+            translated.data["control"]["steps"][1]["control"]["primitive"],
+            "set_weather"
+        );
     }
 
     #[test]

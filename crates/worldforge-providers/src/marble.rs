@@ -15,7 +15,9 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::native_planning;
-use worldforge_core::action::{evaluate_condition, Action, ActionSpaceType, Condition};
+use worldforge_core::action::{
+    evaluate_condition, Action, ActionSpaceType, ActionTranslator, Condition, ProviderAction,
+};
 use worldforge_core::error::{Result, WorldForgeError};
 use worldforge_core::prediction::{PhysicsScores, Plan, PlanRequest, Prediction, PredictionConfig};
 use worldforge_core::provider::{
@@ -59,6 +61,234 @@ impl MarbleProvider {
 impl Default for MarbleProvider {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl MarbleProvider {
+    fn action_payload(&self, action: &Action) -> Value {
+        serde_json::json!({
+            "kind": "marble_program",
+            "model": MODEL_NAME,
+            "registry_name": self.name,
+            "space": self.action_space(action),
+            "instruction": self.action_instruction(action),
+            "parameters": self.action_parameters(action),
+        })
+    }
+
+    fn action_space(&self, action: &Action) -> &'static str {
+        match action {
+            Action::Move { .. }
+            | Action::Grasp { .. }
+            | Action::Release { .. }
+            | Action::Push { .. }
+            | Action::Rotate { .. }
+            | Action::Place { .. }
+            | Action::CameraMove { .. }
+            | Action::CameraLookAt { .. }
+            | Action::Navigate { .. } => "continuous",
+            Action::Teleport { .. }
+            | Action::SetWeather { .. }
+            | Action::SetLighting { .. }
+            | Action::SpawnObject { .. }
+            | Action::RemoveObject { .. } => "discrete",
+            Action::Sequence(_)
+            | Action::Parallel(_)
+            | Action::Conditional { .. }
+            | Action::Raw { .. } => "language",
+        }
+    }
+
+    fn action_instruction(&self, action: &Action) -> &'static str {
+        match action {
+            Action::Move { .. } => "move object toward target",
+            Action::Grasp { .. } => "grasp object",
+            Action::Release { .. } => "release object",
+            Action::Push { .. } => "push object along direction",
+            Action::Rotate { .. } => "rotate object around axis",
+            Action::Place { .. } => "place object at target",
+            Action::CameraMove { .. } => "move camera pose",
+            Action::CameraLookAt { .. } => "orient camera toward target",
+            Action::Navigate { .. } => "navigate through waypoints",
+            Action::Teleport { .. } => "teleport scene actor to pose",
+            Action::SetWeather { .. } => "update weather state",
+            Action::SetLighting { .. } => "update lighting state",
+            Action::SpawnObject { .. } => "spawn object from template",
+            Action::RemoveObject { .. } => "remove object from scene",
+            Action::Sequence(_) => "execute ordered marble program",
+            Action::Parallel(_) => "execute parallel marble program",
+            Action::Conditional { .. } => "execute conditional marble program",
+            Action::Raw { .. } => "inject provider-specific marble instruction",
+        }
+    }
+
+    fn action_parameters(&self, action: &Action) -> Value {
+        match action {
+            Action::Move { target, speed } => serde_json::json!({
+                "target": self.position_payload(target),
+                "speed": speed,
+                "policy": "trajectory",
+            }),
+            Action::Grasp { object, grip_force } => serde_json::json!({
+                "object": object,
+                "grip_force": grip_force,
+                "policy": "manipulation",
+            }),
+            Action::Release { object } => serde_json::json!({
+                "object": object,
+                "policy": "manipulation",
+            }),
+            Action::Push {
+                object,
+                direction,
+                force,
+            } => serde_json::json!({
+                "object": object,
+                "direction": self.vec3_payload(direction),
+                "force": force,
+                "policy": "trajectory",
+            }),
+            Action::Rotate {
+                object,
+                axis,
+                angle,
+            } => serde_json::json!({
+                "object": object,
+                "axis": self.vec3_payload(axis),
+                "angle": angle,
+                "policy": "trajectory",
+            }),
+            Action::Place { object, target } => serde_json::json!({
+                "object": object,
+                "target": self.position_payload(target),
+                "policy": "trajectory",
+            }),
+            Action::CameraMove { delta } => serde_json::json!({
+                "delta": self.pose_payload(delta),
+                "policy": "camera_control",
+            }),
+            Action::CameraLookAt { target } => serde_json::json!({
+                "target": self.position_payload(target),
+                "policy": "camera_control",
+            }),
+            Action::Navigate { waypoints } => serde_json::json!({
+                "waypoints": waypoints
+                    .iter()
+                    .map(|waypoint| self.position_payload(waypoint))
+                    .collect::<Vec<_>>(),
+                "policy": "trajectory",
+            }),
+            Action::Teleport { destination } => serde_json::json!({
+                "destination": self.pose_payload(destination),
+                "policy": "instant_reposition",
+            }),
+            Action::SetWeather { weather } => serde_json::json!({
+                "weather": weather,
+                "policy": "scene_edit",
+            }),
+            Action::SetLighting { time_of_day } => serde_json::json!({
+                "time_of_day": time_of_day,
+                "policy": "scene_edit",
+            }),
+            Action::SpawnObject { template, pose } => serde_json::json!({
+                "template": template,
+                "pose": self.pose_payload(pose),
+                "policy": "scene_edit",
+            }),
+            Action::RemoveObject { object } => serde_json::json!({
+                "object": object,
+                "policy": "scene_edit",
+            }),
+            Action::Sequence(actions) => serde_json::json!({
+                "steps": actions.iter().map(|nested| self.action_payload(nested)).collect::<Vec<_>>(),
+            }),
+            Action::Parallel(actions) => serde_json::json!({
+                "steps": actions.iter().map(|nested| self.action_payload(nested)).collect::<Vec<_>>(),
+            }),
+            Action::Conditional {
+                condition,
+                then,
+                otherwise,
+            } => serde_json::json!({
+                "condition": self.condition_payload(condition),
+                "then": self.action_payload(then),
+                "otherwise": otherwise.as_deref().map(|nested| self.action_payload(nested)),
+            }),
+            Action::Raw { provider, data } => serde_json::json!({
+                "provider": provider,
+                "payload": data,
+            }),
+        }
+    }
+
+    fn condition_payload(&self, condition: &Condition) -> Value {
+        match condition {
+            Condition::ObjectAt {
+                object,
+                position,
+                tolerance,
+            } => serde_json::json!({
+                "kind": "object_at",
+                "object": object,
+                "position": self.position_payload(position),
+                "tolerance": tolerance,
+            }),
+            Condition::ObjectsTouching { a, b } => serde_json::json!({
+                "kind": "objects_touching",
+                "a": a,
+                "b": b,
+            }),
+            Condition::ObjectExists { object } => serde_json::json!({
+                "kind": "object_exists",
+                "object": object,
+            }),
+            Condition::And(conditions) => serde_json::json!({
+                "kind": "and",
+                "conditions": conditions
+                    .iter()
+                    .map(|nested| self.condition_payload(nested))
+                    .collect::<Vec<_>>(),
+            }),
+            Condition::Or(conditions) => serde_json::json!({
+                "kind": "or",
+                "conditions": conditions
+                    .iter()
+                    .map(|nested| self.condition_payload(nested))
+                    .collect::<Vec<_>>(),
+            }),
+            Condition::Not(inner) => serde_json::json!({
+                "kind": "not",
+                "condition": self.condition_payload(inner),
+            }),
+        }
+    }
+
+    fn position_payload(&self, position: &Position) -> Value {
+        serde_json::json!({
+            "x": position.x,
+            "y": position.y,
+            "z": position.z,
+        })
+    }
+
+    fn vec3_payload(&self, vector: &Vec3) -> Value {
+        serde_json::json!({
+            "x": vector.x,
+            "y": vector.y,
+            "z": vector.z,
+        })
+    }
+
+    fn pose_payload(&self, pose: &Pose) -> Value {
+        serde_json::json!({
+            "position": self.position_payload(&pose.position),
+            "rotation": {
+                "w": pose.rotation.w,
+                "x": pose.rotation.x,
+                "y": pose.rotation.y,
+                "z": pose.rotation.z,
+            },
+        })
     }
 }
 
@@ -258,6 +488,19 @@ impl WorldModelProvider for MarbleProvider {
             credits,
             estimated_latency_ms,
         }
+    }
+}
+
+impl ActionTranslator for MarbleProvider {
+    fn translate(&self, action: &Action) -> Result<ProviderAction> {
+        Ok(ProviderAction {
+            provider: self.name().to_string(),
+            data: self.action_payload(action),
+        })
+    }
+
+    fn supported_actions(&self) -> Vec<ActionSpaceType> {
+        self.capabilities().supported_action_spaces
     }
 }
 
@@ -1245,6 +1488,7 @@ fn canonical_json(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use worldforge_core::action::{ActionSpaceType, ActionTranslator};
     use worldforge_core::prediction::{PlanGoal, PlanRequest, PlannerType};
 
     use worldforge_core::action::{Action, Condition, Weather};
@@ -1294,6 +1538,65 @@ mod tests {
         assert!(caps.supports_segmentation);
         assert!(caps.supports_planning);
         assert_eq!(provider.name(), "marble");
+    }
+
+    #[test]
+    fn marble_action_translator_exposes_multi_space_payloads() {
+        let provider = MarbleProvider::new();
+        assert_eq!(
+            provider.supported_actions(),
+            vec![
+                ActionSpaceType::Continuous,
+                ActionSpaceType::Discrete,
+                ActionSpaceType::Language,
+            ]
+        );
+
+        let action = Action::Sequence(vec![
+            Action::Move {
+                target: Position {
+                    x: 0.4,
+                    y: 0.9,
+                    z: -0.2,
+                },
+                speed: 0.6,
+            },
+            Action::SetWeather {
+                weather: Weather::Snow,
+            },
+        ]);
+
+        let translated = provider.translate(&action).unwrap();
+        assert_eq!(translated.provider, "marble");
+        assert_eq!(translated.data["kind"], "marble_program");
+        assert_eq!(translated.data["space"], "language");
+        assert_eq!(
+            translated.data["instruction"],
+            "execute ordered marble program"
+        );
+        assert_eq!(
+            translated.data["parameters"]["steps"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            translated.data["parameters"]["steps"][0]["space"],
+            "continuous"
+        );
+        assert_eq!(
+            translated.data["parameters"]["steps"][0]["parameters"]["policy"],
+            "trajectory"
+        );
+        assert_eq!(
+            translated.data["parameters"]["steps"][1]["space"],
+            "discrete"
+        );
+        assert_eq!(
+            translated.data["parameters"]["steps"][1]["parameters"]["policy"],
+            "scene_edit"
+        );
     }
 
     #[tokio::test]
