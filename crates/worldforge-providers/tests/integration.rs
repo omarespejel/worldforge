@@ -14,7 +14,7 @@ use std::thread;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use worldforge_core::action::{Action, ActionSpaceType, ActionTranslator, Weather};
+use worldforge_core::action::{Action, ActionSpaceType, ActionTranslator, ActionType, Weather};
 use worldforge_core::error::WorldForgeError;
 use worldforge_core::guardrail::{Guardrail, GuardrailConfig};
 use worldforge_core::prediction::{PlanGoal, PlanRequest, PlannerType, PredictionConfig};
@@ -1261,11 +1261,11 @@ fn test_adapter_action_translator_surface_matches_helpers() {
     assert_eq!(cosmos_translation.provider, "cosmos");
     assert_eq!(cosmos_translation.data, cosmos_helper_translation.data);
     assert_eq!(
-        cosmos.supported_actions(),
-        cosmos.capabilities().supported_action_spaces
+        worldforge_core::provider::WorldModelProvider::supported_actions(&cosmos),
+        ActionType::all()
     );
     assert_eq!(
-        cosmos.supported_actions(),
+        worldforge_core::provider::WorldModelProvider::supported_actions(&cosmos),
         CosmosActionTranslator.supported_actions()
     );
 
@@ -1283,11 +1283,11 @@ fn test_adapter_action_translator_surface_matches_helpers() {
     assert_eq!(runway_translation.provider, "runway");
     assert_eq!(runway_translation.data, runway_helper_translation.data);
     assert_eq!(
-        runway.supported_actions(),
-        runway.capabilities().supported_action_spaces
+        worldforge_core::provider::WorldModelProvider::supported_actions(&runway),
+        ActionType::all()
     );
     assert_eq!(
-        runway.supported_actions(),
+        worldforge_core::provider::WorldModelProvider::supported_actions(&runway),
         RunwayActionTranslator.supported_actions()
     );
 }

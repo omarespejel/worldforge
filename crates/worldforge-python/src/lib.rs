@@ -1583,6 +1583,23 @@ impl PyWorld {
         ))
     }
 
+    /// Translate an action into a provider-native payload without mutating the world.
+    #[pyo3(signature = (action, provider=None))]
+    fn translate_action(
+        &self,
+        action: &PyAction,
+        provider: Option<&str>,
+    ) -> PyResult<PyProviderAction> {
+        let provider_name = resolve_provider_name(&self.world, provider);
+        let translated = self
+            .world
+            .translate_action_with_provider(&action.inner, &provider_name)
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("action translation failed: {e}"))
+            })?;
+        Ok(PyProviderAction { inner: translated })
+    }
+
     /// Compare predictions from multiple providers without mutating the world state.
     #[pyo3(signature = (action, providers, steps=1, fallback_provider=None, return_video=false, max_latency_ms=None, guardrails_json=None, disable_guardrails=false, num_samples=None, return_depth=false, return_segmentation=false))]
     #[allow(clippy::too_many_arguments)]
@@ -3518,6 +3535,47 @@ impl PyAction {
     }
 }
 
+/// A provider-specific translated action payload.
+#[pyclass(name = "ProviderAction")]
+#[derive(Debug, Clone)]
+pub struct PyProviderAction {
+    inner: worldforge_core::action::ProviderAction,
+}
+
+#[pymethods]
+impl PyProviderAction {
+    #[getter]
+    fn provider(&self) -> String {
+        self.inner.provider.clone()
+    }
+
+    #[getter]
+    fn data_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner.data).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    }
+
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    }
+
+    #[staticmethod]
+    fn from_json(json: &str) -> PyResult<Self> {
+        let inner: worldforge_core::action::ProviderAction =
+            serde_json::from_str(json).map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!("deserialization error: {e}"))
+            })?;
+        Ok(Self { inner })
+    }
+
+    fn __repr__(&self) -> String {
+        format!("ProviderAction(provider='{}')", self.inner.provider)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Guardrail types
 // ---------------------------------------------------------------------------
@@ -4070,6 +4128,15 @@ impl PyProviderInfo {
         }
     }
 
+    #[getter]
+    fn supported_actions(&self) -> Vec<String> {
+        self.inner
+            .supported_actions
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    }
+
     fn to_json(&self) -> PyResult<String> {
         serde_json::to_string(&self.inner).map_err(|e| {
             pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
@@ -4100,6 +4167,15 @@ impl PyProviderHealthInfo {
         PyProviderCapabilities {
             inner: self.inner.capabilities.clone(),
         }
+    }
+
+    #[getter]
+    fn supported_actions(&self) -> Vec<String> {
+        self.inner
+            .supported_actions
+            .iter()
+            .map(ToString::to_string)
+            .collect()
     }
 
     #[getter]
@@ -4330,6 +4406,17 @@ impl PyWorldForge {
                 ))
             })?;
         Ok(PyCostEstimate { inner: estimate })
+    }
+
+    /// Translate an action into the selected provider's native payload.
+    fn translate_action(&self, provider: &str, action: &PyAction) -> PyResult<PyProviderAction> {
+        let translated = self
+            .inner
+            .translate_action(provider, &action.inner)
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("action translation failed: {e}"))
+            })?;
+        Ok(PyProviderAction { inner: translated })
     }
 
     /// Request an embedding from a provider for text and/or video input.
@@ -7181,6 +7268,7 @@ fn worldforge(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyEmbeddingOutput>()?;
     m.add_class::<PyReasoningOutput>()?;
     m.add_class::<PyAction>()?;
+    m.add_class::<PyProviderAction>()?;
     m.add_class::<PyGuardrail>()?;
     m.add_class::<PyMockProvider>()?;
     m.add_class::<PyMarbleProvider>()?;
@@ -9019,6 +9107,18 @@ mod tests {
         assert!(!healths.is_empty());
         assert!(healths.iter().any(|info| info.name() == "mock"));
         assert!(healths.iter().all(|info| info.healthy()));
+    }
+
+    #[test]
+    fn test_worldforge_translate_action_returns_provider_payload() {
+        let wf = test_worldforge();
+        let action = PyAction::set_weather("rain").unwrap();
+        let translated = wf.translate_action("mock", &action).unwrap();
+
+        assert_eq!(translated.provider(), "mock");
+        let payload = translated.data_json().unwrap();
+        assert!(payload.contains("\"weather\""));
+        assert!(payload.to_ascii_lowercase().contains("rain"));
     }
 
     #[test]

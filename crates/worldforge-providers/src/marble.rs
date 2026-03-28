@@ -16,7 +16,8 @@ use serde_json::Value;
 
 use crate::native_planning;
 use worldforge_core::action::{
-    evaluate_condition, Action, ActionSpaceType, ActionTranslator, Condition, ProviderAction,
+    evaluate_condition, Action, ActionSpaceType, ActionTranslator, ActionType, Condition,
+    ProviderAction,
 };
 use worldforge_core::error::{Result, WorldForgeError};
 use worldforge_core::prediction::{PhysicsScores, Plan, PlanRequest, Prediction, PredictionConfig};
@@ -489,6 +490,14 @@ impl WorldModelProvider for MarbleProvider {
             estimated_latency_ms,
         }
     }
+
+    fn translate_action(&self, action: &Action) -> Result<ProviderAction> {
+        ActionTranslator::translate(self, action)
+    }
+
+    fn supported_actions(&self) -> Vec<ActionType> {
+        ActionTranslator::supported_actions(self)
+    }
 }
 
 impl ActionTranslator for MarbleProvider {
@@ -499,8 +508,8 @@ impl ActionTranslator for MarbleProvider {
         })
     }
 
-    fn supported_actions(&self) -> Vec<ActionSpaceType> {
-        self.capabilities().supported_action_spaces
+    fn supported_actions(&self) -> Vec<ActionType> {
+        ActionType::all()
     }
 }
 
@@ -1488,7 +1497,7 @@ fn canonical_json(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use worldforge_core::action::{ActionSpaceType, ActionTranslator};
+    use worldforge_core::action::{ActionTranslator, ActionType};
     use worldforge_core::prediction::{PlanGoal, PlanRequest, PlannerType};
 
     use worldforge_core::action::{Action, Condition, Weather};
@@ -1544,12 +1553,8 @@ mod tests {
     fn marble_action_translator_exposes_multi_space_payloads() {
         let provider = MarbleProvider::new();
         assert_eq!(
-            provider.supported_actions(),
-            vec![
-                ActionSpaceType::Continuous,
-                ActionSpaceType::Discrete,
-                ActionSpaceType::Language,
-            ]
+            worldforge_core::provider::WorldModelProvider::supported_actions(&provider),
+            ActionType::all()
         );
 
         let action = Action::Sequence(vec![

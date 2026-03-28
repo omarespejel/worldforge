@@ -471,6 +471,12 @@ struct EstimateCostRequest {
     operation: Operation,
 }
 
+/// JSON request body for provider action translation.
+#[derive(Debug, Deserialize)]
+struct TranslateActionRequest {
+    action: Action,
+}
+
 /// JSON request body for world-state reasoning.
 #[derive(Debug, Deserialize)]
 struct ReasonRequest {
@@ -1774,6 +1780,16 @@ const ROUTE_CATALOG: &[RouteDocumentation] = &[
         }),
     },
     RouteDocumentation {
+        path: "/v1/providers/{name}/translate-action",
+        methods: POST_METHODS,
+        summary: "Translate an action into a provider-native payload",
+        query_parameters: EMPTY_QUERY_PARAMETERS,
+        request_body: Some(RouteRequestBodyDoc {
+            methods: POST_METHODS,
+            description: "Translate a WorldForge action into the selected provider format.",
+        }),
+    },
+    RouteDocumentation {
         path: "/v1/providers/{name}/generate",
         methods: POST_METHODS,
         summary: "Generate a clip directly from a prompt",
@@ -2273,6 +2289,7 @@ enum RouteKind {
     ProviderDescriptor,
     ProviderHealth,
     ProviderEstimate,
+    ProviderTranslateAction,
     EvalsSuites,
     EvalsRun,
     WorldsCollection,
@@ -2310,6 +2327,7 @@ impl RouteKind {
             Self::ProviderDescriptor => &["GET", "HEAD"],
             Self::ProviderHealth => &["GET", "HEAD"],
             Self::ProviderEstimate => &["POST"],
+            Self::ProviderTranslateAction => &["POST"],
             Self::EvalsSuites => &["GET", "HEAD"],
             Self::EvalsRun => &["POST"],
             Self::WorldsCollection => &["GET", "HEAD", "POST"],
@@ -2356,6 +2374,7 @@ fn classify_route_kind(path: &str) -> RouteKind {
         ["v1", "providers"] => RouteKind::ProvidersCollection,
         ["v1", "providers", _, "health"] => RouteKind::ProviderHealth,
         ["v1", "providers", _, "estimate"] => RouteKind::ProviderEstimate,
+        ["v1", "providers", _, "translate-action"] => RouteKind::ProviderTranslateAction,
         ["v1", "providers", _, "generate"] => RouteKind::ProviderGenerate,
         ["v1", "providers", _, "embed"] => RouteKind::ProviderEmbed,
         ["v1", "providers", _, "reason"] => RouteKind::ProviderReason,
@@ -2753,6 +2772,21 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                 },
                 (Err(_), _) => (400, error_response("invalid world ID")),
                 (_, Err(_)) => (400, error_response("invalid export format")),
+            }
+        }
+
+        // POST /v1/providers/{name}/generate
+        ("POST", p) if p.starts_with("/v1/providers/") && p.ends_with("/translate-action") => {
+            let provider_name = p
+                .strip_prefix("/v1/providers/")
+                .and_then(|value| value.strip_suffix("/translate-action"))
+                .unwrap_or("");
+            match serde_json::from_str::<TranslateActionRequest>(body) {
+                Ok(req) => match state.registry.translate_action(provider_name, &req.action) {
+                    Ok(provider_action) => (200, ApiResponse::ok(provider_action)),
+                    Err(error) => (api_error_status(&error), error_response(&error.to_string())),
+                },
+                Err(error) => (400, error_response(&format!("invalid request: {error}"))),
             }
         }
 
@@ -4632,6 +4666,7 @@ mod tests {
             ("/v1/openapi.json", &["GET", "HEAD"][..]),
             ("/v1/providers", &["GET", "HEAD"][..]),
             ("/v1/providers/{name}", &["GET", "HEAD"][..]),
+            ("/v1/providers/{name}/translate-action", &["POST"][..]),
             ("/v1/providers/{name}/generate", &["POST"][..]),
             ("/v1/providers/{name}/embed", &["POST"][..]),
             ("/v1/providers/{name}/reason", &["POST"][..]),
@@ -4698,6 +4733,7 @@ mod tests {
         let paths = value["paths"].as_object().unwrap();
         assert_eq!(paths.len(), route_catalog().len());
         assert!(paths.contains_key("/v1/providers"));
+        assert!(paths.contains_key("/v1/providers/{name}/translate-action"));
         assert!(paths.contains_key("/v1/providers/{name}/generate"));
         assert!(paths.contains_key("/v1/providers/{name}/embed"));
         assert!(paths.contains_key("/v1/providers/{name}/reason"));
@@ -4759,6 +4795,12 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Generate a clip"));
+
+        let translate = &paths["/v1/providers/{name}/translate-action"]["post"];
+        assert!(translate["requestBody"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("Translate a WorldForge action"));
     }
 
     #[tokio::test]
@@ -5257,6 +5299,24 @@ mod tests {
             value["data"]["estimate"]["estimated_latency_ms"].as_u64(),
             Some(10)
         );
+    }
+
+    #[tokio::test]
+    async fn test_route_translate_action() {
+        let state = test_state();
+        let body = serde_json::json!({
+            "action": Action::SetLighting { time_of_day: 18.5 }
+        })
+        .to_string();
+
+        let (status, resp) =
+            route("POST", "/v1/providers/mock/translate-action", &body, &state).await;
+        assert_eq!(status, 200);
+
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(value["data"]["provider"], "mock");
+        assert_eq!(value["data"]["data"]["dialect"], "mock-sim-v1");
+        assert_eq!(value["data"]["data"]["control"]["type"], "set_lighting");
     }
 
     #[tokio::test]

@@ -158,6 +158,13 @@ assert consensus.shared_object_count >= 0
 health = wf.provider_health("mock")
 assert health.healthy
 
+# Inspect supported actions and preview the provider-native translation
+info = wf.provider_info("mock")
+assert "move" in info.supported_actions
+translated = wf.translate_action("mock", Action.set_lighting(18.5))
+assert translated.provider == "mock"
+assert "\"lighting\"" in translated.data_json
+
 # Or compare previously captured predictions directly
 prediction_2 = world.predict(Action.move_to(0.5, 0.8, 0.0), provider="runway")
 comparison_from_predictions = wf.compare([prediction, prediction_2])
@@ -476,6 +483,7 @@ cargo run -p worldforge-cli -- providers
 cargo run -p worldforge-cli -- providers --capability planning
 cargo run -p worldforge-cli -- providers --health
 cargo run -p worldforge-cli -- estimate --provider cosmos --operation generate --duration-seconds 5 --width 1280 --height 720
+cargo run -p worldforge-cli -- translate --provider mock --action "set-lighting 18.5" --output-json translated/mock-lighting.json
 cargo run -p worldforge-cli -- list
 cargo run -p worldforge-cli -- --state-backend sqlite --state-db-path .worldforge/worldforge.db list
 cargo run -p worldforge-cli -- --state-backend redis --state-redis-url redis://127.0.0.1:6379/0 list
@@ -702,6 +710,10 @@ curl http://127.0.0.1:8080/v1/providers/mock/health
 curl -X POST http://127.0.0.1:8080/v1/providers/mock/estimate \
   -H 'content-type: application/json' \
   -d '{"operation":{"Generate":{"duration_seconds":5.0,"resolution":[1280,720]}}}'
+
+curl -X POST http://127.0.0.1:8080/v1/providers/mock/translate-action \
+  -H 'content-type: application/json' \
+  -d '{"action":{"SetLighting":{"time_of_day":18.5}}}'
 
 # `compare-body.json` should contain `{"predictions":[...]}`
 # using previously exported `Prediction` JSON payloads.

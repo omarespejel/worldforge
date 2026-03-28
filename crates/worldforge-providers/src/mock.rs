@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use worldforge_core::action::{
-    evaluate_condition, Action, ActionSpaceType, ActionTranslator, ProviderAction,
+    evaluate_condition, Action, ActionSpaceType, ActionTranslator, ActionType, ProviderAction,
 };
 use worldforge_core::error::{Result, WorldForgeError};
 use worldforge_core::goal_image;
@@ -298,6 +298,14 @@ impl WorldModelProvider for MockProvider {
             estimated_latency_ms: self.latency_ms,
         }
     }
+
+    fn translate_action(&self, action: &Action) -> Result<ProviderAction> {
+        ActionTranslator::translate(self, action)
+    }
+
+    fn supported_actions(&self) -> Vec<ActionType> {
+        ActionTranslator::supported_actions(self)
+    }
 }
 
 impl ActionTranslator for MockProvider {
@@ -308,12 +316,8 @@ impl ActionTranslator for MockProvider {
         })
     }
 
-    fn supported_actions(&self) -> Vec<ActionSpaceType> {
-        vec![
-            ActionSpaceType::Continuous,
-            ActionSpaceType::Discrete,
-            ActionSpaceType::Language,
-        ]
+    fn supported_actions(&self) -> Vec<ActionType> {
+        ActionType::all()
     }
 }
 
@@ -2270,7 +2274,7 @@ fn deterministic_embedding_from_seed(seed: u64, dims: usize) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use worldforge_core::action::{ActionSpaceType, ActionTranslator, Condition};
+    use worldforge_core::action::{ActionTranslator, ActionType, Condition};
     use worldforge_core::guardrail::{Guardrail, GuardrailConfig};
     use worldforge_core::prediction::{PlanGoal, PlanRequest, PlannerType};
     use worldforge_core::types::Position;
@@ -2721,12 +2725,8 @@ mod tests {
         );
 
         assert_eq!(
-            provider.supported_actions(),
-            vec![
-                ActionSpaceType::Continuous,
-                ActionSpaceType::Discrete,
-                ActionSpaceType::Language,
-            ]
+            worldforge_core::provider::WorldModelProvider::supported_actions(&provider),
+            ActionType::all()
         );
     }
 

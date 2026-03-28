@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::action::{Action, ActionSpaceType};
+use crate::action::{Action, ActionSpaceType, ActionType, ProviderAction};
 use crate::async_utils::{join_all_ordered, BoxFuture};
 use crate::error::{Result, WorldForgeError};
 use crate::prediction::{Plan, PlanRequest, PredictionConfig};
@@ -107,6 +107,8 @@ pub struct ProviderDescriptor {
     pub name: String,
     /// Declared capabilities for this provider.
     pub capabilities: ProviderCapabilities,
+    /// Concrete action kinds that this provider can translate natively.
+    pub supported_actions: Vec<ActionType>,
 }
 
 /// Provider metadata paired with the latest live health-check result.
@@ -116,6 +118,8 @@ pub struct ProviderHealthReport {
     pub name: String,
     /// Declared capabilities for this provider.
     pub capabilities: ProviderCapabilities,
+    /// Concrete action kinds that this provider can translate natively.
+    pub supported_actions: Vec<ActionType>,
     /// Latest health status when the live check completed successfully.
     pub status: Option<HealthStatus>,
     /// Error returned while attempting the health check, if any.
@@ -341,6 +345,19 @@ pub trait WorldModelProvider: Send + Sync {
 
     /// Estimate cost for an operation.
     fn estimate_cost(&self, operation: &Operation) -> CostEstimate;
+
+    /// Translate a WorldForge action into this provider's native representation.
+    fn translate_action(&self, action: &Action) -> Result<ProviderAction> {
+        Err(WorldForgeError::UnsupportedAction {
+            provider: self.name().to_string(),
+            action: action.action_type().to_string(),
+        })
+    }
+
+    /// List the concrete action kinds that this provider can translate.
+    fn supported_actions(&self) -> Vec<ActionType> {
+        Vec::new()
+    }
 }
 
 /// Registry that manages multiple providers.
@@ -376,6 +393,7 @@ impl ProviderRegistry {
         Ok(ProviderDescriptor {
             name: name.to_string(),
             capabilities: provider.capabilities(),
+            supported_actions: provider.supported_actions(),
         })
     }
 
@@ -398,6 +416,7 @@ impl ProviderRegistry {
             .map(|(name, provider)| ProviderDescriptor {
                 name: name.clone(),
                 capabilities: provider.capabilities(),
+                supported_actions: provider.supported_actions(),
             })
             .collect();
         descriptors.sort_by(|left, right| left.name.cmp(&right.name));
@@ -426,6 +445,7 @@ impl ProviderRegistry {
                 supports_capability(&capabilities, capability).then(|| ProviderDescriptor {
                     name: name.clone(),
                     capabilities,
+                    supported_actions: provider.supported_actions(),
                 })
             })
             .collect();
@@ -446,6 +466,16 @@ impl ProviderRegistry {
     /// Estimate the cost of an operation on a provider.
     pub fn estimate_cost(&self, name: &str, operation: &Operation) -> Result<CostEstimate> {
         Ok(self.get(name)?.estimate_cost(operation))
+    }
+
+    /// Translate an action into a provider-native representation.
+    pub fn translate_action(&self, name: &str, action: &Action) -> Result<ProviderAction> {
+        self.get(name)?.translate_action(action)
+    }
+
+    /// List the concrete action kinds supported by a provider.
+    pub fn supported_actions(&self, name: &str) -> Result<Vec<ActionType>> {
+        Ok(self.get(name)?.supported_actions())
     }
 
     /// Number of registered providers.
@@ -509,16 +539,19 @@ async fn build_health_report(
     provider: &dyn WorldModelProvider,
 ) -> ProviderHealthReport {
     let capabilities = provider.capabilities();
+    let supported_actions = provider.supported_actions();
     match provider.health_check().await {
         Ok(status) => ProviderHealthReport {
             name: name.to_string(),
             capabilities,
+            supported_actions,
             status: Some(status),
             error: None,
         },
         Err(error) => ProviderHealthReport {
             name: name.to_string(),
             capabilities,
+            supported_actions,
             status: None,
             error: Some(error.to_string()),
         },

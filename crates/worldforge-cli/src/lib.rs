@@ -267,6 +267,29 @@ pub enum Commands {
         output_json: Option<PathBuf>,
     },
 
+    /// Translate a WorldForge action into a provider-native payload.
+    Translate {
+        /// Optional world ID used to resolve object names in action shorthand.
+        #[arg(long)]
+        world: Option<String>,
+        /// Action description using the same shorthand accepted by `predict`.
+        #[arg(
+            long,
+            conflicts_with = "action_json",
+            required_unless_present = "action_json"
+        )]
+        action: Option<String>,
+        /// JSON file containing a serialized `Action`.
+        #[arg(long, conflicts_with = "action", required_unless_present = "action")]
+        action_json: Option<PathBuf>,
+        /// Provider to use.
+        #[arg(long, default_value = "mock")]
+        provider: String,
+        /// Optional path to write the translated provider action JSON payload.
+        #[arg(long)]
+        output_json: Option<PathBuf>,
+    },
+
     /// Generate a video clip directly from a prompt.
     Generate {
         /// Prompt describing the desired video.
@@ -1129,6 +1152,23 @@ pub async fn run() -> Result<()> {
                 fallback_provider.as_deref(),
                 timeout_ms,
                 disable_guardrails,
+                output_json.as_deref(),
+            )
+            .await
+        }
+        Commands::Translate {
+            world,
+            action,
+            action_json,
+            provider,
+            output_json,
+        } => {
+            cmd_translate(
+                store.as_ref(),
+                world.as_deref(),
+                action.as_deref(),
+                action_json.as_deref(),
+                &provider,
                 output_json.as_deref(),
             )
             .await
@@ -2417,6 +2457,17 @@ fn print_provider_descriptor(descriptor: &ProviderDescriptor) {
         caps.latency_profile.p95_ms,
         caps.latency_profile.p99_ms
     );
+    if !descriptor.supported_actions.is_empty() {
+        println!(
+            "  supported actions: {}",
+            descriptor
+                .supported_actions
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
 }
 
 fn print_provider_health_report(report: &ProviderHealthReport) {
@@ -2603,6 +2654,65 @@ async fn cmd_predict(
     if let Some(path) = output_json {
         write_json_file(path, &prediction)?;
         println!("  Saved prediction JSON: {}", path.display());
+    }
+
+    Ok(())
+}
+
+async fn cmd_translate(
+    store: &(impl StateStore + ?Sized),
+    world_id: Option<&str>,
+    action_str: Option<&str>,
+    action_json: Option<&Path>,
+    provider: &str,
+    output_json: Option<&Path>,
+) -> Result<()> {
+    let registry = auto_detect_registry();
+    require_provider(&registry, provider)?;
+
+    let state = match world_id {
+        Some(world_id) => {
+            let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
+            store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?
+        }
+        None => WorldState::new("translate-preview", provider),
+    };
+
+    let action = match (action_str, action_json) {
+        (Some(action_str), None) => parse_action(action_str, &state)?,
+        (None, Some(path)) => read_json_file(path)?,
+        _ => anyhow::bail!("provide exactly one of --action or --action-json"),
+    };
+
+    let translated = registry
+        .translate_action(provider, &action)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let supported_actions = registry
+        .supported_actions(provider)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    println!("Translated action:");
+    println!("  Provider: {}", translated.provider);
+    println!("  Action type: {}", action.action_type());
+    if !supported_actions.is_empty() {
+        println!(
+            "  Supported actions: {}",
+            supported_actions
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    println!(
+        "  Payload: {}",
+        serde_json::to_string_pretty(&translated.data)
+            .context("failed to render translated action JSON")?
+    );
+
+    if let Some(path) = output_json {
+        write_json_file(path, &translated)?;
+        println!("  Saved translated action JSON: {}", path.display());
     }
 
     Ok(())
@@ -4172,6 +4282,7 @@ async fn cmd_providers(capability: Option<&str>, include_health: bool) -> Result
             print_provider_descriptor(&ProviderDescriptor {
                 name: report.name.clone(),
                 capabilities: report.capabilities.clone(),
+                supported_actions: report.supported_actions.clone(),
             });
             print_provider_health_report(&report);
         }
@@ -6470,6 +6581,46 @@ mod tests {
                 assert_eq!(height, 360);
             }
             _ => panic!("expected Estimate"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_translate_command() {
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "translate",
+            "--world",
+            "123e4567-e89b-12d3-a456-426614174000",
+            "--action",
+            "set-lighting 18.5",
+            "--provider",
+            "mock",
+            "--output-json",
+            "/tmp/translated-action.json",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Translate {
+                world,
+                action,
+                action_json,
+                provider,
+                output_json,
+            } => {
+                assert_eq!(
+                    world.as_deref(),
+                    Some("123e4567-e89b-12d3-a456-426614174000")
+                );
+                assert_eq!(action.as_deref(), Some("set-lighting 18.5"));
+                assert!(action_json.is_none());
+                assert_eq!(provider, "mock");
+                assert_eq!(
+                    output_json,
+                    Some(PathBuf::from("/tmp/translated-action.json"))
+                );
+            }
+            _ => panic!("expected Translate"),
         }
     }
 

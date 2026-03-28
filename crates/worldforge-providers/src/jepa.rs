@@ -20,8 +20,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use worldforge_core::action::{
-    evaluate_condition, Action, ActionSpaceType, ActionTranslator, Condition, ProviderAction,
-    Weather,
+    evaluate_condition, Action, ActionSpaceType, ActionTranslator, ActionType, Condition,
+    ProviderAction, Weather,
 };
 use worldforge_core::error::{Result, WorldForgeError};
 use worldforge_core::goal_image;
@@ -450,8 +450,8 @@ impl ActionTranslator for JepaProvider {
         })
     }
 
-    fn supported_actions(&self) -> Vec<ActionSpaceType> {
-        vec![ActionSpaceType::Continuous]
+    fn supported_actions(&self) -> Vec<ActionType> {
+        ActionType::all()
     }
 }
 
@@ -714,6 +714,14 @@ impl WorldModelProvider for JepaProvider {
             },
             _ => CostEstimate::default(),
         }
+    }
+
+    fn translate_action(&self, action: &Action) -> Result<ProviderAction> {
+        ActionTranslator::translate(self, action)
+    }
+
+    fn supported_actions(&self) -> Vec<ActionType> {
+        ActionTranslator::supported_actions(self)
     }
 }
 
@@ -2445,7 +2453,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
-    use worldforge_core::action::{ActionSpaceType, ActionTranslator};
+    use worldforge_core::action::{ActionTranslator, ActionType};
     use worldforge_core::types::{Frame, Pose, SimTime};
 
     fn manifest_json(model_name: &str) -> String {
@@ -2618,8 +2626,8 @@ mod tests {
         let provider = JepaProvider::new("/tmp/does-not-matter", JepaBackend::Burn);
 
         assert_eq!(
-            provider.supported_actions(),
-            vec![ActionSpaceType::Continuous]
+            worldforge_core::provider::WorldModelProvider::supported_actions(&provider),
+            ActionType::all()
         );
 
         let action = Action::Sequence(vec![

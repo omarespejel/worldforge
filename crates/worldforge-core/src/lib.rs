@@ -35,7 +35,7 @@ pub mod world;
 
 use std::sync::Arc;
 
-use action::Action;
+use action::{Action, ActionType, ProviderAction};
 use error::Result;
 use prediction::{MultiPrediction, Prediction, PredictionConfig};
 use provider::{
@@ -155,6 +155,16 @@ impl WorldForge {
     /// Estimate the cost of an operation for a provider.
     pub fn estimate_cost(&self, provider: &str, operation: &Operation) -> Result<CostEstimate> {
         self.registry.estimate_cost(provider, operation)
+    }
+
+    /// Translate an action into a provider-native representation.
+    pub fn translate_action(&self, provider: &str, action: &Action) -> Result<ProviderAction> {
+        self.registry.translate_action(provider, action)
+    }
+
+    /// List the concrete action kinds that a provider can translate.
+    pub fn supported_actions(&self, provider: &str) -> Result<Vec<ActionType>> {
+        self.registry.supported_actions(provider)
     }
 
     /// Ask a specific provider to reason about supplied state or video input.

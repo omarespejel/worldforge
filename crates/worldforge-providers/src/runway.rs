@@ -9,7 +9,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use worldforge_core::action::{Action, ActionSpaceType, ActionTranslator};
+use worldforge_core::action::{Action, ActionSpaceType, ActionTranslator, ActionType};
 use worldforge_core::error::{Result, WorldForgeError};
 use worldforge_core::prediction::{PhysicsScores, Plan, PlanRequest, Prediction, PredictionConfig};
 use worldforge_core::provider::{
@@ -1097,6 +1097,14 @@ impl WorldModelProvider for RunwayProvider {
             _ => CostEstimate::default(),
         }
     }
+
+    fn translate_action(&self, action: &Action) -> Result<worldforge_core::action::ProviderAction> {
+        ActionTranslator::translate(self, action)
+    }
+
+    fn supported_actions(&self) -> Vec<ActionType> {
+        ActionTranslator::supported_actions(self)
+    }
 }
 
 impl RunwayProvider {
@@ -1140,8 +1148,8 @@ impl worldforge_core::action::ActionTranslator for RunwayActionTranslator {
         })
     }
 
-    fn supported_actions(&self) -> Vec<ActionSpaceType> {
-        vec![ActionSpaceType::Continuous, ActionSpaceType::Discrete]
+    fn supported_actions(&self) -> Vec<ActionType> {
+        ActionType::all()
     }
 }
 
@@ -1154,8 +1162,8 @@ impl ActionTranslator for RunwayProvider {
         })
     }
 
-    fn supported_actions(&self) -> Vec<ActionSpaceType> {
-        self.capabilities().supported_action_spaces
+    fn supported_actions(&self) -> Vec<ActionType> {
+        ActionType::all()
     }
 }
 

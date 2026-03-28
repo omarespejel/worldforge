@@ -3,6 +3,8 @@
 //! Actions represent operations that can be performed on a world state,
 //! ranging from robot manipulation to environment modifications.
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 use crate::types::{ObjectId, Pose, Position, Vec3};
@@ -72,6 +74,108 @@ pub enum Action {
     },
 }
 
+/// Concrete top-level action kinds supported by provider translators.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionType {
+    Move,
+    Grasp,
+    Release,
+    Push,
+    Rotate,
+    Place,
+    CameraMove,
+    CameraLookAt,
+    Navigate,
+    Teleport,
+    SetWeather,
+    SetLighting,
+    SpawnObject,
+    RemoveObject,
+    Sequence,
+    Parallel,
+    Conditional,
+    Raw,
+}
+
+impl ActionType {
+    /// Return every concrete action kind in deterministic declaration order.
+    pub fn all() -> Vec<Self> {
+        vec![
+            Self::Move,
+            Self::Grasp,
+            Self::Release,
+            Self::Push,
+            Self::Rotate,
+            Self::Place,
+            Self::CameraMove,
+            Self::CameraLookAt,
+            Self::Navigate,
+            Self::Teleport,
+            Self::SetWeather,
+            Self::SetLighting,
+            Self::SpawnObject,
+            Self::RemoveObject,
+            Self::Sequence,
+            Self::Parallel,
+            Self::Conditional,
+            Self::Raw,
+        ]
+    }
+}
+
+impl fmt::Display for ActionType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::Move => "move",
+            Self::Grasp => "grasp",
+            Self::Release => "release",
+            Self::Push => "push",
+            Self::Rotate => "rotate",
+            Self::Place => "place",
+            Self::CameraMove => "camera_move",
+            Self::CameraLookAt => "camera_look_at",
+            Self::Navigate => "navigate",
+            Self::Teleport => "teleport",
+            Self::SetWeather => "set_weather",
+            Self::SetLighting => "set_lighting",
+            Self::SpawnObject => "spawn_object",
+            Self::RemoveObject => "remove_object",
+            Self::Sequence => "sequence",
+            Self::Parallel => "parallel",
+            Self::Conditional => "conditional",
+            Self::Raw => "raw",
+        };
+        f.write_str(value)
+    }
+}
+
+impl Action {
+    /// Return the concrete top-level action kind for this value.
+    pub fn action_type(&self) -> ActionType {
+        match self {
+            Self::Move { .. } => ActionType::Move,
+            Self::Grasp { .. } => ActionType::Grasp,
+            Self::Release { .. } => ActionType::Release,
+            Self::Push { .. } => ActionType::Push,
+            Self::Rotate { .. } => ActionType::Rotate,
+            Self::Place { .. } => ActionType::Place,
+            Self::CameraMove { .. } => ActionType::CameraMove,
+            Self::CameraLookAt { .. } => ActionType::CameraLookAt,
+            Self::Navigate { .. } => ActionType::Navigate,
+            Self::Teleport { .. } => ActionType::Teleport,
+            Self::SetWeather { .. } => ActionType::SetWeather,
+            Self::SetLighting { .. } => ActionType::SetLighting,
+            Self::SpawnObject { .. } => ActionType::SpawnObject,
+            Self::RemoveObject { .. } => ActionType::RemoveObject,
+            Self::Sequence(_) => ActionType::Sequence,
+            Self::Parallel(_) => ActionType::Parallel,
+            Self::Conditional { .. } => ActionType::Conditional,
+            Self::Raw { .. } => ActionType::Raw,
+        }
+    }
+}
+
 /// Weather conditions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Weather {
@@ -131,8 +235,8 @@ pub trait ActionTranslator {
     /// Translate a WorldForge action to a provider-specific action.
     fn translate(&self, action: &Action) -> crate::error::Result<ProviderAction>;
 
-    /// List of action types supported by this translator.
-    fn supported_actions(&self) -> Vec<ActionSpaceType>;
+    /// List of concrete action kinds supported by this translator.
+    fn supported_actions(&self) -> Vec<ActionType>;
 }
 
 /// Evaluate a condition against a world state.
@@ -218,6 +322,24 @@ mod tests {
         };
         let json = serde_json::to_string(&action).unwrap();
         let _: Action = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn test_action_type_maps_move_variant() {
+        let action = Action::Move {
+            target: Position::default(),
+            speed: 1.0,
+        };
+        assert_eq!(action.action_type(), ActionType::Move);
+        assert_eq!(action.action_type().to_string(), "move");
+    }
+
+    #[test]
+    fn test_action_type_serializes_as_snake_case() {
+        let json = serde_json::to_string(&ActionType::CameraLookAt).unwrap();
+        assert_eq!(json, "\"camera_look_at\"");
+        let restored: ActionType = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, ActionType::CameraLookAt);
     }
 
     #[test]

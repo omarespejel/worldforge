@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use tracing::instrument;
 
-use crate::action::{Action, Condition, Weather};
+use crate::action::{Action, ActionType, Condition, ProviderAction, Weather};
 use crate::async_utils::{join_all_ordered, BoxFuture};
 use crate::error::{Result, WorldForgeError};
 use crate::goal_image;
@@ -135,6 +135,30 @@ impl World {
             .scene
             .update_object(object_id, patch)
             .ok_or_else(|| WorldForgeError::InvalidState(format!("object not found: {object_id}")))
+    }
+
+    /// Translate an action with the world's default provider.
+    pub fn translate_action(&self, action: &Action) -> Result<ProviderAction> {
+        self.translate_action_with_provider(action, &self.default_provider)
+    }
+
+    /// Translate an action with a specific provider.
+    pub fn translate_action_with_provider(
+        &self,
+        action: &Action,
+        provider_name: &str,
+    ) -> Result<ProviderAction> {
+        self.registry.translate_action(provider_name, action)
+    }
+
+    /// List the concrete action kinds supported by the default provider.
+    pub fn supported_actions(&self) -> Result<Vec<ActionType>> {
+        self.supported_actions_with_provider(&self.default_provider)
+    }
+
+    /// List the concrete action kinds supported by a specific provider.
+    pub fn supported_actions_with_provider(&self, provider_name: &str) -> Result<Vec<ActionType>> {
+        self.registry.supported_actions(provider_name)
     }
 
     /// Predict the next world state after applying an action.

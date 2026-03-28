@@ -10,8 +10,10 @@ use std::time::Instant;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use worldforge_core::action::{evaluate_condition, Action, ActionSpaceType, Condition, Weather};
-use worldforge_core::action::{ActionTranslator, ProviderAction};
+use worldforge_core::action::{
+    evaluate_condition, Action, ActionSpaceType, ActionTranslator, ActionType, Condition,
+    ProviderAction, Weather,
+};
 use worldforge_core::error::{Result, WorldForgeError};
 use worldforge_core::goal_image;
 use worldforge_core::guardrail::{evaluate_guardrails, has_blocking_violation};
@@ -1880,6 +1882,14 @@ impl WorldModelProvider for GenieProvider {
         }
     }
 
+    fn translate_action(&self, action: &Action) -> Result<ProviderAction> {
+        ActionTranslator::translate(self, action)
+    }
+
+    fn supported_actions(&self) -> Vec<ActionType> {
+        ActionTranslator::supported_actions(self)
+    }
+
     async fn plan(&self, request: &PlanRequest) -> Result<Plan> {
         let started = Instant::now();
         let mut state = request.current_state.clone();
@@ -2040,8 +2050,8 @@ impl ActionTranslator for GenieProvider {
         })
     }
 
-    fn supported_actions(&self) -> Vec<ActionSpaceType> {
-        vec![ActionSpaceType::Discrete, ActionSpaceType::Language]
+    fn supported_actions(&self) -> Vec<ActionType> {
+        ActionType::all()
     }
 }
 
@@ -2620,7 +2630,7 @@ fn map_range(value: f32, from_min: f32, from_max: f32, to_min: f32, to_max: f32)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use worldforge_core::action::{ActionSpaceType, ActionTranslator, Condition};
+    use worldforge_core::action::{ActionTranslator, ActionType, Condition};
 
     fn sample_state() -> (WorldState, uuid::Uuid) {
         let mut state = WorldState::new("genie-test", "genie");
@@ -2701,8 +2711,8 @@ mod tests {
             "weather"
         );
         assert_eq!(
-            provider.supported_actions(),
-            vec![ActionSpaceType::Discrete, ActionSpaceType::Language]
+            worldforge_core::provider::WorldModelProvider::supported_actions(&provider),
+            ActionType::all()
         );
     }
 
