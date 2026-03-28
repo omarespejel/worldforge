@@ -244,6 +244,15 @@ pub enum Commands {
         /// Number of prediction samples to request.
         #[arg(long)]
         num_samples: Option<u32>,
+        /// Return the generated transition video in the prediction payload.
+        #[arg(long, default_value_t = false)]
+        return_video: bool,
+        /// Return depth maps alongside generated preview video frames.
+        #[arg(long, default_value_t = false)]
+        return_depth: bool,
+        /// Return segmentation maps alongside generated preview video frames.
+        #[arg(long, default_value_t = false)]
+        return_segmentation: bool,
         /// Optional fallback provider if the primary provider fails.
         #[arg(long)]
         fallback_provider: Option<String>,
@@ -253,6 +262,9 @@ pub enum Commands {
         /// Disable WorldForge's automatic guardrail checks.
         #[arg(long, default_value_t = false)]
         disable_guardrails: bool,
+        /// Optional path to write the full prediction JSON payload.
+        #[arg(long)]
+        output_json: Option<PathBuf>,
     },
 
     /// Generate a video clip directly from a prompt.
@@ -564,6 +576,10 @@ pub enum Commands {
                 "action",
                 "providers",
                 "steps",
+                "num_samples",
+                "return_video",
+                "return_depth",
+                "return_segmentation",
                 "fallback_provider",
                 "timeout_ms",
                 "guardrails_json",
@@ -574,6 +590,18 @@ pub enum Commands {
         /// Number of prediction steps to compare.
         #[arg(long, default_value = "1")]
         steps: u32,
+        /// Number of samples to request from each provider before selecting the best outcome.
+        #[arg(long)]
+        num_samples: Option<u32>,
+        /// Return generated transition video payloads inside the comparison output.
+        #[arg(long, default_value_t = false)]
+        return_video: bool,
+        /// Return depth maps alongside generated comparison preview video frames.
+        #[arg(long, default_value_t = false)]
+        return_depth: bool,
+        /// Return segmentation maps alongside generated comparison preview video frames.
+        #[arg(long, default_value_t = false)]
+        return_segmentation: bool,
         /// Optional fallback provider if a listed provider fails.
         #[arg(long)]
         fallback_provider: Option<String>,
@@ -698,6 +726,12 @@ pub enum Commands {
         /// Return per-step preview clips in the execution report.
         #[arg(long, default_value_t = false)]
         return_video: bool,
+        /// Return per-step depth maps alongside preview clips.
+        #[arg(long, default_value_t = false)]
+        return_depth: bool,
+        /// Return per-step segmentation maps alongside preview clips.
+        #[arg(long, default_value_t = false)]
+        return_segmentation: bool,
         /// Disable WorldForge's automatic guardrail checks.
         #[arg(long, default_value_t = false)]
         disable_guardrails: bool,
@@ -1074,9 +1108,13 @@ pub async fn run() -> Result<()> {
             steps,
             provider,
             num_samples,
+            return_video,
+            return_depth,
+            return_segmentation,
             fallback_provider,
             timeout_ms,
             disable_guardrails,
+            output_json,
         } => {
             cmd_predict(
                 store.as_ref(),
@@ -1085,9 +1123,13 @@ pub async fn run() -> Result<()> {
                 steps,
                 &provider,
                 num_samples,
+                return_video,
+                return_depth,
+                return_segmentation,
                 fallback_provider.as_deref(),
                 timeout_ms,
                 disable_guardrails,
+                output_json.as_deref(),
             )
             .await
         }
@@ -1406,6 +1448,10 @@ pub async fn run() -> Result<()> {
             providers,
             prediction_json,
             steps,
+            num_samples,
+            return_video,
+            return_depth,
+            return_segmentation,
             fallback_provider,
             timeout_ms,
             guardrails_json,
@@ -1423,6 +1469,10 @@ pub async fn run() -> Result<()> {
                 CompareOptions {
                     prediction_json: &prediction_json,
                     steps,
+                    num_samples,
+                    return_video,
+                    return_depth,
+                    return_segmentation,
                     fallback_provider: fallback_provider.as_deref(),
                     timeout_ms,
                     guardrails_json: guardrails_json.as_deref(),
@@ -1495,6 +1545,8 @@ pub async fn run() -> Result<()> {
             timeout_ms,
             guardrails_json,
             return_video,
+            return_depth,
+            return_segmentation,
             disable_guardrails,
             output_json,
         } => {
@@ -1510,6 +1562,8 @@ pub async fn run() -> Result<()> {
                     timeout_ms,
                     guardrails_json: guardrails_json.as_deref(),
                     return_video,
+                    return_depth,
+                    return_segmentation,
                     disable_guardrails,
                     output_json: output_json.as_deref(),
                 },
@@ -2041,6 +2095,8 @@ struct ExecutePlanOptions<'a> {
     timeout_ms: Option<u64>,
     guardrails_json: Option<&'a Path>,
     return_video: bool,
+    return_depth: bool,
+    return_segmentation: bool,
     disable_guardrails: bool,
     output_json: Option<&'a Path>,
 }
@@ -2048,6 +2104,10 @@ struct ExecutePlanOptions<'a> {
 struct CompareOptions<'a> {
     prediction_json: &'a [PathBuf],
     steps: u32,
+    num_samples: Option<u32>,
+    return_video: bool,
+    return_depth: bool,
+    return_segmentation: bool,
     fallback_provider: Option<&'a str>,
     timeout_ms: Option<u64>,
     guardrails_json: Option<&'a Path>,
@@ -2480,9 +2540,13 @@ async fn cmd_predict(
     steps: u32,
     provider: &str,
     num_samples: Option<u32>,
+    return_video: bool,
+    return_depth: bool,
+    return_segmentation: bool,
     fallback_provider: Option<&str>,
     timeout_ms: Option<u64>,
     disable_guardrails: bool,
+    output_json: Option<&Path>,
 ) -> Result<()> {
     let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
     let state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -2497,7 +2561,15 @@ async fn cmd_predict(
     }
     let action = parse_action(action_str, &state)?;
     let mut world = worldforge_core::world::World::new(state, provider, registry);
-    let mut config = build_predict_config(steps, num_samples, fallback_provider, timeout_ms);
+    let mut config = build_predict_config(
+        steps,
+        num_samples,
+        return_video,
+        return_depth,
+        return_segmentation,
+        fallback_provider,
+        timeout_ms,
+    );
     if disable_guardrails {
         config = config.disable_guardrails();
     }
@@ -2521,10 +2593,17 @@ async fn cmd_predict(
     println!("  Confidence: {:.2}", prediction.confidence);
     println!("  Physics score: {:.2}", prediction.physics_scores.overall);
     println!("  Latency: {}ms", prediction.latency_ms);
+    if prediction.video.is_some() {
+        println!("  Video: attached");
+    }
     if let Some(summary) = predict_sampling_summary(prediction.sampling.as_ref()) {
         println!("  {summary}");
     }
     println!("  New time step: {}", world.current_state().time.step);
+    if let Some(path) = output_json {
+        write_json_file(path, &prediction)?;
+        println!("  Saved prediction JSON: {}", path.display());
+    }
 
     Ok(())
 }
@@ -2532,11 +2611,17 @@ async fn cmd_predict(
 fn build_predict_config(
     steps: u32,
     num_samples: Option<u32>,
+    return_video: bool,
+    return_depth: bool,
+    return_segmentation: bool,
     fallback_provider: Option<&str>,
     timeout_ms: Option<u64>,
 ) -> PredictionConfig {
     PredictionConfig {
         steps,
+        return_video,
+        return_depth,
+        return_segmentation,
         num_samples: num_samples.unwrap_or(1).max(1),
         fallback_provider: fallback_provider.map(ToOwned::to_owned),
         max_latency_ms: timeout_ms,
@@ -3348,7 +3433,6 @@ async fn cmd_eval(store: Option<&dyn StateStore>, options: EvalOptions<'_>) -> R
         load_optional_world_state_input(store, options.world, options.world_snapshot).await?;
     let run_options = worldforge_eval::EvalRunOptions {
         num_samples: options.num_samples,
-        ..Default::default()
     };
     let report = match world_state.as_ref() {
         Some(state) => suite
@@ -3504,11 +3588,15 @@ async fn cmd_compare(
         let world = worldforge_core::world::World::new(state, default_provider, registry);
         let config = PredictionConfig {
             steps: options.steps,
+            return_video: options.return_video,
+            return_depth: options.return_depth,
+            return_segmentation: options.return_segmentation,
             guardrails: resolve_guardrails(
                 read_guardrails(options.guardrails_json)?,
                 options.disable_guardrails,
             ),
             max_latency_ms: options.timeout_ms,
+            num_samples: options.num_samples.unwrap_or(1).max(1),
             fallback_provider: options.fallback_provider.map(ToOwned::to_owned),
             ..PredictionConfig::default()
         };
@@ -3789,6 +3877,8 @@ async fn cmd_execute_plan(
     let mut config = PredictionConfig {
         steps: options.steps,
         return_video: options.return_video,
+        return_depth: options.return_depth,
+        return_segmentation: options.return_segmentation,
         guardrails: read_guardrails(options.guardrails_json)?,
         fallback_provider: options.fallback_provider.map(ToOwned::to_owned),
         max_latency_ms: options.timeout_ms,
@@ -5609,16 +5699,24 @@ mod tests {
             Commands::Predict {
                 provider,
                 num_samples,
+                return_video,
+                return_depth,
+                return_segmentation,
                 fallback_provider,
                 timeout_ms,
                 disable_guardrails,
+                output_json,
                 ..
             } => {
                 assert_eq!(provider, "runway");
                 assert_eq!(num_samples, Some(4));
+                assert!(!return_video);
+                assert!(!return_depth);
+                assert!(!return_segmentation);
                 assert_eq!(fallback_provider.as_deref(), Some("mock"));
                 assert_eq!(timeout_ms, Some(250));
                 assert!(!disable_guardrails);
+                assert!(output_json.is_none());
             }
             _ => panic!("expected Predict"),
         }
@@ -5626,9 +5724,12 @@ mod tests {
 
     #[test]
     fn test_build_predict_config_uses_requested_sample_count() {
-        let config = build_predict_config(3, Some(8), Some("mock"), Some(120));
+        let config = build_predict_config(3, Some(8), true, true, true, Some("mock"), Some(120));
 
         assert_eq!(config.steps, 3);
+        assert!(config.return_video);
+        assert!(config.return_depth);
+        assert!(config.return_segmentation);
         assert_eq!(config.num_samples, 8);
         assert_eq!(config.fallback_provider.as_deref(), Some("mock"));
         assert_eq!(config.max_latency_ms, Some(120));
@@ -5670,6 +5771,11 @@ mod tests {
             "runway,cosmos",
             "--steps",
             "4",
+            "--num-samples",
+            "3",
+            "--return-video",
+            "--return-depth",
+            "--return-segmentation",
             "--fallback-provider",
             "mock",
             "--timeout-ms",
@@ -5688,6 +5794,10 @@ mod tests {
                 providers,
                 prediction_json,
                 steps,
+                num_samples,
+                return_video,
+                return_depth,
+                return_segmentation,
                 fallback_provider,
                 timeout_ms,
                 guardrails_json,
@@ -5704,6 +5814,10 @@ mod tests {
                 assert_eq!(providers.as_deref(), Some("runway,cosmos"));
                 assert!(prediction_json.is_empty());
                 assert_eq!(steps, 4);
+                assert_eq!(num_samples, Some(3));
+                assert!(return_video);
+                assert!(return_depth);
+                assert!(return_segmentation);
                 assert_eq!(fallback_provider.as_deref(), Some("mock"));
                 assert_eq!(timeout_ms, Some(300));
                 assert_eq!(guardrails_json, Some(PathBuf::from("/tmp/guardrails.json")));
@@ -6486,6 +6600,8 @@ mod tests {
             "--guardrails-json",
             "/tmp/guardrails.json",
             "--return-video",
+            "--return-depth",
+            "--return-segmentation",
             "--disable-guardrails",
             "--output-json",
             "/tmp/execution.json",
@@ -6503,6 +6619,8 @@ mod tests {
                 timeout_ms,
                 guardrails_json,
                 return_video,
+                return_depth,
+                return_segmentation,
                 disable_guardrails,
                 output_json,
             } => {
@@ -6515,6 +6633,8 @@ mod tests {
                 assert_eq!(timeout_ms, Some(50));
                 assert_eq!(guardrails_json, Some(PathBuf::from("/tmp/guardrails.json")));
                 assert!(return_video);
+                assert!(return_depth);
+                assert!(return_segmentation);
                 assert!(disable_guardrails);
                 assert_eq!(output_json, Some(PathBuf::from("/tmp/execution.json")));
             }
@@ -6714,6 +6834,10 @@ mod tests {
             CompareOptions {
                 prediction_json: &prediction_paths,
                 steps: 1,
+                num_samples: None,
+                return_video: false,
+                return_depth: false,
+                return_segmentation: false,
                 fallback_provider: None,
                 timeout_ms: None,
                 guardrails_json: None,
@@ -6758,6 +6882,10 @@ mod tests {
             CompareOptions {
                 prediction_json: &[],
                 steps: 1,
+                num_samples: Some(2),
+                return_video: true,
+                return_depth: true,
+                return_segmentation: true,
                 fallback_provider: None,
                 timeout_ms: None,
                 guardrails_json: None,
@@ -6773,6 +6901,14 @@ mod tests {
         let comparison: MultiPrediction = read_json_file(&output).unwrap();
         assert_eq!(comparison.predictions.len(), 2);
         assert_eq!(comparison.comparison.pairwise_agreements.len(), 1);
+        assert!(comparison
+            .predictions
+            .iter()
+            .all(|prediction| prediction.video.is_some()));
+        assert!(comparison
+            .predictions
+            .iter()
+            .all(|prediction| prediction.sampling.is_some()));
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -6804,6 +6940,10 @@ mod tests {
             CompareOptions {
                 prediction_json: &prediction_paths,
                 steps: 1,
+                num_samples: None,
+                return_video: false,
+                return_depth: false,
+                return_segmentation: false,
                 fallback_provider: None,
                 timeout_ms: None,
                 guardrails_json: None,
@@ -7443,6 +7583,8 @@ mod tests {
                 timeout_ms: None,
                 guardrails_json: None,
                 return_video: false,
+                return_depth: false,
+                return_segmentation: false,
                 disable_guardrails: false,
                 output_json: None,
             },
@@ -7798,7 +7940,9 @@ mod tests {
                 steps: 1,
                 timeout_ms: None,
                 guardrails_json: None,
-                return_video: false,
+                return_video: true,
+                return_depth: true,
+                return_segmentation: true,
                 disable_guardrails: false,
                 output_json: Some(&execution_path),
             },
@@ -7809,6 +7953,13 @@ mod tests {
         let report: PlanExecution = read_json_file(&execution_path).unwrap();
         assert_eq!(report.predictions.len(), 1);
         assert_eq!(report.final_state.time.step, 1);
+        let frame = report.predictions[0]
+            .video
+            .as_ref()
+            .and_then(|video| video.frames.first())
+            .unwrap();
+        assert!(frame.depth.is_some());
+        assert!(frame.segmentation.is_some());
 
         let persisted = store.load(&state.id).await.unwrap();
         assert_eq!(persisted.time.step, 1);
@@ -7882,9 +8033,13 @@ mod tests {
             1,
             "mock",
             None,
+            false,
+            false,
+            false,
             None,
             None,
             false,
+            None,
         )
         .await;
         let error = result.unwrap_err().to_string();
@@ -7904,9 +8059,13 @@ mod tests {
             1,
             "mock",
             None,
+            false,
+            false,
+            false,
             None,
             None,
             true,
+            None,
         )
         .await
         .unwrap();
@@ -7929,6 +8088,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_cmd_predict_writes_output_json_with_video_depth_and_segmentation() {
+        let dir =
+            std::env::temp_dir().join(format!("wf-cli-predict-media-{}", uuid::Uuid::new_v4()));
+        let store = StateStoreKind::File(dir.join("state"))
+            .open()
+            .await
+            .unwrap();
+        let mut state = WorldState::new("predict-media", "mock");
+        state.scene.add_object(SceneObject::new(
+            "ball",
+            Pose::default(),
+            BBox::from_center_half_extents(
+                Position::default(),
+                Vec3 {
+                    x: 0.1,
+                    y: 0.1,
+                    z: 0.1,
+                },
+            ),
+        ));
+        let output_path = dir.join("prediction.json");
+        store.save(&state).await.unwrap();
+
+        cmd_predict(
+            store.as_ref(),
+            &state.id.to_string(),
+            "move 1 0 0",
+            1,
+            "mock",
+            Some(2),
+            true,
+            true,
+            true,
+            None,
+            None,
+            false,
+            Some(&output_path),
+        )
+        .await
+        .unwrap();
+
+        let prediction: Prediction = read_json_file(&output_path).unwrap();
+        assert!(prediction.video.is_some());
+        assert!(prediction.sampling.is_some());
+        let frame = prediction
+            .video
+            .as_ref()
+            .and_then(|video| video.frames.first())
+            .unwrap();
+        assert!(frame.depth.is_some());
+        assert!(frame.segmentation.is_some());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn test_cmd_history_writes_output_json() {
         let dir = std::env::temp_dir().join(format!("wf-cli-history-{}", uuid::Uuid::new_v4()));
         let store = StateStoreKind::File(dir.join("state"))
@@ -7946,9 +8161,13 @@ mod tests {
             1,
             "mock",
             None,
+            false,
+            false,
+            false,
             None,
             None,
             true,
+            None,
         )
         .await
         .unwrap();
@@ -7985,9 +8204,13 @@ mod tests {
             1,
             "mock",
             None,
+            false,
+            false,
+            false,
             None,
             None,
             true,
+            None,
         )
         .await
         .unwrap();

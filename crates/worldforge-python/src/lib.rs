@@ -1534,7 +1534,7 @@ impl PyWorld {
     }
 
     /// Predict the next world state after applying an action.
-    #[pyo3(signature = (action, steps=1, provider=None, fallback_provider=None, return_video=false, max_latency_ms=None, guardrails_json=None, disable_guardrails=false, num_samples=None))]
+    #[pyo3(signature = (action, steps=1, provider=None, fallback_provider=None, return_video=false, max_latency_ms=None, guardrails_json=None, disable_guardrails=false, num_samples=None, return_depth=false, return_segmentation=false))]
     #[allow(clippy::too_many_arguments)]
     fn predict(
         &mut self,
@@ -1547,6 +1547,8 @@ impl PyWorld {
         guardrails_json: Option<&str>,
         disable_guardrails: bool,
         num_samples: Option<u32>,
+        return_depth: bool,
+        return_segmentation: bool,
     ) -> PyResult<PyPrediction> {
         let rt = tokio::runtime::Runtime::new().map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("failed to create runtime: {e}"))
@@ -1557,6 +1559,8 @@ impl PyWorld {
         let mut config = PredictionConfig {
             steps,
             return_video,
+            return_depth,
+            return_segmentation,
             max_latency_ms,
             fallback_provider: fallback_provider.map(ToOwned::to_owned),
             guardrails: parse_guardrails_json(guardrails_json)?,
@@ -1580,7 +1584,7 @@ impl PyWorld {
     }
 
     /// Compare predictions from multiple providers without mutating the world state.
-    #[pyo3(signature = (action, providers, steps=1, fallback_provider=None, return_video=false, max_latency_ms=None, guardrails_json=None, disable_guardrails=false))]
+    #[pyo3(signature = (action, providers, steps=1, fallback_provider=None, return_video=false, max_latency_ms=None, guardrails_json=None, disable_guardrails=false, num_samples=None, return_depth=false, return_segmentation=false))]
     #[allow(clippy::too_many_arguments)]
     fn compare(
         &self,
@@ -1592,6 +1596,9 @@ impl PyWorld {
         max_latency_ms: Option<u64>,
         guardrails_json: Option<&str>,
         disable_guardrails: bool,
+        num_samples: Option<u32>,
+        return_depth: bool,
+        return_segmentation: bool,
     ) -> PyResult<PyMultiPrediction> {
         if providers.is_empty() {
             return Err(pyo3::exceptions::PyValueError::new_err(
@@ -1603,6 +1610,8 @@ impl PyWorld {
         let mut config = PredictionConfig {
             steps,
             return_video,
+            return_depth,
+            return_segmentation,
             max_latency_ms,
             fallback_provider: fallback_provider.map(ToOwned::to_owned),
             guardrails: parse_guardrails_json(guardrails_json)?,
@@ -1611,6 +1620,7 @@ impl PyWorld {
         if disable_guardrails {
             config = config.disable_guardrails();
         }
+        config.num_samples = num_samples.unwrap_or(1).max(1);
         let provider_refs: Vec<&str> = providers.iter().map(String::as_str).collect();
         let comparison = rt
             .block_on(
@@ -1764,7 +1774,7 @@ impl PyWorld {
     }
 
     /// Execute a previously generated plan against the live world state.
-    #[pyo3(signature = (plan, steps=1, provider=None, fallback_provider=None, return_video=false, max_latency_ms=None, guardrails_json=None, disable_guardrails=false))]
+    #[pyo3(signature = (plan, steps=1, provider=None, fallback_provider=None, return_video=false, max_latency_ms=None, guardrails_json=None, disable_guardrails=false, return_depth=false, return_segmentation=false))]
     #[allow(clippy::too_many_arguments)]
     fn execute_plan(
         &mut self,
@@ -1776,6 +1786,8 @@ impl PyWorld {
         max_latency_ms: Option<u64>,
         guardrails_json: Option<&str>,
         disable_guardrails: bool,
+        return_depth: bool,
+        return_segmentation: bool,
     ) -> PyResult<PyPlanExecution> {
         let rt = new_runtime()?;
         let provider_name = resolve_provider_name(&self.world, provider);
@@ -1787,6 +1799,8 @@ impl PyWorld {
         let mut config = PredictionConfig {
             steps,
             return_video,
+            return_depth,
+            return_segmentation,
             max_latency_ms,
             fallback_provider: fallback_provider.map(ToOwned::to_owned),
             guardrails: parse_guardrails_json(guardrails_json)?,
@@ -1810,7 +1824,7 @@ impl PyWorld {
     }
 
     /// Execute a previously stored plan against the live world state.
-    #[pyo3(signature = (plan_id, steps=1, provider=None, fallback_provider=None, return_video=false, max_latency_ms=None, guardrails_json=None, disable_guardrails=false))]
+    #[pyo3(signature = (plan_id, steps=1, provider=None, fallback_provider=None, return_video=false, max_latency_ms=None, guardrails_json=None, disable_guardrails=false, return_depth=false, return_segmentation=false))]
     #[allow(clippy::too_many_arguments)]
     fn execute_stored_plan(
         &mut self,
@@ -1822,6 +1836,8 @@ impl PyWorld {
         max_latency_ms: Option<u64>,
         guardrails_json: Option<&str>,
         disable_guardrails: bool,
+        return_depth: bool,
+        return_segmentation: bool,
     ) -> PyResult<PyPlanExecution> {
         let plan_id = parse_plan_id(plan_id)?;
         let rt = new_runtime()?;
@@ -1834,6 +1850,8 @@ impl PyWorld {
         let mut config = PredictionConfig {
             steps,
             return_video,
+            return_depth,
+            return_segmentation,
             max_latency_ms,
             fallback_provider: fallback_provider.map(ToOwned::to_owned),
             guardrails: parse_guardrails_json(guardrails_json)?,
@@ -2126,6 +2144,12 @@ impl PyPrediction {
     #[getter]
     fn sampling(&self) -> Option<PyPredictionSampling> {
         self.inner.sampling().map(PyPredictionSampling::from_core)
+    }
+
+    /// Generated transition video, if requested by the caller.
+    #[getter]
+    fn video(&self) -> Option<PyVideoClip> {
+        self.inner.video.clone().map(|inner| PyVideoClip { inner })
     }
 
     /// Get the predicted output state as a `World`.
@@ -4665,7 +4689,7 @@ impl PyWorldForge {
     }
 
     /// Compare provider predictions for a supplied world or world JSON without persisting it.
-    #[pyo3(signature = (action, providers, world=None, world_json=None, steps=1, fallback_provider=None, return_video=false, max_latency_ms=None, guardrails_json=None, disable_guardrails=false))]
+    #[pyo3(signature = (action, providers, world=None, world_json=None, steps=1, fallback_provider=None, return_video=false, max_latency_ms=None, guardrails_json=None, disable_guardrails=false, num_samples=None, return_depth=false, return_segmentation=false))]
     #[allow(clippy::too_many_arguments)]
     fn compare_world(
         &self,
@@ -4679,6 +4703,9 @@ impl PyWorldForge {
         max_latency_ms: Option<u64>,
         guardrails_json: Option<&str>,
         disable_guardrails: bool,
+        num_samples: Option<u32>,
+        return_depth: bool,
+        return_segmentation: bool,
     ) -> PyResult<PyMultiPrediction> {
         if providers.is_empty() {
             return Err(pyo3::exceptions::PyValueError::new_err(
@@ -4690,6 +4717,8 @@ impl PyWorldForge {
         let mut config = PredictionConfig {
             steps,
             return_video,
+            return_depth,
+            return_segmentation,
             max_latency_ms,
             fallback_provider: fallback_provider.map(ToOwned::to_owned),
             guardrails: parse_guardrails_json(guardrails_json)?,
@@ -4698,6 +4727,7 @@ impl PyWorldForge {
         if disable_guardrails {
             config = config.disable_guardrails();
         }
+        config.num_samples = num_samples.unwrap_or(1).max(1);
 
         let provider_refs: Vec<&str> = providers.iter().map(String::as_str).collect();
         match (world, world_json) {
@@ -5811,10 +5841,7 @@ fn run_eval_suite_report_with_world(
     }
     let rt = new_runtime()?;
     let provider_names = resolve_eval_provider_names(suite, providers);
-    let run_options = worldforge_eval::EvalRunOptions {
-        num_samples,
-        ..Default::default()
-    };
+    let run_options = worldforge_eval::EvalRunOptions { num_samples };
     let mut provider_list: Vec<&dyn worldforge_core::provider::WorldModelProvider> = Vec::new();
     for provider_name in &provider_names {
         let provider = registry.get(provider_name).map_err(|e| {
@@ -7893,6 +7920,8 @@ mod tests {
                 None,
                 false,
                 None,
+                false,
+                false,
             )
             .unwrap();
 
@@ -7917,6 +7946,8 @@ mod tests {
                 None,
                 false,
                 Some(3),
+                false,
+                false,
             )
             .unwrap();
 
@@ -7955,6 +7986,31 @@ mod tests {
     }
 
     #[test]
+    fn test_world_predict_can_return_video_clip() {
+        let mut world = PyWorld::new("predict_video_world", "mock");
+        let prediction = world
+            .predict(
+                &PyAction::move_to(0.5, 0.0, 0.0, 1.0),
+                1,
+                None,
+                None,
+                true,
+                None,
+                None,
+                false,
+                None,
+                true,
+                true,
+            )
+            .unwrap();
+
+        let clip = prediction.video().expect("video clip should be present");
+        assert!(clip.frame_count() > 0);
+        assert!(clip.to_json().unwrap().contains("\"depth\""));
+        assert!(clip.to_json().unwrap().contains("\"segmentation\""));
+    }
+
+    #[test]
     fn test_prediction_prove_inference_bundle_uses_archived_provenance() {
         let mut world = PyWorld::new("predict_world", "mock");
         let prediction = world
@@ -7968,6 +8024,8 @@ mod tests {
                 None,
                 false,
                 None,
+                false,
+                false,
             )
             .unwrap();
 
@@ -8002,6 +8060,8 @@ mod tests {
                 None,
                 false,
                 None,
+                false,
+                false,
             )
             .unwrap();
 
@@ -8023,6 +8083,8 @@ mod tests {
                 None,
                 false,
                 None,
+                false,
+                false,
             )
             .unwrap();
 
@@ -8050,6 +8112,8 @@ mod tests {
                 None,
                 false,
                 None,
+                false,
+                false,
             )
             .unwrap();
 
@@ -8099,7 +8163,9 @@ mod tests {
         assert_eq!(world.stored_plan(&plan_id).unwrap().id(), plan_id);
 
         let execution = world
-            .execute_stored_plan(&plan_id, 1, None, None, false, None, None, false)
+            .execute_stored_plan(
+                &plan_id, 1, None, None, false, None, None, false, false, false,
+            )
             .unwrap();
         assert!(execution.step_count() >= 1);
         assert!(world.history_length() >= 2);
@@ -8142,6 +8208,8 @@ mod tests {
                 None,
                 true,
                 None,
+                false,
+                false,
             )
             .unwrap();
         let forked = world.fork(Some(0), None).unwrap();
@@ -8176,6 +8244,9 @@ mod tests {
                 false,
                 None,
                 None,
+                false,
+                None,
+                false,
                 false,
             )
             .unwrap();
@@ -8224,6 +8295,9 @@ mod tests {
             None,
             None,
             false,
+            None,
+            false,
+            false,
         );
 
         assert!(result.is_err());
@@ -8242,11 +8316,38 @@ mod tests {
                 None,
                 None,
                 false,
+                None,
+                false,
+                false,
             )
             .unwrap();
 
         assert_eq!(comparison.prediction_count(), 1);
         assert_eq!(comparison.best_prediction().provider(), "mock");
+    }
+
+    #[test]
+    fn test_world_compare_can_return_video_and_sampling() {
+        let world = PyWorld::new("compare_media_world", "mock");
+        let comparison = world
+            .compare(
+                &PyAction::move_to(0.5, 0.0, 0.0, 1.0),
+                vec!["mock".to_string()],
+                1,
+                None,
+                true,
+                None,
+                None,
+                false,
+                Some(2),
+                true,
+                true,
+            )
+            .unwrap();
+
+        let prediction = comparison.best_prediction();
+        assert!(prediction.video().is_some());
+        assert!(prediction.sampling().is_some());
     }
 
     #[test]
@@ -8273,11 +8374,15 @@ mod tests {
 
         let action = PyAction::move_to(0.2, 0.5, 0.0, 1.0);
         let prediction = world
-            .predict(&action, 1, None, None, false, None, None, false, None)
+            .predict(
+                &action, 1, None, None, false, None, None, false, None, false, false,
+            )
             .unwrap();
         let mut predicted_world = prediction.output_world();
         let follow_up = predicted_world
-            .predict(&action, 1, None, None, false, None, None, false, None)
+            .predict(
+                &action, 1, None, None, false, None, None, false, None, false, false,
+            )
             .unwrap();
         assert_eq!(follow_up.provider(), "manual-mock");
 
@@ -8291,6 +8396,9 @@ mod tests {
                 None,
                 None,
                 false,
+                None,
+                false,
+                false,
             )
             .unwrap();
         assert_eq!(comparison.prediction_count(), 1);
@@ -8298,7 +8406,9 @@ mod tests {
 
         let mut comparison_world = comparison.best_prediction().output_world();
         let comparison_follow_up = comparison_world
-            .predict(&action, 1, None, None, false, None, None, false, None)
+            .predict(
+                &action, 1, None, None, false, None, None, false, None, false, false,
+            )
             .unwrap();
         assert_eq!(comparison_follow_up.provider(), "manual-mock");
     }
@@ -8327,6 +8437,9 @@ mod tests {
             Some(
                 r#"[{"guardrail":{"BoundaryConstraint":{"bounds":{"min":{"x":-0.25,"y":-0.25,"z":-0.25},"max":{"x":0.25,"y":0.25,"z":0.25}}}},"blocking":true}]"#,
             ),
+            false,
+            None,
+            false,
             false,
         );
 
@@ -8368,6 +8481,8 @@ mod tests {
             None,
             false,
             None,
+            false,
+            false,
         );
         let error = default_result.unwrap_err().to_string();
         assert!(error.contains("NoCollisions"));
@@ -8386,6 +8501,8 @@ mod tests {
                 None,
                 true,
                 None,
+                false,
+                false,
             )
             .unwrap();
 
@@ -8419,6 +8536,8 @@ mod tests {
                 ),
                 false,
                 None,
+                false,
+                false,
             )
             .unwrap_err()
             .to_string();
@@ -8828,6 +8947,8 @@ mod tests {
                 None,
                 true,
                 None,
+                false,
+                false,
             )
             .unwrap();
 
@@ -8940,10 +9061,14 @@ mod tests {
         let mut world_b = wf.create_world("compare-b", "mock").unwrap();
         let action = PyAction::move_to(1.0, 0.0, 0.0, 1.0);
         let prediction_a = world_a
-            .predict(&action, 1, None, None, false, None, None, false, None)
+            .predict(
+                &action, 1, None, None, false, None, None, false, None, false, false,
+            )
             .unwrap();
         let prediction_b = world_b
-            .predict(&action, 1, None, None, false, None, None, false, None)
+            .predict(
+                &action, 1, None, None, false, None, None, false, None, false, false,
+            )
             .unwrap();
 
         let comparison = wf.compare(vec![prediction_a, prediction_b]).unwrap();
@@ -8971,15 +9096,20 @@ mod tests {
                 Some(&world_json),
                 1,
                 None,
-                false,
+                true,
                 None,
                 None,
                 false,
+                Some(2),
+                true,
+                true,
             )
             .unwrap();
 
         assert_eq!(comparison.prediction_count(), 2);
         assert_eq!(comparison.pairwise_agreements().len(), 1);
+        assert!(comparison.best_prediction().video().is_some());
+        assert!(comparison.best_prediction().sampling().is_some());
     }
 
     #[test]
@@ -8998,6 +9128,9 @@ mod tests {
             None,
             None,
             false,
+            None,
+            false,
+            false,
         );
 
         assert!(result.is_err());
@@ -9010,10 +9143,14 @@ mod tests {
         let mut world_b = wf.create_world("compare-b", "mock").unwrap();
         let action = PyAction::move_to(1.0, 0.0, 0.0, 1.0);
         let prediction_a = world_a
-            .predict(&action, 1, None, None, false, None, None, false, None)
+            .predict(
+                &action, 1, None, None, false, None, None, false, None, false, false,
+            )
             .unwrap();
         let prediction_b = world_b
-            .predict(&action, 1, None, None, false, None, None, false, None)
+            .predict(
+                &action, 1, None, None, false, None, None, false, None, false, false,
+            )
             .unwrap();
         let comparison = wf.compare(vec![prediction_a, prediction_b]).unwrap();
 
@@ -10244,7 +10381,18 @@ mod tests {
             )
             .unwrap();
         let execution = world
-            .execute_plan(&plan, 1, Some("mock"), None, false, None, None, false)
+            .execute_plan(
+                &plan,
+                1,
+                Some("mock"),
+                None,
+                true,
+                None,
+                None,
+                false,
+                true,
+                true,
+            )
             .unwrap();
 
         assert!(execution.step_count() > 0);
@@ -10259,6 +10407,7 @@ mod tests {
                 .x()
                 > 0.5
         );
+        assert!(execution.predictions()[0].video().is_some());
 
         let json = execution.to_json().unwrap();
         let roundtrip = PyPlanExecution::from_json(&json).unwrap();
@@ -10308,7 +10457,7 @@ mod tests {
             )
             .unwrap();
         let execution = world
-            .execute_plan(&plan, 1, None, None, false, None, None, false)
+            .execute_plan(&plan, 1, None, None, false, None, None, false, false, false)
             .unwrap();
 
         let mut final_world = execution.final_world();
@@ -10323,6 +10472,8 @@ mod tests {
                 None,
                 false,
                 None,
+                false,
+                false,
             )
             .unwrap();
         assert_eq!(follow_up.provider(), "manual-mock");
@@ -10861,6 +11012,8 @@ mod tests {
                 None,
                 false,
                 None,
+                false,
+                false,
             )
             .unwrap();
 

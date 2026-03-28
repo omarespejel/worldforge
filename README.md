@@ -93,6 +93,16 @@ sampling = prediction.sampling()
 assert sampling is not None
 assert sampling.requested_samples == 4
 
+# Media payloads can also be requested explicitly from Python.
+prediction = world.predict(
+    Action.move_to(0.25, 0.8, 0.0),
+    steps=2,
+    return_video=True,
+    return_depth=True,
+    return_segmentation=True,
+)
+assert prediction.video is not None
+
 # Plan a sequence of actions to achieve a goal
 plan = world.plan(
     goal="spawn cube next to the red mug",
@@ -476,15 +486,15 @@ cargo run -p worldforge-cli -- export --world <id> --output snapshots/world.msgp
 cargo run -p worldforge-cli -- import --input snapshots/world.msgpack --format msgpack --new-id --name kitchen-copy
 cargo run -p worldforge-cli -- history --world <id> --output-json histories/<id>.json
 cargo run -p worldforge-cli -- restore --world <id> --history-index 0 --output-json restored/<id>.json
-cargo run -p worldforge-cli -- predict --world <id> --action "move 1 0 0" --provider runway --fallback-provider mock --num-samples 4 --timeout-ms 500
+cargo run -p worldforge-cli -- predict --world <id> --action "move 1 0 0" --provider runway --fallback-provider mock --num-samples 4 --return-video --return-depth --return-segmentation --output-json runs/predict.json --timeout-ms 500
 cargo run -p worldforge-cli -- compare --prediction-json runs/mock.json --prediction-json runs/runway.json --output-json reports/compare.json
-cargo run -p worldforge-cli -- compare --world-snapshot snapshots/world.msgpack --action "move 1 0 0" --providers mock,runway --output-json reports/compare-from-snapshot.json
+cargo run -p worldforge-cli -- compare --world-snapshot snapshots/world.msgpack --action "move 1 0 0" --providers mock,runway --num-samples 2 --return-video --return-depth --return-segmentation --output-json reports/compare-from-snapshot.json
 cargo run -p worldforge-cli -- compare --world-snapshot snapshots/world.msgpack --action "move 1 0 0" --providers mock,runway --output-json reports/compare.json --output-markdown reports/compare.md --output-csv reports/compare.csv
 cargo run -p worldforge-cli -- plan --world <id> --goal "spawn cube" --planner cem
 cargo run -p worldforge-cli -- plan --world <id> --goal "spawn cube" --planner cem --population-size 12 --elite-fraction 0.25 --num-iterations 3
 cargo run -p worldforge-cli -- plan --world <id> --goal "spawn cube" --planner cem --guardrails-json guardrails.json --output-json plans/generated.json
 cargo run -p worldforge-cli -- plan --world <id> --goal-json goals/object-at.json --planner sampling --output-json plans/object-at.json
-cargo run -p worldforge-cli -- execute-plan --world <id> --plan-json plans/generated.json --output-json plans/executed.json
+cargo run -p worldforge-cli -- execute-plan --world <id> --plan-json plans/generated.json --return-video --return-depth --return-segmentation --output-json plans/executed.json
 cargo run -p worldforge-cli -- plans list --world <id>
 cargo run -p worldforge-cli -- plans show --world <id> --plan-id <plan-id> --output-json plans/<plan-id>.json
 cargo run -p worldforge-cli -- plans delete --world <id> --plan-id <plan-id>
@@ -683,6 +693,8 @@ curl http://127.0.0.1:8080/v1/providers?capability=predict
 
 curl http://127.0.0.1:8080/v1/providers?health=true
 
+curl http://127.0.0.1:8080/v1/openapi.json
+
 curl http://127.0.0.1:8080/v1/providers/mock
 
 curl http://127.0.0.1:8080/v1/providers/mock/health
@@ -803,7 +815,10 @@ reporting is now available across the core, CLI, REST server, and Python
 bindings, including optional live health data when listing providers. The
 Python bindings now reuse the shared Rust core facade for provider discovery,
 health checks, prediction comparison, and state persistence instead of
-duplicating orchestration logic.
+duplicating orchestration logic. The REST server now also publishes a
+machine-readable `/v1/openapi.json` contract generated from the same route
+catalog that powers the `/v1` index, so the live API surface stays discoverable
+without maintaining a second hand-written route list.
 The mock provider now serves as a higher-fidelity offline reference backend:
 object motion keeps bounding boxes and inferred relationships in sync,
 predictions can emit lightweight preview video/depth/segmentation outputs, and
