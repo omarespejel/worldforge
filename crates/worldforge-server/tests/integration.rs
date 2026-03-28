@@ -128,6 +128,170 @@ async fn spawn_test_server_msgpack() -> TestServer {
     }
 }
 
+fn openapi_operation<'a>(document: &'a Value, path: &str, method: &str) -> &'a Value {
+    document
+        .get("paths")
+        .and_then(|paths| paths.get(path))
+        .and_then(|path_item| path_item.get(method))
+        .unwrap_or_else(|| panic!("missing OpenAPI operation {method} {path}"))
+}
+
+fn schema_refs(schema: &Value) -> Vec<String> {
+    fn walk(value: &Value, refs: &mut Vec<String>) {
+        match value {
+            Value::Object(map) => {
+                if let Some(reference) = map.get("$ref").and_then(Value::as_str) {
+                    refs.push(reference.to_string());
+                }
+
+                for child in map.values() {
+                    walk(child, refs);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    walk(item, refs);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut refs = Vec::new();
+    walk(schema, &mut refs);
+    refs.sort();
+    refs.dedup();
+    refs
+}
+
+fn schema_has_generic_object(schema: &Value) -> bool {
+    schema.as_object().is_some_and(|schema| {
+        schema.get("type") == Some(&Value::String("object".to_string()))
+            && schema.get("additionalProperties") == Some(&Value::Bool(true))
+    })
+}
+
+fn schema_has_property(schema: &Value, property: &str) -> bool {
+    match schema {
+        Value::Object(map) => {
+            if let Some(properties) = map.get("properties").and_then(Value::as_object) {
+                if properties.contains_key(property) {
+                    return true;
+                }
+            }
+
+            map.get("allOf")
+                .and_then(Value::as_array)
+                .is_some_and(|items| items.iter().any(|item| schema_has_property(item, property)))
+                || map
+                    .get("oneOf")
+                    .and_then(Value::as_array)
+                    .is_some_and(|items| {
+                        items.iter().any(|item| schema_has_property(item, property))
+                    })
+                || map
+                    .get("anyOf")
+                    .and_then(Value::as_array)
+                    .is_some_and(|items| {
+                        items.iter().any(|item| schema_has_property(item, property))
+                    })
+        }
+        Value::Array(items) => items.iter().any(|item| schema_has_property(item, property)),
+        _ => false,
+    }
+}
+
+fn schema_property<'a>(schema: &'a Value, property: &str) -> Option<&'a Value> {
+    match schema {
+        Value::Object(map) => {
+            if let Some(properties) = map.get("properties").and_then(Value::as_object) {
+                if let Some(property_schema) = properties.get(property) {
+                    return Some(property_schema);
+                }
+            }
+
+            for key in ["allOf", "oneOf", "anyOf"] {
+                if let Some(items) = map.get(key).and_then(Value::as_array) {
+                    if let Some(found) = items
+                        .iter()
+                        .find_map(|item| schema_property(item, property))
+                    {
+                        return Some(found);
+                    }
+                }
+            }
+
+            None
+        }
+        Value::Array(items) => items
+            .iter()
+            .find_map(|item| schema_property(item, property)),
+        _ => None,
+    }
+}
+
+fn assert_typed_request_schema(
+    schema: &Value,
+    context: &str,
+    expected_ref_suffix: &str,
+    expected_fields: &[&str],
+) {
+    assert!(
+        !schema_has_generic_object(schema),
+        "{context}: expected a typed request schema, got generic object {schema:?}"
+    );
+
+    let refs = schema_refs(schema);
+    if refs
+        .iter()
+        .any(|reference| reference.ends_with(expected_ref_suffix))
+    {
+        return;
+    }
+
+    for field in expected_fields {
+        assert!(
+            schema_has_property(schema, field),
+            "{context}: expected typed request schema to include field `{field}`; refs={refs:?}; schema={schema:?}"
+        );
+    }
+}
+
+fn assert_typed_success_schema(
+    schema: &Value,
+    context: &str,
+    expected_ref_suffix: &str,
+    expected_data_fields: &[&str],
+) {
+    let refs = schema_refs(schema);
+    if refs
+        .iter()
+        .any(|reference| reference.ends_with(expected_ref_suffix))
+    {
+        assert!(
+            refs.iter()
+                .any(|reference| !reference.ends_with("/ApiEnvelope")),
+            "{context}: success schema should not collapse to a generic ApiEnvelope ref only; refs={refs:?}"
+        );
+        return;
+    }
+
+    let data_schema = schema_property(schema, "data")
+        .unwrap_or_else(|| panic!("{context}: expected a typed `data` schema or response ref"));
+
+    assert!(
+        !schema_has_generic_object(data_schema),
+        "{context}: expected typed data schema, got generic object {data_schema:?}"
+    );
+
+    for field in expected_data_fields {
+        assert!(
+            schema_has_property(data_schema, field),
+            "{context}: expected data schema to include field `{field}`; refs={refs:?}; schema={schema:?}"
+        );
+    }
+}
+
 async fn spawn_test_server_redis(redis_url: &str) -> TestServer {
     let state_dir = std::env::temp_dir().join(format!("wf-http-redis-{}", uuid::Uuid::new_v4()));
     let mut registry = ProviderRegistry::new();
@@ -701,6 +865,62 @@ async fn test_live_http_exposes_openapi_contract_document() {
             "missing path from openapi contract: {path}"
         );
     }
+
+    let create_world_request = &openapi_operation(&payload, "/v1/worlds", "post")["requestBody"]
+        ["content"]["application/json"]["schema"];
+    assert_typed_request_schema(
+        create_world_request,
+        "live POST /v1/worlds requestBody",
+        "CreateWorldRequest",
+        &["name", "prompt", "provider"],
+    );
+
+    let predict_request = &openapi_operation(&payload, "/v1/worlds/{id}/predict", "post")
+        ["requestBody"]["content"]["application/json"]["schema"];
+    assert_typed_request_schema(
+        predict_request,
+        "live POST /v1/worlds/{id}/predict requestBody",
+        "PredictRequest",
+        &["action", "config", "provider", "disable_guardrails"],
+    );
+
+    let translate_request =
+        &openapi_operation(&payload, "/v1/providers/{name}/translate-action", "post")
+            ["requestBody"]["content"]["application/json"]["schema"];
+    assert_typed_request_schema(
+        translate_request,
+        "live POST /v1/providers/{name}/translate-action requestBody",
+        "TranslateActionRequest",
+        &["action"],
+    );
+
+    let create_world_response = &openapi_operation(&payload, "/v1/worlds", "post")["responses"]
+        ["201"]["content"]["application/json"]["schema"];
+    assert_typed_success_schema(
+        create_world_response,
+        "live POST /v1/worlds success response",
+        "CreateWorldResponse",
+        &["id", "metadata"],
+    );
+
+    let predict_response = &openapi_operation(&payload, "/v1/worlds/{id}/predict", "post")
+        ["responses"]["200"]["content"]["application/json"]["schema"];
+    assert_typed_success_schema(
+        predict_response,
+        "live POST /v1/worlds/{id}/predict success response",
+        "PredictionResponse",
+        &["provider", "model", "output_state", "physics_scores"],
+    );
+
+    let translate_response =
+        &openapi_operation(&payload, "/v1/providers/{name}/translate-action", "post")["responses"]
+            ["200"]["content"]["application/json"]["schema"];
+    assert_typed_success_schema(
+        translate_response,
+        "live POST /v1/providers/{name}/translate-action success response",
+        "ProviderActionResponse",
+        &["provider", "data"],
+    );
 }
 
 #[tokio::test]

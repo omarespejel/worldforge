@@ -829,8 +829,10 @@ Python bindings now reuse the shared Rust core facade for provider discovery,
 health checks, prediction comparison, and state persistence instead of
 duplicating orchestration logic. The REST server now also publishes a
 machine-readable `/v1/openapi.json` contract generated from the same route
-catalog that powers the `/v1` index, so the live API surface stays discoverable
-without maintaining a second hand-written route list.
+catalog that powers the `/v1` index, with typed route-specific request and
+response schemas for client generation and validation instead of a generic
+envelope-only document. The live API surface stays discoverable without
+maintaining a second hand-written route list.
 The mock provider now serves as a higher-fidelity offline reference backend:
 object motion keeps bounding boxes and inferred relationships in sync,
 predictions can emit lightweight preview video/depth/segmentation outputs, and

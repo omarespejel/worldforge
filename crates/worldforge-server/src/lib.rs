@@ -2073,34 +2073,7 @@ fn openapi_document() -> serde_json::Value {
         ],
         "paths": paths,
         "components": {
-            "schemas": {
-                "ApiEnvelope": {
-                    "type": "object",
-                    "required": ["success"],
-                    "properties": {
-                        "success": { "type": "boolean" },
-                        "data": {
-                            "description": "Route-specific response payload.",
-                        },
-                        "error": {
-                            "type": ["string", "null"],
-                        },
-                        "error_details": {
-                            "type": ["object", "null"],
-                            "additionalProperties": true,
-                        },
-                    },
-                },
-                "OpenApiDocument": {
-                    "type": "object",
-                    "description": "OpenAPI 3.1 document rendered directly by the server.",
-                    "additionalProperties": true,
-                },
-                "ErrorResponse": {
-                    "type": "object",
-                    "additionalProperties": true,
-                },
-            }
+            "schemas": openapi_component_schemas(),
         }
     })
 }
@@ -2141,6 +2114,7 @@ fn openapi_operation(route: &RouteDocumentation, method: &str) -> serde_json::Va
             .any(|candidate| candidate.eq_ignore_ascii_case(method))
             .then_some(request_body)
     }) {
+        let schema = openapi_request_body_schema(route.path, method);
         operation.insert(
             "requestBody".to_string(),
             serde_json::json!({
@@ -2148,10 +2122,7 @@ fn openapi_operation(route: &RouteDocumentation, method: &str) -> serde_json::Va
                 "description": request_body.description,
                 "content": {
                     "application/json": {
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": true,
-                        }
+                        "schema": schema,
                     }
                 }
             }),
@@ -2242,16 +2213,2270 @@ fn sanitize_openapi_token(token: &str) -> String {
         .collect()
 }
 
-fn openapi_response_schema(path: &str, method: &str) -> serde_json::Value {
-    if path == "/v1/openapi.json" {
-        return serde_json::json!({
+fn openapi_component_schemas() -> serde_json::Map<String, serde_json::Value> {
+    let mut schemas = serde_json::Map::new();
+
+    schemas.insert(
+        "ApiEnvelope".to_string(),
+        openapi_api_envelope_base_schema(),
+    );
+    schemas.insert(
+        "OpenApiDocument".to_string(),
+        serde_json::json!({
             "type": "object",
+            "description": "OpenAPI 3.1 document rendered directly by the server.",
             "additionalProperties": true,
-        });
+        }),
+    );
+    schemas.insert(
+        "ErrorResponse".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["success", "error"],
+            "properties": {
+                "success": { "type": "boolean" },
+                "error": { "type": "string" },
+                "error_details": {
+                    "type": ["object", "null"],
+                    "additionalProperties": true,
+                },
+            },
+        }),
+    );
+
+    schemas.insert(
+        "Action".to_string(),
+        openapi_loose_object_schema("Serialized WorldForge action enum payload."),
+    );
+    schemas.insert(
+        "Condition".to_string(),
+        openapi_loose_object_schema("Serialized WorldForge condition enum payload."),
+    );
+    schemas.insert(
+        "Guardrail".to_string(),
+        openapi_loose_object_schema("Serialized guardrail enum payload."),
+    );
+    schemas.insert(
+        "PlanGoalInput".to_string(),
+        openapi_loose_object_schema("Serialized plan-goal payload."),
+    );
+    schemas.insert(
+        "Tensor".to_string(),
+        openapi_object_schema(
+            &["data", "shape", "dtype", "device"],
+            vec![
+                (
+                    "data",
+                    openapi_loose_object_schema("Tensor storage payload."),
+                ),
+                (
+                    "shape",
+                    openapi_array_schema(serde_json::json!({ "type": "integer", "minimum": 0 })),
+                ),
+                ("dtype", serde_json::json!({ "type": "string" })),
+                (
+                    "device",
+                    openapi_loose_object_schema("Tensor device descriptor."),
+                ),
+            ],
+        ),
+    );
+    schemas.insert(
+        "Position".to_string(),
+        openapi_object_schema(
+            &["x", "y", "z"],
+            vec![
+                ("x", serde_json::json!({ "type": "number" })),
+                ("y", serde_json::json!({ "type": "number" })),
+                ("z", serde_json::json!({ "type": "number" })),
+            ],
+        ),
+    );
+    schemas.insert(
+        "Rotation".to_string(),
+        openapi_object_schema(
+            &["w", "x", "y", "z"],
+            vec![
+                ("w", serde_json::json!({ "type": "number" })),
+                ("x", serde_json::json!({ "type": "number" })),
+                ("y", serde_json::json!({ "type": "number" })),
+                ("z", serde_json::json!({ "type": "number" })),
+            ],
+        ),
+    );
+    schemas.insert(
+        "Pose".to_string(),
+        openapi_object_schema(
+            &["position", "rotation"],
+            vec![
+                ("position", openapi_ref_schema("Position")),
+                ("rotation", openapi_ref_schema("Rotation")),
+            ],
+        ),
+    );
+    schemas.insert(
+        "BBox".to_string(),
+        openapi_object_schema(
+            &["min", "max"],
+            vec![
+                ("min", openapi_ref_schema("Position")),
+                ("max", openapi_ref_schema("Position")),
+            ],
+        ),
+    );
+    schemas.insert(
+        "Velocity".to_string(),
+        openapi_object_schema(
+            &["x", "y", "z"],
+            vec![
+                ("x", serde_json::json!({ "type": "number" })),
+                ("y", serde_json::json!({ "type": "number" })),
+                ("z", serde_json::json!({ "type": "number" })),
+            ],
+        ),
+    );
+    schemas.insert(
+        "Mesh".to_string(),
+        openapi_object_schema(
+            &["vertices", "faces"],
+            vec![
+                (
+                    "vertices",
+                    openapi_array_schema(openapi_ref_schema("Position")),
+                ),
+                (
+                    "faces",
+                    openapi_array_schema(openapi_tuple_schema(vec![
+                        serde_json::json!({ "type": "integer", "minimum": 0 }),
+                        serde_json::json!({ "type": "integer", "minimum": 0 }),
+                        serde_json::json!({ "type": "integer", "minimum": 0 }),
+                    ])),
+                ),
+                (
+                    "normals",
+                    openapi_array_schema(openapi_ref_schema("Position")),
+                ),
+                (
+                    "uvs",
+                    openapi_array_schema(openapi_tuple_schema(vec![
+                        serde_json::json!({ "type": "number" }),
+                        serde_json::json!({ "type": "number" }),
+                    ])),
+                ),
+            ],
+        ),
+    );
+    schemas.insert(
+        "SimTime".to_string(),
+        openapi_object_schema(
+            &["step", "seconds", "dt"],
+            vec![
+                (
+                    "step",
+                    serde_json::json!({ "type": "integer", "minimum": 0 }),
+                ),
+                ("seconds", serde_json::json!({ "type": "number" })),
+                ("dt", serde_json::json!({ "type": "number" })),
+            ],
+        ),
+    );
+    schemas.insert(
+        "CameraPose".to_string(),
+        openapi_object_schema(
+            &["extrinsics", "fov", "near_clip", "far_clip"],
+            vec![
+                ("extrinsics", openapi_ref_schema("Pose")),
+                ("fov", serde_json::json!({ "type": "number" })),
+                ("near_clip", serde_json::json!({ "type": "number" })),
+                ("far_clip", serde_json::json!({ "type": "number" })),
+            ],
+        ),
+    );
+    schemas.insert(
+        "Frame".to_string(),
+        openapi_object_schema(
+            &["data", "timestamp"],
+            vec![
+                ("data", openapi_ref_schema("Tensor")),
+                ("timestamp", openapi_ref_schema("SimTime")),
+                ("camera", openapi_ref_schema("CameraPose")),
+                ("depth", openapi_ref_schema("Tensor")),
+                ("segmentation", openapi_ref_schema("Tensor")),
+            ],
+        ),
+    );
+    schemas.insert(
+        "VideoClip".to_string(),
+        openapi_object_schema(
+            &["frames", "fps", "resolution", "duration"],
+            vec![
+                ("frames", openapi_array_schema(openapi_ref_schema("Frame"))),
+                ("fps", serde_json::json!({ "type": "number" })),
+                (
+                    "resolution",
+                    openapi_tuple_schema(vec![
+                        serde_json::json!({ "type": "integer", "minimum": 0 }),
+                        serde_json::json!({ "type": "integer", "minimum": 0 }),
+                    ]),
+                ),
+                ("duration", serde_json::json!({ "type": "number" })),
+            ],
+        ),
+    );
+    schemas.insert(
+        "PhysicsProperties".to_string(),
+        openapi_object_schema(
+            &["is_static", "is_graspable"],
+            vec![
+                ("mass", serde_json::json!({ "type": "number" })),
+                ("friction", serde_json::json!({ "type": "number" })),
+                ("restitution", serde_json::json!({ "type": "number" })),
+                ("is_static", serde_json::json!({ "type": "boolean" })),
+                ("is_graspable", serde_json::json!({ "type": "boolean" })),
+                ("material", serde_json::json!({ "type": "string" })),
+            ],
+        ),
+    );
+    schemas.insert(
+        "SceneObject".to_string(),
+        openapi_object_schema(
+            &["id", "name", "pose", "bbox", "physics"],
+            vec![
+                ("id", openapi_uuid_schema()),
+                ("name", serde_json::json!({ "type": "string" })),
+                ("pose", openapi_ref_schema("Pose")),
+                ("bbox", openapi_ref_schema("BBox")),
+                ("mesh", openapi_ref_schema("Mesh")),
+                ("physics", openapi_ref_schema("PhysicsProperties")),
+                ("semantic_label", serde_json::json!({ "type": "string" })),
+                ("visual_embedding", openapi_ref_schema("Tensor")),
+            ],
+        ),
+    );
+    schemas.insert(
+        "SceneObjectPatch".to_string(),
+        openapi_object_schema(
+            &[],
+            vec![
+                ("name", serde_json::json!({ "type": "string" })),
+                ("position", openapi_ref_schema("Position")),
+                ("rotation", openapi_ref_schema("Rotation")),
+                ("bbox", openapi_ref_schema("BBox")),
+                ("mesh", openapi_ref_schema("Mesh")),
+                ("semantic_label", serde_json::json!({ "type": "string" })),
+                ("visual_embedding", openapi_ref_schema("Tensor")),
+                ("mass", serde_json::json!({ "type": "number" })),
+                ("friction", serde_json::json!({ "type": "number" })),
+                ("restitution", serde_json::json!({ "type": "number" })),
+                ("material", serde_json::json!({ "type": "string" })),
+                ("is_static", serde_json::json!({ "type": "boolean" })),
+                ("is_graspable", serde_json::json!({ "type": "boolean" })),
+            ],
+        ),
+    );
+    schemas.insert(
+        "SceneGraph".to_string(),
+        openapi_object_schema(
+            &["objects", "relationships"],
+            vec![
+                (
+                    "root",
+                    openapi_loose_object_schema("Scene-graph root node."),
+                ),
+                (
+                    "objects",
+                    serde_json::json!({
+                        "type": "object",
+                        "additionalProperties": openapi_ref_schema("SceneObject"),
+                    }),
+                ),
+                (
+                    "relationships",
+                    openapi_array_schema(openapi_loose_object_schema(
+                        "Serialized spatial relationship enum payload.",
+                    )),
+                ),
+            ],
+        ),
+    );
+    schemas.insert(
+        "WorldMetadata".to_string(),
+        openapi_object_schema(
+            &["name", "description", "created_by", "created_at", "tags"],
+            vec![
+                ("name", serde_json::json!({ "type": "string" })),
+                ("description", serde_json::json!({ "type": "string" })),
+                ("created_by", serde_json::json!({ "type": "string" })),
+                ("created_at", openapi_datetime_schema()),
+                (
+                    "tags",
+                    openapi_array_schema(serde_json::json!({ "type": "string" })),
+                ),
+            ],
+        ),
+    );
+    schemas.insert(
+        "PredictionSummary".to_string(),
+        openapi_object_schema(
+            &["confidence", "physics_score", "latency_ms"],
+            vec![
+                ("confidence", serde_json::json!({ "type": "number" })),
+                ("physics_score", serde_json::json!({ "type": "number" })),
+                (
+                    "latency_ms",
+                    serde_json::json!({ "type": "integer", "minimum": 0 }),
+                ),
+                ("model", serde_json::json!({ "type": "string" })),
+                ("provenance", openapi_ref_schema("PredictionProvenance")),
+            ],
+        ),
+    );
+    schemas.insert(
+        "HistorySnapshot".to_string(),
+        openapi_object_schema(
+            &["time", "scene", "metadata"],
+            vec![
+                ("time", openapi_ref_schema("SimTime")),
+                ("scene", openapi_ref_schema("SceneGraph")),
+                ("metadata", openapi_ref_schema("WorldMetadata")),
+            ],
+        ),
+    );
+    schemas.insert(
+        "HistoryEntry".to_string(),
+        openapi_object_schema(
+            &["time", "state_hash", "provider"],
+            vec![
+                ("time", openapi_ref_schema("SimTime")),
+                ("state_hash", openapi_hash_schema()),
+                ("action", openapi_ref_schema("Action")),
+                ("prediction", openapi_ref_schema("PredictionSummary")),
+                ("provider", serde_json::json!({ "type": "string" })),
+                ("snapshot", openapi_ref_schema("HistorySnapshot")),
+            ],
+        ),
+    );
+    schemas.insert(
+        "StateHistory".to_string(),
+        openapi_object_schema(
+            &["states", "max_entries", "compression"],
+            vec![
+                (
+                    "states",
+                    openapi_array_schema(openapi_ref_schema("HistoryEntry")),
+                ),
+                (
+                    "max_entries",
+                    serde_json::json!({ "type": "integer", "minimum": 0 }),
+                ),
+                (
+                    "compression",
+                    openapi_string_enum_schema(&["None", "Lz4", "Zstd"]),
+                ),
+            ],
+        ),
+    );
+    schemas.insert(
+        "WorldState".to_string(),
+        openapi_object_schema(
+            &["id", "time", "scene", "history", "metadata"],
+            vec![
+                ("id", openapi_uuid_schema()),
+                ("time", openapi_ref_schema("SimTime")),
+                ("scene", openapi_ref_schema("SceneGraph")),
+                ("history", openapi_ref_schema("StateHistory")),
+                ("metadata", openapi_ref_schema("WorldMetadata")),
+                (
+                    "stored_plans",
+                    serde_json::json!({
+                        "type": "object",
+                        "additionalProperties": openapi_ref_schema("StoredPlanRecord"),
+                    }),
+                ),
+            ],
+        ),
+    );
+    schemas.insert(
+        "GuardrailConfig".to_string(),
+        openapi_object_schema(
+            &["guardrail", "blocking"],
+            vec![
+                ("guardrail", openapi_ref_schema("Guardrail")),
+                ("blocking", serde_json::json!({ "type": "boolean" })),
+            ],
+        ),
+    );
+    schemas.insert(
+        "GuardrailResult".to_string(),
+        openapi_object_schema(
+            &["guardrail", "passed", "severity"],
+            vec![
+                ("guardrail", openapi_ref_schema("Guardrail")),
+                ("passed", serde_json::json!({ "type": "boolean" })),
+                ("violation_details", serde_json::json!({ "type": "string" })),
+                (
+                    "severity",
+                    openapi_string_enum_schema(&["Info", "Warning", "Critical", "Blocking"]),
+                ),
+            ],
+        ),
+    );
+    schemas.insert(
+        "PredictionProvenance".to_string(),
+        openapi_object_schema(
+            &["model_hash"],
+            vec![
+                ("model_hash", openapi_hash_schema()),
+                (
+                    "asset_fingerprint",
+                    serde_json::json!({ "type": "integer", "minimum": 0 }),
+                ),
+                ("backend", serde_json::json!({ "type": "string" })),
+            ],
+        ),
+    );
+    schemas.insert(
+        "PhysicsScores".to_string(),
+        openapi_object_schema(
+            &[
+                "overall",
+                "object_permanence",
+                "gravity_compliance",
+                "collision_accuracy",
+                "spatial_consistency",
+                "temporal_consistency",
+            ],
+            vec![
+                ("overall", serde_json::json!({ "type": "number" })),
+                ("object_permanence", serde_json::json!({ "type": "number" })),
+                (
+                    "gravity_compliance",
+                    serde_json::json!({ "type": "number" }),
+                ),
+                (
+                    "collision_accuracy",
+                    serde_json::json!({ "type": "number" }),
+                ),
+                (
+                    "spatial_consistency",
+                    serde_json::json!({ "type": "number" }),
+                ),
+                (
+                    "temporal_consistency",
+                    serde_json::json!({ "type": "number" }),
+                ),
+            ],
+        ),
+    );
+    schemas.insert(
+        "PredictionSampleSummary".to_string(),
+        openapi_object_schema(
+            &[
+                "id",
+                "provider",
+                "model",
+                "confidence",
+                "physics_score",
+                "quality_score",
+                "latency_ms",
+                "guardrail_pass_rate",
+                "blocking_guardrail_failures",
+            ],
+            vec![
+                ("id", openapi_uuid_schema()),
+                ("provider", serde_json::json!({ "type": "string" })),
+                ("model", serde_json::json!({ "type": "string" })),
+                ("confidence", serde_json::json!({ "type": "number" })),
+                ("physics_score", serde_json::json!({ "type": "number" })),
+                ("quality_score", serde_json::json!({ "type": "number" })),
+                (
+                    "latency_ms",
+                    serde_json::json!({ "type": "integer", "minimum": 0 }),
+                ),
+                (
+                    "guardrail_pass_rate",
+                    serde_json::json!({ "type": "number" }),
+                ),
+                (
+                    "blocking_guardrail_failures",
+                    serde_json::json!({ "type": "integer", "minimum": 0 }),
+                ),
+            ],
+        ),
+    );
+    schemas.insert(
+        "PredictionSamplingMetadata".to_string(),
+        openapi_object_schema(
+            &[
+                "requested_samples",
+                "completed_samples",
+                "selected_sample_index",
+                "confidence_mean",
+                "confidence_stddev",
+                "physics_mean",
+                "physics_stddev",
+                "quality_mean",
+                "quality_stddev",
+                "sample_summaries",
+            ],
+            vec![
+                (
+                    "requested_samples",
+                    serde_json::json!({ "type": "integer", "minimum": 1 }),
+                ),
+                (
+                    "completed_samples",
+                    serde_json::json!({ "type": "integer", "minimum": 0 }),
+                ),
+                (
+                    "selected_sample_index",
+                    serde_json::json!({ "type": "integer", "minimum": 0 }),
+                ),
+                ("confidence_mean", serde_json::json!({ "type": "number" })),
+                ("confidence_stddev", serde_json::json!({ "type": "number" })),
+                ("physics_mean", serde_json::json!({ "type": "number" })),
+                ("physics_stddev", serde_json::json!({ "type": "number" })),
+                ("quality_mean", serde_json::json!({ "type": "number" })),
+                ("quality_stddev", serde_json::json!({ "type": "number" })),
+                (
+                    "sample_summaries",
+                    openapi_array_schema(openapi_ref_schema("PredictionSampleSummary")),
+                ),
+            ],
+        ),
+    );
+    schemas.insert(
+        "PredictionConfig".to_string(),
+        openapi_object_schema(
+            &[
+                "steps",
+                "resolution",
+                "fps",
+                "return_video",
+                "return_depth",
+                "return_segmentation",
+                "guardrails",
+                "num_samples",
+                "temperature",
+            ],
+            vec![
+                (
+                    "steps",
+                    serde_json::json!({ "type": "integer", "minimum": 1 }),
+                ),
+                (
+                    "resolution",
+                    openapi_tuple_schema(vec![
+                        serde_json::json!({ "type": "integer", "minimum": 0 }),
+                        serde_json::json!({ "type": "integer", "minimum": 0 }),
+                    ]),
+                ),
+                ("fps", serde_json::json!({ "type": "number" })),
+                ("return_video", serde_json::json!({ "type": "boolean" })),
+                ("return_depth", serde_json::json!({ "type": "boolean" })),
+                (
+                    "return_segmentation",
+                    serde_json::json!({ "type": "boolean" }),
+                ),
+                (
+                    "guardrails",
+                    openapi_array_schema(openapi_ref_schema("GuardrailConfig")),
+                ),
+                (
+                    "max_latency_ms",
+                    serde_json::json!({ "type": "integer", "minimum": 0 }),
+                ),
+                ("fallback_provider", serde_json::json!({ "type": "string" })),
+                (
+                    "num_samples",
+                    serde_json::json!({ "type": "integer", "minimum": 1 }),
+                ),
+                ("temperature", serde_json::json!({ "type": "number" })),
+            ],
+        ),
+    );
+    schemas.insert(
+        "CostEstimate".to_string(),
+        openapi_object_schema(
+            &["usd", "credits", "estimated_latency_ms"],
+            vec![
+                ("usd", serde_json::json!({ "type": "number" })),
+                ("credits", serde_json::json!({ "type": "number" })),
+                (
+                    "estimated_latency_ms",
+                    serde_json::json!({ "type": "integer", "minimum": 0 }),
+                ),
+            ],
+        ),
+    );
+    schemas.insert(
+        "Prediction".to_string(),
+        openapi_object_schema(
+            &[
+                "id",
+                "provider",
+                "model",
+                "input_state",
+                "action",
+                "output_state",
+                "confidence",
+                "physics_scores",
+                "latency_ms",
+                "cost",
+                "guardrail_results",
+                "timestamp",
+            ],
+            vec![
+                ("id", openapi_uuid_schema()),
+                ("provider", serde_json::json!({ "type": "string" })),
+                ("model", serde_json::json!({ "type": "string" })),
+                ("input_state", openapi_ref_schema("WorldState")),
+                ("action", openapi_ref_schema("Action")),
+                ("output_state", openapi_ref_schema("WorldState")),
+                ("video", openapi_ref_schema("VideoClip")),
+                ("confidence", serde_json::json!({ "type": "number" })),
+                ("physics_scores", openapi_ref_schema("PhysicsScores")),
+                (
+                    "latency_ms",
+                    serde_json::json!({ "type": "integer", "minimum": 0 }),
+                ),
+                ("cost", openapi_ref_schema("CostEstimate")),
+                ("provenance", openapi_ref_schema("PredictionProvenance")),
+                ("sampling", openapi_ref_schema("PredictionSamplingMetadata")),
+                (
+                    "guardrail_results",
+                    openapi_array_schema(openapi_ref_schema("GuardrailResult")),
+                ),
+                ("timestamp", openapi_datetime_schema()),
+            ],
+        ),
+    );
+    schemas.insert(
+        "Plan".to_string(),
+        openapi_object_schema(
+            &[
+                "actions",
+                "predicted_states",
+                "total_cost",
+                "success_probability",
+                "guardrail_compliance",
+                "planning_time_ms",
+                "iterations_used",
+            ],
+            vec![
+                (
+                    "actions",
+                    openapi_array_schema(openapi_ref_schema("Action")),
+                ),
+                (
+                    "predicted_states",
+                    openapi_array_schema(openapi_ref_schema("WorldState")),
+                ),
+                (
+                    "predicted_videos",
+                    openapi_array_schema(openapi_ref_schema("VideoClip")),
+                ),
+                ("total_cost", serde_json::json!({ "type": "number" })),
+                (
+                    "success_probability",
+                    serde_json::json!({ "type": "number" }),
+                ),
+                (
+                    "guardrail_compliance",
+                    openapi_array_schema(openapi_array_schema(openapi_ref_schema(
+                        "GuardrailResult",
+                    ))),
+                ),
+                (
+                    "planning_time_ms",
+                    serde_json::json!({ "type": "integer", "minimum": 0 }),
+                ),
+                (
+                    "iterations_used",
+                    serde_json::json!({ "type": "integer", "minimum": 0 }),
+                ),
+                ("stored_plan_id", openapi_uuid_schema()),
+                ("verification_proof", openapi_ref_schema("ZkProof")),
+            ],
+        ),
+    );
+    schemas.insert(
+        "StoredPlanRecord".to_string(),
+        openapi_object_schema(
+            &[
+                "id",
+                "provider",
+                "planner",
+                "goal_summary",
+                "created_at",
+                "plan",
+            ],
+            vec![
+                ("id", openapi_uuid_schema()),
+                ("provider", serde_json::json!({ "type": "string" })),
+                ("planner", serde_json::json!({ "type": "string" })),
+                ("goal_summary", serde_json::json!({ "type": "string" })),
+                ("created_at", openapi_datetime_schema()),
+                ("plan", openapi_ref_schema("Plan")),
+            ],
+        ),
+    );
+    schemas.insert(
+        "PlanExecution".to_string(),
+        openapi_object_schema(
+            &[
+                "predictions",
+                "final_state",
+                "total_cost",
+                "execution_time_ms",
+            ],
+            vec![
+                (
+                    "predictions",
+                    openapi_array_schema(openapi_ref_schema("Prediction")),
+                ),
+                ("final_state", openapi_ref_schema("WorldState")),
+                ("total_cost", openapi_ref_schema("CostEstimate")),
+                (
+                    "execution_time_ms",
+                    serde_json::json!({ "type": "integer", "minimum": 0 }),
+                ),
+            ],
+        ),
+    );
+    schemas.insert(
+        "LatencyProfile".to_string(),
+        openapi_object_schema(
+            &["p50_ms", "p95_ms", "p99_ms", "throughput_fps"],
+            vec![
+                (
+                    "p50_ms",
+                    serde_json::json!({ "type": "integer", "minimum": 0 }),
+                ),
+                (
+                    "p95_ms",
+                    serde_json::json!({ "type": "integer", "minimum": 0 }),
+                ),
+                (
+                    "p99_ms",
+                    serde_json::json!({ "type": "integer", "minimum": 0 }),
+                ),
+                ("throughput_fps", serde_json::json!({ "type": "number" })),
+            ],
+        ),
+    );
+    schemas.insert(
+        "ProviderCapabilities".to_string(),
+        openapi_object_schema(
+            &[
+                "predict",
+                "generate",
+                "reason",
+                "transfer",
+                "embed",
+                "action_conditioned",
+                "multi_view",
+                "max_video_length_seconds",
+                "max_resolution",
+                "fps_range",
+                "supported_action_spaces",
+                "supports_depth",
+                "supports_segmentation",
+                "supports_planning",
+                "latency_profile",
+            ],
+            vec![
+                ("predict", serde_json::json!({ "type": "boolean" })),
+                ("generate", serde_json::json!({ "type": "boolean" })),
+                ("reason", serde_json::json!({ "type": "boolean" })),
+                ("transfer", serde_json::json!({ "type": "boolean" })),
+                ("embed", serde_json::json!({ "type": "boolean" })),
+                (
+                    "action_conditioned",
+                    serde_json::json!({ "type": "boolean" }),
+                ),
+                ("multi_view", serde_json::json!({ "type": "boolean" })),
+                (
+                    "max_video_length_seconds",
+                    serde_json::json!({ "type": "number" }),
+                ),
+                (
+                    "max_resolution",
+                    openapi_tuple_schema(vec![
+                        serde_json::json!({ "type": "integer", "minimum": 0 }),
+                        serde_json::json!({ "type": "integer", "minimum": 0 }),
+                    ]),
+                ),
+                (
+                    "fps_range",
+                    openapi_tuple_schema(vec![
+                        serde_json::json!({ "type": "number" }),
+                        serde_json::json!({ "type": "number" }),
+                    ]),
+                ),
+                (
+                    "supported_action_spaces",
+                    openapi_array_schema(serde_json::json!({ "type": "string" })),
+                ),
+                ("supports_depth", serde_json::json!({ "type": "boolean" })),
+                (
+                    "supports_segmentation",
+                    serde_json::json!({ "type": "boolean" }),
+                ),
+                (
+                    "supports_planning",
+                    serde_json::json!({ "type": "boolean" }),
+                ),
+                ("latency_profile", openapi_ref_schema("LatencyProfile")),
+            ],
+        ),
+    );
+    schemas.insert(
+        "ProviderDescriptor".to_string(),
+        openapi_object_schema(
+            &["name", "capabilities", "supported_actions"],
+            vec![
+                ("name", serde_json::json!({ "type": "string" })),
+                ("capabilities", openapi_ref_schema("ProviderCapabilities")),
+                (
+                    "supported_actions",
+                    openapi_array_schema(serde_json::json!({ "type": "string" })),
+                ),
+            ],
+        ),
+    );
+    schemas.insert(
+        "HealthStatus".to_string(),
+        openapi_object_schema(
+            &["healthy", "message", "latency_ms"],
+            vec![
+                ("healthy", serde_json::json!({ "type": "boolean" })),
+                ("message", serde_json::json!({ "type": "string" })),
+                (
+                    "latency_ms",
+                    serde_json::json!({ "type": "integer", "minimum": 0 }),
+                ),
+            ],
+        ),
+    );
+    schemas.insert(
+        "ProviderHealthReport".to_string(),
+        openapi_object_schema(
+            &["name", "capabilities", "supported_actions"],
+            vec![
+                ("name", serde_json::json!({ "type": "string" })),
+                ("capabilities", openapi_ref_schema("ProviderCapabilities")),
+                (
+                    "supported_actions",
+                    openapi_array_schema(serde_json::json!({ "type": "string" })),
+                ),
+                ("status", openapi_ref_schema("HealthStatus")),
+                ("error", serde_json::json!({ "type": "string" })),
+            ],
+        ),
+    );
+    schemas.insert(
+        "GenerationConfig".to_string(),
+        openapi_object_schema(
+            &["resolution", "fps", "duration_seconds", "temperature"],
+            vec![
+                (
+                    "resolution",
+                    openapi_tuple_schema(vec![
+                        serde_json::json!({ "type": "integer", "minimum": 0 }),
+                        serde_json::json!({ "type": "integer", "minimum": 0 }),
+                    ]),
+                ),
+                ("fps", serde_json::json!({ "type": "number" })),
+                ("duration_seconds", serde_json::json!({ "type": "number" })),
+                ("temperature", serde_json::json!({ "type": "number" })),
+                (
+                    "seed",
+                    serde_json::json!({ "type": "integer", "minimum": 0 }),
+                ),
+            ],
+        ),
+    );
+    schemas.insert(
+        "EmbeddingOutput".to_string(),
+        openapi_object_schema(
+            &["provider", "model", "embedding"],
+            vec![
+                ("provider", serde_json::json!({ "type": "string" })),
+                ("model", serde_json::json!({ "type": "string" })),
+                ("embedding", openapi_ref_schema("Tensor")),
+            ],
+        ),
+    );
+    schemas.insert(
+        "ReasoningOutput".to_string(),
+        openapi_object_schema(
+            &["answer", "confidence", "evidence"],
+            vec![
+                ("answer", serde_json::json!({ "type": "string" })),
+                ("confidence", serde_json::json!({ "type": "number" })),
+                (
+                    "evidence",
+                    openapi_array_schema(serde_json::json!({ "type": "string" })),
+                ),
+            ],
+        ),
+    );
+    schemas.insert(
+        "Trajectory".to_string(),
+        openapi_loose_object_schema("Serialized trajectory payload."),
+    );
+    schemas.insert(
+        "SpatialControls".to_string(),
+        openapi_object_schema(
+            &[],
+            vec![
+                ("camera_trajectory", openapi_ref_schema("Trajectory")),
+                ("depth_map", openapi_ref_schema("Tensor")),
+                ("segmentation_map", openapi_ref_schema("Tensor")),
+            ],
+        ),
+    );
+    schemas.insert(
+        "TransferConfig".to_string(),
+        openapi_object_schema(
+            &["resolution", "fps", "control_strength"],
+            vec![
+                (
+                    "resolution",
+                    openapi_tuple_schema(vec![
+                        serde_json::json!({ "type": "integer", "minimum": 0 }),
+                        serde_json::json!({ "type": "integer", "minimum": 0 }),
+                    ]),
+                ),
+                ("fps", serde_json::json!({ "type": "number" })),
+                ("control_strength", serde_json::json!({ "type": "number" })),
+            ],
+        ),
+    );
+    schemas.insert(
+        "Operation".to_string(),
+        serde_json::json!({
+            "oneOf": [
+                {
+                    "type": "object",
+                    "required": ["Predict"],
+                    "properties": {
+                        "Predict": openapi_object_schema(
+                            &["steps", "resolution"],
+                            vec![
+                                ("steps", serde_json::json!({ "type": "integer", "minimum": 1 })),
+                                ("resolution", openapi_tuple_schema(vec![
+                                    serde_json::json!({ "type": "integer", "minimum": 0 }),
+                                    serde_json::json!({ "type": "integer", "minimum": 0 }),
+                                ])),
+                            ],
+                        ),
+                    },
+                },
+                {
+                    "type": "object",
+                    "required": ["Generate"],
+                    "properties": {
+                        "Generate": openapi_object_schema(
+                            &["duration_seconds", "resolution"],
+                            vec![
+                                ("duration_seconds", serde_json::json!({ "type": "number" })),
+                                ("resolution", openapi_tuple_schema(vec![
+                                    serde_json::json!({ "type": "integer", "minimum": 0 }),
+                                    serde_json::json!({ "type": "integer", "minimum": 0 }),
+                                ])),
+                            ],
+                        ),
+                    },
+                },
+                {
+                    "type": "object",
+                    "required": ["Reason"],
+                    "properties": {
+                        "Reason": serde_json::json!({ "type": "string", "enum": ["Reason"] }),
+                    },
+                },
+                {
+                    "type": "object",
+                    "required": ["Transfer"],
+                    "properties": {
+                        "Transfer": openapi_object_schema(
+                            &["duration_seconds"],
+                            vec![("duration_seconds", serde_json::json!({ "type": "number" }))],
+                        ),
+                    },
+                },
+            ],
+        }),
+    );
+    schemas.insert(
+        "ProviderAction".to_string(),
+        openapi_object_schema(
+            &["provider", "data"],
+            vec![
+                ("provider", serde_json::json!({ "type": "string" })),
+                (
+                    "data",
+                    openapi_loose_object_schema("Provider-native action payload."),
+                ),
+            ],
+        ),
+    );
+    schemas.insert(
+        "EvalSuite".to_string(),
+        openapi_object_schema(
+            &["name", "scenarios", "dimensions", "providers"],
+            vec![
+                ("name", serde_json::json!({ "type": "string" })),
+                (
+                    "scenarios",
+                    openapi_array_schema(openapi_loose_object_schema("Evaluation scenario.")),
+                ),
+                (
+                    "dimensions",
+                    openapi_array_schema(openapi_loose_object_schema("Evaluation dimension.")),
+                ),
+                (
+                    "providers",
+                    openapi_array_schema(serde_json::json!({ "type": "string" })),
+                ),
+            ],
+        ),
+    );
+    schemas.insert(
+        "EvalReport".to_string(),
+        openapi_object_schema(
+            &[
+                "suite",
+                "results",
+                "leaderboard",
+                "provider_summaries",
+                "dimension_summaries",
+                "scenario_summaries",
+                "outcomes_passed",
+                "total_outcomes",
+            ],
+            vec![
+                ("suite", serde_json::json!({ "type": "string" })),
+                (
+                    "results",
+                    openapi_array_schema(openapi_loose_object_schema("Evaluation result row.")),
+                ),
+                (
+                    "leaderboard",
+                    openapi_array_schema(openapi_loose_object_schema("Leaderboard entry.")),
+                ),
+                (
+                    "provider_summaries",
+                    openapi_array_schema(openapi_loose_object_schema("Provider summary row.")),
+                ),
+                (
+                    "dimension_summaries",
+                    openapi_array_schema(openapi_loose_object_schema("Dimension summary row.")),
+                ),
+                (
+                    "scenario_summaries",
+                    openapi_array_schema(openapi_loose_object_schema("Scenario summary row.")),
+                ),
+                (
+                    "outcomes_passed",
+                    serde_json::json!({ "type": "integer", "minimum": 0 }),
+                ),
+                (
+                    "total_outcomes",
+                    serde_json::json!({ "type": "integer", "minimum": 0 }),
+                ),
+            ],
+        ),
+    );
+    schemas.insert(
+        "RenderedEvalReport".to_string(),
+        openapi_object_schema(
+            &["suite", "format", "content"],
+            vec![
+                ("suite", serde_json::json!({ "type": "string" })),
+                (
+                    "format",
+                    openapi_string_enum_schema(&["json", "markdown", "csv"]),
+                ),
+                ("content", serde_json::json!({ "type": "string" })),
+            ],
+        ),
+    );
+    schemas.insert(
+        "RenderedEvalArtifact".to_string(),
+        openapi_object_schema(
+            &["format", "content"],
+            vec![
+                (
+                    "format",
+                    openapi_string_enum_schema(&["json", "markdown", "csv"]),
+                ),
+                ("content", serde_json::json!({ "type": "string" })),
+            ],
+        ),
+    );
+    schemas.insert(
+        "RenderedEvalArtifacts".to_string(),
+        openapi_object_schema(
+            &["suite", "artifacts"],
+            vec![
+                ("suite", serde_json::json!({ "type": "string" })),
+                (
+                    "artifacts",
+                    openapi_array_schema(openapi_ref_schema("RenderedEvalArtifact")),
+                ),
+            ],
+        ),
+    );
+    schemas.insert(
+        "MultiPrediction".to_string(),
+        openapi_object_schema(
+            &[
+                "predictions",
+                "agreement_score",
+                "best_prediction",
+                "comparison",
+            ],
+            vec![
+                (
+                    "predictions",
+                    openapi_array_schema(openapi_ref_schema("Prediction")),
+                ),
+                ("agreement_score", serde_json::json!({ "type": "number" })),
+                (
+                    "best_prediction",
+                    serde_json::json!({ "type": "integer", "minimum": 0 }),
+                ),
+                (
+                    "comparison",
+                    openapi_loose_object_schema("Detailed comparison report."),
+                ),
+            ],
+        ),
+    );
+    schemas.insert(
+        "RenderedComparisonReport".to_string(),
+        openapi_object_schema(
+            &["summary", "best_provider", "format", "content"],
+            vec![
+                ("summary", serde_json::json!({ "type": "string" })),
+                ("best_provider", serde_json::json!({ "type": "string" })),
+                (
+                    "format",
+                    openapi_string_enum_schema(&["json", "markdown", "csv"]),
+                ),
+                ("content", serde_json::json!({ "type": "string" })),
+            ],
+        ),
+    );
+    schemas.insert(
+        "RenderedComparisonArtifact".to_string(),
+        openapi_object_schema(
+            &["format", "content"],
+            vec![
+                (
+                    "format",
+                    openapi_string_enum_schema(&["json", "markdown", "csv"]),
+                ),
+                ("content", serde_json::json!({ "type": "string" })),
+            ],
+        ),
+    );
+    schemas.insert(
+        "RenderedComparisonArtifacts".to_string(),
+        openapi_object_schema(
+            &["summary", "best_provider", "artifacts"],
+            vec![
+                ("summary", serde_json::json!({ "type": "string" })),
+                ("best_provider", serde_json::json!({ "type": "string" })),
+                (
+                    "artifacts",
+                    openapi_array_schema(openapi_ref_schema("RenderedComparisonArtifact")),
+                ),
+            ],
+        ),
+    );
+    schemas.insert(
+        "ZkProof".to_string(),
+        openapi_object_schema(
+            &["proof_type", "proof_data", "backend", "generation_time_ms"],
+            vec![
+                (
+                    "proof_type",
+                    openapi_loose_object_schema("Proof type payload."),
+                ),
+                ("proof_data", openapi_byte_array_schema()),
+                (
+                    "backend",
+                    openapi_string_enum_schema(&["mock", "ezkl", "stark"]),
+                ),
+                (
+                    "generation_time_ms",
+                    serde_json::json!({ "type": "integer", "minimum": 0 }),
+                ),
+            ],
+        ),
+    );
+    schemas.insert(
+        "VerificationResult".to_string(),
+        openapi_object_schema(
+            &["valid", "verification_time_ms", "details"],
+            vec![
+                ("valid", serde_json::json!({ "type": "boolean" })),
+                (
+                    "verification_time_ms",
+                    serde_json::json!({ "type": "integer", "minimum": 0 }),
+                ),
+                ("details", serde_json::json!({ "type": "string" })),
+            ],
+        ),
+    );
+    schemas.insert(
+        "InferenceArtifact".to_string(),
+        openapi_object_schema(
+            &["provider", "model_hash", "input_hash", "output_hash"],
+            vec![
+                ("provider", serde_json::json!({ "type": "string" })),
+                ("model", serde_json::json!({ "type": "string" })),
+                ("model_hash", openapi_hash_schema()),
+                ("provenance", openapi_ref_schema("PredictionProvenance")),
+                ("input_hash", openapi_hash_schema()),
+                ("output_hash", openapi_hash_schema()),
+            ],
+        ),
+    );
+    schemas.insert(
+        "GuardrailArtifact".to_string(),
+        openapi_object_schema(
+            &[
+                "plan_hash",
+                "guardrail_hashes",
+                "all_passed",
+                "action_count",
+                "predicted_state_count",
+                "guardrail_step_count",
+            ],
+            vec![
+                ("plan_hash", openapi_hash_schema()),
+                (
+                    "guardrail_hashes",
+                    openapi_array_schema(openapi_hash_schema()),
+                ),
+                ("all_passed", serde_json::json!({ "type": "boolean" })),
+                (
+                    "action_count",
+                    serde_json::json!({ "type": "integer", "minimum": 0 }),
+                ),
+                (
+                    "predicted_state_count",
+                    serde_json::json!({ "type": "integer", "minimum": 0 }),
+                ),
+                (
+                    "guardrail_step_count",
+                    serde_json::json!({ "type": "integer", "minimum": 0 }),
+                ),
+            ],
+        ),
+    );
+    schemas.insert(
+        "ProvenanceArtifact".to_string(),
+        openapi_object_schema(
+            &[
+                "world_id",
+                "provider",
+                "data_hash",
+                "history_hash",
+                "timestamp",
+                "source_commitment",
+            ],
+            vec![
+                ("world_id", openapi_uuid_schema()),
+                ("provider", serde_json::json!({ "type": "string" })),
+                ("data_hash", openapi_hash_schema()),
+                ("history_hash", openapi_hash_schema()),
+                (
+                    "timestamp",
+                    serde_json::json!({ "type": "integer", "minimum": 0 }),
+                ),
+                ("source_commitment", openapi_hash_schema()),
+            ],
+        ),
+    );
+    schemas.insert(
+        "VerificationBundleInference".to_string(),
+        openapi_object_schema(
+            &["artifact", "proof", "verification"],
+            vec![
+                ("artifact", openapi_ref_schema("InferenceArtifact")),
+                ("proof", openapi_ref_schema("ZkProof")),
+                ("verification", openapi_ref_schema("VerificationResult")),
+            ],
+        ),
+    );
+    schemas.insert(
+        "VerificationBundleGuardrail".to_string(),
+        openapi_object_schema(
+            &["artifact", "proof", "verification"],
+            vec![
+                ("artifact", openapi_ref_schema("GuardrailArtifact")),
+                ("proof", openapi_ref_schema("ZkProof")),
+                ("verification", openapi_ref_schema("VerificationResult")),
+            ],
+        ),
+    );
+    schemas.insert(
+        "VerificationBundleProvenance".to_string(),
+        openapi_object_schema(
+            &["artifact", "proof", "verification"],
+            vec![
+                ("artifact", openapi_ref_schema("ProvenanceArtifact")),
+                ("proof", openapi_ref_schema("ZkProof")),
+                ("verification", openapi_ref_schema("VerificationResult")),
+            ],
+        ),
+    );
+    schemas.insert(
+        "BundleVerificationReportInference".to_string(),
+        openapi_object_schema(
+            &[
+                "artifact",
+                "proof",
+                "recorded_verification",
+                "current_verification",
+                "verification_matches_recorded",
+            ],
+            vec![
+                ("artifact", openapi_ref_schema("InferenceArtifact")),
+                ("proof", openapi_ref_schema("ZkProof")),
+                (
+                    "recorded_verification",
+                    openapi_ref_schema("VerificationResult"),
+                ),
+                (
+                    "current_verification",
+                    openapi_ref_schema("VerificationResult"),
+                ),
+                (
+                    "verification_matches_recorded",
+                    serde_json::json!({ "type": "boolean" }),
+                ),
+            ],
+        ),
+    );
+    schemas.insert(
+        "BundleVerificationReportGuardrail".to_string(),
+        openapi_object_schema(
+            &[
+                "artifact",
+                "proof",
+                "recorded_verification",
+                "current_verification",
+                "verification_matches_recorded",
+            ],
+            vec![
+                ("artifact", openapi_ref_schema("GuardrailArtifact")),
+                ("proof", openapi_ref_schema("ZkProof")),
+                (
+                    "recorded_verification",
+                    openapi_ref_schema("VerificationResult"),
+                ),
+                (
+                    "current_verification",
+                    openapi_ref_schema("VerificationResult"),
+                ),
+                (
+                    "verification_matches_recorded",
+                    serde_json::json!({ "type": "boolean" }),
+                ),
+            ],
+        ),
+    );
+    schemas.insert(
+        "BundleVerificationReportProvenance".to_string(),
+        openapi_object_schema(
+            &[
+                "artifact",
+                "proof",
+                "recorded_verification",
+                "current_verification",
+                "verification_matches_recorded",
+            ],
+            vec![
+                ("artifact", openapi_ref_schema("ProvenanceArtifact")),
+                ("proof", openapi_ref_schema("ZkProof")),
+                (
+                    "recorded_verification",
+                    openapi_ref_schema("VerificationResult"),
+                ),
+                (
+                    "current_verification",
+                    openapi_ref_schema("VerificationResult"),
+                ),
+                (
+                    "verification_matches_recorded",
+                    serde_json::json!({ "type": "boolean" }),
+                ),
+            ],
+        ),
+    );
+    schemas.insert(
+        "ProofVerificationReport".to_string(),
+        openapi_object_schema(
+            &["proof", "verification"],
+            vec![
+                ("proof", openapi_ref_schema("ZkProof")),
+                ("verification", openapi_ref_schema("VerificationResult")),
+            ],
+        ),
+    );
+
+    schemas.insert(
+        "EvalSuiteName".to_string(),
+        openapi_object_schema(
+            &["name"],
+            vec![("name", serde_json::json!({ "type": "string" }))],
+        ),
+    );
+    schemas.insert(
+        "CreateWorldSummary".to_string(),
+        openapi_object_schema(
+            &["id", "name", "description", "provider", "object_count"],
+            vec![
+                ("id", openapi_uuid_schema()),
+                ("name", serde_json::json!({ "type": "string" })),
+                ("description", serde_json::json!({ "type": "string" })),
+                ("provider", serde_json::json!({ "type": "string" })),
+                (
+                    "object_count",
+                    serde_json::json!({ "type": "integer", "minimum": 0 }),
+                ),
+            ],
+        ),
+    );
+    schemas.insert(
+        "ExportedSnapshot".to_string(),
+        openapi_object_schema(
+            &[
+                "id",
+                "schema_version",
+                "format",
+                "encoding",
+                "sha256",
+                "snapshot",
+            ],
+            vec![
+                ("id", openapi_uuid_schema()),
+                (
+                    "schema_version",
+                    serde_json::json!({ "type": "integer", "minimum": 1 }),
+                ),
+                ("format", openapi_string_enum_schema(&["json", "msgpack"])),
+                ("encoding", serde_json::json!({ "type": "string" })),
+                ("sha256", serde_json::json!({ "type": "string" })),
+                ("snapshot", serde_json::json!({ "type": "string" })),
+            ],
+        ),
+    );
+    schemas.insert(
+        "DeletionResult".to_string(),
+        openapi_object_schema(
+            &["deleted"],
+            vec![("deleted", serde_json::json!({ "type": "string" }))],
+        ),
+    );
+    schemas.insert(
+        "EstimateCostResult".to_string(),
+        openapi_object_schema(
+            &["provider", "operation", "estimate"],
+            vec![
+                ("provider", serde_json::json!({ "type": "string" })),
+                ("operation", openapi_ref_schema("Operation")),
+                ("estimate", openapi_ref_schema("CostEstimate")),
+            ],
+        ),
+    );
+
+    schemas.insert(
+        "CreateWorldRequest".to_string(),
+        openapi_object_schema(
+            &["provider"],
+            vec![
+                ("name", serde_json::json!({ "type": "string" })),
+                ("prompt", serde_json::json!({ "type": "string" })),
+                ("provider", serde_json::json!({ "type": "string" })),
+            ],
+        ),
+    );
+    schemas.insert(
+        "ImportWorldRequest".to_string(),
+        openapi_object_schema(
+            &[],
+            vec![
+                ("state", openapi_ref_schema("WorldState")),
+                ("format", openapi_string_enum_schema(&["json", "msgpack"])),
+                ("snapshot", serde_json::json!({ "type": "string" })),
+                ("encoding", serde_json::json!({ "type": "string" })),
+                ("sha256", serde_json::json!({ "type": "string" })),
+                ("new_id", serde_json::json!({ "type": "boolean" })),
+                ("name", serde_json::json!({ "type": "string" })),
+            ],
+        ),
+    );
+    schemas.insert(
+        "ForkWorldRequest".to_string(),
+        openapi_object_schema(
+            &[],
+            vec![
+                (
+                    "history_index",
+                    serde_json::json!({ "type": "integer", "minimum": 0 }),
+                ),
+                ("name", serde_json::json!({ "type": "string" })),
+            ],
+        ),
+    );
+    schemas.insert(
+        "PredictRequest".to_string(),
+        openapi_object_schema(
+            &["action"],
+            vec![
+                ("action", openapi_ref_schema("Action")),
+                ("config", openapi_ref_schema("PredictionConfig")),
+                ("provider", serde_json::json!({ "type": "string" })),
+                (
+                    "disable_guardrails",
+                    serde_json::json!({ "type": "boolean" }),
+                ),
+            ],
+        ),
+    );
+    schemas.insert(
+        "CreateObjectRequest".to_string(),
+        openapi_object_schema(
+            &["name", "position", "bbox"],
+            vec![
+                ("name", serde_json::json!({ "type": "string" })),
+                ("position", openapi_ref_schema("Position")),
+                ("bbox", openapi_ref_schema("BBox")),
+                ("mesh", openapi_ref_schema("Mesh")),
+                ("rotation", openapi_ref_schema("Rotation")),
+                ("velocity", openapi_ref_schema("Velocity")),
+                ("semantic_label", serde_json::json!({ "type": "string" })),
+                ("visual_embedding", openapi_ref_schema("Tensor")),
+                ("mass", serde_json::json!({ "type": "number" })),
+                ("friction", serde_json::json!({ "type": "number" })),
+                ("restitution", serde_json::json!({ "type": "number" })),
+                ("material", serde_json::json!({ "type": "string" })),
+                ("is_static", serde_json::json!({ "type": "boolean" })),
+                ("is_graspable", serde_json::json!({ "type": "boolean" })),
+            ],
+        ),
+    );
+    schemas.insert(
+        "PlanRequest".to_string(),
+        openapi_object_schema(
+            &["goal"],
+            vec![
+                ("goal", openapi_ref_schema("PlanGoalInput")),
+                (
+                    "max_steps",
+                    serde_json::json!({ "type": "integer", "minimum": 1, "default": 10 }),
+                ),
+                ("provider", serde_json::json!({ "type": "string" })),
+                ("fallback_provider", serde_json::json!({ "type": "string" })),
+                (
+                    "verification_backend",
+                    openapi_string_enum_schema(&["mock", "ezkl", "stark"]),
+                ),
+                (
+                    "timeout_seconds",
+                    serde_json::json!({ "type": "number", "default": 30.0 }),
+                ),
+                (
+                    "planner",
+                    serde_json::json!({ "type": "string", "default": "sampling" }),
+                ),
+                (
+                    "num_samples",
+                    serde_json::json!({ "type": "integer", "minimum": 1 }),
+                ),
+                (
+                    "top_k",
+                    serde_json::json!({ "type": "integer", "minimum": 1 }),
+                ),
+                (
+                    "population_size",
+                    serde_json::json!({ "type": "integer", "minimum": 1 }),
+                ),
+                ("elite_fraction", serde_json::json!({ "type": "number" })),
+                (
+                    "num_iterations",
+                    serde_json::json!({ "type": "integer", "minimum": 1 }),
+                ),
+                ("learning_rate", serde_json::json!({ "type": "number" })),
+                (
+                    "horizon",
+                    serde_json::json!({ "type": "integer", "minimum": 1 }),
+                ),
+                (
+                    "replanning_interval",
+                    serde_json::json!({ "type": "integer", "minimum": 1 }),
+                ),
+                (
+                    "guardrails",
+                    openapi_array_schema(openapi_ref_schema("GuardrailConfig")),
+                ),
+                (
+                    "disable_guardrails",
+                    serde_json::json!({ "type": "boolean" }),
+                ),
+                (
+                    "persist",
+                    serde_json::json!({ "type": "boolean", "default": true }),
+                ),
+            ],
+        ),
+    );
+    schemas.insert(
+        "ExecutePlanRequest".to_string(),
+        openapi_object_schema(
+            &[],
+            vec![
+                ("plan", openapi_ref_schema("Plan")),
+                ("plan_id", openapi_uuid_schema()),
+                ("config", openapi_ref_schema("PredictionConfig")),
+                ("provider", serde_json::json!({ "type": "string" })),
+                (
+                    "disable_guardrails",
+                    serde_json::json!({ "type": "boolean" }),
+                ),
+            ],
+        ),
+    );
+    schemas.insert(
+        "RestoreWorldRequest".to_string(),
+        openapi_object_schema(
+            &["history_index"],
+            vec![(
+                "history_index",
+                serde_json::json!({ "type": "integer", "minimum": 0 }),
+            )],
+        ),
+    );
+    schemas.insert(
+        "GenerateRequest".to_string(),
+        openapi_object_schema(
+            &["prompt"],
+            vec![
+                ("prompt", serde_json::json!({ "type": "string" })),
+                ("negative_prompt", serde_json::json!({ "type": "string" })),
+                ("fallback_provider", serde_json::json!({ "type": "string" })),
+                ("config", openapi_ref_schema("GenerationConfig")),
+            ],
+        ),
+    );
+    schemas.insert(
+        "EmbedRequest".to_string(),
+        openapi_object_schema(
+            &[],
+            vec![
+                ("text", serde_json::json!({ "type": "string" })),
+                ("video", openapi_ref_schema("VideoClip")),
+                ("fallback_provider", serde_json::json!({ "type": "string" })),
+            ],
+        ),
+    );
+    schemas.insert(
+        "ProviderReasonRequest".to_string(),
+        openapi_object_schema(
+            &["query"],
+            vec![
+                ("query", serde_json::json!({ "type": "string" })),
+                ("state", openapi_ref_schema("WorldState")),
+                ("video", openapi_ref_schema("VideoClip")),
+                ("fallback_provider", serde_json::json!({ "type": "string" })),
+            ],
+        ),
+    );
+    schemas.insert(
+        "TransferRequest".to_string(),
+        openapi_object_schema(
+            &["source"],
+            vec![
+                ("source", openapi_ref_schema("VideoClip")),
+                ("controls", openapi_ref_schema("SpatialControls")),
+                ("fallback_provider", serde_json::json!({ "type": "string" })),
+                ("config", openapi_ref_schema("TransferConfig")),
+            ],
+        ),
+    );
+    schemas.insert(
+        "EstimateCostRequest".to_string(),
+        openapi_object_schema(
+            &["operation"],
+            vec![("operation", openapi_ref_schema("Operation"))],
+        ),
+    );
+    schemas.insert(
+        "TranslateActionRequest".to_string(),
+        openapi_object_schema(&["action"], vec![("action", openapi_ref_schema("Action"))]),
+    );
+    schemas.insert(
+        "ReasonRequest".to_string(),
+        openapi_object_schema(
+            &["query"],
+            vec![
+                ("query", serde_json::json!({ "type": "string" })),
+                ("provider", serde_json::json!({ "type": "string" })),
+                ("fallback_provider", serde_json::json!({ "type": "string" })),
+            ],
+        ),
+    );
+    schemas.insert(
+        "EvaluateRequest".to_string(),
+        openapi_object_schema(
+            &[],
+            vec![
+                ("suite", serde_json::json!({ "type": "string" })),
+                ("suite_definition", openapi_ref_schema("EvalSuite")),
+                (
+                    "providers",
+                    openapi_array_schema(serde_json::json!({ "type": "string" })),
+                ),
+                (
+                    "num_samples",
+                    serde_json::json!({ "type": "integer", "minimum": 1 }),
+                ),
+                (
+                    "report_format",
+                    openapi_string_enum_schema(&["json", "markdown", "csv"]),
+                ),
+                (
+                    "report_formats",
+                    openapi_array_schema(openapi_string_enum_schema(&["json", "markdown", "csv"])),
+                ),
+                ("world_id", openapi_uuid_schema()),
+                ("world_state", openapi_ref_schema("WorldState")),
+            ],
+        ),
+    );
+    schemas.insert(
+        "CompareWorldRequest".to_string(),
+        openapi_object_schema(
+            &["action", "providers"],
+            vec![
+                ("world_id", openapi_uuid_schema()),
+                ("world_state", openapi_ref_schema("WorldState")),
+                ("action", openapi_ref_schema("Action")),
+                (
+                    "providers",
+                    openapi_array_schema(serde_json::json!({ "type": "string" })),
+                ),
+                ("config", openapi_ref_schema("PredictionConfig")),
+                (
+                    "disable_guardrails",
+                    serde_json::json!({ "type": "boolean" }),
+                ),
+                (
+                    "report_format",
+                    openapi_string_enum_schema(&["json", "markdown", "csv"]),
+                ),
+                (
+                    "report_formats",
+                    openapi_array_schema(openapi_string_enum_schema(&["json", "markdown", "csv"])),
+                ),
+            ],
+        ),
+    );
+    schemas.insert(
+        "ComparePredictionsRequest".to_string(),
+        openapi_object_schema(
+            &["predictions"],
+            vec![
+                (
+                    "predictions",
+                    openapi_array_schema(openapi_ref_schema("Prediction")),
+                ),
+                (
+                    "report_format",
+                    openapi_string_enum_schema(&["json", "markdown", "csv"]),
+                ),
+                (
+                    "report_formats",
+                    openapi_array_schema(openapi_string_enum_schema(&["json", "markdown", "csv"])),
+                ),
+            ],
+        ),
+    );
+    schemas.insert(
+        "CompareRequest".to_string(),
+        serde_json::json!({
+            "oneOf": [
+                openapi_ref_schema("CompareWorldRequest"),
+                openapi_ref_schema("ComparePredictionsRequest"),
+            ],
+        }),
+    );
+    schemas.insert(
+        "VerifyRequest".to_string(),
+        openapi_object_schema(
+            &[],
+            vec![
+                (
+                    "backend",
+                    openapi_string_enum_schema(&["mock", "ezkl", "stark"]),
+                ),
+                (
+                    "proof_type",
+                    openapi_string_enum_schema(&["inference", "guardrail", "provenance"]),
+                ),
+                ("provider", serde_json::json!({ "type": "string" })),
+                ("fallback_provider", serde_json::json!({ "type": "string" })),
+                ("input_state", openapi_ref_schema("WorldState")),
+                ("output_state", openapi_ref_schema("WorldState")),
+                ("prediction", openapi_ref_schema("Prediction")),
+                ("plan", openapi_ref_schema("Plan")),
+                ("plan_id", openapi_uuid_schema()),
+                ("goal", openapi_ref_schema("PlanGoalInput")),
+                (
+                    "max_steps",
+                    serde_json::json!({ "type": "integer", "minimum": 1 }),
+                ),
+                ("timeout_seconds", serde_json::json!({ "type": "number" })),
+                ("planner", serde_json::json!({ "type": "string" })),
+                (
+                    "num_samples",
+                    serde_json::json!({ "type": "integer", "minimum": 1 }),
+                ),
+                (
+                    "top_k",
+                    serde_json::json!({ "type": "integer", "minimum": 1 }),
+                ),
+                (
+                    "population_size",
+                    serde_json::json!({ "type": "integer", "minimum": 1 }),
+                ),
+                ("elite_fraction", serde_json::json!({ "type": "number" })),
+                (
+                    "num_iterations",
+                    serde_json::json!({ "type": "integer", "minimum": 1 }),
+                ),
+                ("learning_rate", serde_json::json!({ "type": "number" })),
+                (
+                    "horizon",
+                    serde_json::json!({ "type": "integer", "minimum": 1 }),
+                ),
+                (
+                    "replanning_interval",
+                    serde_json::json!({ "type": "integer", "minimum": 1 }),
+                ),
+                (
+                    "guardrails",
+                    openapi_array_schema(openapi_ref_schema("GuardrailConfig")),
+                ),
+                (
+                    "disable_guardrails",
+                    serde_json::json!({ "type": "boolean" }),
+                ),
+                ("source_label", serde_json::json!({ "type": "string" })),
+            ],
+        ),
+    );
+    schemas.insert(
+        "VerifyProofRequest".to_string(),
+        openapi_object_schema(
+            &[],
+            vec![
+                (
+                    "backend",
+                    openapi_string_enum_schema(&["mock", "ezkl", "stark"]),
+                ),
+                ("proof", openapi_ref_schema("ZkProof")),
+                (
+                    "inference_bundle",
+                    openapi_ref_schema("VerificationBundleInference"),
+                ),
+                (
+                    "guardrail_bundle",
+                    openapi_ref_schema("VerificationBundleGuardrail"),
+                ),
+                (
+                    "provenance_bundle",
+                    openapi_ref_schema("VerificationBundleProvenance"),
+                ),
+            ],
+        ),
+    );
+
+    schemas.insert(
+        "ProviderListResponse".to_string(),
+        openapi_response_envelope_schema(serde_json::json!({
+            "oneOf": [
+                openapi_array_schema(openapi_ref_schema("ProviderDescriptor")),
+                openapi_array_schema(openapi_ref_schema("ProviderHealthReport")),
+            ],
+        })),
+    );
+    schemas.insert(
+        "ProviderDescriptorResponse".to_string(),
+        openapi_response_envelope_schema(openapi_ref_schema("ProviderDescriptor")),
+    );
+    schemas.insert(
+        "HealthStatusResponse".to_string(),
+        openapi_response_envelope_schema(openapi_ref_schema("HealthStatus")),
+    );
+    schemas.insert(
+        "EstimateCostResponse".to_string(),
+        openapi_response_envelope_schema(openapi_ref_schema("EstimateCostResult")),
+    );
+    schemas.insert(
+        "ProviderActionResponse".to_string(),
+        openapi_response_envelope_schema(openapi_ref_schema("ProviderAction")),
+    );
+    schemas.insert(
+        "VideoClipResponse".to_string(),
+        openapi_response_envelope_schema(openapi_ref_schema("VideoClip")),
+    );
+    schemas.insert(
+        "EmbeddingOutputResponse".to_string(),
+        openapi_response_envelope_schema(openapi_ref_schema("EmbeddingOutput")),
+    );
+    schemas.insert(
+        "ReasoningOutputResponse".to_string(),
+        openapi_response_envelope_schema(openapi_ref_schema("ReasoningOutput")),
+    );
+    schemas.insert(
+        "EvalSuiteListResponse".to_string(),
+        openapi_response_envelope_schema(openapi_array_schema(openapi_ref_schema("EvalSuiteName"))),
+    );
+    schemas.insert(
+        "EvalResponse".to_string(),
+        openapi_response_envelope_schema(serde_json::json!({
+            "oneOf": [
+                openapi_ref_schema("EvalReport"),
+                openapi_ref_schema("RenderedEvalReport"),
+                openapi_ref_schema("RenderedEvalArtifacts"),
+            ],
+        })),
+    );
+    schemas.insert(
+        "WorldListResponse".to_string(),
+        openapi_response_envelope_schema(openapi_array_schema(openapi_ref_schema("WorldState"))),
+    );
+    schemas.insert(
+        "CreateWorldResponse".to_string(),
+        openapi_response_envelope_schema(openapi_ref_schema("CreateWorldSummary")),
+    );
+    schemas.insert(
+        "WorldStateResponse".to_string(),
+        openapi_response_envelope_schema(openapi_ref_schema("WorldState")),
+    );
+    schemas.insert(
+        "StoredPlanListResponse".to_string(),
+        openapi_response_envelope_schema(openapi_array_schema(openapi_ref_schema(
+            "StoredPlanRecord",
+        ))),
+    );
+    schemas.insert(
+        "StoredPlanResponse".to_string(),
+        openapi_response_envelope_schema(openapi_ref_schema("StoredPlanRecord")),
+    );
+    schemas.insert(
+        "HistoryResponse".to_string(),
+        openapi_response_envelope_schema(openapi_array_schema(openapi_ref_schema("HistoryEntry"))),
+    );
+    schemas.insert(
+        "ExportWorldResponse".to_string(),
+        openapi_response_envelope_schema(openapi_ref_schema("ExportedSnapshot")),
+    );
+    schemas.insert(
+        "SceneObjectListResponse".to_string(),
+        openapi_response_envelope_schema(openapi_array_schema(openapi_ref_schema("SceneObject"))),
+    );
+    schemas.insert(
+        "SceneObjectResponse".to_string(),
+        openapi_response_envelope_schema(openapi_ref_schema("SceneObject")),
+    );
+    schemas.insert(
+        "PredictionResponse".to_string(),
+        openapi_response_envelope_schema(openapi_ref_schema("Prediction")),
+    );
+    schemas.insert(
+        "PlanResponse".to_string(),
+        openapi_response_envelope_schema(openapi_ref_schema("Plan")),
+    );
+    schemas.insert(
+        "PlanExecutionResponse".to_string(),
+        openapi_response_envelope_schema(openapi_ref_schema("PlanExecution")),
+    );
+    schemas.insert(
+        "VerifyArtifactsResponse".to_string(),
+        openapi_response_envelope_schema(serde_json::json!({
+            "oneOf": [
+                openapi_ref_schema("VerificationBundleInference"),
+                openapi_ref_schema("VerificationBundleGuardrail"),
+                openapi_ref_schema("VerificationBundleProvenance"),
+            ],
+        })),
+    );
+    schemas.insert(
+        "CompareResponse".to_string(),
+        openapi_response_envelope_schema(serde_json::json!({
+            "oneOf": [
+                openapi_ref_schema("MultiPrediction"),
+                openapi_ref_schema("RenderedComparisonReport"),
+                openapi_ref_schema("RenderedComparisonArtifacts"),
+            ],
+        })),
+    );
+    schemas.insert(
+        "VerifyProofResponse".to_string(),
+        openapi_response_envelope_schema(serde_json::json!({
+            "oneOf": [
+                openapi_ref_schema("ProofVerificationReport"),
+                openapi_ref_schema("BundleVerificationReportInference"),
+                openapi_ref_schema("BundleVerificationReportGuardrail"),
+                openapi_ref_schema("BundleVerificationReportProvenance"),
+            ],
+        })),
+    );
+    schemas.insert(
+        "DeletionResponse".to_string(),
+        openapi_response_envelope_schema(openapi_ref_schema("DeletionResult")),
+    );
+
+    schemas
+}
+
+fn openapi_api_envelope_base_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "required": ["success"],
+        "properties": {
+            "success": { "type": "boolean" },
+            "data": {
+                "description": "Route-specific response payload.",
+            },
+            "error": {
+                "type": ["string", "null"],
+            },
+            "error_details": {
+                "type": ["object", "null"],
+                "additionalProperties": true,
+            },
+        },
+    })
+}
+
+fn openapi_response_envelope_schema(data_schema: serde_json::Value) -> serde_json::Value {
+    openapi_object_schema(
+        &["success", "data"],
+        vec![
+            ("success", serde_json::json!({ "type": "boolean" })),
+            ("data", data_schema),
+            ("error", serde_json::json!({ "type": "string" })),
+            (
+                "error_details",
+                serde_json::json!({
+                    "type": "object",
+                    "additionalProperties": true,
+                }),
+            ),
+        ],
+    )
+}
+
+fn openapi_object_schema(
+    required: &[&str],
+    properties: Vec<(&str, serde_json::Value)>,
+) -> serde_json::Value {
+    let mut property_map = serde_json::Map::new();
+    for (name, schema) in properties {
+        property_map.insert(name.to_string(), schema);
     }
 
-    let _ = method;
-    serde_json::json!({ "$ref": "#/components/schemas/ApiEnvelope" })
+    let mut schema = serde_json::Map::new();
+    schema.insert("type".to_string(), serde_json::json!("object"));
+    schema.insert(
+        "properties".to_string(),
+        serde_json::Value::Object(property_map),
+    );
+    if !required.is_empty() {
+        schema.insert("required".to_string(), serde_json::json!(required));
+    }
+    serde_json::Value::Object(schema)
+}
+
+fn openapi_loose_object_schema(description: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "description": description,
+        "additionalProperties": true,
+    })
+}
+
+fn openapi_array_schema(items: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "type": "array",
+        "items": items,
+    })
+}
+
+fn openapi_tuple_schema(items: Vec<serde_json::Value>) -> serde_json::Value {
+    let len = items.len();
+    serde_json::json!({
+        "type": "array",
+        "prefixItems": items,
+        "minItems": len,
+        "maxItems": len,
+    })
+}
+
+fn openapi_ref_schema(name: &str) -> serde_json::Value {
+    serde_json::json!({
+        "$ref": format!("#/components/schemas/{name}"),
+    })
+}
+
+fn openapi_uuid_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "string",
+        "format": "uuid",
+    })
+}
+
+fn openapi_datetime_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "string",
+        "format": "date-time",
+    })
+}
+
+fn openapi_hash_schema() -> serde_json::Value {
+    openapi_tuple_schema(
+        (0..32)
+            .map(|_| serde_json::json!({ "type": "integer", "minimum": 0, "maximum": 255 }))
+            .collect(),
+    )
+}
+
+fn openapi_byte_array_schema() -> serde_json::Value {
+    openapi_array_schema(serde_json::json!({
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 255,
+    }))
+}
+
+fn openapi_string_enum_schema(values: &[&str]) -> serde_json::Value {
+    serde_json::json!({
+        "type": "string",
+        "enum": values,
+    })
+}
+
+fn openapi_request_body_schema(path: &str, method: &str) -> serde_json::Value {
+    match openapi_request_component_name(path, method) {
+        Some(name) => openapi_ref_schema(name),
+        None => openapi_loose_object_schema("Route-specific request payload."),
+    }
+}
+
+fn openapi_request_component_name(path: &str, method: &str) -> Option<&'static str> {
+    match (method, path) {
+        ("POST", "/v1/providers/{name}/estimate") => Some("EstimateCostRequest"),
+        ("POST", "/v1/providers/{name}/translate-action") => Some("TranslateActionRequest"),
+        ("POST", "/v1/providers/{name}/generate") => Some("GenerateRequest"),
+        ("POST", "/v1/providers/{name}/embed") => Some("EmbedRequest"),
+        ("POST", "/v1/providers/{name}/reason") => Some("ProviderReasonRequest"),
+        ("POST", "/v1/providers/{name}/transfer") => Some("TransferRequest"),
+        ("POST", "/v1/evals/run") => Some("EvaluateRequest"),
+        ("POST", "/v1/worlds") => Some("CreateWorldRequest"),
+        ("POST", "/v1/worlds/import") => Some("ImportWorldRequest"),
+        ("POST", "/v1/worlds/{id}/fork") => Some("ForkWorldRequest"),
+        ("POST", "/v1/worlds/{id}/restore") => Some("RestoreWorldRequest"),
+        ("POST", "/v1/worlds/{id}/objects") => Some("CreateObjectRequest"),
+        ("PATCH", "/v1/worlds/{id}/objects/{object_id}") => Some("SceneObjectPatch"),
+        ("POST", "/v1/worlds/{id}/predict") => Some("PredictRequest"),
+        ("POST", "/v1/worlds/{id}/reason") => Some("ReasonRequest"),
+        ("POST", "/v1/worlds/{id}/plan") => Some("PlanRequest"),
+        ("POST", "/v1/worlds/{id}/execute-plan") => Some("ExecutePlanRequest"),
+        ("POST", "/v1/worlds/{id}/verify") => Some("VerifyRequest"),
+        ("POST", "/v1/worlds/{id}/evaluate") => Some("EvaluateRequest"),
+        ("POST", "/v1/compare") => Some("CompareRequest"),
+        ("POST", "/v1/verify/proof") => Some("VerifyProofRequest"),
+        _ => None,
+    }
+}
+
+fn openapi_response_schema(path: &str, method: &str) -> serde_json::Value {
+    let component = match (method, path) {
+        ("GET", "/v1/openapi.json") | ("HEAD", "/v1/openapi.json") => "OpenApiDocument",
+        ("GET", "/v1/providers") | ("HEAD", "/v1/providers") => "ProviderListResponse",
+        ("GET", "/v1/providers/{name}") | ("HEAD", "/v1/providers/{name}") => {
+            "ProviderDescriptorResponse"
+        }
+        ("GET", "/v1/providers/{name}/health") | ("HEAD", "/v1/providers/{name}/health") => {
+            "HealthStatusResponse"
+        }
+        ("POST", "/v1/providers/{name}/estimate") => "EstimateCostResponse",
+        ("POST", "/v1/providers/{name}/translate-action") => "ProviderActionResponse",
+        ("POST", "/v1/providers/{name}/generate") => "VideoClipResponse",
+        ("POST", "/v1/providers/{name}/embed") => "EmbeddingOutputResponse",
+        ("POST", "/v1/providers/{name}/reason") => "ReasoningOutputResponse",
+        ("POST", "/v1/providers/{name}/transfer") => "VideoClipResponse",
+        ("GET", "/v1/evals/suites") | ("HEAD", "/v1/evals/suites") => "EvalSuiteListResponse",
+        ("POST", "/v1/evals/run") => "EvalResponse",
+        ("GET", "/v1/worlds") | ("HEAD", "/v1/worlds") => "WorldListResponse",
+        ("POST", "/v1/worlds") => "CreateWorldResponse",
+        ("POST", "/v1/worlds/import") => "WorldStateResponse",
+        ("GET", "/v1/worlds/{id}") | ("HEAD", "/v1/worlds/{id}") => "WorldStateResponse",
+        ("DELETE", "/v1/worlds/{id}") => "DeletionResponse",
+        ("POST", "/v1/worlds/{id}/fork") => "WorldStateResponse",
+        ("GET", "/v1/worlds/{id}/export") | ("HEAD", "/v1/worlds/{id}/export") => {
+            "ExportWorldResponse"
+        }
+        ("GET", "/v1/worlds/{id}/history") | ("HEAD", "/v1/worlds/{id}/history") => {
+            "HistoryResponse"
+        }
+        ("GET", "/v1/worlds/{id}/plans") | ("HEAD", "/v1/worlds/{id}/plans") => {
+            "StoredPlanListResponse"
+        }
+        ("GET", "/v1/worlds/{id}/plans/{plan_id}")
+        | ("HEAD", "/v1/worlds/{id}/plans/{plan_id}")
+        | ("DELETE", "/v1/worlds/{id}/plans/{plan_id}") => "StoredPlanResponse",
+        ("POST", "/v1/worlds/{id}/restore") => "WorldStateResponse",
+        ("GET", "/v1/worlds/{id}/objects") | ("HEAD", "/v1/worlds/{id}/objects") => {
+            "SceneObjectListResponse"
+        }
+        ("POST", "/v1/worlds/{id}/objects") => "SceneObjectResponse",
+        ("GET", "/v1/worlds/{id}/objects/{object_id}")
+        | ("HEAD", "/v1/worlds/{id}/objects/{object_id}")
+        | ("PATCH", "/v1/worlds/{id}/objects/{object_id}")
+        | ("DELETE", "/v1/worlds/{id}/objects/{object_id}") => "SceneObjectResponse",
+        ("POST", "/v1/worlds/{id}/predict") => "PredictionResponse",
+        ("POST", "/v1/worlds/{id}/reason") => "ReasoningOutputResponse",
+        ("POST", "/v1/worlds/{id}/plan") => "PlanResponse",
+        ("POST", "/v1/worlds/{id}/execute-plan") => "PlanExecutionResponse",
+        ("POST", "/v1/worlds/{id}/verify") => "VerifyArtifactsResponse",
+        ("POST", "/v1/worlds/{id}/evaluate") => "EvalResponse",
+        ("POST", "/v1/compare") => "CompareResponse",
+        ("POST", "/v1/verify/proof") => "VerifyProofResponse",
+        _ => "ApiEnvelope",
+    };
+
+    if component == "OpenApiDocument" {
+        return openapi_ref_schema(component);
+    }
+
+    serde_json::json!({
+        "allOf": [
+            openapi_ref_schema("ApiEnvelope"),
+            openapi_ref_schema(component),
+        ],
+    })
 }
 
 fn openapi_success_status(path: &str, method: &str) -> u16 {
@@ -4760,13 +6985,20 @@ mod tests {
             "Create a new world from a name and optional prompt."
         );
         assert_eq!(
+            world_create["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/CreateWorldRequest"
+        );
+        assert_eq!(
             world_create["responses"]["201"]["description"],
             "Successful response"
         );
-        assert_eq!(
-            world_create["responses"]["201"]["content"]["application/json"]["schema"]["$ref"],
-            "#/components/schemas/ApiEnvelope"
-        );
+        let create_world_refs = world_create["responses"]["201"]["content"]["application/json"]
+            ["schema"]["allOf"]
+            .as_array()
+            .unwrap();
+        assert!(create_world_refs.iter().any(|reference| {
+            reference["$ref"] == serde_json::json!("#/components/schemas/CreateWorldResponse")
+        }));
 
         let export = &paths["/v1/worlds/{id}/export"]["get"];
         let export_params = export["parameters"].as_array().unwrap();
@@ -4789,18 +7021,65 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Fork the world"));
+        assert_eq!(
+            fork["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/ForkWorldRequest"
+        );
 
         let generate = &paths["/v1/providers/{name}/generate"]["post"];
         assert!(generate["requestBody"]["description"]
             .as_str()
             .unwrap()
             .contains("Generate a clip"));
+        assert_eq!(
+            generate["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/GenerateRequest"
+        );
+        let generate_refs = generate["responses"]["200"]["content"]["application/json"]["schema"]
+            ["allOf"]
+            .as_array()
+            .unwrap();
+        assert!(generate_refs.iter().any(|reference| {
+            reference["$ref"] == serde_json::json!("#/components/schemas/VideoClipResponse")
+        }));
 
         let translate = &paths["/v1/providers/{name}/translate-action"]["post"];
         assert!(translate["requestBody"]["description"]
             .as_str()
             .unwrap()
             .contains("Translate a WorldForge action"));
+        assert_eq!(
+            translate["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/TranslateActionRequest"
+        );
+        let translate_refs = translate["responses"]["200"]["content"]["application/json"]["schema"]
+            ["allOf"]
+            .as_array()
+            .unwrap();
+        assert!(translate_refs.iter().any(|reference| {
+            reference["$ref"] == serde_json::json!("#/components/schemas/ProviderActionResponse")
+        }));
+
+        let compare = &paths["/v1/compare"]["post"];
+        assert_eq!(
+            compare["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/CompareRequest"
+        );
+        let compare_refs = compare["responses"]["200"]["content"]["application/json"]["schema"]
+            ["allOf"]
+            .as_array()
+            .unwrap();
+        assert!(compare_refs.iter().any(|reference| {
+            reference["$ref"] == serde_json::json!("#/components/schemas/CompareResponse")
+        }));
+
+        let schemas = value["components"]["schemas"].as_object().unwrap();
+        assert!(schemas.contains_key("PredictionConfig"));
+        assert!(schemas.contains_key("WorldState"));
+        assert!(schemas.contains_key("CreateWorldRequest"));
+        assert!(schemas.contains_key("CreateWorldResponse"));
+        assert!(schemas.contains_key("CompareRequest"));
+        assert!(schemas.contains_key("CompareResponse"));
     }
 
     #[tokio::test]
