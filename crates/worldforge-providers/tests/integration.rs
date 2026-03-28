@@ -2214,6 +2214,212 @@ async fn test_cosmos_full_stack_routes_predict_reason_and_transfer() {
 }
 
 #[tokio::test]
+async fn test_cosmos_nim_local_executes_without_http_transport() {
+    let provider = CosmosProvider::full_stack(
+        "cosmos-key",
+        CosmosEndpoint::NimLocal("http://127.0.0.1:9".to_string()),
+    );
+
+    let mut state = WorldState::new("cosmos-nim-local-world", "cosmos");
+    state.scene.add_object(SceneObject::new(
+        "mug",
+        Pose {
+            position: Position {
+                x: 0.0,
+                y: 0.8,
+                z: 0.0,
+            },
+            ..Default::default()
+        },
+        BBox {
+            min: Position {
+                x: -0.05,
+                y: 0.75,
+                z: -0.05,
+            },
+            max: Position {
+                x: 0.05,
+                y: 0.85,
+                z: 0.05,
+            },
+        },
+    ));
+
+    let prediction = provider
+        .predict(
+            &state,
+            &Action::Move {
+                target: Position {
+                    x: 0.25,
+                    y: 0.8,
+                    z: 0.0,
+                },
+                speed: 1.0,
+            },
+            &PredictionConfig {
+                steps: 3,
+                resolution: (640, 360),
+                fps: 12.0,
+                return_video: true,
+                return_depth: true,
+                return_segmentation: true,
+                ..PredictionConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    let generated = provider
+        .generate(
+            &GenerationPrompt {
+                text: "a mug sliding across a tabletop".to_string(),
+                reference_image: None,
+                negative_prompt: None,
+            },
+            &GenerationConfig {
+                resolution: (640, 360),
+                fps: 12.0,
+                duration_seconds: 2.0,
+                temperature: 0.7,
+                seed: Some(11),
+            },
+        )
+        .await
+        .unwrap();
+
+    let reasoning = provider
+        .reason(
+            &ReasoningInput {
+                video: None,
+                state: Some(state.clone()),
+            },
+            "Will the mug stay upright?",
+        )
+        .await
+        .unwrap();
+
+    let embedded = provider
+        .embed(&EmbeddingInput::from_text("a mug on a tabletop"))
+        .await
+        .unwrap();
+
+    let transferred = provider
+        .transfer(
+            &sample_video_clip(),
+            &SpatialControls::default(),
+            &TransferConfig {
+                resolution: (640, 360),
+                fps: 12.0,
+                control_strength: 0.5,
+            },
+        )
+        .await
+        .unwrap();
+
+    let health = provider.health_check().await.unwrap();
+
+    assert_eq!(prediction.provider, "cosmos");
+    assert!(prediction.confidence >= 0.0);
+    assert!(!prediction.output_state.scene.objects.is_empty());
+    assert!(prediction.video.is_some());
+    assert!(!generated.frames.is_empty());
+    assert_eq!(generated.resolution, (640, 360));
+    assert_eq!(generated.fps, 12.0);
+    assert!(!reasoning.answer.is_empty());
+    assert!(!reasoning.evidence.is_empty());
+    assert_eq!(embedded.provider, "cosmos");
+    assert!(!embedded.embedding.shape.is_empty());
+    assert!(!transferred.frames.is_empty());
+    assert_eq!(transferred.resolution, (640, 360));
+    assert!(health.healthy);
+}
+
+#[tokio::test]
+async fn test_cosmos_huggingface_executes_without_http_transport() {
+    let provider = CosmosProvider::full_stack("cosmos-key", CosmosEndpoint::HuggingFace);
+
+    let state = WorldState::new("cosmos-hf-world", "cosmos");
+
+    let prediction = provider
+        .predict(
+            &state,
+            &Action::SetLighting { time_of_day: 18.0 },
+            &PredictionConfig {
+                steps: 2,
+                resolution: (320, 180),
+                fps: 8.0,
+                return_video: true,
+                ..PredictionConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    let generated = provider
+        .generate(
+            &GenerationPrompt {
+                text: "sunset over a kitchen counter".to_string(),
+                reference_image: None,
+                negative_prompt: Some("blurry".to_string()),
+            },
+            &GenerationConfig {
+                resolution: (320, 180),
+                fps: 8.0,
+                duration_seconds: 1.5,
+                temperature: 0.5,
+                seed: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let reasoning = provider
+        .reason(
+            &ReasoningInput {
+                video: None,
+                state: Some(state.clone()),
+            },
+            "Is the scene stable?",
+        )
+        .await
+        .unwrap();
+
+    let embedded = provider
+        .embed(&EmbeddingInput::from_text("a kitchen counter at sunset"))
+        .await
+        .unwrap();
+
+    let transferred = provider
+        .transfer(
+            &sample_video_clip(),
+            &SpatialControls::default(),
+            &TransferConfig {
+                resolution: (320, 180),
+                fps: 8.0,
+                control_strength: 0.75,
+            },
+        )
+        .await
+        .unwrap();
+
+    let health = provider.health_check().await.unwrap();
+
+    assert_eq!(prediction.provider, "cosmos");
+    assert!(prediction.confidence >= 0.0);
+    assert!(prediction.video.is_some());
+    assert!(!generated.frames.is_empty());
+    assert_eq!(generated.resolution, (320, 180));
+    assert_eq!(generated.fps, 8.0);
+    assert!(!reasoning.answer.is_empty());
+    assert!(!reasoning.evidence.is_empty());
+    assert_eq!(embedded.provider, "cosmos");
+    assert!(!embedded.embedding.shape.is_empty());
+    assert!(!transferred.frames.is_empty());
+    assert_eq!(transferred.resolution, (320, 180));
+    assert!(health.healthy);
+}
+
+#[tokio::test]
 async fn test_runway_predict_roundtrip_with_fake_http_response() {
     let response_body = serde_json::json!({
         "request_id": "runway-predict-1",

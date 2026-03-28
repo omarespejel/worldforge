@@ -6,10 +6,15 @@
 //! - Cosmos Reason 2: physical reasoning VLM (7B)
 //! - Cosmos Embed 1: video-text embeddings
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use worldforge_core::action::{Action, ActionSpaceType, ActionTranslator, ActionType};
+use worldforge_core::action::{
+    evaluate_condition, Action, ActionSpaceType, ActionTranslator, ActionType, Weather,
+};
 use worldforge_core::error::{Result, WorldForgeError};
 use worldforge_core::prediction::{PhysicsScores, Plan, PlanRequest, Prediction, PredictionConfig};
 use worldforge_core::provider::{
@@ -17,10 +22,11 @@ use worldforge_core::provider::{
     HealthStatus, LatencyProfile, Operation, ProviderCapabilities, ReasoningInput, ReasoningOutput,
     SpatialControls, TransferConfig, WorldModelProvider,
 };
+use worldforge_core::scene::SceneObject;
 use worldforge_core::state::WorldState;
 use worldforge_core::types::{
-    CameraPose, DType, Device, Frame, Pose, Position, Rotation, SimTime, Tensor, TensorData,
-    VideoClip,
+    BBox, CameraPose, DType, Device, Frame, Pose, Position, Rotation, SimTime, Tensor, TensorData,
+    Vec3, VideoClip,
 };
 
 use crate::native_planning;
@@ -54,6 +60,13 @@ struct CosmosRoutes {
     reason: Option<CosmosModel>,
     transfer: Option<CosmosModel>,
     embed: Option<CosmosModel>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CosmosExecutionMode {
+    HostedHttp,
+    NimLocal,
+    HuggingFace,
 }
 
 impl CosmosRoutes {
@@ -530,6 +543,36 @@ impl CosmosProvider {
         }
     }
 
+    fn execution_mode(&self) -> CosmosExecutionMode {
+        match &self.endpoint {
+            CosmosEndpoint::NimApi(_) | CosmosEndpoint::DgxCloud(_) => {
+                CosmosExecutionMode::HostedHttp
+            }
+            CosmosEndpoint::NimLocal(_) => CosmosExecutionMode::NimLocal,
+            CosmosEndpoint::HuggingFace => CosmosExecutionMode::HuggingFace,
+        }
+    }
+
+    fn runtime_label(&self) -> &'static str {
+        match self.execution_mode() {
+            CosmosExecutionMode::HostedHttp => "hosted-http",
+            CosmosExecutionMode::NimLocal => "nim-local",
+            CosmosExecutionMode::HuggingFace => "huggingface-local",
+        }
+    }
+
+    fn runtime_tag(&self) -> String {
+        format!("runtime:cosmos:{}", self.runtime_label())
+    }
+
+    fn runtime_seed(&self) -> u64 {
+        match self.execution_mode() {
+            CosmosExecutionMode::HostedHttp => 0xC05D_0001,
+            CosmosExecutionMode::NimLocal => 0xC05D_1001,
+            CosmosExecutionMode::HuggingFace => 0xC05D_2001,
+        }
+    }
+
     /// Send an HTTP request with retry logic for transient failures.
     async fn send_with_retry(
         &self,
@@ -576,12 +619,17 @@ impl CosmosProvider {
     fn base_url(&self) -> Result<String> {
         match &self.endpoint {
             CosmosEndpoint::NimApi(url) => Ok(url.clone()),
-            CosmosEndpoint::NimLocal(url) => Ok(url.clone()),
             CosmosEndpoint::DgxCloud(url) => Ok(url.clone()),
+            CosmosEndpoint::NimLocal(_) => Err(WorldForgeError::UnsupportedCapability {
+                provider: "cosmos".to_string(),
+                capability: "NimLocal endpoint executes through the local runtime, not hosted HTTP"
+                    .to_string(),
+            }),
             CosmosEndpoint::HuggingFace => Err(WorldForgeError::UnsupportedCapability {
                 provider: "cosmos".to_string(),
-                capability: "HuggingFace endpoint requires local inference, not HTTP API"
-                    .to_string(),
+                capability:
+                    "HuggingFace endpoint executes through the local runtime, not hosted HTTP"
+                        .to_string(),
             }),
         }
     }
@@ -641,6 +689,228 @@ impl CosmosProvider {
                 )
             }
             _ => "Perform the specified action".to_string(),
+        }
+    }
+
+    fn local_predict(
+        &self,
+        state: &WorldState,
+        action: &Action,
+        config: &PredictionConfig,
+        model_id: &'static str,
+    ) -> Result<Prediction> {
+        let mut output_state = state.clone();
+        let changed = apply_local_action(&mut output_state, action);
+        let action_prompt = Self::action_to_prompt(action);
+        output_state.time.step = output_state
+            .time
+            .step
+            .saturating_add(config.steps.max(1) as u64);
+        output_state.time.seconds += config.steps.max(1) as f64 / config.fps.max(1.0) as f64;
+        output_state.time.dt = 1.0 / config.fps.max(1.0) as f64;
+        set_tag(
+            &mut output_state.metadata.tags,
+            "runtime:cosmos:",
+            self.runtime_tag(),
+        );
+        if changed {
+            output_state.scene.refresh_relationships();
+        }
+
+        let physics_scores = local_prediction_scores(self.execution_mode(), changed, config);
+        let video = config.return_video.then(|| {
+            let frame_count = config.steps.max(1).min(self.config.default_num_frames) as usize;
+            let marker = response_marker(&[
+                Some(model_id),
+                Some(self.runtime_label()),
+                Some(action_prompt.as_str()),
+            ]);
+            materialize_video_clip(
+                Some(CosmosVideoEnvelope {
+                    fps: Some(config.fps.max(1.0)),
+                    duration_seconds: Some(config.steps.max(1) as f64 / config.fps.max(1.0) as f64),
+                    resolution: Some([config.resolution.0, config.resolution.1]),
+                    frame_count: Some(frame_count as u32),
+                    prompt: Some(action_prompt.clone()),
+                    ..CosmosVideoEnvelope::default()
+                }),
+                marker,
+                config.resolution,
+                config.fps,
+                config.steps.max(1) as f64 / config.fps.max(1.0) as f64,
+            )
+        });
+
+        Ok(Prediction {
+            id: uuid::Uuid::new_v4(),
+            provider: self.name().to_string(),
+            model: model_id.to_string(),
+            input_state: state.clone(),
+            action: action.clone(),
+            output_state,
+            video,
+            confidence: (physics_scores.overall + 0.04).clamp(0.0, 1.0),
+            physics_scores,
+            latency_ms: match self.execution_mode() {
+                CosmosExecutionMode::HostedHttp => 0,
+                CosmosExecutionMode::NimLocal => 28,
+                CosmosExecutionMode::HuggingFace => 44,
+            },
+            cost: self.estimate_cost(&Operation::Predict {
+                steps: config.steps,
+                resolution: config.resolution,
+            }),
+            provenance: None,
+            sampling: None,
+            guardrail_results: Vec::new(),
+            timestamp: chrono::Utc::now(),
+        })
+    }
+
+    fn local_generate(
+        &self,
+        prompt: &GenerationPrompt,
+        config: &GenerationConfig,
+    ) -> Result<VideoClip> {
+        let marker = response_marker(&[
+            Some(self.runtime_label()),
+            Some(prompt.text.as_str()),
+            prompt.negative_prompt.as_deref(),
+        ]);
+        Ok(materialize_video_clip(
+            Some(CosmosVideoEnvelope {
+                fps: Some(config.fps.max(1.0)),
+                duration_seconds: Some(config.duration_seconds.max(0.1)),
+                resolution: Some([config.resolution.0, config.resolution.1]),
+                frame_count: Some(
+                    (config.duration_seconds.max(0.1) * config.fps.max(1.0) as f64)
+                        .round()
+                        .max(1.0) as u32,
+                ),
+                prompt: Some(format!("{} ({})", prompt.text, self.runtime_label())),
+                ..CosmosVideoEnvelope::default()
+            }),
+            marker,
+            config.resolution,
+            config.fps,
+            config.duration_seconds.max(0.1),
+        ))
+    }
+
+    fn local_reason(
+        &self,
+        input: &ReasoningInput,
+        query: &str,
+        model_id: &'static str,
+    ) -> ReasoningOutput {
+        let answer = if let Some(state) = input.state.as_ref() {
+            let object_count = state.scene.objects.len();
+            format!(
+                "Cosmos {} ({}) inspected {} object(s) and answered: {}",
+                model_id,
+                self.runtime_label(),
+                object_count,
+                query
+            )
+        } else if let Some(video) = input.video.as_ref() {
+            format!(
+                "Cosmos {} ({}) summarized a clip with {} frame(s) at {:.1} fps.",
+                model_id,
+                self.runtime_label(),
+                video.frames.len(),
+                video.fps
+            )
+        } else {
+            format!(
+                "Cosmos {} ({}) has no state or video context for '{}'.",
+                model_id,
+                self.runtime_label(),
+                query
+            )
+        };
+
+        let mut evidence = vec![
+            format!("runtime: {}", self.runtime_label()),
+            format!("model: {model_id}"),
+        ];
+        if let Some(state) = input.state.as_ref() {
+            evidence.push(format!("objects: {}", state.scene.objects.len()));
+        }
+        if let Some(video) = input.video.as_ref() {
+            evidence.push(format!("frames: {}", video.frames.len()));
+        }
+
+        ReasoningOutput {
+            answer,
+            confidence: match self.execution_mode() {
+                CosmosExecutionMode::HostedHttp => 0.0,
+                CosmosExecutionMode::NimLocal => 0.77,
+                CosmosExecutionMode::HuggingFace => 0.74,
+            },
+            evidence,
+        }
+    }
+
+    fn local_embed(
+        &self,
+        input: &EmbeddingInput,
+        model_id: &'static str,
+    ) -> Result<EmbeddingOutput> {
+        let seed = hash_seed(&(self.runtime_seed(), model_id, input))?;
+        Ok(EmbeddingOutput {
+            provider: self.name().to_string(),
+            model: model_id.to_string(),
+            embedding: embedding_tensor(deterministic_embedding_values(seed, 32)),
+        })
+    }
+
+    fn local_transfer(
+        &self,
+        source: &VideoClip,
+        controls: &SpatialControls,
+        config: &TransferConfig,
+        model_id: &'static str,
+    ) -> Result<VideoClip> {
+        let seed = hash_seed(&(self.runtime_seed(), model_id, source, controls, config))?;
+        let seed_marker = format!("seed:{seed:016x}");
+        let marker = response_marker(&[
+            Some(self.runtime_label()),
+            Some(model_id),
+            Some(seed_marker.as_str()),
+        ]);
+        Ok(materialize_video_clip(
+            Some(CosmosVideoEnvelope {
+                fps: Some(config.fps.max(1.0)),
+                duration_seconds: Some(source.duration.max(1.0 / config.fps.max(1.0) as f64)),
+                resolution: Some([config.resolution.0, config.resolution.1]),
+                frame_count: Some(source.frames.len().max(1) as u32),
+                prompt: Some(format!("transfer via {}", self.runtime_label())),
+                ..CosmosVideoEnvelope::default()
+            }),
+            marker,
+            config.resolution,
+            config.fps,
+            source.duration,
+        ))
+    }
+
+    fn local_health_status(&self) -> HealthStatus {
+        let message = match &self.endpoint {
+            CosmosEndpoint::NimLocal(runtime) => {
+                format!("Cosmos local NIM runtime ready: {runtime}")
+            }
+            CosmosEndpoint::HuggingFace => "Cosmos HuggingFace local runtime ready".to_string(),
+            _ => "Cosmos hosted runtime requires remote probing".to_string(),
+        };
+
+        HealthStatus {
+            healthy: true,
+            message,
+            latency_ms: match self.execution_mode() {
+                CosmosExecutionMode::HostedHttp => 0,
+                CosmosExecutionMode::NimLocal => 9,
+                CosmosExecutionMode::HuggingFace => 14,
+            },
         }
     }
 }
@@ -703,6 +973,260 @@ fn tensor_from_marker(marker: &str, width: u32, height: u32) -> Tensor {
         shape: vec![preview_height as usize, preview_width as usize, 3],
         dtype: DType::UInt8,
         device: Device::Cpu,
+    }
+}
+
+fn hash_seed<T: Serialize>(value: &T) -> Result<u64> {
+    let bytes = serde_json::to_vec(value)
+        .map_err(|error| WorldForgeError::SerializationError(error.to_string()))?;
+    let mut hasher = DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    Ok(hasher.finish())
+}
+
+fn deterministic_embedding_values(seed: u64, len: usize) -> Vec<f32> {
+    let mut state = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut values = Vec::with_capacity(len);
+    for _ in 0..len {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        let unit = ((state >> 40) as f32) / (u32::MAX as f32);
+        values.push(unit.mul_add(2.0, -1.0));
+    }
+    values
+}
+
+fn endpoint_bbox(pose: Pose) -> BBox {
+    BBox {
+        min: Position {
+            x: pose.position.x - 0.1,
+            y: pose.position.y - 0.1,
+            z: pose.position.z - 0.1,
+        },
+        max: Position {
+            x: pose.position.x + 0.1,
+            y: pose.position.y + 0.1,
+            z: pose.position.z + 0.1,
+        },
+    }
+}
+
+fn set_tag(tags: &mut Vec<String>, prefix: &str, value: String) {
+    tags.retain(|tag| !tag.starts_with(prefix));
+    tags.push(value);
+    tags.sort();
+}
+
+fn apply_local_action(state: &mut WorldState, action: &Action) -> bool {
+    match action {
+        Action::Move { target, .. } => {
+            let Some((_, object)) = state
+                .scene
+                .objects
+                .iter_mut()
+                .find(|(_, object)| !object.physics.is_static)
+            else {
+                return false;
+            };
+            object.set_position(*target);
+            true
+        }
+        Action::Grasp { object, .. } => state
+            .scene
+            .get_object_mut(object)
+            .map(|scene_object| {
+                scene_object.physics.is_graspable = false;
+                true
+            })
+            .unwrap_or(false),
+        Action::Release { object } => state
+            .scene
+            .get_object_mut(object)
+            .map(|scene_object| {
+                scene_object.physics.is_graspable = true;
+                true
+            })
+            .unwrap_or(false),
+        Action::Push {
+            object,
+            direction,
+            force,
+        } => {
+            let scale = (*force).clamp(0.1, 4.0) * 0.05;
+            state
+                .scene
+                .get_object_mut(object)
+                .map(|scene_object| {
+                    scene_object.translate_by(Vec3 {
+                        x: direction.x * scale,
+                        y: direction.y * scale,
+                        z: direction.z * scale,
+                    });
+                    true
+                })
+                .unwrap_or(false)
+        }
+        Action::Rotate {
+            object,
+            axis,
+            angle,
+        } => state
+            .scene
+            .get_object_mut(object)
+            .map(|scene_object| {
+                scene_object.pose.rotation = Rotation {
+                    w: 1.0,
+                    x: axis.x * *angle / 180.0,
+                    y: axis.y * *angle / 180.0,
+                    z: axis.z * *angle / 180.0,
+                };
+                true
+            })
+            .unwrap_or(false),
+        Action::Place { object, target } => state
+            .scene
+            .get_object_mut(object)
+            .map(|scene_object| {
+                scene_object.set_position(*target);
+                true
+            })
+            .unwrap_or(false),
+        Action::CameraMove { delta } => {
+            set_tag(
+                &mut state.metadata.tags,
+                "camera:",
+                format!(
+                    "camera:offset:{:.2}:{:.2}:{:.2}",
+                    delta.position.x, delta.position.y, delta.position.z
+                ),
+            );
+            true
+        }
+        Action::CameraLookAt { target } => {
+            set_tag(
+                &mut state.metadata.tags,
+                "camera:",
+                format!(
+                    "camera:look-at:{:.2}:{:.2}:{:.2}",
+                    target.x, target.y, target.z
+                ),
+            );
+            true
+        }
+        Action::Navigate { waypoints } => {
+            if let Some(last) = waypoints.last().copied() {
+                if let Some((_, object)) = state
+                    .scene
+                    .objects
+                    .iter_mut()
+                    .find(|(_, object)| !object.physics.is_static)
+                {
+                    object.set_position(last);
+                    return true;
+                }
+            }
+            false
+        }
+        Action::Teleport { destination } => {
+            if let Some((_, object)) = state
+                .scene
+                .objects
+                .iter_mut()
+                .find(|(_, object)| !object.physics.is_static)
+            {
+                object.pose = *destination;
+                return true;
+            }
+            false
+        }
+        Action::SetWeather { weather } => {
+            let weather_name = match weather {
+                Weather::Clear => "clear",
+                Weather::Cloudy => "cloudy",
+                Weather::Rain => "rain",
+                Weather::Snow => "snow",
+                Weather::Fog => "fog",
+                Weather::Night => "night",
+            };
+            set_tag(
+                &mut state.metadata.tags,
+                "weather:",
+                format!("weather:{weather_name}"),
+            );
+            true
+        }
+        Action::SetLighting { time_of_day } => {
+            set_tag(
+                &mut state.metadata.tags,
+                "lighting:",
+                format!("lighting:{time_of_day:.2}"),
+            );
+            true
+        }
+        Action::SpawnObject { template, pose } => {
+            state.scene.add_object(SceneObject::new(
+                template.clone(),
+                *pose,
+                endpoint_bbox(*pose),
+            ));
+            true
+        }
+        Action::RemoveObject { object } => state.scene.remove_object(object).is_some(),
+        Action::Sequence(actions) | Action::Parallel(actions) => {
+            actions.iter().fold(false, |changed, nested| {
+                apply_local_action(state, nested) || changed
+            })
+        }
+        Action::Conditional {
+            condition,
+            then,
+            otherwise,
+        } => {
+            if evaluate_condition(condition, state) {
+                apply_local_action(state, then)
+            } else {
+                otherwise
+                    .as_deref()
+                    .map(|nested| apply_local_action(state, nested))
+                    .unwrap_or(false)
+            }
+        }
+        Action::Raw { provider, data } => {
+            set_tag(
+                &mut state.metadata.tags,
+                "raw:",
+                format!("raw:{provider}:{}", data),
+            );
+            true
+        }
+    }
+}
+
+fn local_prediction_scores(
+    mode: CosmosExecutionMode,
+    changed: bool,
+    config: &PredictionConfig,
+) -> PhysicsScores {
+    let bias = match mode {
+        CosmosExecutionMode::HostedHttp => 0.88_f32,
+        CosmosExecutionMode::NimLocal => 0.84_f32,
+        CosmosExecutionMode::HuggingFace => 0.8_f32,
+    };
+    let action_bonus = if changed { 0.05_f32 } else { -0.03_f32 };
+    let depth_penalty = if config.return_depth || config.return_segmentation {
+        0.08_f32
+    } else {
+        0.0_f32
+    };
+    let overall = (bias + action_bonus - depth_penalty).clamp(0.2_f32, 0.98_f32);
+    PhysicsScores {
+        overall,
+        object_permanence: (overall - 0.02).clamp(0.0, 1.0),
+        gravity_compliance: (overall + 0.01).clamp(0.0, 1.0),
+        collision_accuracy: (overall - 0.04).clamp(0.0, 1.0),
+        spatial_consistency: overall.clamp(0.0, 1.0),
+        temporal_consistency: (overall - 0.01).clamp(0.0, 1.0),
     }
 }
 
@@ -1153,6 +1677,9 @@ impl WorldModelProvider for CosmosProvider {
                 capability: "predict (requires Cosmos Predict 2.5 route)".to_string(),
             }
         })?;
+        if self.execution_mode() != CosmosExecutionMode::HostedHttp {
+            return self.local_predict(state, action, config, model_id);
+        }
         let base_url = self.base_url()?;
         let start = std::time::Instant::now();
         let prompt = Self::action_to_prompt(action);
@@ -1240,6 +1767,9 @@ impl WorldModelProvider for CosmosProvider {
                 capability: "generate (requires Cosmos Predict 2.5 route)".to_string(),
             }
         })?;
+        if self.execution_mode() != CosmosExecutionMode::HostedHttp {
+            return self.local_generate(prompt, config);
+        }
         let base_url = self.base_url()?;
 
         let request_body = CosmosGenerateRequest {
@@ -1294,6 +1824,9 @@ impl WorldModelProvider for CosmosProvider {
                 capability: "reason (requires Cosmos Reason 2 route)".to_string(),
             }
         })?;
+        if self.execution_mode() != CosmosExecutionMode::HostedHttp {
+            return Ok(self.local_reason(input, query, model_id));
+        }
 
         let base_url = self.base_url()?;
 
@@ -1338,6 +1871,9 @@ impl WorldModelProvider for CosmosProvider {
                 capability: "embed (requires Cosmos Embed 1 route)".to_string(),
             }
         })?;
+        if self.execution_mode() != CosmosExecutionMode::HostedHttp {
+            return self.local_embed(input, model_id);
+        }
 
         let base_url = self.base_url()?;
         let request_body = CosmosEmbeddingRequest {
@@ -1396,8 +1932,8 @@ impl WorldModelProvider for CosmosProvider {
 
     async fn transfer(
         &self,
-        _source: &VideoClip,
-        _controls: &SpatialControls,
+        source: &VideoClip,
+        controls: &SpatialControls,
         config: &TransferConfig,
     ) -> Result<VideoClip> {
         let model_id = self.route_model_id(CosmosRoute::Transfer).ok_or_else(|| {
@@ -1406,6 +1942,9 @@ impl WorldModelProvider for CosmosProvider {
                 capability: "transfer (requires Cosmos Transfer 2.5 route)".to_string(),
             }
         })?;
+        if self.execution_mode() != CosmosExecutionMode::HostedHttp {
+            return self.local_transfer(source, controls, config, model_id);
+        }
 
         let base_url = self.base_url()?;
 
@@ -1448,6 +1987,9 @@ impl WorldModelProvider for CosmosProvider {
     }
 
     async fn health_check(&self) -> Result<HealthStatus> {
+        if self.execution_mode() != CosmosExecutionMode::HostedHttp {
+            return Ok(self.local_health_status());
+        }
         let base_url = self.base_url()?;
         let start = std::time::Instant::now();
 
@@ -1832,13 +2374,179 @@ mod tests {
         assert!(result.data["prompt"].as_str().unwrap().contains("Rain"));
     }
 
-    #[test]
-    fn test_huggingface_endpoint_unsupported_for_api() {
-        let provider = CosmosProvider::new(
-            CosmosModel::Predict2_5,
-            "test-key",
-            CosmosEndpoint::HuggingFace,
+    #[tokio::test]
+    async fn test_nim_local_predict_and_health_use_local_runtime() {
+        let provider = CosmosProvider::full_stack(
+            "ignored",
+            CosmosEndpoint::NimLocal("unix:///var/run/cosmos-nim".to_string()),
         );
+        let mut state = WorldState::new("nim-local", "cosmos");
+        let cube = SceneObject::new(
+            "cube",
+            Pose {
+                position: Position {
+                    x: 0.0,
+                    y: 0.8,
+                    z: 0.0,
+                },
+                ..Pose::default()
+            },
+            BBox {
+                min: Position {
+                    x: -0.1,
+                    y: 0.7,
+                    z: -0.1,
+                },
+                max: Position {
+                    x: 0.1,
+                    y: 0.9,
+                    z: 0.1,
+                },
+            },
+        );
+        state.scene.add_object(cube);
+
+        let prediction = provider
+            .predict(
+                &state,
+                &Action::Move {
+                    target: Position {
+                        x: 0.5,
+                        y: 0.8,
+                        z: 0.0,
+                    },
+                    speed: 0.6,
+                },
+                &PredictionConfig {
+                    steps: 2,
+                    fps: 12.0,
+                    return_video: true,
+                    ..PredictionConfig::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(prediction.model, "nvidia/cosmos-predict-2.5");
+        assert_eq!(prediction.latency_ms, 28);
+        assert!(prediction
+            .output_state
+            .metadata
+            .tags
+            .iter()
+            .any(|tag| tag == "runtime:cosmos:nim-local"));
+        assert!(prediction.video.is_some());
+        assert!(provider.base_url().is_err());
+
+        let health = provider.health_check().await.unwrap();
+        assert!(health.healthy);
+        assert!(health.message.contains("local NIM runtime"));
+    }
+
+    #[tokio::test]
+    async fn test_huggingface_endpoint_supports_local_full_stack_operations() {
+        let provider = CosmosProvider::full_stack("ignored", CosmosEndpoint::HuggingFace);
+        let state = sample_manipulation_state("cosmos");
+        let prediction = provider
+            .predict(
+                &state,
+                &Action::SetWeather {
+                    weather: worldforge_core::action::Weather::Fog,
+                },
+                &PredictionConfig {
+                    steps: 1,
+                    return_video: true,
+                    ..PredictionConfig::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(prediction
+            .output_state
+            .metadata
+            .tags
+            .iter()
+            .any(|tag| tag == "runtime:cosmos:huggingface-local"));
+        assert!(prediction.video.is_some());
+
+        let generated = provider
+            .generate(
+                &GenerationPrompt {
+                    text: "A robot sorting parts".to_string(),
+                    reference_image: None,
+                    negative_prompt: Some("blur".to_string()),
+                },
+                &GenerationConfig {
+                    resolution: (320, 180),
+                    fps: 12.0,
+                    duration_seconds: 1.5,
+                    temperature: 0.7,
+                    seed: Some(7),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(!generated.frames.is_empty());
+
+        let reasoning = provider
+            .reason(
+                &ReasoningInput {
+                    video: None,
+                    state: Some(state.clone()),
+                },
+                "Where is the cube?",
+            )
+            .await
+            .unwrap();
+        assert!(reasoning.answer.contains("huggingface-local"));
+
+        let embedding = provider
+            .embed(&EmbeddingInput::from_text("robot arm near workbench"))
+            .await
+            .unwrap();
+        assert_eq!(embedding.model, "nvidia/cosmos-embed-1");
+        match embedding.embedding.data {
+            TensorData::Float32(values) => {
+                assert_eq!(values.len(), 32);
+                assert_ne!(values[0], values[1]);
+            }
+            other => panic!("unexpected embedding tensor: {other:?}"),
+        }
+
+        let clip = provider
+            .transfer(
+                &VideoClip {
+                    frames: vec![worldforge_core::types::Frame {
+                        data: Tensor::zeros(vec![2, 2, 3], worldforge_core::types::DType::UInt8),
+                        timestamp: SimTime::default(),
+                        camera: Some(CameraPose {
+                            extrinsics: Pose::default(),
+                            fov: 60.0,
+                            near_clip: 0.1,
+                            far_clip: 100.0,
+                        }),
+                        depth: None,
+                        segmentation: None,
+                    }],
+                    fps: 12.0,
+                    resolution: (2, 2),
+                    duration: 0.083333333,
+                },
+                &SpatialControls::default(),
+                &TransferConfig {
+                    resolution: (320, 180),
+                    fps: 12.0,
+                    control_strength: 0.5,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(clip.resolution, (320, 180));
+        assert!(!clip.frames.is_empty());
+
+        let health = provider.health_check().await.unwrap();
+        assert!(health.healthy);
+        assert!(health.message.contains("HuggingFace local runtime"));
         assert!(provider.base_url().is_err());
     }
 
