@@ -3,7 +3,7 @@
 //! Provides the `StateStore` trait and built-in file/SQLite
 //! implementations for saving and loading world state.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -17,9 +17,9 @@ use tokio::net::TcpStream;
 use crate::action::Action;
 use crate::bootstrap::seed_world_state_from_prompt;
 use crate::error::{Result, WorldForgeError};
-use crate::prediction::PredictionProvenance;
+use crate::prediction::{PredictionProvenance, StoredPlanRecord};
 use crate::scene::SceneGraph;
-use crate::types::{SimTime, WorldId};
+use crate::types::{PlanId, SimTime, WorldId};
 
 const SHA256_INITIAL_STATE: [u32; 8] = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
@@ -49,6 +49,9 @@ pub struct WorldState {
     pub history: StateHistory,
     /// Metadata about the world.
     pub metadata: WorldMetadata,
+    /// Persisted plan artifacts associated with this world.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub stored_plans: BTreeMap<PlanId, StoredPlanRecord>,
 }
 
 /// Metadata describing a world instance.
@@ -188,6 +191,7 @@ impl WorldState {
                 created_at: chrono::Utc::now(),
                 tags: Vec::new(),
             },
+            stored_plans: BTreeMap::new(),
         }
     }
 
@@ -365,6 +369,7 @@ impl WorldState {
             scene: snapshot.scene,
             history,
             metadata: snapshot.metadata,
+            stored_plans: self.stored_plans.clone(),
         })
     }
 
@@ -395,12 +400,25 @@ impl WorldState {
                 compression: self.history.compression,
             },
             metadata: snapshot.metadata,
+            stored_plans: self.stored_plans.clone(),
         };
         forked.metadata.name = derive_fork_name(&forked.metadata.name, name_override);
         forked.metadata.created_by = provider.clone();
         forked.metadata.created_at = chrono::Utc::now();
         forked.record_current_state(None, None, provider)?;
         Ok(forked)
+    }
+
+    /// Persist a plan artifact alongside this world state.
+    pub fn store_plan_record(&mut self, record: StoredPlanRecord) -> PlanId {
+        let id = record.id;
+        self.stored_plans.insert(id, record);
+        id
+    }
+
+    /// Return a persisted plan artifact by ID.
+    pub fn stored_plan(&self, id: &PlanId) -> Option<&StoredPlanRecord> {
+        self.stored_plans.get(id)
     }
 }
 
@@ -504,7 +522,9 @@ pub fn sha256_hash(data: &[u8]) -> [u8; 32] {
 
 /// Compute the canonical SHA-256 hash for a serialized world-state snapshot.
 pub fn canonical_state_hash(state: &WorldState) -> Result<[u8; 32]> {
-    let bytes = serde_json::to_vec(state)
+    let mut snapshot = state.clone();
+    snapshot.stored_plans.clear();
+    let bytes = serde_json::to_vec(&snapshot)
         .map_err(|error| WorldForgeError::SerializationError(error.to_string()))?;
     Ok(sha256_hash(&bytes))
 }
@@ -517,6 +537,14 @@ fn current_state_matches_latest_history(state: &WorldState) -> Result<bool> {
     let mut snapshot = state.clone();
     snapshot.history.states.pop_back();
     Ok(snapshot.time == latest.time && canonical_state_hash(&snapshot)? == latest.state_hash)
+}
+
+fn normalize_world_state(mut state: WorldState) -> Result<WorldState> {
+    let provider = state.current_state_provider();
+    state.ensure_history_initialized(provider.as_str())?;
+    state.ensure_current_state_recorded(provider.as_str())?;
+    state.ensure_latest_history_snapshot()?;
+    Ok(state)
 }
 
 /// Trait for persisting world state.
@@ -582,13 +610,17 @@ pub fn serialize_world_state(format: StateFileFormat, state: &WorldState) -> Res
 }
 
 /// Deserialize a world state using the requested snapshot format.
+///
+/// The returned state is normalized so legacy snapshots regain a recoverable
+/// latest history entry and a materialized checkpoint snapshot when needed.
 pub fn deserialize_world_state(format: StateFileFormat, data: &[u8]) -> Result<WorldState> {
-    match format {
+    let state = match format {
         StateFileFormat::Json => serde_json::from_slice(data)
             .map_err(|e| WorldForgeError::SerializationError(e.to_string())),
         StateFileFormat::MessagePack => rmp_serde::from_slice(data)
             .map_err(|e| WorldForgeError::SerializationError(e.to_string())),
-    }
+    }?;
+    normalize_world_state(state)
 }
 
 /// Infer the snapshot format from a file path extension.
@@ -997,10 +1029,7 @@ impl S3StateStore {
 #[async_trait::async_trait]
 impl StateStore for S3StateStore {
     async fn save(&self, state: &WorldState) -> Result<()> {
-        let mut normalized = state.clone();
-        let provider = normalized.current_state_provider();
-        normalized.ensure_history_initialized(provider)?;
-        normalized.ensure_latest_history_snapshot()?;
+        let normalized = normalize_world_state(state.clone())?;
         let payload = serialize_world_state(self.format, &normalized)?;
         self.put_object(
             &self.config.object_key(&normalized.id, self.format),
@@ -1578,10 +1607,7 @@ impl RedisStateStore {
 #[async_trait::async_trait]
 impl StateStore for RedisStateStore {
     async fn save(&self, state: &WorldState) -> Result<()> {
-        let mut normalized = state.clone();
-        let provider = normalized.current_state_provider();
-        normalized.ensure_history_initialized(provider)?;
-        normalized.ensure_latest_history_snapshot()?;
+        let normalized = normalize_world_state(state.clone())?;
 
         let payload = serde_json::to_vec(&normalized)
             .map_err(|e| WorldForgeError::SerializationError(e.to_string()))?;
@@ -1609,8 +1635,7 @@ impl StateStore for RedisStateStore {
         let key = redis_key_for_world(id);
         let response = self.command(&[b"GET", key.as_bytes()]).await?;
         match response {
-            RedisValue::BulkString(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|e| WorldForgeError::SerializationError(e.to_string())),
+            RedisValue::BulkString(bytes) => deserialize_world_state(StateFileFormat::Json, &bytes),
             RedisValue::Null => Err(WorldForgeError::WorldNotFound(*id)),
             RedisValue::Error(message) => Err(WorldForgeError::InternalError(message)),
             other => Err(redis_error(format!(
@@ -1720,10 +1745,7 @@ impl FileStateStore {
 #[async_trait::async_trait]
 impl StateStore for FileStateStore {
     async fn save(&self, state: &WorldState) -> Result<()> {
-        let mut normalized = state.clone();
-        let provider = normalized.current_state_provider();
-        normalized.ensure_history_initialized(provider)?;
-        normalized.ensure_latest_history_snapshot()?;
+        let normalized = normalize_world_state(state.clone())?;
         tokio::fs::create_dir_all(&self.path)
             .await
             .map_err(|e| WorldForgeError::InternalError(format!("failed to create dir: {e}")))?;
@@ -1889,10 +1911,7 @@ impl SqliteStateStore {
 #[async_trait::async_trait]
 impl StateStore for SqliteStateStore {
     async fn save(&self, state: &WorldState) -> Result<()> {
-        let mut normalized = state.clone();
-        let provider = normalized.current_state_provider();
-        normalized.ensure_history_initialized(provider)?;
-        normalized.ensure_latest_history_snapshot()?;
+        let normalized = normalize_world_state(state.clone())?;
         let id = normalized.id.to_string();
         let json = serde_json::to_string(&normalized)
             .map_err(|e| WorldForgeError::SerializationError(e.to_string()))?;
@@ -1916,8 +1935,7 @@ impl StateStore for SqliteStateStore {
             .map_err(|e| WorldForgeError::InternalError(format!("SQLite load failed: {e}")))?;
 
         match row {
-            Some((json,)) => serde_json::from_str(&json)
-                .map_err(|e| WorldForgeError::SerializationError(e.to_string())),
+            Some((json,)) => deserialize_world_state(StateFileFormat::Json, json.as_bytes()),
             None => Err(WorldForgeError::WorldNotFound(*id)),
         }
     }
@@ -1962,6 +1980,19 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio::sync::Mutex;
     use tokio::task::JoinHandle;
+
+    fn legacy_world_state_without_snapshot() -> WorldState {
+        let mut state = WorldState::new("legacy-world", "mock");
+        state.history.push(HistoryEntry {
+            time: state.time,
+            state_hash: [7; 32],
+            action: None,
+            prediction: None,
+            provider: "mock".to_string(),
+            snapshot: None,
+        });
+        state
+    }
 
     #[test]
     fn test_world_state_new() {
@@ -2016,6 +2047,18 @@ mod tests {
         assert!(repaired);
         assert_eq!(state.history.len(), 2);
         assert_ne!(state.history.latest().unwrap().state_hash, [7; 32]);
+    }
+
+    #[test]
+    fn test_normalize_world_state_bootstraps_empty_history() {
+        let state = WorldState::new("normalize-empty", "mock");
+
+        let normalized = normalize_world_state(state).unwrap();
+
+        assert_eq!(normalized.history.len(), 1);
+        let latest = normalized.history.latest().unwrap();
+        assert_eq!(latest.provider, "mock");
+        assert!(latest.snapshot.is_some());
     }
 
     #[test]
@@ -2253,6 +2296,8 @@ mod tests {
         assert_eq!(restored.id, state.id);
         assert_eq!(restored.metadata.name, state.metadata.name);
         assert_eq!(restored.metadata.description, state.metadata.description);
+        assert_eq!(restored.history.len(), 1);
+        assert!(restored.history.latest().unwrap().snapshot.is_some());
     }
 
     #[test]
@@ -2266,6 +2311,20 @@ mod tests {
         assert_eq!(restored.id, state.id);
         assert_eq!(restored.metadata.name, state.metadata.name);
         assert_eq!(restored.metadata.description, state.metadata.description);
+        assert_eq!(restored.history.len(), 1);
+        assert!(restored.history.latest().unwrap().snapshot.is_some());
+    }
+
+    #[test]
+    fn test_world_state_snapshot_codec_normalizes_legacy_history() {
+        let state = legacy_world_state_without_snapshot();
+        let bytes = serialize_world_state(StateFileFormat::Json, &state).unwrap();
+
+        let restored = deserialize_world_state(StateFileFormat::Json, &bytes).unwrap();
+        assert_eq!(restored.id, state.id);
+        assert_eq!(restored.history.len(), 2);
+        assert!(restored.history.latest().unwrap().snapshot.is_some());
+        assert_ne!(restored.history.latest().unwrap().state_hash, [7; 32]);
     }
 
     #[test]
@@ -2309,6 +2368,25 @@ mod tests {
         assert!(store.delete(&id).await.is_err());
     }
 
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn test_sqlite_state_store_load_normalizes_legacy_raw_record() {
+        let store = SqliteStateStore::new("sqlite::memory:").await.unwrap();
+        let state = WorldState::new("sqlite-legacy-load", "mock");
+        let id = state.id;
+
+        sqlx::query("INSERT INTO world_states (id, state) VALUES (?, ?)")
+            .bind(id.to_string())
+            .bind(serde_json::to_string(&state).unwrap())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+
+        let loaded = store.load(&id).await.unwrap();
+        assert_eq!(loaded.history.len(), 1);
+        assert!(loaded.history.latest().unwrap().snapshot.is_some());
+    }
+
     #[tokio::test]
     async fn test_file_state_store() {
         let dir = std::env::temp_dir().join(format!("worldforge-test-{}", uuid::Uuid::new_v4()));
@@ -2337,20 +2415,16 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("worldforge-legacy-{}", uuid::Uuid::new_v4()));
         let store = FileStateStore::new(&dir);
 
-        let mut state = WorldState::new("legacy-world", "mock");
-        let latest_hash = canonical_state_hash(&state).unwrap();
-        state.history.push(HistoryEntry {
-            time: state.time,
-            state_hash: latest_hash,
-            action: None,
-            prediction: None,
-            provider: "mock".to_string(),
-            snapshot: None,
-        });
+        let state = legacy_world_state_without_snapshot();
+        let payload = serialize_world_state(StateFileFormat::Json, &state).unwrap();
+        let path = store.state_path_for_format(&state.id, StateFileFormat::Json);
 
-        store.save(&state).await.unwrap();
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        tokio::fs::write(&path, payload).await.unwrap();
 
         let loaded = store.load(&state.id).await.unwrap();
+        assert_eq!(loaded.id, state.id);
+        assert_eq!(loaded.history.len(), 2);
         assert!(loaded.history.latest().unwrap().snapshot.is_some());
 
         let _ = tokio::fs::remove_dir_all(&dir).await;

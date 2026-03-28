@@ -367,7 +367,9 @@ Portable world snapshots are now first-class across the user surfaces:
 REST export returns a JSON envelope with `format`, `encoding`, `sha256`, and
 `snapshot`. JSON snapshots use `encoding: "utf-8"`, while MessagePack snapshots
 use `encoding: "hex"` so they stay text-safe over HTTP. Import accepts either a
-raw `state` object or the exported snapshot payload shape.
+raw `state` object or the exported snapshot payload shape. Legacy snapshots are
+normalized on load so restore/fork/history flows continue to work across file,
+SQLite, Redis, and S3-backed worlds.
 
 Recoverable history checkpoints are also available end-to-end:
 - Python: `world.history_state(index)` / `world.restore_history(index)`

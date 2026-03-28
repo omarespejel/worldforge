@@ -6511,6 +6511,14 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    #[allow(dead_code)]
+    mod fake_state_backends {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/support/fake_state_backends.rs"
+        ));
+    }
+
     fn test_state_dir() -> PathBuf {
         std::env::temp_dir().join(format!("worldforge-python-tests-{}", uuid::Uuid::new_v4()))
     }
@@ -8234,6 +8242,138 @@ mod tests {
 
         wf.delete_world(&world_id).unwrap();
         assert!(wf.list_worlds().unwrap().is_empty());
+
+        let _ = std::fs::remove_dir_all(&state_dir);
+    }
+
+    #[test]
+    fn test_worldforge_redis_store_roundtrip_across_instances() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let redis = runtime.block_on(fake_state_backends::FakeRedisServer::spawn());
+        let state_dir =
+            std::env::temp_dir().join(format!("wf-python-redis-{}", uuid::Uuid::new_v4()));
+        let redis_url = redis.url(5);
+
+        let wf = PyWorldForge::new(
+            "redis",
+            state_dir.to_str().unwrap(),
+            None,
+            "json",
+            Some(redis_url.as_str()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let world = wf.create_world("redis_world", "mock").unwrap();
+        let world_id = wf.save_world(&world).unwrap();
+
+        drop(wf);
+
+        let reloaded = PyWorldForge::new(
+            "redis",
+            state_dir.to_str().unwrap(),
+            None,
+            "json",
+            Some(redis_url.as_str()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let loaded = reloaded.load_world(&world_id).unwrap();
+        assert_eq!(loaded.name(), "redis_world");
+        assert_eq!(reloaded.list_worlds().unwrap(), vec![world_id.clone()]);
+
+        reloaded.delete_world(&world_id).unwrap();
+        assert!(reloaded.list_worlds().unwrap().is_empty());
+
+        let commands = runtime.block_on(async { redis.commands.lock().await.clone() });
+        assert!(commands
+            .iter()
+            .any(|command| command == &vec!["SELECT".to_string(), "5".to_string()]));
+        assert!(commands
+            .iter()
+            .any(|command| command.first().map(String::as_str) == Some("SET")));
+        assert!(commands
+            .iter()
+            .any(|command| command.first().map(String::as_str) == Some("GET")));
+        assert!(commands
+            .iter()
+            .any(|command| command.first().map(String::as_str) == Some("SMEMBERS")));
+
+        let _ = std::fs::remove_dir_all(&state_dir);
+    }
+
+    #[test]
+    fn test_worldforge_s3_store_roundtrip_across_instances() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let s3 = runtime.block_on(fake_state_backends::FakeS3Server::spawn());
+        let s3_config = fake_state_backends::test_s3_config(s3.endpoint());
+        let state_dir = std::env::temp_dir().join(format!("wf-python-s3-{}", uuid::Uuid::new_v4()));
+
+        let wf = PyWorldForge::new(
+            "s3",
+            state_dir.to_str().unwrap(),
+            None,
+            "json",
+            None,
+            Some(s3_config.bucket.as_str()),
+            Some(s3_config.region.as_str()),
+            Some(s3_config.access_key_id.as_str()),
+            Some(s3_config.secret_access_key.as_str()),
+            s3_config.endpoint.as_deref(),
+            s3_config.session_token.as_deref(),
+            Some(s3_config.prefix.as_str()),
+        )
+        .unwrap();
+        let world = wf.create_world("s3_world", "mock").unwrap();
+        let world_id = wf.save_world(&world).unwrap();
+
+        drop(wf);
+
+        let reloaded = PyWorldForge::new(
+            "s3",
+            state_dir.to_str().unwrap(),
+            None,
+            "json",
+            None,
+            Some(s3_config.bucket.as_str()),
+            Some(s3_config.region.as_str()),
+            Some(s3_config.access_key_id.as_str()),
+            Some(s3_config.secret_access_key.as_str()),
+            s3_config.endpoint.as_deref(),
+            s3_config.session_token.as_deref(),
+            Some(s3_config.prefix.as_str()),
+        )
+        .unwrap();
+        let loaded = reloaded.load_world(&world_id).unwrap();
+        assert_eq!(loaded.name(), "s3_world");
+        assert_eq!(reloaded.list_worlds().unwrap(), vec![world_id.clone()]);
+
+        reloaded.delete_world(&world_id).unwrap();
+        assert!(reloaded.list_worlds().unwrap().is_empty());
+
+        let requests = runtime.block_on(async { s3.requests.lock().await.clone() });
+        assert!(requests.iter().any(|request| request.method == "PUT"));
+        assert!(requests.iter().any(|request| request.method == "GET"));
+        assert!(requests
+            .iter()
+            .any(|request| request.query.contains("list-type=2")));
+        assert!(requests.iter().all(|request| {
+            request
+                .headers
+                .get("authorization")
+                .is_some_and(|value| value.starts_with("AWS4-HMAC-SHA256 Credential=test-access/"))
+        }));
 
         let _ = std::fs::remove_dir_all(&state_dir);
     }

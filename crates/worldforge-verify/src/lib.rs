@@ -1051,6 +1051,7 @@ mod tests {
             guardrail_compliance: vec![vec![sample_guardrail_result(true)]],
             planning_time_ms: 4,
             iterations_used: 2,
+            stored_plan_id: None,
             verification_proof: None,
         }
     }

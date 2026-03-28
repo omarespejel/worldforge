@@ -285,6 +285,9 @@ pub type ObjectId = uuid::Uuid;
 /// Unique identifier for a prediction.
 pub type PredictionId = uuid::Uuid;
 
+/// Unique identifier for a persisted plan artifact.
+pub type PlanId = uuid::Uuid;
+
 // ---------------------------------------------------------------------------
 // Default impls
 // ---------------------------------------------------------------------------

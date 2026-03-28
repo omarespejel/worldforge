@@ -29,7 +29,7 @@ use worldforge_core::state::{
     StateHistory, StateStoreKind, WorldState,
 };
 use worldforge_core::types::{
-    BBox, Mesh, Pose, Position, Rotation, Tensor, Velocity, VideoClip, WorldId,
+    BBox, Mesh, PlanId, Pose, Position, Rotation, Tensor, Velocity, VideoClip, WorldId,
 };
 use worldforge_eval::{EvalReportFormat, EvalSuite};
 use worldforge_verify::{
@@ -341,12 +341,17 @@ struct PlanRequest {
     guardrails: Vec<GuardrailConfig>,
     #[serde(default)]
     disable_guardrails: bool,
+    #[serde(default = "default_persist_plan")]
+    persist: bool,
 }
 
 /// JSON request body for plan execution.
 #[derive(Debug, Deserialize)]
 struct ExecutePlanRequest {
-    plan: Plan,
+    #[serde(default)]
+    plan: Option<Plan>,
+    #[serde(default)]
+    plan_id: Option<PlanId>,
     #[serde(default)]
     config: PredictionConfig,
     #[serde(default)]
@@ -371,6 +376,10 @@ fn default_timeout_seconds() -> f64 {
 
 fn default_planner_name() -> String {
     "sampling".to_string()
+}
+
+fn default_persist_plan() -> bool {
+    true
 }
 
 /// JSON request body for generation.
@@ -506,6 +515,13 @@ fn resolve_guardrails(
     } else {
         guardrails
     }
+}
+
+fn resolve_stored_plan(state: &WorldState, plan_id: PlanId) -> std::result::Result<Plan, String> {
+    state
+        .stored_plan(&plan_id)
+        .map(|record| record.plan.clone())
+        .ok_or_else(|| format!("stored plan not found: {plan_id}"))
 }
 
 /// JSON request body for evaluation.
@@ -877,6 +893,9 @@ struct VerifyRequest {
     /// Explicit plan for guardrail verification.
     #[serde(default)]
     plan: Option<worldforge_core::prediction::Plan>,
+    /// Stored plan ID for guardrail verification.
+    #[serde(default)]
+    plan_id: Option<PlanId>,
     /// Goal used to generate a plan before guardrail verification.
     #[serde(default)]
     goal: Option<PlanGoalInput>,
@@ -1217,6 +1236,7 @@ fn fork_world_state(
             compression: source.history.compression,
         },
         metadata: source.metadata,
+        stored_plans: source.stored_plans,
     };
     forked.metadata.name = default_fork_name(&forked.metadata.name, name_override);
     forked.metadata.created_by = provider.clone();
@@ -2582,7 +2602,7 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                             Err(error) => return (400, error_response(&error)),
                         };
                         let registry = Arc::clone(&state.registry);
-                        let world = worldforge_core::world::World::new(
+                        let mut world = worldforge_core::world::World::new(
                             ws.clone(),
                             &provider_name,
                             registry,
@@ -2596,7 +2616,15 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                             req.timeout_seconds,
                             req.fallback_provider,
                         );
-                        match world.plan(&plan_req).await {
+                        let plan_result = if req.persist {
+                            world
+                                .plan_and_store(&plan_req)
+                                .await
+                                .map(|record| record.plan)
+                        } else {
+                            world.plan(&plan_req).await
+                        };
+                        match plan_result {
                             Ok(mut plan) => {
                                 let verification_backend =
                                     match parse_requested_verification_backend(
@@ -2606,7 +2634,28 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                                         Err(error) => return (400, error_response(&error)),
                                     };
                                 match attach_plan_verification(&mut plan, verification_backend) {
-                                    Ok(_) => (200, ApiResponse::ok(plan)),
+                                    Ok(_) => {
+                                        if req.persist {
+                                            world.state.store_plan_record(
+                                                worldforge_core::prediction::StoredPlanRecord::from_request(
+                                                    provider_name.clone(),
+                                                    &plan_req,
+                                                    &plan,
+                                                ),
+                                            );
+                                            if let Err(error) =
+                                                state.store.save(world.current_state()).await
+                                            {
+                                                return (
+                                                    500,
+                                                    error_response(&format!(
+                                                        "failed to save world: {error}"
+                                                    )),
+                                                );
+                                            }
+                                        }
+                                        (200, ApiResponse::ok(plan))
+                                    }
                                     Err(error) => (500, error_response(&error)),
                                 }
                             }
@@ -2649,10 +2698,27 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                             config = config.disable_guardrails();
                         }
 
-                        match world
-                            .execute_plan_with_provider(&req.plan, &config, &provider_name)
-                            .await
-                        {
+                        let execution = match (&req.plan, req.plan_id) {
+                            (Some(plan), None) => {
+                                world
+                                    .execute_plan_with_provider(plan, &config, &provider_name)
+                                    .await
+                            }
+                            (None, Some(plan_id)) => {
+                                world
+                                    .execute_stored_plan_with_provider(
+                                        &plan_id,
+                                        &config,
+                                        &provider_name,
+                                    )
+                                    .await
+                            }
+                            _ => Err(WorldForgeError::InvalidState(
+                                "execute-plan requires exactly one of plan or plan_id".to_string(),
+                            )),
+                        };
+
+                        match execution {
                             Ok(report) => match state.store.save(world.current_state()).await {
                                 Ok(()) => (200, ApiResponse::ok(report)),
                                 Err(error) => (
@@ -2730,6 +2796,11 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                             "guardrail" => {
                                 let plan = if let Some(plan) = req.plan.clone() {
                                     plan
+                                } else if let Some(plan_id) = req.plan_id {
+                                    match resolve_stored_plan(&ws, plan_id) {
+                                        Ok(plan) => plan,
+                                        Err(error) => return (404, error_response(&error)),
+                                    }
                                 } else {
                                     let goal = match req.goal.clone() {
                                         Some(goal) => goal,
@@ -2737,7 +2808,7 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                                             return (
                                                 400,
                                                 error_response(
-                                                    "guardrail verification requires either a plan or a goal",
+                                                    "guardrail verification requires a plan, a plan_id, or a goal",
                                                 ),
                                             );
                                         }
@@ -3142,6 +3213,23 @@ mod tests {
                 },
             },
         ));
+        state
+    }
+
+    fn legacy_snapshot_state(name: &str) -> WorldState {
+        let mut state = sample_export_state(name);
+        state.history = StateHistory::default();
+
+        let state_hash = worldforge_core::state::canonical_state_hash(&state).unwrap();
+        state.history.push(worldforge_core::state::HistoryEntry {
+            time: state.time,
+            state_hash,
+            action: None,
+            prediction: None,
+            provider: state.metadata.created_by.clone(),
+            snapshot: None,
+        });
+
         state
     }
 
@@ -3990,6 +4078,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_route_import_legacy_snapshot_can_restore_history_checkpoint() {
+        let state = test_state();
+        let legacy_state = legacy_snapshot_state("legacy-import-world");
+        let body = serde_json::json!({
+            "state": legacy_state,
+        });
+
+        let (status, resp) = route("POST", "/v1/worlds/import", &body.to_string(), &state).await;
+        assert_eq!(status, 201);
+
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let id = value["data"]["id"].as_str().unwrap();
+        assert_eq!(
+            value["data"]["history"]["states"].as_array().unwrap().len(),
+            1
+        );
+
+        let (status, resp) = route(
+            "POST",
+            &format!("/v1/worlds/{id}/restore"),
+            r#"{"history_index":0}"#,
+            &state,
+        )
+        .await;
+        assert_eq!(status, 200);
+
+        let restored: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(
+            restored["data"]["history"]["states"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let parsed_id = id.parse::<WorldId>().unwrap();
+        let persisted = state.store.load(&parsed_id).await.unwrap();
+        assert_eq!(persisted.history.len(), 1);
+        assert!(persisted.history.latest().unwrap().snapshot.is_some());
+    }
+
+    #[tokio::test]
     async fn test_route_restore_world_history_rejects_unknown_index() {
         let state = test_state();
         let id = seed_world(&state, "restore-error", "mock").await;
@@ -4389,6 +4519,28 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_route_plan_persists_plan_id_on_world() {
+        let state = test_state();
+        let id = seed_world(&state, "plan-persisted", "mock").await;
+        let body = serde_json::json!({
+            "goal": "spawn cube"
+        })
+        .to_string();
+
+        let (status, resp) = route("POST", &format!("/v1/worlds/{id}/plan"), &body, &state).await;
+        assert_eq!(status, 200);
+
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let plan_id = value["data"]["stored_plan_id"].as_str().unwrap();
+
+        let persisted = state.store.load(&id).await.unwrap();
+        let parsed_plan_id: uuid::Uuid = plan_id.parse().unwrap();
+        let stored = persisted.stored_plan(&parsed_plan_id).unwrap();
+        assert_eq!(stored.id, parsed_plan_id);
+        assert_eq!(stored.plan.stored_plan_id, Some(parsed_plan_id));
+    }
+
     #[test]
     fn test_planner_from_request_uses_shared_defaults() {
         let request: PlanRequest = serde_json::from_value(serde_json::json!({
@@ -4482,6 +4634,47 @@ mod tests {
                 .unwrap()
                 .len(),
             2
+        );
+    }
+
+    #[tokio::test]
+    async fn test_route_execute_plan_uses_stored_plan_id() {
+        let state = test_state();
+        let id = seed_world(&state, "execute-stored-plan", "mock").await;
+
+        let plan_body = serde_json::json!({
+            "goal": "spawn cube"
+        })
+        .to_string();
+        let (status, resp) =
+            route("POST", &format!("/v1/worlds/{id}/plan"), &plan_body, &state).await;
+        assert_eq!(status, 200);
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let plan_id = value["data"]["stored_plan_id"].as_str().unwrap();
+
+        let execute_body = serde_json::json!({
+            "plan_id": plan_id
+        })
+        .to_string();
+        let (status, resp) = route(
+            "POST",
+            &format!("/v1/worlds/{id}/execute-plan"),
+            &execute_body,
+            &state,
+        )
+        .await;
+        assert_eq!(status, 200);
+
+        let execution: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert!(!execution["data"]["predictions"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert!(
+            execution["data"]["final_state"]["time"]["step"]
+                .as_u64()
+                .unwrap()
+                >= 1
         );
     }
 

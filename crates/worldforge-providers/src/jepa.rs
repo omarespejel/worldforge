@@ -430,6 +430,7 @@ impl WorldModelProvider for JepaProvider {
             guardrail_compliance,
             planning_time_ms: start.elapsed().as_millis() as u64,
             iterations_used,
+            stored_plan_id: None,
             verification_proof: None,
         })
     }

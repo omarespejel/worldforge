@@ -20,6 +20,14 @@ use worldforge_providers::{GenieProvider, MockProvider};
 use worldforge_server::{Server, ServerConfig};
 use worldforge_verify::sha256_hash;
 
+#[allow(dead_code)]
+mod fake_state_backends {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/support/fake_state_backends.rs"
+    ));
+}
+
 /// Helper to create a server config with a unique temp directory.
 fn test_server_config() -> (FileStateStore, Arc<ProviderRegistry>) {
     let dir = std::env::temp_dir().join(format!("wf-integ-{}", uuid::Uuid::new_v4()));
@@ -104,6 +112,67 @@ async fn spawn_test_server_msgpack() -> TestServer {
             bind_address: "127.0.0.1:0".to_string(),
             state_dir: state_dir.display().to_string(),
             state_file_format: "msgpack".to_string(),
+            ..ServerConfig::default()
+        },
+        Arc::new(registry),
+    )
+    .await
+    .unwrap();
+    let address = server.local_addr().unwrap();
+    let task = tokio::spawn(server.run());
+
+    TestServer {
+        address,
+        state_dir,
+        task,
+    }
+}
+
+async fn spawn_test_server_redis(redis_url: &str) -> TestServer {
+    let state_dir = std::env::temp_dir().join(format!("wf-http-redis-{}", uuid::Uuid::new_v4()));
+    let mut registry = ProviderRegistry::new();
+    registry.register(Box::new(MockProvider::new()));
+
+    let server = Server::bind(
+        ServerConfig {
+            bind_address: "127.0.0.1:0".to_string(),
+            state_dir: state_dir.display().to_string(),
+            state_backend: "redis".to_string(),
+            state_redis_url: Some(redis_url.to_string()),
+            ..ServerConfig::default()
+        },
+        Arc::new(registry),
+    )
+    .await
+    .unwrap();
+    let address = server.local_addr().unwrap();
+    let task = tokio::spawn(server.run());
+
+    TestServer {
+        address,
+        state_dir,
+        task,
+    }
+}
+
+async fn spawn_test_server_s3(endpoint: &str) -> TestServer {
+    let state_dir = std::env::temp_dir().join(format!("wf-http-s3-{}", uuid::Uuid::new_v4()));
+    let mut registry = ProviderRegistry::new();
+    registry.register(Box::new(MockProvider::new()));
+    let s3_config = fake_state_backends::test_s3_config(endpoint);
+
+    let server = Server::bind(
+        ServerConfig {
+            bind_address: "127.0.0.1:0".to_string(),
+            state_dir: state_dir.display().to_string(),
+            state_backend: "s3".to_string(),
+            state_s3_bucket: Some(s3_config.bucket),
+            state_s3_region: Some(s3_config.region),
+            state_s3_access_key_id: Some(s3_config.access_key_id),
+            state_s3_secret_access_key: Some(s3_config.secret_access_key),
+            state_s3_endpoint: s3_config.endpoint,
+            state_s3_session_token: s3_config.session_token,
+            state_s3_prefix: Some(s3_config.prefix),
             ..ServerConfig::default()
         },
         Arc::new(registry),
@@ -1009,6 +1078,46 @@ async fn test_live_http_snapshot_import_rejects_checksum_mismatch() {
 }
 
 #[tokio::test]
+async fn test_live_http_loads_legacy_file_snapshot_with_normalized_history() {
+    let server = spawn_test_server().await;
+    let legacy = worldforge_core::state::WorldState::new("legacy-http-load", "mock");
+    let world_id = legacy.id;
+
+    tokio::fs::create_dir_all(&server.state_dir).await.unwrap();
+    tokio::fs::write(
+        server.state_dir.join(format!("{world_id}.json")),
+        serde_json::to_vec(&legacy).unwrap(),
+    )
+    .await
+    .unwrap();
+
+    let (status, shown) =
+        http_request(server.address, "GET", &format!("/v1/worlds/{world_id}"), "").await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        shown["data"]["history"]["states"].as_array().unwrap().len(),
+        1
+    );
+    assert!(shown["data"]["history"]["states"][0]["snapshot"].is_object());
+
+    let (status, restored) = http_request(
+        server.address,
+        "POST",
+        &format!("/v1/worlds/{world_id}/restore"),
+        r#"{"history_index":0}"#,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        restored["data"]["history"]["states"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn test_live_http_snapshot_import_rejects_invalid_encoding_metadata() {
     let server = spawn_test_server().await;
 
@@ -1123,6 +1232,147 @@ async fn test_live_http_world_lifecycle_msgpack_file_store() {
         .unwrap()
         .iter()
         .any(|entry| entry["id"] == world_id));
+}
+
+#[tokio::test]
+async fn test_live_http_world_lifecycle_redis_store_persists_across_server_restarts() {
+    let redis = fake_state_backends::FakeRedisServer::spawn().await;
+    let redis_url = redis.url(3);
+    let server = spawn_test_server_redis(&redis_url).await;
+
+    let (status, create) = http_request(
+        server.address,
+        "POST",
+        "/v1/worlds",
+        r#"{"name":"redis_world","provider":"mock"}"#,
+    )
+    .await;
+    assert_eq!(status, 201);
+    let world_id = create["data"]["id"].as_str().unwrap().to_string();
+
+    let predict_body =
+        r#"{"action":{"Move":{"target":{"x":1.0,"y":0.0,"z":0.0},"speed":1.0}},"provider":"mock"}"#;
+    let (status, prediction) = http_request(
+        server.address,
+        "POST",
+        &format!("/v1/worlds/{world_id}/predict"),
+        predict_body,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(prediction["data"]["provider"], "mock");
+
+    drop(server);
+
+    let reloaded = spawn_test_server_redis(&redis_url).await;
+    let (status, world) = http_request(
+        reloaded.address,
+        "GET",
+        &format!("/v1/worlds/{world_id}"),
+        "",
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(world["data"]["time"]["step"], 1);
+    assert_eq!(world["data"]["metadata"]["name"], "redis_world");
+    assert_eq!(
+        world["data"]["history"]["states"].as_array().unwrap().len(),
+        2
+    );
+
+    let (status, list) = http_request(reloaded.address, "GET", "/v1/worlds", "").await;
+    assert_eq!(status, 200);
+    assert!(list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["id"] == world_id));
+
+    let commands = redis.commands.lock().await;
+    assert!(commands
+        .iter()
+        .any(|command| command == &vec!["SELECT".to_string(), "3".to_string()]));
+    assert!(commands
+        .iter()
+        .any(|command| command.first().map(String::as_str) == Some("SET")));
+    assert!(commands
+        .iter()
+        .any(|command| command.first().map(String::as_str) == Some("GET")));
+    assert!(commands
+        .iter()
+        .any(|command| command.first().map(String::as_str) == Some("SMEMBERS")));
+}
+
+#[tokio::test]
+async fn test_live_http_world_lifecycle_s3_store_persists_across_server_restarts() {
+    let s3 = fake_state_backends::FakeS3Server::spawn().await;
+    let server = spawn_test_server_s3(s3.endpoint()).await;
+
+    let (status, create) = http_request(
+        server.address,
+        "POST",
+        "/v1/worlds",
+        r#"{"name":"s3_world","provider":"mock"}"#,
+    )
+    .await;
+    assert_eq!(status, 201);
+    let world_id = create["data"]["id"].as_str().unwrap().to_string();
+
+    let predict_body =
+        r#"{"action":{"Move":{"target":{"x":1.0,"y":0.0,"z":0.0},"speed":1.0}},"provider":"mock"}"#;
+    let (status, prediction) = http_request(
+        server.address,
+        "POST",
+        &format!("/v1/worlds/{world_id}/predict"),
+        predict_body,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(prediction["data"]["provider"], "mock");
+
+    drop(server);
+
+    let reloaded = spawn_test_server_s3(s3.endpoint()).await;
+    let (status, world) = http_request(
+        reloaded.address,
+        "GET",
+        &format!("/v1/worlds/{world_id}"),
+        "",
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(world["data"]["time"]["step"], 1);
+    assert_eq!(world["data"]["metadata"]["name"], "s3_world");
+    assert_eq!(
+        world["data"]["history"]["states"].as_array().unwrap().len(),
+        2
+    );
+
+    let (status, list) = http_request(reloaded.address, "GET", "/v1/worlds", "").await;
+    assert_eq!(status, 200);
+    assert!(list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["id"] == world_id));
+
+    let requests = s3.requests.lock().await;
+    assert!(requests.iter().any(|request| request.method == "PUT"));
+    assert!(requests.iter().any(|request| request.method == "GET"));
+    assert!(requests
+        .iter()
+        .any(|request| request.query.contains("list-type=2")));
+    assert!(requests.iter().all(|request| {
+        request
+            .headers
+            .get("authorization")
+            .is_some_and(|value| value.starts_with("AWS4-HMAC-SHA256 Credential=test-access/"))
+    }));
+    assert!(requests.iter().any(|request| {
+        request
+            .path
+            .ends_with(&format!("/worldforge-tests/states/{world_id}.json"))
+    }));
 }
 
 #[tokio::test]
@@ -2548,6 +2798,7 @@ async fn test_e2e_zk_proof_types_serialization() {
         guardrail_compliance: Vec::new(),
         planning_time_ms: 100,
         iterations_used: 5,
+        stored_plan_id: None,
         verification_proof: None,
     };
     let guardrail_proof = verifier.prove_guardrail_compliance(&plan, &[]).unwrap();

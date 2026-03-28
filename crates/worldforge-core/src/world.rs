@@ -14,6 +14,7 @@ use crate::goal_image;
 use crate::guardrail::{evaluate_guardrails, has_blocking_violation};
 use crate::prediction::{
     MultiPrediction, Plan, PlanExecution, PlanRequest, PlannerType, Prediction, PredictionConfig,
+    StoredPlanRecord,
 };
 use crate::provider::{
     GenerationConfig, GenerationPrompt, Operation, ProviderCapabilities, ProviderRegistry,
@@ -21,7 +22,7 @@ use crate::provider::{
 };
 use crate::scene::{SceneObject, SceneObjectPatch};
 use crate::state::{PredictionSummary, WorldState};
-use crate::types::{ObjectId, Pose, Position, SimTime, Vec3};
+use crate::types::{ObjectId, PlanId, Pose, Position, SimTime, Vec3};
 
 /// A live world instance backed by one or more providers.
 pub struct World {
@@ -484,6 +485,15 @@ impl World {
         Ok(candidate.plan)
     }
 
+    /// Plan a sequence of actions and persist the resulting plan artifact on the world.
+    #[instrument(skip(self, request))]
+    pub async fn plan_and_store(&mut self, request: &PlanRequest) -> Result<StoredPlanRecord> {
+        let plan = self.plan(request).await?;
+        let record = StoredPlanRecord::from_request(self.default_provider.clone(), request, &plan);
+        self.state.store_plan_record(record.clone());
+        Ok(record)
+    }
+
     async fn plan_with_provider_fallback(
         &self,
         request: &PlanRequest,
@@ -597,6 +607,44 @@ impl World {
             final_state,
             start.elapsed().as_millis() as u64,
         ))
+    }
+
+    /// Execute a previously persisted plan against the world's default provider.
+    #[instrument(skip(self, config))]
+    pub async fn execute_stored_plan(
+        &mut self,
+        plan_id: &PlanId,
+        config: &PredictionConfig,
+    ) -> Result<PlanExecution> {
+        let provider_name = self.default_provider.clone();
+        self.execute_stored_plan_with_provider(plan_id, config, &provider_name)
+            .await
+    }
+
+    /// Execute a previously persisted plan against a specific provider.
+    #[instrument(skip(self, config))]
+    pub async fn execute_stored_plan_with_provider(
+        &mut self,
+        plan_id: &PlanId,
+        config: &PredictionConfig,
+        provider_name: &str,
+    ) -> Result<PlanExecution> {
+        let plan = self
+            .state
+            .stored_plan(plan_id)
+            .map(|record| record.plan.clone())
+            .ok_or_else(|| {
+                WorldForgeError::InvalidState(format!("stored plan not found: {plan_id}"))
+            })?;
+        self.execute_plan_with_provider(&plan, config, provider_name)
+            .await
+    }
+
+    /// Return a persisted plan artifact by ID.
+    pub fn stored_plan(&self, plan_id: &PlanId) -> Result<&StoredPlanRecord> {
+        self.state.stored_plan(plan_id).ok_or_else(|| {
+            WorldForgeError::InvalidState(format!("stored plan not found: {plan_id}"))
+        })
     }
 
     /// Get the current world state.
@@ -1270,6 +1318,7 @@ async fn mpc_search(
             guardrail_compliance,
             planning_time_ms: context.start.elapsed().as_millis() as u64,
             iterations_used: iterations.max(1),
+            stored_plan_id: None,
             verification_proof: None,
         },
     }))
@@ -1369,6 +1418,7 @@ async fn evaluate_candidate_sequence(
             guardrail_compliance,
             planning_time_ms: context.start.elapsed().as_millis() as u64,
             iterations_used: 1,
+            stored_plan_id: None,
             verification_proof: None,
         },
     }))
@@ -3256,6 +3306,7 @@ mod tests {
             guardrail_compliance: Vec::new(),
             planning_time_ms: 0,
             iterations_used: 1,
+            stored_plan_id: None,
             verification_proof: None,
         };
         let config = PredictionConfig {
@@ -3331,6 +3382,7 @@ mod tests {
             guardrail_compliance: Vec::new(),
             planning_time_ms: 0,
             iterations_used: 1,
+            stored_plan_id: None,
             verification_proof: None,
         };
         let config = PredictionConfig {
@@ -4732,6 +4784,7 @@ mod tests {
             guardrail_compliance: Vec::new(),
             planning_time_ms: 0,
             iterations_used,
+            stored_plan_id: None,
             verification_proof: None,
         }
     }
@@ -5195,6 +5248,7 @@ mod tests {
                 guardrail_compliance: Vec::new(),
                 planning_time_ms: 0,
                 iterations_used: 1,
+                stored_plan_id: None,
                 verification_proof: None,
             })
         }

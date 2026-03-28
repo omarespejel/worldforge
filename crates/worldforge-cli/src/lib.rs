@@ -655,8 +655,15 @@ pub enum Commands {
         #[arg(long)]
         world: String,
         /// JSON file containing a serialized `Plan`.
-        #[arg(long)]
-        plan_json: PathBuf,
+        #[arg(long, conflicts_with = "plan_id", required_unless_present = "plan_id")]
+        plan_json: Option<PathBuf>,
+        /// Stored plan ID persisted on the target world.
+        #[arg(
+            long,
+            conflicts_with = "plan_json",
+            required_unless_present = "plan_json"
+        )]
+        plan_id: Option<String>,
         /// Optional provider override. Defaults to the world's current provider.
         #[arg(long)]
         provider: Option<String>,
@@ -704,8 +711,11 @@ pub enum Commands {
         #[arg(long)]
         prediction_json: Option<PathBuf>,
         /// JSON file containing a fully materialized `Plan` for guardrail verification.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "plan_id")]
         plan_json: Option<PathBuf>,
+        /// Stored plan ID persisted on the target world for guardrail verification.
+        #[arg(long, conflicts_with = "plan_json")]
+        plan_id: Option<String>,
         /// Natural-language goal used to generate a plan before guardrail verification.
         #[arg(long, conflicts_with = "goal_json")]
         goal: Option<String>,
@@ -1391,6 +1401,7 @@ pub async fn run() -> Result<()> {
         Commands::ExecutePlan {
             world,
             plan_json,
+            plan_id,
             provider,
             fallback_provider,
             steps,
@@ -1404,7 +1415,8 @@ pub async fn run() -> Result<()> {
                 store.as_ref(),
                 &world,
                 ExecutePlanOptions {
-                    plan_json: &plan_json,
+                    plan_json: plan_json.as_deref(),
+                    plan_id: plan_id.as_deref(),
                     provider: provider.as_deref(),
                     fallback_provider: fallback_provider.as_deref(),
                     steps,
@@ -1425,6 +1437,7 @@ pub async fn run() -> Result<()> {
             output_state_json,
             prediction_json,
             plan_json,
+            plan_id,
             goal,
             goal_json,
             max_steps,
@@ -1455,6 +1468,7 @@ pub async fn run() -> Result<()> {
                     output_state_json: output_state_json.as_deref(),
                     prediction_json: prediction_json.as_deref(),
                     plan_json: plan_json.as_deref(),
+                    plan_id: plan_id.as_deref(),
                     goal: goal.as_deref(),
                     goal_json: goal_json.as_deref(),
                     max_steps,
@@ -1906,7 +1920,8 @@ struct PlanOptions<'a> {
 }
 
 struct ExecutePlanOptions<'a> {
-    plan_json: &'a Path,
+    plan_json: Option<&'a Path>,
+    plan_id: Option<&'a str>,
     provider: Option<&'a str>,
     fallback_provider: Option<&'a str>,
     steps: u32,
@@ -1948,6 +1963,7 @@ struct VerifyOptions<'a> {
     output_state_json: Option<&'a Path>,
     prediction_json: Option<&'a Path>,
     plan_json: Option<&'a Path>,
+    plan_id: Option<&'a str>,
     goal: Option<&'a str>,
     goal_json: Option<&'a Path>,
     max_steps: u32,
@@ -2849,6 +2865,7 @@ fn fork_world_state(
             compression: source.history.compression,
         },
         metadata: source.metadata,
+        stored_plans: source.stored_plans,
     };
     forked.metadata.name = default_fork_name(&forked.metadata.name, name_override);
     forked.metadata.created_by = provider.clone();
@@ -3402,7 +3419,7 @@ async fn cmd_plan(
     if let Some(fallback_provider) = options.fallback_provider {
         require_provider(&registry, fallback_provider)?;
     }
-    let world = worldforge_core::world::World::new(state.clone(), options.provider, registry);
+    let mut world = worldforge_core::world::World::new(state.clone(), options.provider, registry);
     let planner = planner_from_name(
         options.planner_name,
         options.max_steps,
@@ -3424,13 +3441,26 @@ async fn cmd_plan(
         fallback_provider: options.fallback_provider.map(ToOwned::to_owned),
     };
 
-    let mut plan = world
-        .plan(&request)
+    let record = world
+        .plan_and_store(&request)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let mut plan = record.plan;
     let proof_attached = attach_plan_verification(&mut plan, options.verify_backend)?;
+    world
+        .state
+        .store_plan_record(worldforge_core::prediction::StoredPlanRecord::from_request(
+            options.provider,
+            &request,
+            &plan,
+        ));
+    store
+        .save(world.current_state())
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     println!("Plan generated:");
+    println!("  Plan ID: {}", plan.stored_plan_id.unwrap_or(record.id));
     println!("  Actions: {}", plan.actions.len());
     println!("  Success probability: {:.2}", plan.success_probability);
     println!("  Planning time: {}ms", plan.planning_time_ms);
@@ -3470,7 +3500,17 @@ async fn cmd_execute_plan(
 ) -> Result<()> {
     let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
     let state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
-    let plan: Plan = read_json_file(options.plan_json)?;
+    let plan = match (options.plan_json, options.plan_id) {
+        (Some(path), None) => read_json_file(path)?,
+        (None, Some(plan_id)) => {
+            let plan_id: uuid::Uuid = plan_id.parse().context("invalid plan ID")?;
+            state
+                .stored_plan(&plan_id)
+                .map(|record| record.plan.clone())
+                .context("stored plan not found")?
+        }
+        _ => anyhow::bail!("execute-plan requires exactly one of --plan-json or --plan-id"),
+    };
 
     let provider_name = options
         .provider
@@ -3592,12 +3632,21 @@ async fn cmd_verify(
         "guardrail" => {
             let plan = if let Some(plan_path) = options.plan_json {
                 read_json_file(plan_path)?
+            } else if let Some(plan_id) = options.plan_id {
+                let state = loaded_state
+                    .as_ref()
+                    .context("guardrail verification with --plan-id requires --world")?;
+                let plan_id: uuid::Uuid = plan_id.parse().context("invalid plan ID")?;
+                state
+                    .stored_plan(&plan_id)
+                    .map(|record| record.plan.clone())
+                    .context("stored plan not found")?
             } else {
                 let state = loaded_state.as_ref().context(
-                    "guardrail verification requires --plan-json or --world together with --goal/--goal-json",
+                    "guardrail verification requires --plan-json, --plan-id with --world, or --world together with --goal/--goal-json",
                 )?;
                 let goal = load_plan_goal(options.goal, options.goal_json).context(
-                    "guardrail verification requires --goal or --goal-json when --plan-json is not provided",
+                    "guardrail verification requires --goal or --goal-json when neither --plan-json nor --plan-id is provided",
                 )?;
                 let provider_name = resolve_provider_name(state, options.provider).to_string();
                 let registry = Arc::new(auto_detect_registry());
@@ -4185,6 +4234,14 @@ mod tests {
     use worldforge_core::types::{DType, Device, Mesh, Tensor, TensorData};
     use worldforge_verify::{MockVerifier, ZkVerifier};
 
+    #[allow(dead_code)]
+    mod fake_state_backends {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/support/fake_state_backends.rs"
+        ));
+    }
+
     fn world_with_named_object(name: &str) -> (WorldState, uuid::Uuid) {
         let mut state = WorldState::new("cli-action-tests", "mock");
         let object = SceneObject::new(
@@ -4215,6 +4272,23 @@ mod tests {
             Some(name),
         )
         .unwrap()
+    }
+
+    fn legacy_snapshot_state(name: &str) -> WorldState {
+        let mut state = sample_snapshot_state(name);
+        state.history = StateHistory::default();
+
+        let state_hash = worldforge_core::state::canonical_state_hash(&state).unwrap();
+        state.history.push(worldforge_core::state::HistoryEntry {
+            time: state.time,
+            state_hash,
+            action: None,
+            prediction: None,
+            provider: state.metadata.created_by.clone(),
+            snapshot: None,
+        });
+
+        state
     }
 
     fn sample_prediction(provider: &str, output_x: f32, latency_ms: u64) -> Prediction {
@@ -4928,6 +5002,131 @@ mod tests {
                 ))
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_cmd_create_roundtrip_with_redis_state_store() {
+        let redis = fake_state_backends::FakeRedisServer::spawn().await;
+        let redis_url = redis.url(4);
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "--state-backend",
+            "redis",
+            "--state-redis-url",
+            &redis_url,
+            "list",
+        ])
+        .unwrap();
+
+        let store = open_state_store(&cli).await.unwrap();
+        cmd_create(
+            store.as_ref(),
+            "A workshop with a crate",
+            Some("redis-cli-world"),
+            "mock",
+        )
+        .await
+        .unwrap();
+
+        let ids = store.list().await.unwrap();
+        assert_eq!(ids.len(), 1);
+        let world_id = ids[0].to_string();
+
+        drop(store);
+
+        let reopened = open_state_store(&cli).await.unwrap();
+        let loaded = reopened.load(&ids[0]).await.unwrap();
+        assert_eq!(loaded.metadata.name, "redis-cli-world");
+
+        cmd_delete(reopened.as_ref(), &world_id).await.unwrap();
+        assert!(reopened.list().await.unwrap().is_empty());
+
+        let commands = redis.commands.lock().await;
+        assert!(commands
+            .iter()
+            .any(|command| command == &vec!["SELECT".to_string(), "4".to_string()]));
+        assert!(commands
+            .iter()
+            .any(|command| command.first().map(String::as_str) == Some("SET")));
+        assert!(commands
+            .iter()
+            .any(|command| command.first().map(String::as_str) == Some("GET")));
+        assert!(commands
+            .iter()
+            .any(|command| command.first().map(String::as_str) == Some("DEL")));
+    }
+
+    #[tokio::test]
+    async fn test_cmd_export_import_roundtrip_with_s3_state_store() {
+        let s3 = fake_state_backends::FakeS3Server::spawn().await;
+        let s3_config = fake_state_backends::test_s3_config(s3.endpoint());
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "--state-backend",
+            "s3",
+            "--state-s3-bucket",
+            s3_config.bucket.as_str(),
+            "--state-s3-region",
+            s3_config.region.as_str(),
+            "--state-s3-access-key-id",
+            s3_config.access_key_id.as_str(),
+            "--state-s3-secret-access-key",
+            s3_config.secret_access_key.as_str(),
+            "--state-s3-endpoint",
+            s3_config.endpoint.as_deref().unwrap(),
+            "--state-s3-session-token",
+            s3_config.session_token.as_deref().unwrap(),
+            "--state-s3-prefix",
+            s3_config.prefix.as_str(),
+            "list",
+        ])
+        .unwrap();
+
+        let store = open_state_store(&cli).await.unwrap();
+        cmd_create(
+            store.as_ref(),
+            "A shelf with a blue bin",
+            Some("s3-cli-world"),
+            "mock",
+        )
+        .await
+        .unwrap();
+
+        let ids = store.list().await.unwrap();
+        assert_eq!(ids.len(), 1);
+        let world_id = ids[0].to_string();
+
+        let temp_dir = std::env::temp_dir().join(format!("wf-cli-s3-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let export_path = temp_dir.join("world.json");
+
+        cmd_export(store.as_ref(), &world_id, &export_path, None)
+            .await
+            .unwrap();
+        cmd_delete(store.as_ref(), &world_id).await.unwrap();
+        assert!(store.list().await.unwrap().is_empty());
+
+        let imported = cmd_import(
+            store.as_ref(),
+            &export_path,
+            None,
+            true,
+            Some("s3-imported"),
+        )
+        .await
+        .unwrap();
+        let loaded = store.load(&imported.id).await.unwrap();
+        assert_eq!(loaded.metadata.name, "s3-imported");
+
+        let requests = s3.requests.lock().await;
+        assert!(requests.iter().any(|request| request.method == "PUT"));
+        assert!(requests.iter().any(|request| request.method == "GET"));
+        assert!(requests.iter().any(|request| request.method == "DELETE"));
+        assert!(requests
+            .iter()
+            .any(|request| request.query.contains("list-type=2")));
+
+        let _ = fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -5772,6 +5971,7 @@ mod tests {
             Commands::ExecutePlan {
                 world,
                 plan_json,
+                plan_id,
                 provider,
                 fallback_provider,
                 steps,
@@ -5782,7 +5982,8 @@ mod tests {
                 output_json,
             } => {
                 assert_eq!(world, "123e4567-e89b-12d3-a456-426614174000");
-                assert_eq!(plan_json, PathBuf::from("/tmp/plan.json"));
+                assert_eq!(plan_json, Some(PathBuf::from("/tmp/plan.json")));
+                assert_eq!(plan_id, None);
                 assert_eq!(provider.as_deref(), Some("runway"));
                 assert_eq!(fallback_provider.as_deref(), Some("mock"));
                 assert_eq!(steps, 2);
@@ -6559,12 +6760,74 @@ mod tests {
 
         let plan: worldforge_core::prediction::Plan = read_json_file(&plan_path).unwrap();
         assert!(!plan.actions.is_empty());
+        assert!(plan.stored_plan_id.is_some());
         assert_eq!(
             plan.verification_proof
                 .as_ref()
                 .map(|proof| proof.backend.as_str()),
             Some("mock")
         );
+        let persisted = store.load(&state.id).await.unwrap();
+        assert_eq!(persisted.stored_plans.len(), 1);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn test_cmd_execute_plan_uses_stored_plan_id() {
+        let dir = std::env::temp_dir().join(format!("wf-cli-execute-id-{}", uuid::Uuid::new_v4()));
+        let store = StateStoreKind::File(dir.join("state"))
+            .open()
+            .await
+            .unwrap();
+        let state = WorldState::new("execute-plan-id", "mock");
+        store.save(&state).await.unwrap();
+
+        cmd_plan(
+            store.as_ref(),
+            &state.id.to_string(),
+            Some("spawn cube"),
+            PlanOptions {
+                max_steps: 4,
+                planner_name: "sampling",
+                planner_options: PlannerOptions::default(),
+                timeout: 10.0,
+                provider: "mock",
+                fallback_provider: None,
+                verify_backend: None,
+                goal_json: None,
+                guardrails_json: None,
+                disable_guardrails: false,
+                output_json: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let persisted = store.load(&state.id).await.unwrap();
+        let plan_id = persisted.stored_plans.keys().next().unwrap().to_string();
+
+        cmd_execute_plan(
+            store.as_ref(),
+            &state.id.to_string(),
+            ExecutePlanOptions {
+                plan_json: None,
+                plan_id: Some(&plan_id),
+                provider: None,
+                fallback_provider: None,
+                steps: 1,
+                timeout_ms: None,
+                guardrails_json: None,
+                return_video: false,
+                disable_guardrails: false,
+                output_json: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let updated = store.load(&state.id).await.unwrap();
+        assert!(updated.time.step >= 1);
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -6836,6 +7099,7 @@ mod tests {
             guardrail_compliance: Vec::new(),
             planning_time_ms: 0,
             iterations_used: 1,
+            stored_plan_id: None,
             verification_proof: None,
         };
         let plan_path = dir.join("plan.json");
@@ -6846,7 +7110,8 @@ mod tests {
             store.as_ref(),
             &state.id.to_string(),
             ExecutePlanOptions {
-                plan_json: &plan_path,
+                plan_json: Some(&plan_path),
+                plan_id: None,
                 provider: None,
                 fallback_provider: None,
                 steps: 1,
@@ -6924,7 +7189,7 @@ mod tests {
         store.save(&state).await.unwrap();
 
         let persisted_before = store.load(&state.id).await.unwrap();
-        assert_eq!(persisted_before.history.len(), 1);
+        assert_eq!(persisted_before.history.len(), 2);
         let initial_entry = persisted_before.history.latest().unwrap();
         assert!(initial_entry.action.is_none());
         assert!(initial_entry.prediction.is_none());
@@ -6943,6 +7208,13 @@ mod tests {
         let error = result.unwrap_err().to_string();
         assert!(error.contains("NoCollisions"));
         assert!(error.contains("collision between"));
+        let after_failed = store.load(&state.id).await.unwrap();
+        assert_eq!(after_failed.time, persisted_before.time);
+        assert_eq!(after_failed.history.len(), persisted_before.history.len());
+        assert_eq!(
+            after_failed.history.latest().unwrap().state_hash,
+            persisted_before.history.latest().unwrap().state_hash
+        );
 
         cmd_predict(
             store.as_ref(),
@@ -6959,10 +7231,11 @@ mod tests {
 
         let updated = store.load(&state.id).await.unwrap();
         assert_eq!(updated.time.step, 1);
-        assert_eq!(updated.history.len(), 2);
+        assert!(updated.history.len() > after_failed.history.len());
         let transition = updated.history.latest().unwrap();
         assert_eq!(transition.provider, "mock");
         assert!(transition.prediction.is_some());
+        assert!(transition.snapshot.is_some());
         assert!(matches!(
             transition.action,
             Some(worldforge_core::action::Action::SetWeather {
@@ -7359,6 +7632,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_cmd_import_legacy_snapshot_can_restore_history_checkpoint() {
+        let dir =
+            std::env::temp_dir().join(format!("wf-cli-legacy-import-{}", uuid::Uuid::new_v4()));
+        let import_store = StateStoreKind::File(dir.join("import"))
+            .open()
+            .await
+            .unwrap();
+        let legacy_state = legacy_snapshot_state("legacy-import-world");
+        let snapshot_path = dir.join("legacy.json");
+
+        write_world_state_snapshot(&snapshot_path, &legacy_state, CoreStateFileFormat::Json)
+            .unwrap();
+
+        let imported = cmd_import(
+            import_store.as_ref(),
+            &snapshot_path,
+            Some(CoreStateFileFormat::Json),
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(imported.history.len(), 2);
+        assert!(imported.history.latest().unwrap().snapshot.is_some());
+
+        let restored_path = dir.join("restored.json");
+        cmd_restore(
+            import_store.as_ref(),
+            &imported.id.to_string(),
+            0,
+            Some(&restored_path),
+        )
+        .await
+        .unwrap();
+
+        let restored = import_store.load(&imported.id).await.unwrap();
+        assert!(restored.history.len() >= 1);
+        assert!(restored.history.latest().unwrap().snapshot.is_some());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn test_cmd_export_and_import_msgpack_roundtrip() {
         let dir =
             std::env::temp_dir().join(format!("wf-cli-export-msgpack-{}", uuid::Uuid::new_v4()));
@@ -7441,7 +7758,7 @@ mod tests {
         let persisted = store.load(&forked.id).await.unwrap();
         assert_eq!(persisted.id, forked.id);
         assert_eq!(persisted.metadata.name, "branched-world");
-        assert_eq!(persisted.history.len(), 1);
+        assert_eq!(persisted.history.len(), 2);
 
         let original = store.load(&source_id).await.unwrap();
         assert_eq!(original.id, source_id);
@@ -7507,6 +7824,7 @@ mod tests {
                 output_state_json: Some(&output_path),
                 prediction_json: None,
                 plan_json: None,
+                plan_id: None,
                 goal: None,
                 goal_json: None,
                 max_steps: 4,
@@ -7559,6 +7877,7 @@ mod tests {
                 output_state_json: None,
                 prediction_json: Some(&prediction_path),
                 plan_json: None,
+                plan_id: None,
                 goal: None,
                 goal_json: None,
                 max_steps: 4,
@@ -7630,6 +7949,7 @@ mod tests {
                 output_state_json: None,
                 prediction_json: None,
                 plan_json: Some(&plan_path),
+                plan_id: None,
                 goal: None,
                 goal_json: None,
                 max_steps: 4,
@@ -7650,6 +7970,76 @@ mod tests {
         let bundle: serde_json::Value = read_json_file(&bundle_path).unwrap();
         assert_eq!(bundle["verification"]["valid"], true);
         assert!(bundle["artifact"]["plan_hash"].is_array());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn test_cmd_verify_guardrail_from_plan_id() {
+        let dir =
+            std::env::temp_dir().join(format!("wf-cli-verify-plan-id-{}", uuid::Uuid::new_v4()));
+        let store = StateStoreKind::File(dir.join("state"))
+            .open()
+            .await
+            .unwrap();
+        let state = WorldState::new("verify-plan-id", "mock");
+        store.save(&state).await.unwrap();
+
+        cmd_plan(
+            store.as_ref(),
+            &state.id.to_string(),
+            Some("spawn cube"),
+            PlanOptions {
+                max_steps: 4,
+                planner_name: "sampling",
+                planner_options: PlannerOptions::default(),
+                timeout: 10.0,
+                provider: "mock",
+                fallback_provider: None,
+                verify_backend: None,
+                goal_json: None,
+                guardrails_json: None,
+                disable_guardrails: false,
+                output_json: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let persisted = store.load(&state.id).await.unwrap();
+        let plan_id = persisted.stored_plans.keys().next().unwrap().to_string();
+        let bundle_path = dir.join("bundle.json");
+
+        cmd_verify(
+            store.as_ref(),
+            Some(&state.id.to_string()),
+            VerifyOptions {
+                backend: VerifyBackend::Mock,
+                proof_type: "guardrail",
+                input_state_json: None,
+                output_state_json: None,
+                prediction_json: None,
+                plan_json: None,
+                plan_id: Some(&plan_id),
+                goal: None,
+                goal_json: None,
+                max_steps: 4,
+                planner_name: "sampling",
+                planner_options: PlannerOptions::default(),
+                timeout: 10.0,
+                provider: None,
+                fallback_provider: None,
+                guardrails_json: None,
+                disable_guardrails: false,
+                source_label: "worldforge-cli",
+                output_json: Some(&bundle_path),
+            },
+        )
+        .await
+        .unwrap();
+
+        let bundle: serde_json::Value = read_json_file(&bundle_path).unwrap();
+        assert_eq!(bundle["verification"]["valid"], true);
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -7686,6 +8076,7 @@ mod tests {
                 output_state_json: None,
                 prediction_json: None,
                 plan_json: None,
+                plan_id: None,
                 goal: Some("spawn cube"),
                 goal_json: None,
                 max_steps: 4,

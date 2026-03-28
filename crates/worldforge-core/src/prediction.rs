@@ -15,7 +15,7 @@ use crate::guardrail::{Guardrail, GuardrailConfig, GuardrailResult, ViolationSev
 use crate::provider::CostEstimate;
 use crate::scene::SpatialRelationship;
 use crate::state::WorldState;
-use crate::types::{ObjectId, PredictionId, VideoClip};
+use crate::types::{ObjectId, PlanId, PredictionId, VideoClip};
 
 /// Execution provenance for a prediction.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1454,6 +1454,17 @@ impl PlannerType {
             ))),
         }
     }
+
+    /// Canonical lowercase planner identifier for external APIs and stored metadata.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Gradient { .. } => "gradient",
+            Self::Sampling { .. } => "sampling",
+            Self::CEM { .. } => "cem",
+            Self::MPC { .. } => "mpc",
+            Self::ProviderNative => "provider-native",
+        }
+    }
 }
 
 impl PredictionConfig {
@@ -1523,9 +1534,59 @@ pub struct Plan {
     pub planning_time_ms: u64,
     /// Number of iterations used.
     pub iterations_used: u32,
+    /// Stable identifier when this plan has been persisted alongside a world state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stored_plan_id: Option<PlanId>,
     /// Attached verification proof when planning was augmented with proof generation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification_proof: Option<crate::proof::ZkProof>,
+}
+
+/// Persisted plan metadata and payload stored alongside a world state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredPlanRecord {
+    /// Stable identifier for the persisted plan artifact.
+    pub id: PlanId,
+    /// Provider used for the planning request.
+    pub provider: String,
+    /// Canonical planner identifier used to generate the plan.
+    pub planner: String,
+    /// Human-readable summary of the requested goal.
+    pub goal_summary: String,
+    /// Timestamp when the plan was persisted.
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    /// Materialized plan payload.
+    pub plan: Plan,
+}
+
+impl StoredPlanRecord {
+    /// Build a persisted plan record from a planning request and result.
+    pub fn from_request(provider: impl Into<String>, request: &PlanRequest, plan: &Plan) -> Self {
+        let id = plan.stored_plan_id.unwrap_or_else(uuid::Uuid::new_v4);
+        let mut stored_plan = plan.clone();
+        stored_plan.stored_plan_id = Some(id);
+        for state in &mut stored_plan.predicted_states {
+            state.stored_plans.clear();
+        }
+
+        Self {
+            id,
+            provider: provider.into(),
+            planner: request.planner.as_str().to_string(),
+            goal_summary: summarize_plan_goal(&request.goal),
+            created_at: chrono::Utc::now(),
+            plan: stored_plan,
+        }
+    }
+}
+
+fn summarize_plan_goal(goal: &PlanGoal) -> String {
+    match goal {
+        PlanGoal::Description(description) => description.clone(),
+        PlanGoal::Condition(condition) => format!("condition:{condition:?}"),
+        PlanGoal::TargetState(state) => format!("target_state:{}", state.metadata.name),
+        PlanGoal::GoalImage(image) => format!("goal_image:{:?}", image.shape),
+    }
 }
 
 /// Result of executing a materialized plan against a live world.
@@ -2045,6 +2106,7 @@ mod tests {
             guardrail_compliance: Vec::new(),
             planning_time_ms: 1,
             iterations_used: 1,
+            stored_plan_id: None,
             verification_proof: Some(proof.clone()),
         };
 
