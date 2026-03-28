@@ -435,6 +435,86 @@ fn sample_genie_transfer_controls() -> SpatialControls {
     }
 }
 
+fn sample_planning_scene(provider: &str) -> WorldState {
+    let mut state = WorldState::new("planning-scene", provider);
+
+    state.scene.add_object(SceneObject::new(
+        "cube",
+        Pose {
+            position: Position {
+                x: 0.0,
+                y: 0.8,
+                z: 0.0,
+            },
+            ..Pose::default()
+        },
+        BBox {
+            min: Position {
+                x: -0.1,
+                y: 0.7,
+                z: -0.1,
+            },
+            max: Position {
+                x: 0.1,
+                y: 0.9,
+                z: 0.1,
+            },
+        },
+    ));
+    state.scene.add_object(SceneObject::new(
+        "mug",
+        Pose {
+            position: Position {
+                x: 0.8,
+                y: 0.8,
+                z: 0.0,
+            },
+            ..Pose::default()
+        },
+        BBox {
+            min: Position {
+                x: 0.7,
+                y: 0.7,
+                z: -0.1,
+            },
+            max: Position {
+                x: 0.9,
+                y: 0.9,
+                z: 0.1,
+            },
+        },
+    ));
+
+    state
+}
+
+fn action_kind(action: &Action) -> &'static str {
+    match action {
+        Action::Move { .. } => "move",
+        Action::Grasp { .. } => "grasp",
+        Action::Release { .. } => "release",
+        Action::Push { .. } => "push",
+        Action::Rotate { .. } => "rotate",
+        Action::Place { .. } => "place",
+        Action::CameraMove { .. } => "camera_move",
+        Action::CameraLookAt { .. } => "camera_look_at",
+        Action::Navigate { .. } => "navigate",
+        Action::Teleport { .. } => "teleport",
+        Action::SetWeather { .. } => "set_weather",
+        Action::SetLighting { .. } => "set_lighting",
+        Action::SpawnObject { .. } => "spawn",
+        Action::RemoveObject { .. } => "remove",
+        Action::Sequence(_) => "sequence",
+        Action::Parallel(_) => "parallel",
+        Action::Conditional { .. } => "conditional",
+        Action::Raw { .. } => "raw",
+    }
+}
+
+fn action_kinds(actions: &[Action]) -> Vec<&'static str> {
+    actions.iter().map(action_kind).collect()
+}
+
 static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 fn env_lock() -> &'static Mutex<()> {
@@ -568,12 +648,19 @@ async fn test_cosmos_full_stack_native_planning_surface() {
     assert!(!plan.actions.is_empty());
     assert_eq!(plan.predicted_states.len(), plan.actions.len());
     assert_eq!(plan.guardrail_compliance.len(), plan.actions.len());
+    let predicted_videos = plan
+        .predicted_videos
+        .as_ref()
+        .expect("cosmos native planning should emit a storyboard");
+    assert_eq!(predicted_videos.len(), plan.actions.len());
+    assert!(predicted_videos.iter().all(|clip| !clip.frames.is_empty()));
     assert!(plan.iterations_used > 0);
     assert!((0.0..=1.0).contains(&plan.success_probability));
     assert!(plan.actions.iter().any(|action| matches!(
         action,
         Action::SpawnObject { template, .. } if template.to_lowercase().contains("cube")
     )));
+    assert!(action_kinds(&plan.actions).contains(&"spawn"));
 }
 
 #[test]
@@ -629,10 +716,28 @@ fn test_full_stack_runway_constructor_exposes_merged_capabilities() {
 async fn test_runway_full_stack_native_planning_surface() {
     let provider = RunwayProvider::full_stack("runway-test-secret");
     let capabilities = provider.capabilities();
+    let current_state = sample_planning_scene("runway");
+    let cube_id = current_state
+        .scene
+        .objects
+        .values()
+        .find(|object| object.name == "cube")
+        .map(|object| object.id)
+        .unwrap();
+    let mut target_state = current_state.clone();
+    target_state
+        .scene
+        .get_object_mut(&cube_id)
+        .unwrap()
+        .set_position(Position {
+            x: 0.55,
+            y: 0.8,
+            z: 0.0,
+        });
 
     let request = PlanRequest {
-        current_state: WorldState::new("runway-native-plan", "runway"),
-        goal: PlanGoal::Description("place the cube next to the mug".to_string()),
+        current_state,
+        goal: PlanGoal::TargetState(Box::new(target_state)),
         max_steps: 4,
         guardrails: Vec::new(),
         planner: PlannerType::ProviderNative,
@@ -645,12 +750,146 @@ async fn test_runway_full_stack_native_planning_surface() {
     assert!(!plan.actions.is_empty());
     assert_eq!(plan.predicted_states.len(), plan.actions.len());
     assert_eq!(plan.guardrail_compliance.len(), plan.actions.len());
+    let predicted_videos = plan
+        .predicted_videos
+        .as_ref()
+        .expect("runway native planning should emit a storyboard");
+    assert_eq!(predicted_videos.len(), plan.actions.len());
+    assert!(predicted_videos.iter().all(|clip| !clip.frames.is_empty()));
     assert!(plan.iterations_used > 0);
     assert!((0.0..=1.0).contains(&plan.success_probability));
-    assert!(plan
-        .actions
+    let kinds = action_kinds(&plan.actions);
+    assert_eq!(kinds, vec!["navigate", "grasp", "move", "place"]);
+    assert!(matches!(
+        &plan.actions[0],
+        Action::Navigate { waypoints } if !waypoints.is_empty()
+    ));
+    assert!(matches!(
+        &plan.actions[1],
+        Action::Grasp { object, .. } if *object == cube_id
+    ));
+    assert!(matches!(&plan.actions[2], Action::Move { .. }));
+    assert!(matches!(
+        &plan.actions[3],
+        Action::Place { object, .. } if *object == cube_id
+    ));
+    let final_state = plan.predicted_states.last().unwrap();
+    let final_cube = final_state.scene.get_object(&cube_id).unwrap();
+    assert_eq!(
+        final_cube.pose.position,
+        Position {
+            x: 0.55,
+            y: 0.8,
+            z: 0.0,
+        }
+    );
+}
+
+#[tokio::test]
+async fn test_provider_native_planning_profiles_diverge_on_same_goal() {
+    let cosmos = CosmosProvider::full_stack(
+        "cosmos-test-key",
+        CosmosEndpoint::NimApi("https://example.invalid/cosmos".to_string()),
+    );
+    let runway = RunwayProvider::full_stack("runway-test-secret");
+    let request = PlanRequest {
+        current_state: sample_planning_scene("planning"),
+        goal: PlanGoal::Description("place the cube next to the mug".to_string()),
+        max_steps: 5,
+        guardrails: Vec::new(),
+        planner: PlannerType::ProviderNative,
+        timeout_seconds: 5.0,
+        fallback_provider: None,
+    };
+
+    let cosmos_plan = cosmos.plan(&request).await.unwrap();
+    let runway_plan = runway.plan(&request).await.unwrap();
+
+    assert_eq!(
+        cosmos_plan.predicted_videos.as_ref().unwrap().len(),
+        cosmos_plan.actions.len()
+    );
+    assert_eq!(
+        runway_plan.predicted_videos.as_ref().unwrap().len(),
+        runway_plan.actions.len()
+    );
+    assert!(cosmos_plan
+        .predicted_videos
+        .as_ref()
+        .unwrap()
         .iter()
-        .any(|action| matches!(action, Action::Place { .. } | Action::SpawnObject { .. })));
+        .all(|clip| !clip.frames.is_empty()));
+    assert!(runway_plan
+        .predicted_videos
+        .as_ref()
+        .unwrap()
+        .iter()
+        .all(|clip| !clip.frames.is_empty()));
+
+    let cosmos_kinds = action_kinds(&cosmos_plan.actions);
+    let runway_kinds = action_kinds(&runway_plan.actions);
+    assert_ne!(cosmos_kinds, runway_kinds);
+    assert!(runway_kinds.iter().any(|kind| matches!(
+        *kind,
+        "move" | "grasp" | "release" | "navigate" | "teleport"
+    )));
+    assert!(cosmos_kinds
+        .iter()
+        .any(|kind| matches!(*kind, "place" | "spawn" | "conditional")));
+}
+
+#[tokio::test]
+async fn test_runway_native_planning_blocks_boundary_constraint() {
+    let provider = RunwayProvider::full_stack("runway-test-secret");
+    let current_state = sample_planning_scene("runway-guardrail");
+    let cube_id = current_state
+        .scene
+        .objects
+        .values()
+        .find(|object| object.name == "cube")
+        .map(|object| object.id)
+        .unwrap();
+    let mut target_state = current_state.clone();
+    target_state
+        .scene
+        .get_object_mut(&cube_id)
+        .unwrap()
+        .set_position(Position {
+            x: 0.55,
+            y: 0.8,
+            z: 0.0,
+        });
+    let request = PlanRequest {
+        current_state,
+        goal: PlanGoal::TargetState(Box::new(target_state)),
+        max_steps: 4,
+        guardrails: vec![GuardrailConfig {
+            guardrail: Guardrail::BoundaryConstraint {
+                bounds: BBox {
+                    min: Position {
+                        x: -0.5,
+                        y: 0.79,
+                        z: -0.5,
+                    },
+                    max: Position {
+                        x: 0.5,
+                        y: 0.805,
+                        z: 0.5,
+                    },
+                },
+            },
+            blocking: true,
+        }],
+        planner: PlannerType::ProviderNative,
+        timeout_seconds: 5.0,
+        fallback_provider: None,
+    };
+
+    let error = provider.plan(&request).await.unwrap_err();
+    assert!(matches!(
+        error,
+        WorldForgeError::NoFeasiblePlan { reason, .. } if reason.contains("guardrail-blocked step")
+    ));
 }
 
 #[test]
