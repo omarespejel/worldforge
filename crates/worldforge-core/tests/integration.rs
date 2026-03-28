@@ -390,6 +390,36 @@ async fn test_worldforge_compare_facade() {
 }
 
 #[tokio::test]
+async fn test_worldforge_compare_world_state_facade() {
+    let worldforge = worldforge_with_mock_provider();
+    let state = WorldState::new("compare-state", "mock");
+    let action = Action::Move {
+        target: Position {
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        speed: 1.0,
+    };
+    let providers = ["mock", "mock"];
+
+    let comparison = worldforge
+        .compare_world_state(
+            state,
+            "mock",
+            &action,
+            &providers,
+            &PredictionConfig::default(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(comparison.predictions.len(), 2);
+    assert_eq!(comparison.comparison.scores.len(), 2);
+    assert_eq!(comparison.comparison.pairwise_agreements.len(), 1);
+}
+
+#[tokio::test]
 async fn test_worldforge_state_store_facade_roundtrip() {
     let dir = std::env::temp_dir().join(format!("wf-core-facade-{}", uuid::Uuid::new_v4()));
     let store: DynStateStore = Arc::new(FileStateStore::new(&dir));

@@ -749,7 +749,10 @@ async fn run_evaluation_request(
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CompareWorldRequest {
-    world_id: String,
+    #[serde(default)]
+    world_id: Option<String>,
+    #[serde(default)]
+    world_state: Option<WorldState>,
     action: Action,
     providers: Vec<String>,
     #[serde(default)]
@@ -769,7 +772,7 @@ struct ComparePredictionsRequest {
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum CompareRequest {
-    World(CompareWorldRequest),
+    World(Box<CompareWorldRequest>),
     Predictions(ComparePredictionsRequest),
 }
 
@@ -2765,13 +2768,32 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                     );
                 }
 
-                let id = match req.world_id.parse::<WorldId>() {
-                    Ok(id) => id,
-                    Err(_) => return (400, error_response("invalid world ID")),
-                };
-                let ws = match state.store.load(&id).await {
-                    Ok(ws) => ws,
-                    Err(e) => return (404, error_response(&e.to_string())),
+                let ws = match (&req.world_id, &req.world_state) {
+                    (Some(_), Some(_)) => {
+                        return (
+                            400,
+                            error_response("provide exactly one of world_id or world_state"),
+                        )
+                    }
+                    (None, None) => {
+                        return (
+                            400,
+                            error_response(
+                                "compare requires world_id or world_state when predictions are not provided",
+                            ),
+                        )
+                    }
+                    (Some(world_id), None) => {
+                        let id = match world_id.parse::<WorldId>() {
+                            Ok(id) => id,
+                            Err(_) => return (400, error_response("invalid world ID")),
+                        };
+                        match state.store.load(&id).await {
+                            Ok(ws) => ws,
+                            Err(e) => return (404, error_response(&e.to_string())),
+                        }
+                    }
+                    (None, Some(world_state)) => world_state.clone(),
                 };
                 let first_provider = req.providers.first().map(|s| s.as_str()).unwrap_or("mock");
                 let registry = Arc::clone(&state.registry);
@@ -5047,6 +5069,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_route_compare_with_inline_world_state() {
+        let state = test_state();
+        let world_state = sample_export_state("cmp-inline");
+        let body = serde_json::json!({
+            "world_state": world_state,
+            "action": {
+                "Move": {
+                    "target": { "x": 1.0, "y": 0.0, "z": 0.0 },
+                    "speed": 1.0
+                }
+            },
+            "providers": ["mock", "mock"],
+        })
+        .to_string();
+
+        let (status, resp) = route("POST", "/v1/compare", &body, &state).await;
+
+        assert_eq!(status, 200);
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(value["success"], true);
+        assert_eq!(
+            value["data"]["comparison"]["pairwise_agreements"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
     async fn test_route_compare_requires_providers() {
         let state = test_state();
         let id = seed_world(&state, "cmp-world", "mock").await;
@@ -5066,6 +5118,29 @@ mod tests {
 
         assert_eq!(status, 400);
         assert!(resp.contains("at least one provider"));
+    }
+
+    #[tokio::test]
+    async fn test_route_compare_rejects_ambiguous_world_inputs() {
+        let state = test_state();
+        let id = seed_world(&state, "cmp-world-inline", "mock").await;
+        let body = serde_json::json!({
+            "world_id": id,
+            "world_state": sample_export_state("cmp-inline"),
+            "action": {
+                "Move": {
+                    "target": { "x": 1.0, "y": 0.0, "z": 0.0 },
+                    "speed": 1.0
+                }
+            },
+            "providers": ["mock"],
+        })
+        .to_string();
+
+        let (status, resp) = route("POST", "/v1/compare", &body, &state).await;
+
+        assert_eq!(status, 400);
+        assert!(resp.contains("exactly one of world_id or world_state"));
     }
 
     #[tokio::test]

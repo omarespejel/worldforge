@@ -35,8 +35,9 @@ pub mod world;
 
 use std::sync::Arc;
 
+use action::Action;
 use error::Result;
-use prediction::{MultiPrediction, Prediction};
+use prediction::{MultiPrediction, Prediction, PredictionConfig};
 use provider::{
     CostEstimate, EmbeddingInput, EmbeddingOutput, Operation, ProviderDescriptor,
     ProviderHealthReport, ProviderRegistry, ReasoningInput, ReasoningOutput,
@@ -322,6 +323,19 @@ impl WorldForge {
     /// Compare previously generated predictions.
     pub fn compare(&self, predictions: Vec<Prediction>) -> Result<MultiPrediction> {
         MultiPrediction::try_from_predictions(predictions)
+    }
+
+    /// Compare provider predictions for a supplied world state without persisting it.
+    pub async fn compare_world_state(
+        &self,
+        state: WorldState,
+        default_provider: impl Into<String>,
+        action: &Action,
+        providers: &[&str],
+        config: &PredictionConfig,
+    ) -> Result<MultiPrediction> {
+        let world = self.load_world(state, default_provider)?;
+        world.predict_multi(action, providers, config).await
     }
 
     /// Create a new world with the given name and default provider.

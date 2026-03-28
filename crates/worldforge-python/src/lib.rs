@@ -3972,6 +3972,89 @@ impl PyWorldForge {
         Ok(PyVideoClip { inner: clip })
     }
 
+    /// Compare provider predictions for a supplied world or world JSON without persisting it.
+    #[pyo3(signature = (action, providers, world=None, world_json=None, steps=1, fallback_provider=None, return_video=false, max_latency_ms=None, guardrails_json=None, disable_guardrails=false))]
+    #[allow(clippy::too_many_arguments)]
+    fn compare_world(
+        &self,
+        action: &PyAction,
+        providers: Vec<String>,
+        world: Option<&PyWorld>,
+        world_json: Option<&str>,
+        steps: u32,
+        fallback_provider: Option<&str>,
+        return_video: bool,
+        max_latency_ms: Option<u64>,
+        guardrails_json: Option<&str>,
+        disable_guardrails: bool,
+    ) -> PyResult<PyMultiPrediction> {
+        if providers.is_empty() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "providers cannot be empty",
+            ));
+        }
+
+        let rt = new_runtime()?;
+        let mut config = PredictionConfig {
+            steps,
+            return_video,
+            max_latency_ms,
+            fallback_provider: fallback_provider.map(ToOwned::to_owned),
+            guardrails: parse_guardrails_json(guardrails_json)?,
+            ..PredictionConfig::default()
+        };
+        if disable_guardrails {
+            config = config.disable_guardrails();
+        }
+
+        let provider_refs: Vec<&str> = providers.iter().map(String::as_str).collect();
+        match (world, world_json) {
+            (Some(_), Some(_)) => Err(pyo3::exceptions::PyValueError::new_err(
+                "world and world_json are mutually exclusive",
+            )),
+            (None, None) => Err(pyo3::exceptions::PyValueError::new_err(
+                "compare_world requires world or world_json",
+            )),
+            (Some(world), None) => {
+                let comparison = rt
+                    .block_on(
+                        world
+                            .world
+                            .predict_multi(&action.inner, &provider_refs, &config),
+                    )
+                    .map_err(|e| {
+                        pyo3::exceptions::PyRuntimeError::new_err(format!("comparison failed: {e}"))
+                    })?;
+                Ok(multi_prediction_from_inner(
+                    comparison,
+                    Arc::clone(&world.registry),
+                ))
+            }
+            (None, Some(world_json)) => {
+                let state = serde_json::from_str::<WorldState>(world_json).map_err(|e| {
+                    pyo3::exceptions::PyValueError::new_err(format!(
+                        "failed to parse world JSON: {e}"
+                    ))
+                })?;
+                let comparison = rt
+                    .block_on(self.inner.compare_world_state(
+                        state,
+                        providers.first().map(String::as_str).unwrap_or("mock"),
+                        &action.inner,
+                        &provider_refs,
+                        &config,
+                    ))
+                    .map_err(|e| {
+                        pyo3::exceptions::PyRuntimeError::new_err(format!("comparison failed: {e}"))
+                    })?;
+                Ok(multi_prediction_from_inner(
+                    comparison,
+                    self.inner.registry_arc(),
+                ))
+            }
+        }
+    }
+
     /// Compare previously generated predictions.
     fn compare(&self, predictions: Vec<PyPrediction>) -> PyResult<PyMultiPrediction> {
         let registry = predictions
@@ -7700,6 +7783,53 @@ mod tests {
         assert_eq!(comparison.provider_scores()[0].provider(), "mock");
         assert_eq!(comparison.pairwise_agreements().len(), 1);
         assert!(comparison.consensus().average_quality_score() > 0.0);
+    }
+
+    #[test]
+    fn test_worldforge_compare_world_with_world_json() {
+        let wf = test_worldforge();
+        let state = WorldState::new("compare-world-json", "mock");
+        let world_json = serde_json::to_string(&state).unwrap();
+        let action = PyAction::move_to(1.0, 0.0, 0.0, 1.0);
+
+        let comparison = wf
+            .compare_world(
+                &action,
+                vec!["mock".to_string(), "mock".to_string()],
+                None,
+                Some(&world_json),
+                1,
+                None,
+                false,
+                None,
+                None,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(comparison.prediction_count(), 2);
+        assert_eq!(comparison.pairwise_agreements().len(), 1);
+    }
+
+    #[test]
+    fn test_worldforge_compare_world_requires_world_input() {
+        let wf = test_worldforge();
+        let action = PyAction::move_to(1.0, 0.0, 0.0, 1.0);
+
+        let result = wf.compare_world(
+            &action,
+            vec!["mock".to_string()],
+            None,
+            None,
+            1,
+            None,
+            false,
+            None,
+            None,
+            false,
+        );
+
+        assert!(result.is_err());
     }
 
     #[test]

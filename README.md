@@ -454,6 +454,7 @@ cargo run -p worldforge-cli -- history --world <id> --output-json histories/<id>
 cargo run -p worldforge-cli -- restore --world <id> --history-index 0 --output-json restored/<id>.json
 cargo run -p worldforge-cli -- predict --world <id> --action "move 1 0 0" --provider runway --fallback-provider mock --timeout-ms 500
 cargo run -p worldforge-cli -- compare --prediction-json runs/mock.json --prediction-json runs/runway.json --output-json reports/compare.json
+cargo run -p worldforge-cli -- compare --world-snapshot snapshots/world.msgpack --action "move 1 0 0" --providers mock,runway --output-json reports/compare-from-snapshot.json
 cargo run -p worldforge-cli -- plan --world <id> --goal "spawn cube" --planner cem
 cargo run -p worldforge-cli -- plan --world <id> --goal "spawn cube" --planner cem --guardrails-json guardrails.json --output-json plans/generated.json
 cargo run -p worldforge-cli -- plan --world <id> --goal-json goals/object-at.json --planner sampling --output-json plans/object-at.json
@@ -468,6 +469,7 @@ cargo run -p worldforge-cli -- verify-proof --guardrail-bundle-json proofs/guard
 cargo run -p worldforge-cli -- verify-proof --proof-json proofs/raw-proof.json
 cargo run -p worldforge-cli -- eval --list-suites
 cargo run -p worldforge-cli -- eval --suite physics
+cargo run -p worldforge-cli -- eval --suite physics --world-snapshot snapshots/world.json --output-json reports/eval-from-snapshot.json
 cargo run -p worldforge-cli -- eval --suite physics --world <id>
 cargo run -p worldforge-cli -- eval --suite-json evals/custom.json
 cargo run -p worldforge-cli -- eval --suite-json evals/custom.json --providers mock,jepa --output-json reports/custom-eval.json
@@ -639,6 +641,12 @@ curl -X POST http://127.0.0.1:8080/v1/providers/mock/estimate \
 curl -X POST http://127.0.0.1:8080/v1/compare \
   -H 'content-type: application/json' \
   -d @compare-body.json
+
+# `compare-state-body.json` should contain
+# `{"world_state": {...}, "action": {...}, "providers": ["mock","runway"]}`.
+curl -X POST http://127.0.0.1:8080/v1/compare \
+  -H 'content-type: application/json' \
+  -d @compare-state-body.json
 ```
 
 ## Status
@@ -666,8 +674,11 @@ clip in Python and over REST, and Python registers Genie as a local surrogate by
 default. `GENIE_API_KEY` and `GENIE_API_ENDPOINT` remain optional remote hints,
 not discovery gates. The CLI
 `eval` command can now overlay a persisted world onto each scenario fixture via
-`--world`, which keeps the public evaluation workflow aligned with stored state
-without dropping suite-specific setup. Provider transfer is now exposed end-to-end in
+`--world` or an exported snapshot via `--world-snapshot`, which keeps the public
+evaluation workflow aligned with stored state without dropping suite-specific
+setup. Cross-provider comparison now accepts portable world snapshots in the
+CLI and inline `world_state` payloads over REST in addition to persisted
+`world_id`s and offline prediction JSON inputs. Provider transfer is now exposed end-to-end in
 the core, CLI, REST server, and Python bindings with JSON clip round-tripping
 for reusable workflows. File-backed (JSON or MessagePack), SQLite-backed, Redis-backed, and
 S3-backed world persistence are all supported through the shared `StateStore`

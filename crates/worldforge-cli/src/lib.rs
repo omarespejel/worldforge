@@ -490,8 +490,11 @@ pub enum Commands {
         #[arg(long)]
         suite_json: Option<PathBuf>,
         /// Optional world ID whose persisted state seeds each evaluation scenario.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "world_snapshot")]
         world: Option<String>,
+        /// Optional exported world snapshot (JSON or MessagePack) to seed each scenario.
+        #[arg(long, value_name = "PATH", conflicts_with = "world")]
+        world_snapshot: Option<PathBuf>,
         /// Optional comma-separated list of providers.
         ///
         /// When omitted, the suite's baked-in providers are used.
@@ -514,8 +517,20 @@ pub enum Commands {
     /// Compare predictions across providers.
     Compare {
         /// World ID.
-        #[arg(long, required_unless_present = "prediction_json")]
+        #[arg(
+            long,
+            required_unless_present_any = ["prediction_json", "world_snapshot"],
+            conflicts_with = "world_snapshot"
+        )]
         world: Option<String>,
+        /// Exported world snapshot (JSON or MessagePack) to compare without persistence.
+        #[arg(
+            long,
+            value_name = "PATH",
+            required_unless_present_any = ["prediction_json", "world"],
+            conflicts_with = "world"
+        )]
+        world_snapshot: Option<PathBuf>,
         /// Action description.
         #[arg(long, required_unless_present = "prediction_json")]
         action: Option<String>,
@@ -529,6 +544,7 @@ pub enum Commands {
             action = clap::ArgAction::Append,
             conflicts_with_all = [
                 "world",
+                "world_snapshot",
                 "action",
                 "providers",
                 "steps",
@@ -1206,6 +1222,7 @@ pub async fn run() -> Result<()> {
             suite,
             suite_json,
             world,
+            world_snapshot,
             providers,
             list_suites,
             output_json,
@@ -1218,6 +1235,7 @@ pub async fn run() -> Result<()> {
                     suite_name: suite.as_deref(),
                     suite_json: suite_json.as_deref(),
                     world: world.as_deref(),
+                    world_snapshot: world_snapshot.as_deref(),
                     providers: providers.as_deref(),
                     list_suites,
                     output_json: output_json.as_deref(),
@@ -1229,6 +1247,7 @@ pub async fn run() -> Result<()> {
         }
         Commands::Compare {
             world,
+            world_snapshot,
             action,
             providers,
             prediction_json,
@@ -1242,6 +1261,7 @@ pub async fn run() -> Result<()> {
             cmd_compare(
                 store.as_ref(),
                 world.as_deref(),
+                world_snapshot.as_deref(),
                 action.as_deref(),
                 providers.as_deref(),
                 CompareOptions {
@@ -1811,6 +1831,7 @@ struct EvalOptions<'a> {
     suite_name: Option<&'a str>,
     suite_json: Option<&'a Path>,
     world: Option<&'a str>,
+    world_snapshot: Option<&'a Path>,
     providers: Option<&'a str>,
     list_suites: bool,
     output_json: Option<&'a Path>,
@@ -2982,19 +3003,17 @@ async fn cmd_eval(store: Option<&dyn StateStore>, options: EvalOptions<'_>) -> R
         provider_list.push(require_provider(&registry, provider_name)?);
     }
 
-    let report = if let Some(world_id) = options.world {
-        let store = store.context("world-backed evaluation requires a state store")?;
-        let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
-        let state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
-        suite
-            .run_with_world_state(&provider_list, &state)
+    let world_state =
+        load_optional_world_state_input(store, options.world, options.world_snapshot).await?;
+    let report = match world_state.as_ref() {
+        Some(state) => suite
+            .run_with_world_state(&provider_list, state)
             .await
-            .map_err(|e| anyhow::anyhow!("{e}"))?
-    } else {
-        suite
+            .map_err(|e| anyhow::anyhow!("{e}"))?,
+        None => suite
             .run(&provider_list)
             .await
-            .map_err(|e| anyhow::anyhow!("{e}"))?
+            .map_err(|e| anyhow::anyhow!("{e}"))?,
     };
 
     if let Some(path) = options.output_json {
@@ -3102,8 +3121,9 @@ async fn cmd_eval(store: Option<&dyn StateStore>, options: EvalOptions<'_>) -> R
 }
 
 async fn cmd_compare(
-    store: &(impl StateStore + ?Sized),
+    store: &dyn StateStore,
     world_id: Option<&str>,
+    world_snapshot: Option<&Path>,
     action_str: Option<&str>,
     providers_str: Option<&str>,
     options: CompareOptions<'_>,
@@ -3112,14 +3132,15 @@ async fn cmd_compare(
         let predictions = load_prediction_files(options.prediction_json)?;
         MultiPrediction::try_from_predictions(predictions).map_err(|e| anyhow::anyhow!("{e}"))?
     } else {
-        let world_id =
-            world_id.context("compare requires --world when --prediction-json is not provided")?;
         let action_str = action_str
             .context("compare requires --action when --prediction-json is not provided")?;
         let providers_str = providers_str
             .context("compare requires --providers when --prediction-json is not provided")?;
-        let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
-        let state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+        let state = load_optional_world_state_input(Some(store), world_id, world_snapshot)
+            .await?
+            .context(
+                "compare requires --world or --world-snapshot when --prediction-json is not provided",
+            )?;
 
         let provider_names = parse_provider_names(providers_str);
         let registry = Arc::new(auto_detect_registry());
@@ -3165,6 +3186,24 @@ fn load_prediction_files(paths: &[PathBuf]) -> Result<Vec<Prediction>> {
         .iter()
         .map(|path| read_json_file(path.as_path()))
         .collect()
+}
+
+async fn load_optional_world_state_input(
+    store: Option<&dyn StateStore>,
+    world_id: Option<&str>,
+    world_snapshot: Option<&Path>,
+) -> Result<Option<WorldState>> {
+    match (world_id, world_snapshot) {
+        (Some(_), Some(_)) => anyhow::bail!("world ID and world snapshot are mutually exclusive"),
+        (Some(world_id), None) => {
+            let store = store.context("world-backed operation requires a state store")?;
+            let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
+            let state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+            Ok(Some(state))
+        }
+        (None, Some(snapshot)) => read_world_state_snapshot(snapshot, None).map(Some),
+        (None, None) => Ok(None),
+    }
 }
 
 fn print_comparison_results(multi: &MultiPrediction) {
@@ -4923,6 +4962,39 @@ mod tests {
     }
 
     #[test]
+    fn test_cli_parse_compare_with_world_snapshot() {
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "compare",
+            "--world-snapshot",
+            "/tmp/world.msgpack",
+            "--action",
+            "move 1 2 3",
+            "--providers",
+            "mock,runway",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Compare {
+                world,
+                world_snapshot,
+                action,
+                providers,
+                prediction_json,
+                ..
+            } => {
+                assert!(world.is_none());
+                assert_eq!(world_snapshot, Some(PathBuf::from("/tmp/world.msgpack")));
+                assert_eq!(action.as_deref(), Some("move 1 2 3"));
+                assert_eq!(providers.as_deref(), Some("mock,runway"));
+                assert!(prediction_json.is_empty());
+            }
+            _ => panic!("expected Compare"),
+        }
+    }
+
+    #[test]
     fn test_cli_parse_generate_command() {
         let cli = Cli::try_parse_from([
             "worldforge",
@@ -5314,6 +5386,7 @@ mod tests {
                 suite,
                 suite_json,
                 world,
+                world_snapshot,
                 providers,
                 list_suites,
                 output_json,
@@ -5323,6 +5396,7 @@ mod tests {
                 assert!(suite.is_none());
                 assert_eq!(suite_json, Some(PathBuf::from("/tmp/custom-suite.json")));
                 assert!(world.is_none());
+                assert!(world_snapshot.is_none());
                 assert_eq!(providers.as_deref(), Some("mock,jepa"));
                 assert!(!list_suites);
                 assert_eq!(output_json, Some(PathBuf::from("/tmp/eval-report.json")));
@@ -5364,6 +5438,36 @@ mod tests {
                 assert!(!list_suites);
                 assert!(output_markdown.is_none());
                 assert!(output_csv.is_none());
+            }
+            _ => panic!("expected Eval"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_eval_with_world_snapshot() {
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "eval",
+            "--suite",
+            "physics",
+            "--world-snapshot",
+            "/tmp/eval-world.msgpack",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Eval {
+                suite,
+                world,
+                world_snapshot,
+                ..
+            } => {
+                assert_eq!(suite.as_deref(), Some("physics"));
+                assert!(world.is_none());
+                assert_eq!(
+                    world_snapshot,
+                    Some(PathBuf::from("/tmp/eval-world.msgpack"))
+                );
             }
             _ => panic!("expected Eval"),
         }
@@ -5693,6 +5797,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             CompareOptions {
                 prediction_json: &prediction_paths,
                 steps: 1,
@@ -5715,6 +5820,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_cmd_compare_world_snapshot_writes_output_json() {
+        let dir =
+            std::env::temp_dir().join(format!("wf-cli-compare-snapshot-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let snapshot = dir.join("world.msgpack");
+        let output = dir.join("compare.json");
+        let state = WorldState::new("compare-snapshot", "mock");
+        write_world_state_snapshot(&snapshot, &state, CoreStateFileFormat::MessagePack).unwrap();
+
+        let store = StateStoreKind::File(dir.join("state"))
+            .open()
+            .await
+            .unwrap();
+
+        cmd_compare(
+            store.as_ref(),
+            None,
+            Some(&snapshot),
+            Some("move 1 2 3"),
+            Some("mock,mock"),
+            CompareOptions {
+                prediction_json: &[],
+                steps: 1,
+                fallback_provider: None,
+                timeout_ms: None,
+                guardrails_json: None,
+                disable_guardrails: false,
+                output_json: Some(&output),
+            },
+        )
+        .await
+        .unwrap();
+
+        let comparison: MultiPrediction = read_json_file(&output).unwrap();
+        assert_eq!(comparison.predictions.len(), 2);
+        assert_eq!(comparison.comparison.pairwise_agreements.len(), 1);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn test_cmd_eval_loads_custom_suite_and_writes_output_json() {
         let dir = std::env::temp_dir().join(format!("wf-cli-eval-{}", uuid::Uuid::new_v4()));
         let suite_path = dir.join("suite.json");
@@ -5728,6 +5874,7 @@ mod tests {
                 suite_name: None,
                 suite_json: Some(&suite_path),
                 world: None,
+                world_snapshot: None,
                 providers: None,
                 list_suites: false,
                 output_json: Some(&report_path),
@@ -5842,6 +5989,7 @@ mod tests {
                 suite_name: None,
                 suite_json: Some(&suite_path),
                 world: Some(&world_state.id.to_string()),
+                world_snapshot: None,
                 providers: None,
                 list_suites: false,
                 output_json: Some(&report_path),
@@ -5861,6 +6009,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_cmd_eval_uses_world_snapshot_when_provided() {
+        let dir =
+            std::env::temp_dir().join(format!("wf-cli-eval-snapshot-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+
+        let mut world_state = WorldState::new("eval-world-snapshot", "mock");
+        world_state.scene.add_object(SceneObject::new(
+            "mug",
+            Pose {
+                position: Position {
+                    x: 0.0,
+                    y: 0.8,
+                    z: 0.0,
+                },
+                ..Pose::default()
+            },
+            BBox {
+                min: Position {
+                    x: -0.05,
+                    y: 0.75,
+                    z: -0.05,
+                },
+                max: Position {
+                    x: 0.05,
+                    y: 0.85,
+                    z: 0.05,
+                },
+            },
+        ));
+
+        let snapshot = dir.join("world.json");
+        write_world_state_snapshot(&snapshot, &world_state, CoreStateFileFormat::Json).unwrap();
+
+        let suite_path = dir.join("suite.json");
+        let report_path = dir.join("report.json");
+        let suite = EvalSuite {
+            name: "Snapshot-aware eval".to_string(),
+            scenarios: vec![worldforge_eval::EvalScenario {
+                name: "snapshot-seeded-object-check".to_string(),
+                description: "Checks that an exported snapshot seeds evaluation".to_string(),
+                initial_state: WorldState::new("fixture", "mock"),
+                actions: Vec::new(),
+                expected_outcomes: vec![worldforge_eval::ExpectedOutcome::ObjectExists {
+                    name: "mug".to_string(),
+                }],
+                ground_truth: None,
+            }],
+            dimensions: vec![worldforge_eval::EvalDimension::ObjectPermanence],
+            providers: vec!["mock".to_string()],
+        };
+        write_json_file(&suite_path, &suite).unwrap();
+
+        cmd_eval(
+            None,
+            EvalOptions {
+                suite_name: None,
+                suite_json: Some(&suite_path),
+                world: None,
+                world_snapshot: Some(&snapshot),
+                providers: None,
+                list_suites: false,
+                output_json: Some(&report_path),
+                output_markdown: None,
+                output_csv: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let report: serde_json::Value = read_json_file(&report_path).unwrap();
+        assert_eq!(report["suite"], "Snapshot-aware eval");
+        assert_eq!(report["results"][0]["outcomes"][0]["passed"], true);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn test_cmd_eval_writes_markdown_and_csv_reports() {
         let dir =
             std::env::temp_dir().join(format!("wf-cli-eval-artifacts-{}", uuid::Uuid::new_v4()));
@@ -5873,6 +6098,7 @@ mod tests {
                 suite_name: Some("physics"),
                 suite_json: None,
                 world: None,
+                world_snapshot: None,
                 providers: None,
                 list_suites: false,
                 output_json: None,
