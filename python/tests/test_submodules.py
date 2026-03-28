@@ -76,6 +76,41 @@ class WorldForgeSubmoduleImportTests(unittest.TestCase):
             self.assertIsNotNone(plan.verification_proof)
             self.assertEqual(plan.verification_proof.backend, "Mock")
 
+    def test_manual_provider_eval_uses_registered_provider(self) -> None:
+        from worldforge.eval import EvalSuite
+        from worldforge.providers import MockProvider
+
+        worldforge = self.worldforge
+        with tempfile.TemporaryDirectory(prefix="worldforge-python-eval-") as state_dir:
+            forge = worldforge.WorldForge(state_dir=state_dir)
+            forge.register_provider(MockProvider(name="manual-mock"))
+
+            world = forge.create_world("manual-eval-world", "manual-mock")
+            world.add_object(
+                worldforge.SceneObject(
+                    "red_mug",
+                    worldforge.Position(0.0, 0.8, 0.0),
+                    worldforge.BBox(
+                        worldforge.Position(-0.05, 0.75, -0.05),
+                        worldforge.Position(0.05, 0.85, 0.05),
+                    ),
+                )
+            )
+
+            suite = EvalSuite.from_builtin("physics")
+
+            world_results = suite.run_with_world("manual-mock", world=world, forge=forge)
+            self.assertGreaterEqual(len(world_results), 1)
+            self.assertEqual(world_results[0].provider, "manual-mock")
+
+            results = suite.run("manual-mock", forge=forge)
+            self.assertGreaterEqual(len(results), 1)
+            self.assertEqual(results[0].provider, "manual-mock")
+
+            report = worldforge.run_eval("physics", "manual-mock", forge=forge)
+            self.assertGreaterEqual(len(report), 1)
+            self.assertEqual(report[0].provider, "manual-mock")
+
 
 if __name__ == "__main__":
     unittest.main()

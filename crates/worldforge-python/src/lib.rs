@@ -215,6 +215,27 @@ fn world_from_state(state: WorldState, registry: Arc<ProviderRegistry>) -> PyWor
     }
 }
 
+fn prediction_from_inner(
+    inner: worldforge_core::prediction::Prediction,
+    registry: Arc<ProviderRegistry>,
+) -> PyPrediction {
+    PyPrediction { inner, registry }
+}
+
+fn multi_prediction_from_inner(
+    inner: MultiPrediction,
+    registry: Arc<ProviderRegistry>,
+) -> PyMultiPrediction {
+    PyMultiPrediction { inner, registry }
+}
+
+fn plan_execution_from_inner(
+    inner: PlanExecution,
+    registry: Arc<ProviderRegistry>,
+) -> PyPlanExecution {
+    PyPlanExecution { inner, registry }
+}
+
 fn normalize_imported_state(
     state: &mut WorldState,
     new_id: bool,
@@ -1478,7 +1499,10 @@ impl PyWorld {
             })?;
         self.world.state = self.world.current_state().clone();
 
-        Ok(PyPrediction { inner: prediction })
+        Ok(prediction_from_inner(
+            prediction,
+            Arc::clone(&self.registry),
+        ))
     }
 
     /// Compare predictions from multiple providers without mutating the world state.
@@ -1523,7 +1547,10 @@ impl PyWorld {
                 pyo3::exceptions::PyRuntimeError::new_err(format!("comparison failed: {e}"))
             })?;
 
-        Ok(PyMultiPrediction { inner: comparison })
+        Ok(multi_prediction_from_inner(
+            comparison,
+            Arc::clone(&self.registry),
+        ))
     }
 
     /// Plan a sequence of actions to achieve either a natural-language or structured goal.
@@ -1633,7 +1660,10 @@ impl PyWorld {
             })?;
         self.world.state = world.current_state().clone();
 
-        Ok(PyPlanExecution { inner: execution })
+        Ok(plan_execution_from_inner(
+            execution,
+            Arc::clone(&self.registry),
+        ))
     }
 
     /// Ask a provider to reason about the current world state.
@@ -1768,9 +1798,18 @@ impl PyHistoryEntry {
 
 /// The result of a world-model prediction.
 #[pyclass(name = "Prediction")]
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PyPrediction {
     inner: worldforge_core::prediction::Prediction,
+    registry: Arc<ProviderRegistry>,
+}
+
+impl std::fmt::Debug for PyPrediction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PyPrediction")
+            .field("inner", &self.inner)
+            .finish()
+    }
 }
 
 #[pymethods]
@@ -1820,12 +1859,7 @@ impl PyPrediction {
     /// Get the predicted output state as a `World`.
     fn output_world(&self) -> PyWorld {
         let state = self.inner.output_state.clone();
-        let provider = state.current_state_provider();
-        let registry = auto_detect_registry();
-        PyWorld {
-            world: CoreWorld::new(state, provider, Arc::clone(&registry)),
-            registry,
-        }
+        world_from_state(state, Arc::clone(&self.registry))
     }
 
     /// Serialize the prediction to JSON.
@@ -2357,9 +2391,18 @@ impl PyProviderScore {
 
 /// Result of comparing predictions across providers.
 #[pyclass(name = "MultiPrediction")]
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PyMultiPrediction {
     inner: MultiPrediction,
+    registry: Arc<ProviderRegistry>,
+}
+
+impl std::fmt::Debug for PyMultiPrediction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PyMultiPrediction")
+            .field("inner", &self.inner)
+            .finish()
+    }
 }
 
 #[pymethods]
@@ -2394,7 +2437,7 @@ impl PyMultiPrediction {
             .predictions
             .iter()
             .cloned()
-            .map(|inner| PyPrediction { inner })
+            .map(|inner| prediction_from_inner(inner, Arc::clone(&self.registry)))
             .collect()
     }
 
@@ -2429,9 +2472,10 @@ impl PyMultiPrediction {
 
     /// The highest-quality prediction in the comparison.
     fn best_prediction(&self) -> PyPrediction {
-        PyPrediction {
-            inner: self.inner.predictions[self.inner.best_prediction].clone(),
-        }
+        prediction_from_inner(
+            self.inner.predictions[self.inner.best_prediction].clone(),
+            Arc::clone(&self.registry),
+        )
     }
 
     /// Serialize the comparison to JSON.
@@ -2447,7 +2491,10 @@ impl PyMultiPrediction {
         let inner: MultiPrediction = serde_json::from_str(json).map_err(|e| {
             pyo3::exceptions::PyValueError::new_err(format!("deserialization error: {e}"))
         })?;
-        Ok(Self { inner })
+        Ok(Self {
+            inner,
+            registry: auto_detect_registry(),
+        })
     }
 
     fn __repr__(&self) -> String {
@@ -3882,6 +3929,10 @@ impl PyWorldForge {
 
     /// Compare previously generated predictions.
     fn compare(&self, predictions: Vec<PyPrediction>) -> PyResult<PyMultiPrediction> {
+        let registry = predictions
+            .first()
+            .map(|prediction| Arc::clone(&prediction.registry))
+            .unwrap_or_else(auto_detect_registry);
         let raw_predictions: Vec<_> = predictions
             .into_iter()
             .map(|prediction| prediction.inner)
@@ -3889,7 +3940,7 @@ impl PyWorldForge {
         let comparison = self.inner.compare(raw_predictions).map_err(|e| {
             pyo3::exceptions::PyValueError::new_err(format!("comparison failed: {e}"))
         })?;
-        Ok(PyMultiPrediction { inner: comparison })
+        Ok(multi_prediction_from_inner(comparison, registry))
     }
 
     fn __repr__(&self) -> String {
@@ -4023,9 +4074,18 @@ impl PyPlan {
 
 /// Result of executing a plan against a live world.
 #[pyclass(name = "PlanExecution")]
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PyPlanExecution {
     inner: PlanExecution,
+    registry: Arc<ProviderRegistry>,
+}
+
+impl std::fmt::Debug for PyPlanExecution {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PyPlanExecution")
+            .field("inner", &self.inner)
+            .finish()
+    }
 }
 
 #[pymethods]
@@ -4055,19 +4115,14 @@ impl PyPlanExecution {
             .predictions
             .iter()
             .cloned()
-            .map(|inner| PyPrediction { inner })
+            .map(|inner| prediction_from_inner(inner, Arc::clone(&self.registry)))
             .collect()
     }
 
     /// Final committed world state after the plan completed.
     fn final_world(&self) -> PyWorld {
         let state = self.inner.final_state.clone();
-        let provider = state.current_state_provider();
-        let registry = auto_detect_registry();
-        PyWorld {
-            world: CoreWorld::new(state, provider, Arc::clone(&registry)),
-            registry,
-        }
+        world_from_state(state, Arc::clone(&self.registry))
     }
 
     /// Serialize the execution report to JSON.
@@ -4083,7 +4138,10 @@ impl PyPlanExecution {
         let inner: PlanExecution = serde_json::from_str(json).map_err(|e| {
             pyo3::exceptions::PyValueError::new_err(format!("deserialization error: {e}"))
         })?;
-        Ok(Self { inner })
+        Ok(Self {
+            inner,
+            registry: auto_detect_registry(),
+        })
     }
 
     fn __repr__(&self) -> String {
@@ -4520,39 +4578,59 @@ impl PyEvalSuite {
     ///
     /// When `world` or `world_json` is supplied, each scenario is evaluated
     /// against that world state instead of its baked-in initial state.
-    #[pyo3(signature = (providers="", world=None, world_json=None))]
+    #[pyo3(signature = (providers="", world=None, world_json=None, forge=None))]
     fn run(
         &self,
         providers: &str,
         world: Option<&PyWorld>,
         world_json: Option<&str>,
+        forge: Option<&PyWorldForge>,
     ) -> PyResult<Vec<PyEvalResult>> {
-        let world_state = resolve_eval_world_state(world, world_json)?;
-        Ok(
-            run_eval_suite_report_with_world(&self.inner, providers, world_state.as_ref())?
-                .provider_summaries
-                .iter()
-                .map(to_py_eval_result)
-                .collect(),
-        )
+        let EvalContext {
+            world_state,
+            registry,
+        } = resolve_eval_context(
+            world,
+            world_json,
+            forge.map(|worldforge| worldforge.inner.registry_arc()),
+        )?;
+        Ok(run_eval_suite_report_with_world(
+            &self.inner,
+            providers,
+            world_state.as_ref(),
+            registry,
+        )?
+        .provider_summaries
+        .iter()
+        .map(to_py_eval_result)
+        .collect())
     }
 
     /// Run the evaluation suite and return the full report JSON.
     ///
     /// When `world` or `world_json` is supplied, each scenario is evaluated
     /// against that world state instead of its baked-in initial state.
-    #[pyo3(signature = (providers="", world=None, world_json=None))]
+    #[pyo3(signature = (providers="", world=None, world_json=None, forge=None))]
     fn run_report(
         &self,
         providers: &str,
         world: Option<&PyWorld>,
         world_json: Option<&str>,
+        forge: Option<&PyWorldForge>,
     ) -> PyResult<String> {
-        let world_state = resolve_eval_world_state(world, world_json)?;
+        let EvalContext {
+            world_state,
+            registry,
+        } = resolve_eval_context(
+            world,
+            world_json,
+            forge.map(|worldforge| worldforge.inner.registry_arc()),
+        )?;
         serde_json::to_string_pretty(&run_eval_suite_report_with_world(
             &self.inner,
             providers,
             world_state.as_ref(),
+            registry,
         )?)
         .map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!(
@@ -4565,52 +4643,64 @@ impl PyEvalSuite {
     ///
     /// When `world` or `world_json` is supplied, each scenario is evaluated
     /// against that world state instead of its baked-in initial state.
-    #[pyo3(signature = (providers="", world=None, world_json=None))]
+    #[pyo3(signature = (providers="", world=None, world_json=None, forge=None))]
     fn run_report_data(
         &self,
         providers: &str,
         world: Option<&PyWorld>,
         world_json: Option<&str>,
+        forge: Option<&PyWorldForge>,
     ) -> PyResult<PyEvalReport> {
-        let world_state = resolve_eval_world_state(world, world_json)?;
+        let EvalContext {
+            world_state,
+            registry,
+        } = resolve_eval_context(
+            world,
+            world_json,
+            forge.map(|worldforge| worldforge.inner.registry_arc()),
+        )?;
         Ok(to_py_eval_report(run_eval_suite_report_with_world(
             &self.inner,
             providers,
             world_state.as_ref(),
+            registry,
         )?))
     }
 
     /// Run the evaluation suite against a supplied world and return provider summaries.
-    #[pyo3(signature = (providers="", world=None, world_json=None))]
+    #[pyo3(signature = (providers="", world=None, world_json=None, forge=None))]
     fn run_with_world(
         &self,
         providers: &str,
         world: Option<&PyWorld>,
         world_json: Option<&str>,
+        forge: Option<&PyWorldForge>,
     ) -> PyResult<Vec<PyEvalResult>> {
-        self.run(providers, world, world_json)
+        self.run(providers, world, world_json, forge)
     }
 
     /// Run the evaluation suite against a supplied world and return the full report JSON.
-    #[pyo3(signature = (providers="", world=None, world_json=None))]
+    #[pyo3(signature = (providers="", world=None, world_json=None, forge=None))]
     fn run_report_with_world(
         &self,
         providers: &str,
         world: Option<&PyWorld>,
         world_json: Option<&str>,
+        forge: Option<&PyWorldForge>,
     ) -> PyResult<String> {
-        self.run_report(providers, world, world_json)
+        self.run_report(providers, world, world_json, forge)
     }
 
     /// Run the evaluation suite against a supplied world and return the structured report.
-    #[pyo3(signature = (providers="", world=None, world_json=None))]
+    #[pyo3(signature = (providers="", world=None, world_json=None, forge=None))]
     fn run_report_data_with_world(
         &self,
         providers: &str,
         world: Option<&PyWorld>,
         world_json: Option<&str>,
+        forge: Option<&PyWorldForge>,
     ) -> PyResult<PyEvalReport> {
-        self.run_report_data(providers, world, world_json)
+        self.run_report_data(providers, world, world_json, forge)
     }
 
     fn to_json(&self) -> PyResult<String> {
@@ -4760,20 +4850,13 @@ fn eval_dimension_name(dimension: &worldforge_eval::EvalDimension) -> String {
     }
 }
 
-fn run_eval_suite_report(
-    suite: &worldforge_eval::EvalSuite,
-    providers: &str,
-) -> PyResult<worldforge_eval::EvalReport> {
-    run_eval_suite_report_with_world(suite, providers, None)
-}
-
 fn run_eval_suite_report_with_world(
     suite: &worldforge_eval::EvalSuite,
     providers: &str,
     world_state: Option<&WorldState>,
+    registry: Arc<ProviderRegistry>,
 ) -> PyResult<worldforge_eval::EvalReport> {
     let rt = new_runtime()?;
-    let registry = auto_detect_registry();
     let provider_names = resolve_eval_provider_names(suite, providers);
     let mut provider_list: Vec<&dyn worldforge_core::provider::WorldModelProvider> = Vec::new();
     for provider_name in &provider_names {
@@ -4808,6 +4891,45 @@ fn resolve_eval_world_state(
     }
 }
 
+struct EvalContext {
+    world_state: Option<WorldState>,
+    registry: Arc<ProviderRegistry>,
+}
+
+fn resolve_eval_context(
+    world: Option<&PyWorld>,
+    world_json: Option<&str>,
+    forge_registry: Option<Arc<ProviderRegistry>>,
+) -> PyResult<EvalContext> {
+    let default_registry = || {
+        forge_registry
+            .as_ref()
+            .map(Arc::clone)
+            .unwrap_or_else(auto_detect_registry)
+    };
+    match (world, world_json) {
+        (Some(_), Some(_)) => Err(pyo3::exceptions::PyValueError::new_err(
+            "world and world_json are mutually exclusive",
+        )),
+        (Some(world), None) => Ok(EvalContext {
+            world_state: Some(world.world.state.clone()),
+            registry: Arc::clone(&world.registry),
+        }),
+        (None, Some(json)) => serde_json::from_str::<WorldState>(json)
+            .map(|state| EvalContext {
+                world_state: Some(state),
+                registry: default_registry(),
+            })
+            .map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!("failed to parse world JSON: {e}"))
+            }),
+        (None, None) => Ok(EvalContext {
+            world_state: None,
+            registry: default_registry(),
+        }),
+    }
+}
+
 /// List the built-in evaluation suite names.
 #[pyfunction]
 fn list_eval_suites() -> Vec<String> {
@@ -4819,14 +4941,22 @@ fn list_eval_suites() -> Vec<String> {
 
 /// Run an evaluation suite and return provider summaries.
 #[pyfunction]
-#[pyo3(signature = (suite_name="physics", providers="", suite_json=None))]
+#[pyo3(signature = (suite_name="physics", providers="", suite_json=None, forge=None))]
 fn run_eval(
     suite_name: &str,
     providers: &str,
     suite_json: Option<&str>,
+    forge: Option<&PyWorldForge>,
 ) -> PyResult<Vec<PyEvalResult>> {
     let suite = load_eval_suite(suite_name, suite_json)?;
-    let report = run_eval_suite_report(&suite, providers)?;
+    let report = run_eval_suite_report_with_world(
+        &suite,
+        providers,
+        None,
+        forge
+            .map(|worldforge| worldforge.inner.registry_arc())
+            .unwrap_or_else(auto_detect_registry),
+    )?;
     Ok(report
         .provider_summaries
         .iter()
@@ -4836,14 +4966,23 @@ fn run_eval(
 
 /// Run an evaluation suite and return the full report JSON.
 #[pyfunction]
-#[pyo3(signature = (suite_name="physics", providers="", suite_json=None))]
+#[pyo3(signature = (suite_name="physics", providers="", suite_json=None, forge=None))]
 fn run_eval_report(
     suite_name: &str,
     providers: &str,
     suite_json: Option<&str>,
+    forge: Option<&PyWorldForge>,
 ) -> PyResult<String> {
     let suite = load_eval_suite(suite_name, suite_json)?;
-    serde_json::to_string_pretty(&run_eval_suite_report(&suite, providers)?).map_err(|e| {
+    serde_json::to_string_pretty(&run_eval_suite_report_with_world(
+        &suite,
+        providers,
+        None,
+        forge
+            .map(|worldforge| worldforge.inner.registry_arc())
+            .unwrap_or_else(auto_detect_registry),
+    )?)
+    .map_err(|e| {
         pyo3::exceptions::PyRuntimeError::new_err(format!(
             "failed to serialize evaluation report: {e}"
         ))
@@ -4852,14 +4991,22 @@ fn run_eval_report(
 
 /// Run an evaluation suite and return the structured report object.
 #[pyfunction]
-#[pyo3(signature = (suite_name="physics", providers="", suite_json=None))]
+#[pyo3(signature = (suite_name="physics", providers="", suite_json=None, forge=None))]
 fn run_eval_report_data(
     suite_name: &str,
     providers: &str,
     suite_json: Option<&str>,
+    forge: Option<&PyWorldForge>,
 ) -> PyResult<PyEvalReport> {
     let suite = load_eval_suite(suite_name, suite_json)?;
-    Ok(to_py_eval_report(run_eval_suite_report(&suite, providers)?))
+    Ok(to_py_eval_report(run_eval_suite_report_with_world(
+        &suite,
+        providers,
+        None,
+        forge
+            .map(|worldforge| worldforge.inner.registry_arc())
+            .unwrap_or_else(auto_detect_registry),
+    )?))
 }
 
 fn register_child_module(
@@ -6790,6 +6937,60 @@ mod tests {
     }
 
     #[test]
+    fn test_manual_provider_registry_survives_prediction_and_comparison() {
+        let mut wf = test_worldforge();
+        Python::with_gil(|py| -> PyResult<()> {
+            let provider = Py::new(py, PyMockProvider::new("manual-mock", 12, 0.91))?;
+            wf.register_provider(provider.bind(py).as_any())?;
+            Ok(())
+        })
+        .unwrap();
+
+        let mut world = wf
+            .create_world("manual-provider-world", "manual-mock")
+            .unwrap();
+        let position = PyPosition::new(0.0, 0.5, 0.0);
+        let bbox = PyBBox::new(
+            &PyPosition::new(-0.05, 0.45, -0.05),
+            &PyPosition::new(0.05, 0.55, 0.05),
+        );
+        world
+            .add_object(&PySceneObject::new("mug", &position, &bbox))
+            .unwrap();
+
+        let action = PyAction::move_to(0.2, 0.5, 0.0, 1.0);
+        let prediction = world
+            .predict(&action, 1, None, None, false, None, false)
+            .unwrap();
+        let mut predicted_world = prediction.output_world();
+        let follow_up = predicted_world
+            .predict(&action, 1, None, None, false, None, false)
+            .unwrap();
+        assert_eq!(follow_up.provider(), "manual-mock");
+
+        let comparison = world
+            .compare(
+                &action,
+                vec!["manual-mock".to_string()],
+                1,
+                None,
+                false,
+                None,
+                None,
+                false,
+            )
+            .unwrap();
+        assert_eq!(comparison.prediction_count(), 1);
+        assert_eq!(comparison.best_prediction().provider(), "manual-mock");
+
+        let mut comparison_world = comparison.best_prediction().output_world();
+        let comparison_follow_up = comparison_world
+            .predict(&action, 1, None, None, false, None, false)
+            .unwrap();
+        assert_eq!(comparison_follow_up.provider(), "manual-mock");
+    }
+
+    #[test]
     fn test_world_compare_applies_guardrails() {
         let mut world = PyWorld::new("compare_world", "mock");
         world
@@ -8234,11 +8435,72 @@ mod tests {
         assert_eq!(roundtrip.step_count(), execution.step_count());
     }
 
+    #[test]
+    fn test_manual_provider_registry_survives_plan_execution() {
+        let mut wf = test_worldforge();
+        Python::with_gil(|py| -> PyResult<()> {
+            let provider = Py::new(py, PyMockProvider::new("manual-mock", 12, 0.91))?;
+            wf.register_provider(provider.bind(py).as_any())?;
+            Ok(())
+        })
+        .unwrap();
+
+        let mut world = wf.create_world("manual-plan-world", "manual-mock").unwrap();
+        let position = PyPosition::new(0.0, 0.5, 0.0);
+        let bbox = PyBBox::new(
+            &PyPosition::new(-0.1, 0.4, -0.1),
+            &PyPosition::new(0.1, 0.6, 0.1),
+        );
+        world
+            .add_object(&PySceneObject::new("ball", &position, &bbox))
+            .unwrap();
+
+        let plan = world
+            .plan(
+                Some("move ball to position (1.0, 0.5, 0.0)"),
+                None,
+                4,
+                10.0,
+                None,
+                None,
+                "sampling",
+                Some(48),
+                Some(5),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                false,
+                None,
+            )
+            .unwrap();
+        let execution = world
+            .execute_plan(&plan, 1, None, None, false, None, None, false)
+            .unwrap();
+
+        let mut final_world = execution.final_world();
+        let follow_up = final_world
+            .predict(
+                &PyAction::move_to(0.25, 0.5, 0.0, 1.0),
+                1,
+                None,
+                None,
+                false,
+                None,
+                false,
+            )
+            .unwrap();
+        assert_eq!(follow_up.provider(), "manual-mock");
+    }
+
     // --- Evaluation tests ---
 
     #[test]
     fn test_run_eval_physics() {
-        let results = run_eval("physics", "mock", None).unwrap();
+        let results = run_eval("physics", "mock", None, None).unwrap();
         assert!(!results.is_empty());
         assert_eq!(results[0].provider(), "mock");
         assert!(results[0].dimension_scores().contains_key("overall"));
@@ -8247,20 +8509,20 @@ mod tests {
 
     #[test]
     fn test_run_eval_uses_suite_default_providers_when_omitted() {
-        let results = run_eval("physics", "", None).unwrap();
+        let results = run_eval("physics", "", None, None).unwrap();
         assert!(!results.is_empty());
         assert_eq!(results[0].provider(), "mock");
     }
 
     #[test]
     fn test_run_eval_invalid_suite() {
-        let result = run_eval("nonexistent", "mock", None);
+        let result = run_eval("nonexistent", "mock", None, None);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_eval_result_repr() {
-        let results = run_eval("physics", "mock", None).unwrap();
+        let results = run_eval("physics", "mock", None, None).unwrap();
         let repr = results[0].__repr__();
         assert!(repr.contains("EvalResult"));
     }
@@ -8276,14 +8538,14 @@ mod tests {
     fn test_run_eval_report_with_custom_suite_json() {
         let suite_json =
             serde_json::to_string(&worldforge_eval::EvalSuite::physics_standard()).unwrap();
-        let report = run_eval_report("physics", "mock", Some(&suite_json)).unwrap();
+        let report = run_eval_report("physics", "mock", Some(&suite_json), None).unwrap();
         assert!(report.contains("\"suite\": \"Physics Standard\""));
         assert!(report.contains("\"provider\": \"mock\""));
     }
 
     #[test]
     fn test_run_eval_report_data_exposes_rollups() {
-        let report = run_eval_report_data("physics", "mock", None).unwrap();
+        let report = run_eval_report_data("physics", "mock", None, None).unwrap();
         assert_eq!(report.suite(), "Physics Standard");
         assert_eq!(report.provider_summaries().len(), 1);
         assert!(report
@@ -8298,7 +8560,7 @@ mod tests {
 
     #[test]
     fn test_eval_report_roundtrips_and_renders_artifacts() {
-        let report = run_eval_report_data("physics", "mock", None).unwrap();
+        let report = run_eval_report_data("physics", "mock", None, None).unwrap();
 
         let json = report.to_json().unwrap();
         let restored = PyEvalReport::from_json(&json).unwrap();
@@ -8338,7 +8600,7 @@ mod tests {
         };
 
         let empty_report = suite
-            .run_report_data_with_world("mock", None, None)
+            .run_report_data_with_world("mock", None, None, None)
             .unwrap();
         assert_eq!(
             empty_report.provider_summaries()[0].scenario_pass_rate(),
@@ -8360,7 +8622,7 @@ mod tests {
             .unwrap();
 
         let report = suite
-            .run_report_data_with_world("mock", Some(&world), None)
+            .run_report_data_with_world("mock", Some(&world), None, None)
             .unwrap();
         assert_eq!(report.provider_summaries()[0].scenario_pass_rate(), 1.0);
         assert_eq!(report.provider_summaries()[0].outcome_pass_rate(), 1.0);
@@ -8398,10 +8660,56 @@ mod tests {
         let world_json = world.to_json().unwrap();
 
         let report = suite
-            .run_report_data_with_world("mock", None, Some(&world_json))
+            .run_report_data_with_world("mock", None, Some(&world_json), None)
             .unwrap();
         assert_eq!(report.provider_summaries()[0].scenario_pass_rate(), 1.0);
         assert_eq!(report.provider_summaries()[0].outcome_pass_rate(), 1.0);
+    }
+
+    #[test]
+    fn test_eval_suite_run_report_data_with_manual_provider_world_uses_registry() {
+        let mut wf = test_worldforge();
+        Python::with_gil(|py| -> PyResult<()> {
+            let provider = Py::new(py, PyMockProvider::new("manual-mock", 12, 0.91))?;
+            wf.register_provider(provider.bind(py).as_any())?;
+            Ok(())
+        })
+        .unwrap();
+
+        let mut world = wf.create_world("manual-eval-world", "manual-mock").unwrap();
+        let position = PyPosition::new(0.0, 0.5, 0.0);
+        let bbox = PyBBox::new(
+            &PyPosition::new(-0.1, 0.4, -0.1),
+            &PyPosition::new(0.1, 0.6, 0.1),
+        );
+        world
+            .add_object(&PySceneObject::new("mug", &position, &bbox))
+            .unwrap();
+
+        let suite = PyEvalSuite::from_builtin("physics").unwrap();
+        let report = suite
+            .run_report_data_with_world("manual-mock", Some(&world), None, None)
+            .unwrap();
+
+        assert_eq!(report.provider_summaries().len(), 1);
+        assert_eq!(report.provider_summaries()[0].provider(), "manual-mock");
+        assert!(report.provider_summaries()[0].scenario_pass_rate() > 0.0);
+    }
+
+    #[test]
+    fn test_run_eval_with_manual_provider_uses_worldforge_registry() {
+        let mut wf = test_worldforge();
+        Python::with_gil(|py| -> PyResult<()> {
+            let provider = Py::new(py, PyMockProvider::new("manual-mock", 12, 0.91))?;
+            wf.register_provider(provider.bind(py).as_any())?;
+            Ok(())
+        })
+        .unwrap();
+
+        let results = run_eval("physics", "manual-mock", None, Some(&wf)).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].provider(), "manual-mock");
+        assert!(results[0].scenario_pass_rate() > 0.0);
     }
 
     // --- ZK Verification tests ---
