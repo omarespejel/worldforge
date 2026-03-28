@@ -3728,6 +3728,202 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_outcomes_imply_derived_scores_without_explicit_dimensions() {
+        let target = Position {
+            x: 1.0,
+            y: 0.5,
+            z: -0.2,
+        };
+        let suite = EvalSuite {
+            name: "Implied Derived Scores".to_string(),
+            scenarios: vec![EvalScenario {
+                name: "implied_scores".to_string(),
+                description: "Outcomes should surface action/spatial/material derived scores"
+                    .to_string(),
+                initial_state: visual_fixture_state(
+                    Position {
+                        x: 0.0,
+                        y: 0.5,
+                        z: -0.2,
+                    },
+                    Some("mug"),
+                ),
+                actions: vec![Action::Move { target, speed: 1.0 }],
+                expected_outcomes: vec![
+                    ExpectedOutcome::ObjectPosition {
+                        name: "mug".to_string(),
+                        position: target,
+                        tolerance: 0.001,
+                    },
+                    ExpectedOutcome::ObjectSemanticLabel {
+                        name: "mug".to_string(),
+                        label: "mug".to_string(),
+                    },
+                ],
+                ground_truth: None,
+            }],
+            dimensions: vec![EvalDimension::SpatialConsistency],
+            providers: vec![],
+        };
+        let provider = VisualFixtureProvider::new(
+            "implied-visual",
+            visual_fixture_state(target, Some("mug")),
+            visual_fixture_clip(),
+        );
+
+        let report = suite
+            .run(&[&provider as &dyn WorldModelProvider])
+            .await
+            .unwrap();
+        let result = &report.results[0];
+
+        assert!(result.scores.contains_key("action_prediction_accuracy"));
+        assert!(result.scores.contains_key("spatial_reasoning"));
+        assert!(result.scores.contains_key("material_understanding"));
+    }
+
+    #[tokio::test]
+    async fn test_action_prediction_uses_action_effect_fallback_without_relevant_outcomes() {
+        let mut output_state = visual_fixture_state(Position::default(), Some("mug"));
+        output_state
+            .metadata
+            .tags
+            .push("camera-look-at:0.0,0.5,-2.0".to_string());
+
+        let suite = EvalSuite {
+            name: "Action Fallback".to_string(),
+            scenarios: vec![EvalScenario {
+                name: "camera_look".to_string(),
+                description: "When outcomes do not describe final state, use direct action effect"
+                    .to_string(),
+                initial_state: visual_fixture_state(Position::default(), Some("mug")),
+                actions: vec![Action::CameraLookAt {
+                    target: Position {
+                        x: 0.0,
+                        y: 0.5,
+                        z: -2.0,
+                    },
+                }],
+                expected_outcomes: vec![],
+                ground_truth: None,
+            }],
+            dimensions: vec![EvalDimension::ActionPredictionAccuracy],
+            providers: vec![],
+        };
+        let provider = VisualFixtureProvider::new(
+            "action-fallback",
+            output_state,
+            visual_fixture_clip(),
+        );
+
+        let report = suite
+            .run(&[&provider as &dyn WorldModelProvider])
+            .await
+            .unwrap();
+        assert_eq!(report.results[0].scores["action_prediction_accuracy"], 1.0);
+    }
+
+    #[tokio::test]
+    async fn test_threshold_request_for_action_prediction_is_not_circular() {
+        let suite = EvalSuite {
+            name: "Non Circular Threshold".to_string(),
+            scenarios: vec![EvalScenario {
+                name: "derived_threshold".to_string(),
+                description: "Derived thresholds should not influence their own score".to_string(),
+                initial_state: WorldState::new("non_circular", "eval"),
+                actions: vec![Action::SetLighting { time_of_day: 0.5 }],
+                expected_outcomes: vec![ExpectedOutcome::MinPhysicsScore {
+                    dimension: EvalDimension::ActionPredictionAccuracy,
+                    threshold: 0.8,
+                }],
+                ground_truth: None,
+            }],
+            dimensions: vec![EvalDimension::SpatialConsistency],
+            providers: vec![],
+        };
+        let provider = SequencedEvalProvider::new(
+            "non-circular",
+            vec![(
+                PhysicsScores {
+                    overall: 0.25,
+                    object_permanence: 0.25,
+                    gravity_compliance: 0.25,
+                    collision_accuracy: 0.25,
+                    spatial_consistency: 0.25,
+                    temporal_consistency: 0.25,
+                },
+                0.9,
+            )],
+        );
+
+        let report = suite
+            .run(&[&provider as &dyn WorldModelProvider])
+            .await
+            .unwrap();
+        let result = &report.results[0];
+        assert_eq!(result.scores["action_prediction_accuracy"], 0.25);
+        assert!(!result.outcomes[0].passed);
+    }
+
+    #[test]
+    fn test_spatial_relationship_signal_scores_scene_relationships() {
+        use worldforge_core::scene::SceneObject;
+
+        let mut state = WorldState::new("spatial_signal", "eval");
+        let object_a = SceneObject::new(
+            "a",
+            Pose {
+                position: Position {
+                    x: 0.0,
+                    y: 0.5,
+                    z: 0.0,
+                },
+                ..Default::default()
+            },
+            BBox {
+                min: Position {
+                    x: -0.1,
+                    y: 0.4,
+                    z: -0.1,
+                },
+                max: Position {
+                    x: 0.1,
+                    y: 0.6,
+                    z: 0.1,
+                },
+            },
+        );
+        let object_b = SceneObject::new(
+            "b",
+            Pose {
+                position: Position {
+                    x: 0.12,
+                    y: 0.5,
+                    z: 0.0,
+                },
+                ..Default::default()
+            },
+            BBox {
+                min: Position {
+                    x: 0.02,
+                    y: 0.4,
+                    z: -0.1,
+                },
+                max: Position {
+                    x: 0.22,
+                    y: 0.6,
+                    z: 0.1,
+                },
+            },
+        );
+        state.scene.add_object(object_a);
+        state.scene.add_object(object_b);
+
+        let score = spatial_relationship_signal_score(&state).unwrap();
+        assert!(score > 0.5);
+    }
+
+    #[tokio::test]
     async fn test_final_state_condition_outcome_fails_and_passes() {
         let mut state = WorldState::new("condition_checks", "eval");
         let object = worldforge_core::scene::SceneObject::new(
