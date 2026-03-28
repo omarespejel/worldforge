@@ -17,6 +17,7 @@ use worldforge_core::prediction::{
     ComparisonConsensus, ComparisonReportFormat, GuardrailDiagnostics, MultiPrediction,
     ObjectDiagnostic, ObjectDrift, PairwiseAgreement, PlanExecution, PlanGoal, PlanGoalInput,
     PlannerOptions, PlannerType, PredictionConfig, ProviderScore, StateDiagnostics,
+    StoredPlanRecord,
 };
 use worldforge_core::provider::{
     CostEstimate, EmbeddingInput, EmbeddingOutput, GenerationConfig, GenerationPrompt, Operation,
@@ -77,6 +78,10 @@ fn parse_world_id(world_id: &str) -> PyResult<uuid::Uuid> {
 
 fn parse_object_id(object_id: &str) -> PyResult<uuid::Uuid> {
     parse_uuid(object_id, "object")
+}
+
+fn parse_plan_id(plan_id: &str) -> PyResult<uuid::Uuid> {
+    parse_uuid(plan_id, "plan")
 }
 
 #[derive(Clone, Copy)]
@@ -236,6 +241,10 @@ fn plan_execution_from_inner(
     registry: Arc<ProviderRegistry>,
 ) -> PyPlanExecution {
     PyPlanExecution { inner, registry }
+}
+
+fn stored_plan_record_from_inner(inner: StoredPlanRecord) -> PyStoredPlanRecord {
+    PyStoredPlanRecord { inner }
 }
 
 fn normalize_imported_state(
@@ -1372,6 +1381,12 @@ impl PyWorld {
         self.world.state.history.len()
     }
 
+    /// Get the number of stored plan artifacts attached to this world.
+    #[getter]
+    fn stored_plan_count(&self) -> usize {
+        self.world.list_stored_plans().len()
+    }
+
     /// Return the recorded history entries for this world.
     fn history(&self) -> Vec<PyHistoryEntry> {
         self.world
@@ -1382,6 +1397,47 @@ impl PyWorld {
             .cloned()
             .map(|inner| PyHistoryEntry { inner })
             .collect()
+    }
+
+    /// Return the stored plan artifacts for this world.
+    fn stored_plans(&self) -> Vec<PyStoredPlanRecord> {
+        self.world
+            .list_stored_plans()
+            .into_iter()
+            .map(stored_plan_record_from_inner)
+            .collect()
+    }
+
+    /// Return one stored plan artifact by ID.
+    fn stored_plan(&self, plan_id: &str) -> PyResult<PyStoredPlanRecord> {
+        let plan_id = parse_plan_id(plan_id)?;
+        self.world
+            .get_stored_plan(&plan_id)
+            .map(|record| stored_plan_record_from_inner(record.clone()))
+            .map_err(|e| match e {
+                worldforge_core::error::WorldForgeError::InvalidState(message) => {
+                    pyo3::exceptions::PyKeyError::new_err(message)
+                }
+                _ => pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "failed to load stored plan: {e}"
+                )),
+            })
+    }
+
+    /// Delete one stored plan artifact by ID and return the removed record.
+    fn delete_stored_plan(&mut self, plan_id: &str) -> PyResult<PyStoredPlanRecord> {
+        let plan_id = parse_plan_id(plan_id)?;
+        self.world
+            .remove_stored_plan(&plan_id)
+            .map(stored_plan_record_from_inner)
+            .map_err(|e| match e {
+                worldforge_core::error::WorldForgeError::InvalidState(message) => {
+                    pyo3::exceptions::PyKeyError::new_err(message)
+                }
+                _ => pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "failed to delete stored plan: {e}"
+                )),
+            })
     }
 
     /// Return a detached world view for a specific recorded history checkpoint.
@@ -1632,6 +1688,75 @@ impl PyWorld {
         Ok(PyPlan { inner: plan })
     }
 
+    /// Plan a sequence of actions and persist the resulting plan on this world.
+    #[pyo3(signature = (goal=None, goal_json=None, max_steps=10, timeout_seconds=30.0, provider=None, fallback_provider=None, planner="sampling", num_samples=None, top_k=None, population_size=None, elite_fraction=None, num_iterations=None, learning_rate=None, horizon=None, replanning_interval=None, guardrails_json=None, disable_guardrails=false, verify_backend=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn plan_and_store(
+        &mut self,
+        goal: Option<&str>,
+        goal_json: Option<&str>,
+        max_steps: u32,
+        timeout_seconds: f64,
+        provider: Option<&str>,
+        fallback_provider: Option<&str>,
+        planner: &str,
+        num_samples: Option<u32>,
+        top_k: Option<u32>,
+        population_size: Option<u32>,
+        elite_fraction: Option<f32>,
+        num_iterations: Option<u32>,
+        learning_rate: Option<f32>,
+        horizon: Option<u32>,
+        replanning_interval: Option<u32>,
+        guardrails_json: Option<&str>,
+        disable_guardrails: bool,
+        verify_backend: Option<&str>,
+    ) -> PyResult<PyStoredPlanRecord> {
+        let rt = new_runtime()?;
+        let provider_name = resolve_provider_name(&self.world, provider);
+        let mut world = CoreWorld::new(
+            self.world.state.clone(),
+            provider_name.clone(),
+            Arc::clone(&self.registry),
+        );
+        let planner = planner_from_args(
+            planner,
+            max_steps,
+            num_samples,
+            top_k,
+            population_size,
+            elite_fraction,
+            num_iterations,
+            learning_rate,
+            horizon,
+            replanning_interval,
+        )?;
+        let goal = parse_plan_goal(goal, goal_json)?;
+        let mut request = worldforge_core::prediction::PlanRequest {
+            current_state: self.world.state.clone(),
+            goal,
+            max_steps,
+            guardrails: parse_guardrails_json(guardrails_json)?,
+            planner,
+            timeout_seconds,
+            fallback_provider: fallback_provider.map(ToOwned::to_owned),
+        };
+        if disable_guardrails {
+            request = request.disable_guardrails();
+        }
+
+        let mut record = rt.block_on(world.plan_and_store(&request)).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("planning failed: {e}"))
+        })?;
+        let mut plan = record.plan.clone();
+        attach_plan_verification(&mut plan, verify_backend)?;
+        record = StoredPlanRecord::from_request(provider_name, &request, &plan);
+        world.state.store_plan_record(record.clone());
+        self.world.state = world.current_state().clone();
+
+        Ok(stored_plan_record_from_inner(record))
+    }
+
     /// Execute a previously generated plan against the live world state.
     #[pyo3(signature = (plan, steps=1, provider=None, fallback_provider=None, return_video=false, max_latency_ms=None, guardrails_json=None, disable_guardrails=false))]
     #[allow(clippy::too_many_arguments)]
@@ -1667,6 +1792,53 @@ impl PyWorld {
 
         let execution = rt
             .block_on(world.execute_plan_with_provider(&plan.inner, &config, &provider_name))
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("plan execution failed: {e}"))
+            })?;
+        self.world.state = world.current_state().clone();
+
+        Ok(plan_execution_from_inner(
+            execution,
+            Arc::clone(&self.registry),
+        ))
+    }
+
+    /// Execute a previously stored plan against the live world state.
+    #[pyo3(signature = (plan_id, steps=1, provider=None, fallback_provider=None, return_video=false, max_latency_ms=None, guardrails_json=None, disable_guardrails=false))]
+    #[allow(clippy::too_many_arguments)]
+    fn execute_stored_plan(
+        &mut self,
+        plan_id: &str,
+        steps: u32,
+        provider: Option<&str>,
+        fallback_provider: Option<&str>,
+        return_video: bool,
+        max_latency_ms: Option<u64>,
+        guardrails_json: Option<&str>,
+        disable_guardrails: bool,
+    ) -> PyResult<PyPlanExecution> {
+        let plan_id = parse_plan_id(plan_id)?;
+        let rt = new_runtime()?;
+        let provider_name = resolve_provider_name(&self.world, provider);
+        let mut world = CoreWorld::new(
+            self.world.state.clone(),
+            provider_name.clone(),
+            Arc::clone(&self.registry),
+        );
+        let mut config = PredictionConfig {
+            steps,
+            return_video,
+            max_latency_ms,
+            fallback_provider: fallback_provider.map(ToOwned::to_owned),
+            guardrails: parse_guardrails_json(guardrails_json)?,
+            ..PredictionConfig::default()
+        };
+        if disable_guardrails {
+            config = config.disable_guardrails();
+        }
+
+        let execution = rt
+            .block_on(world.execute_stored_plan_with_provider(&plan_id, &config, &provider_name))
             .map_err(|e| {
                 pyo3::exceptions::PyRuntimeError::new_err(format!("plan execution failed: {e}"))
             })?;
@@ -1800,6 +1972,82 @@ impl PyHistoryEntry {
             self.inner.time.step,
             self.inner.provider,
             self.inner.action.is_some()
+        )
+    }
+}
+
+/// Persisted plan metadata and payload stored alongside a world.
+#[pyclass(name = "StoredPlanRecord")]
+#[derive(Debug, Clone)]
+pub struct PyStoredPlanRecord {
+    inner: StoredPlanRecord,
+}
+
+#[pymethods]
+impl PyStoredPlanRecord {
+    /// Stable stored-plan ID.
+    #[getter]
+    fn id(&self) -> String {
+        self.inner.id.to_string()
+    }
+
+    /// Provider used to generate the plan.
+    #[getter]
+    fn provider(&self) -> &str {
+        &self.inner.provider
+    }
+
+    /// Planner identifier used to generate the plan.
+    #[getter]
+    fn planner(&self) -> &str {
+        &self.inner.planner
+    }
+
+    /// Human-readable summary of the requested goal.
+    #[getter]
+    fn goal_summary(&self) -> &str {
+        &self.inner.goal_summary
+    }
+
+    /// RFC 3339 timestamp when the plan record was created.
+    #[getter]
+    fn created_at(&self) -> String {
+        self.inner.created_at.to_rfc3339()
+    }
+
+    /// Number of actions in the stored plan.
+    #[getter]
+    fn action_count(&self) -> usize {
+        self.inner.plan.actions.len()
+    }
+
+    /// Return the stored plan payload.
+    fn plan(&self) -> PyPlan {
+        PyPlan {
+            inner: self.inner.plan.clone(),
+        }
+    }
+
+    /// Serialize only the stored plan payload to JSON.
+    fn plan_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner.plan).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    }
+
+    /// Serialize the full stored plan record to JSON.
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "StoredPlanRecord(id='{}', planner='{}', actions={})",
+            self.inner.id,
+            self.inner.planner,
+            self.inner.plan.actions.len()
         )
     }
 }
@@ -3843,6 +4091,56 @@ impl PyWorldForge {
         Ok(PyWorld { world, registry })
     }
 
+    /// List the stored plan artifacts for a persisted world.
+    fn stored_plans(&self, world_id: &str) -> PyResult<Vec<PyStoredPlanRecord>> {
+        let id = parse_world_id(world_id)?;
+        let rt = new_runtime()?;
+        let state = rt.block_on(self.inner.load_state(&id)).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("failed to load world state: {e}"))
+        })?;
+        Ok(state
+            .list_stored_plans()
+            .into_iter()
+            .map(stored_plan_record_from_inner)
+            .collect())
+    }
+
+    /// Return one stored plan artifact for a persisted world.
+    fn stored_plan(&self, world_id: &str, plan_id: &str) -> PyResult<PyStoredPlanRecord> {
+        let id = parse_world_id(world_id)?;
+        let plan_id = parse_plan_id(plan_id)?;
+        let rt = new_runtime()?;
+        let state = rt.block_on(self.inner.load_state(&id)).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("failed to load world state: {e}"))
+        })?;
+        state
+            .get_stored_plan(&plan_id)
+            .cloned()
+            .map(stored_plan_record_from_inner)
+            .ok_or_else(|| {
+                pyo3::exceptions::PyKeyError::new_err(format!("stored plan not found: {plan_id}"))
+            })
+    }
+
+    /// Delete one stored plan artifact from a persisted world and save the updated state.
+    fn delete_stored_plan(&self, world_id: &str, plan_id: &str) -> PyResult<PyStoredPlanRecord> {
+        let id = parse_world_id(world_id)?;
+        let plan_id = parse_plan_id(plan_id)?;
+        let rt = new_runtime()?;
+        let mut state = rt.block_on(self.inner.load_state(&id)).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("failed to load world state: {e}"))
+        })?;
+        let removed = state.remove_stored_plan(&plan_id).ok_or_else(|| {
+            pyo3::exceptions::PyKeyError::new_err(format!("stored plan not found: {plan_id}"))
+        })?;
+        rt.block_on(self.inner.save_state(&state)).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "failed to save updated world state: {e}"
+            ))
+        })?;
+        Ok(stored_plan_record_from_inner(removed))
+    }
+
     /// Fork a persisted world into a new branch and save the branch.
     #[pyo3(signature = (world_id, history_index=None, name=None))]
     fn fork_world(
@@ -4161,6 +4459,12 @@ pub struct PyPlan {
 
 #[pymethods]
 impl PyPlan {
+    /// Stable identifier when this plan has been stored on a world.
+    #[getter]
+    fn stored_plan_id(&self) -> Option<String> {
+        self.inner.stored_plan_id.map(|id| id.to_string())
+    }
+
     /// Number of actions in the plan.
     #[getter]
     fn action_count(&self) -> usize {
@@ -6436,6 +6740,7 @@ fn worldforge(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySceneObjectPatch>()?;
     m.add_class::<PyWorld>()?;
     m.add_class::<PyHistoryEntry>()?;
+    m.add_class::<PyStoredPlanRecord>()?;
     m.add_class::<PyPrediction>()?;
     m.add_class::<PyObjectDiagnostic>()?;
     m.add_class::<PyObjectDrift>()?;
@@ -7157,6 +7462,60 @@ mod tests {
         world.restore_history(0).unwrap();
         assert_eq!(world.step(), 0);
         assert_eq!(world.history_length(), 1);
+    }
+
+    #[test]
+    fn test_world_stored_plan_lifecycle_and_execution() {
+        let mut world = PyWorld::new("stored_plan_world", "mock");
+        let record = world
+            .plan_and_store(
+                Some("spawn cube"),
+                None,
+                4,
+                30.0,
+                None,
+                None,
+                "sampling",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                false,
+                None,
+            )
+            .unwrap();
+
+        let plan_id = record.id();
+        assert_eq!(record.goal_summary(), "spawn cube");
+        assert_eq!(
+            record.plan().stored_plan_id().as_deref(),
+            Some(plan_id.as_str())
+        );
+        assert_eq!(world.stored_plan_count(), 1);
+        assert_eq!(world.stored_plans().len(), 1);
+        assert_eq!(world.stored_plan(&plan_id).unwrap().id(), plan_id);
+
+        let execution = world
+            .execute_stored_plan(&plan_id, 1, None, None, false, None, None, false)
+            .unwrap();
+        assert!(execution.step_count() >= 1);
+        assert!(world.history_length() >= 2);
+
+        let restored = PyStoredPlanRecord {
+            inner: serde_json::from_str::<StoredPlanRecord>(&record.to_json().unwrap()).unwrap(),
+        };
+        assert_eq!(restored.id(), plan_id);
+
+        let deleted = world.delete_stored_plan(&plan_id).unwrap();
+        assert_eq!(deleted.id(), plan_id);
+        assert_eq!(world.stored_plan_count(), 0);
+        assert!(world.stored_plans().is_empty());
+        assert!(world.stored_plan(&plan_id).is_err());
     }
 
     #[test]
@@ -8175,6 +8534,67 @@ mod tests {
 
         wf.delete_world(&world_id).unwrap();
         assert!(wf.load_world(&world_id).is_err());
+
+        let _ = std::fs::remove_dir_all(&state_dir);
+    }
+
+    #[test]
+    fn test_worldforge_persisted_stored_plan_management_roundtrip() {
+        let state_dir =
+            std::env::temp_dir().join(format!("wf-python-stored-plans-{}", uuid::Uuid::new_v4()));
+        let wf = PyWorldForge::new(
+            "file",
+            state_dir.to_str().unwrap(),
+            None,
+            "json",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let mut world = wf.create_world("persisted_plans_world", "mock").unwrap();
+        let record = world
+            .plan_and_store(
+                Some("spawn cube"),
+                None,
+                4,
+                30.0,
+                None,
+                None,
+                "sampling",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                false,
+                None,
+            )
+            .unwrap();
+        let world_id = wf.save_world(&world).unwrap();
+
+        let listed = wf.stored_plans(&world_id).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id(), record.id());
+
+        let shown = wf.stored_plan(&world_id, &record.id()).unwrap();
+        assert_eq!(shown.goal_summary(), "spawn cube");
+
+        let deleted = wf.delete_stored_plan(&world_id, &record.id()).unwrap();
+        assert_eq!(deleted.id(), record.id());
+        assert!(wf.stored_plans(&world_id).unwrap().is_empty());
+
+        let reloaded = wf.load_world(&world_id).unwrap();
+        assert_eq!(reloaded.stored_plan_count(), 0);
 
         let _ = std::fs::remove_dir_all(&state_dir);
     }

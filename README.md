@@ -762,9 +762,10 @@ support them. Structured
 the CLI, REST server, and Python bindings, and serialized plans can now be
 executed against persisted worlds through each surface with atomic state
 commit-on-success semantics. Stored plans are also manageable end to end via
-`worldforge plans list|show|delete` and `GET`/`DELETE /v1/worlds/{id}/plans`
-routes, so persisted plan artifacts can be inspected or removed without
-touching the underlying world state. Scene object seeding and inspection are
+`worldforge plans list|show|delete`, the Python `World`/`WorldForge`
+stored-plan helpers, and `GET`/`DELETE /v1/worlds/{id}/plans` routes, so
+persisted plan artifacts can be inspected or removed without touching the
+underlying world state. Scene object seeding and inspection are
 now exposed across the CLI and REST server as first-class operations instead of
 requiring direct JSON state editing, and Python scene objects can round-trip
 through JSON for interop with those workflows. Provider discovery now exposes

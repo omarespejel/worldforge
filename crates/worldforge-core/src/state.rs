@@ -431,9 +431,24 @@ impl WorldState {
         id
     }
 
+    /// List all persisted plan artifacts associated with this world.
+    pub fn list_stored_plans(&self) -> Vec<StoredPlanRecord> {
+        self.stored_plans.values().cloned().collect()
+    }
+
+    /// Return a persisted plan artifact by ID.
+    pub fn get_stored_plan(&self, id: &PlanId) -> Option<&StoredPlanRecord> {
+        self.stored_plans.get(id)
+    }
+
     /// Return a persisted plan artifact by ID.
     pub fn stored_plan(&self, id: &PlanId) -> Option<&StoredPlanRecord> {
-        self.stored_plans.get(id)
+        self.get_stored_plan(id)
+    }
+
+    /// Remove a persisted plan artifact by ID and return it if present.
+    pub fn remove_stored_plan(&mut self, id: &PlanId) -> Option<StoredPlanRecord> {
+        self.stored_plans.remove(id)
     }
 }
 
@@ -2005,7 +2020,10 @@ mod tests {
     use std::net::SocketAddr;
     use std::sync::Arc;
 
+    use uuid::Uuid;
+
     use super::*;
+    use crate::prediction::{Plan, PlanGoal, PlanRequest, PlannerType, StoredPlanRecord};
     use tokio::net::TcpListener;
     use tokio::sync::Mutex;
     use tokio::task::JoinHandle;
@@ -2030,6 +2048,36 @@ mod tests {
         assert_eq!(ws.metadata.created_by, "mock");
         assert_eq!(ws.time.step, 0);
         assert!(ws.history.is_empty());
+        assert!(ws.list_stored_plans().is_empty());
+    }
+
+    fn sample_stored_plan_record(id: PlanId, name: &str) -> StoredPlanRecord {
+        let state = WorldState::new(name, "mock");
+        let request = PlanRequest {
+            current_state: state.clone(),
+            goal: PlanGoal::Description(format!("reach {name}")),
+            max_steps: 2,
+            guardrails: Vec::new(),
+            planner: PlannerType::Sampling {
+                num_samples: 1,
+                top_k: 1,
+            },
+            timeout_seconds: 5.0,
+            fallback_provider: None,
+        };
+        let plan = Plan {
+            actions: Vec::new(),
+            predicted_states: vec![state],
+            predicted_videos: None,
+            total_cost: 0.0,
+            success_probability: 1.0,
+            guardrail_compliance: Vec::new(),
+            planning_time_ms: 0,
+            iterations_used: 0,
+            stored_plan_id: Some(id),
+            verification_proof: None,
+        };
+        StoredPlanRecord::from_request("mock", &request, &plan)
     }
 
     #[test]
@@ -2169,6 +2217,33 @@ mod tests {
         assert_eq!(state.time.step, 0);
         assert_eq!(state.metadata.name, "restore-in-place");
         assert_eq!(state.history.len(), 1);
+    }
+
+    #[test]
+    fn test_world_state_stored_plan_lifecycle() {
+        let mut state = WorldState::new("plan-world", "mock");
+        let first_id = Uuid::from_u128(1);
+        let second_id = Uuid::from_u128(2);
+        let first = sample_stored_plan_record(first_id, "first");
+        let second = sample_stored_plan_record(second_id, "second");
+
+        assert_eq!(state.store_plan_record(first.clone()), first_id);
+        assert_eq!(state.store_plan_record(second.clone()), second_id);
+
+        let listed = state.list_stored_plans();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].id, first_id);
+        assert_eq!(listed[1].id, second_id);
+
+        let fetched = state.get_stored_plan(&second_id).unwrap();
+        assert_eq!(fetched.goal_summary, second.goal_summary);
+        assert_eq!(state.stored_plan(&first_id).unwrap().provider, "mock");
+
+        let removed = state.remove_stored_plan(&first_id).unwrap();
+        assert_eq!(removed.id, first_id);
+        assert!(state.get_stored_plan(&first_id).is_none());
+        assert_eq!(state.list_stored_plans().len(), 1);
+        assert!(state.remove_stored_plan(&first_id).is_none());
     }
 
     #[test]

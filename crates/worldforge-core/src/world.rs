@@ -494,6 +494,11 @@ impl World {
         Ok(record)
     }
 
+    /// List all persisted plan artifacts associated with this world.
+    pub fn list_stored_plans(&self) -> Vec<StoredPlanRecord> {
+        self.state.list_stored_plans()
+    }
+
     async fn plan_with_provider_fallback(
         &self,
         request: &PlanRequest,
@@ -641,8 +646,20 @@ impl World {
     }
 
     /// Return a persisted plan artifact by ID.
+    pub fn get_stored_plan(&self, plan_id: &PlanId) -> Result<&StoredPlanRecord> {
+        self.state.get_stored_plan(plan_id).ok_or_else(|| {
+            WorldForgeError::InvalidState(format!("stored plan not found: {plan_id}"))
+        })
+    }
+
+    /// Return a persisted plan artifact by ID.
     pub fn stored_plan(&self, plan_id: &PlanId) -> Result<&StoredPlanRecord> {
-        self.state.stored_plan(plan_id).ok_or_else(|| {
+        self.get_stored_plan(plan_id)
+    }
+
+    /// Remove a persisted plan artifact by ID and return it if present.
+    pub fn remove_stored_plan(&mut self, plan_id: &PlanId) -> Result<StoredPlanRecord> {
+        self.state.remove_stored_plan(plan_id).ok_or_else(|| {
             WorldForgeError::InvalidState(format!("stored plan not found: {plan_id}"))
         })
     }
@@ -2611,14 +2628,18 @@ mod tests {
 
     use super::*;
     use async_trait::async_trait;
+    use uuid::Uuid;
 
     use crate::error::WorldForgeError;
     use crate::prediction::PlanGoal;
-    use crate::prediction::{PhysicsScores, Prediction, PredictionProvenance};
+    use crate::prediction::{
+        PhysicsScores, Plan, PlanRequest, PlannerType, Prediction, PredictionProvenance,
+        StoredPlanRecord,
+    };
     use crate::provider::{
         CostEstimate, GenerationConfig, GenerationPrompt, HealthStatus, LatencyProfile, Operation,
-        ProviderCapabilities, ReasoningInput, ReasoningOutput, SpatialControls, TransferConfig,
-        WorldModelProvider,
+        ProviderCapabilities, ProviderRegistry, ReasoningInput, ReasoningOutput, SpatialControls,
+        TransferConfig, WorldModelProvider,
     };
     use crate::types::VideoClip;
 
@@ -2641,6 +2662,35 @@ mod tests {
         fn max_active(&self) -> usize {
             self.max_active.load(Ordering::SeqCst)
         }
+    }
+
+    fn sample_stored_plan_record(id: Uuid, name: &str) -> StoredPlanRecord {
+        let state = WorldState::new(name, "mock");
+        let request = PlanRequest {
+            current_state: state.clone(),
+            goal: PlanGoal::Description(format!("reach {name}")),
+            max_steps: 2,
+            guardrails: Vec::new(),
+            planner: PlannerType::Sampling {
+                num_samples: 1,
+                top_k: 1,
+            },
+            timeout_seconds: 5.0,
+            fallback_provider: None,
+        };
+        let plan = Plan {
+            actions: Vec::new(),
+            predicted_states: vec![state],
+            predicted_videos: None,
+            total_cost: 0.0,
+            success_probability: 1.0,
+            guardrail_compliance: Vec::new(),
+            planning_time_ms: 0,
+            iterations_used: 0,
+            stored_plan_id: Some(id),
+            verification_proof: None,
+        };
+        StoredPlanRecord::from_request("mock", &request, &plan)
     }
 
     #[test]
@@ -2676,9 +2726,30 @@ mod tests {
     }
 
     #[test]
+    fn test_world_stored_plan_lifecycle() {
+        let registry = Arc::new(ProviderRegistry::new());
+        let mut world = World::new(WorldState::new("world", "mock"), "mock", registry);
+        let plan_id = Uuid::from_u128(7);
+        let record = sample_stored_plan_record(plan_id, "plan-world");
+        world.state.store_plan_record(record.clone());
+
+        let listed = world.list_stored_plans();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, plan_id);
+
+        let fetched = world.get_stored_plan(&plan_id).unwrap();
+        assert_eq!(fetched.goal_summary, record.goal_summary);
+
+        let removed = world.remove_stored_plan(&plan_id).unwrap();
+        assert_eq!(removed.id, plan_id);
+        assert!(world.list_stored_plans().is_empty());
+        assert!(world.get_stored_plan(&plan_id).is_err());
+    }
+
+    #[test]
     fn test_evaluate_goal_score_condition() {
         let state = WorldState::new("test", "mock");
-        let fake_id = uuid::Uuid::new_v4();
+        let fake_id = Uuid::new_v4();
 
         // Condition not met => 0.0
         let goal = PlanGoal::Condition(crate::action::Condition::ObjectExists { object: fake_id });
