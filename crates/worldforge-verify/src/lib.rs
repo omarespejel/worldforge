@@ -19,7 +19,7 @@
 use serde::{Deserialize, Serialize};
 
 use worldforge_core::guardrail::GuardrailResult;
-use worldforge_core::prediction::Plan;
+use worldforge_core::prediction::{Plan, Prediction, PredictionProvenance};
 pub use worldforge_core::proof::{VerificationBackend, VerificationResult, ZkProof, ZkProofType};
 use worldforge_core::state::WorldState;
 use worldforge_core::types::WorldId;
@@ -60,6 +60,9 @@ pub struct InferenceArtifact {
     pub model: Option<String>,
     /// Hash identifying the model or provider version.
     pub model_hash: [u8; 32],
+    /// Recorded execution provenance from the prediction, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<PredictionProvenance>,
     /// Hash of the input state.
     pub input_hash: [u8; 32],
     /// Hash of the output state.
@@ -317,8 +320,32 @@ pub fn inference_artifact_from_states(
         provider,
         model: None,
         model_hash,
+        provenance: None,
         input_hash: state_hash(input_state)?,
         output_hash: state_hash(output_state)?,
+    })
+}
+
+/// Build an inference artifact from a serialized prediction.
+///
+/// When recorded execution provenance is available, it is carried through
+/// unchanged and used to derive the proof input hash instead of re-hashing
+/// the provider or model label.
+pub fn inference_artifact_from_prediction(prediction: &Prediction) -> Result<InferenceArtifact> {
+    let provenance = prediction.provenance.clone();
+    let model = Some(prediction.model.clone()).filter(|model| !model.is_empty());
+    let model_hash = provenance
+        .as_ref()
+        .map(|recorded| recorded.model_hash)
+        .unwrap_or_else(|| source_commitment(model.as_deref().unwrap_or(&prediction.provider)));
+
+    Ok(InferenceArtifact {
+        provider: prediction.provider.clone(),
+        model,
+        model_hash,
+        provenance,
+        input_hash: state_hash(&prediction.input_state)?,
+        output_hash: state_hash(&prediction.output_state)?,
     })
 }
 
@@ -354,18 +381,24 @@ pub fn latest_inference_artifact(
         .map(ToOwned::to_owned)
         .or_else(|| state.history.latest().map(|entry| entry.provider.clone()))
         .unwrap_or_else(|| state.metadata.created_by.clone());
-    let model = state
+    let latest_prediction = state
         .history
         .latest()
-        .and_then(|entry| entry.prediction.as_ref())
+        .and_then(|entry| entry.prediction.as_ref());
+    let provenance = latest_prediction.and_then(|prediction| prediction.provenance.clone());
+    let model = latest_prediction
         .and_then(|prediction| prediction.model.clone())
         .filter(|model| !model.is_empty());
-    let model_hash = source_commitment(model.as_deref().unwrap_or(&provider));
+    let model_hash = provenance
+        .as_ref()
+        .map(|recorded| recorded.model_hash)
+        .unwrap_or_else(|| source_commitment(model.as_deref().unwrap_or(&provider)));
 
     Ok(InferenceArtifact {
         provider,
         model,
         model_hash,
+        provenance,
         input_hash,
         output_hash: state.history.latest().map(|entry| entry.state_hash).ok_or(
             VerifyError::InsufficientHistory {
@@ -442,6 +475,26 @@ pub fn prove_latest_inference<V: ZkVerifier + ?Sized>(
     provider_override: Option<&str>,
 ) -> Result<VerificationBundle<InferenceArtifact>> {
     let artifact = latest_inference_artifact(state, provider_override)?;
+    let proof = verifier.prove_inference(
+        artifact.model_hash,
+        artifact.input_hash,
+        artifact.output_hash,
+    )?;
+    let verification = verifier.verify(&proof)?;
+
+    Ok(VerificationBundle {
+        artifact,
+        proof,
+        verification,
+    })
+}
+
+/// Generate and verify an inference proof for a serialized prediction.
+pub fn prove_prediction_inference<V: ZkVerifier + ?Sized>(
+    verifier: &V,
+    prediction: &Prediction,
+) -> Result<VerificationBundle<InferenceArtifact>> {
+    let artifact = inference_artifact_from_prediction(prediction)?;
     let proof = verifier.prove_inference(
         artifact.model_hash,
         artifact.input_hash,
@@ -942,6 +995,8 @@ mod tests {
     use super::*;
     use worldforge_core::action::Action;
     use worldforge_core::guardrail::{GuardrailResult, ViolationSeverity};
+    use worldforge_core::prediction::{PhysicsScores, Prediction, PredictionProvenance};
+    use worldforge_core::provider::CostEstimate;
     use worldforge_core::scene::SceneObject;
     use worldforge_core::state::{HistoryEntry, PredictionSummary, WorldState};
     use worldforge_core::types::{BBox, Pose, Position, SimTime};
@@ -1213,6 +1268,52 @@ mod tests {
     }
 
     #[test]
+    fn test_inference_artifact_from_prediction_prefers_recorded_provenance() {
+        let input = sample_state("input", "mock", 0.0);
+        let output = sample_state("output", "mock", 1.0);
+        let model_hash = sha256_hash(b"prediction-provenance");
+        let mut prediction: Prediction = serde_json::from_value(serde_json::json!({
+            "id": "00000000-0000-0000-0000-000000000001",
+            "provider": "mock",
+            "model": "mock-v2",
+            "input_state": input,
+            "action": serde_json::to_value(Action::SetWeather {
+                weather: worldforge_core::action::Weather::Clear,
+            })
+            .unwrap(),
+            "output_state": output,
+            "video": null,
+            "confidence": 0.8,
+            "physics_scores": serde_json::to_value(PhysicsScores::default()).unwrap(),
+            "latency_ms": 12,
+            "cost": serde_json::to_value(CostEstimate::default()).unwrap(),
+            "provenance": null,
+            "guardrail_results": [],
+            "timestamp": "2024-03-09T12:00:00Z"
+        }))
+        .unwrap();
+        prediction.provenance = Some(PredictionProvenance {
+            model_hash,
+            asset_fingerprint: Some(7),
+            backend: Some("fixture".to_string()),
+        });
+
+        let artifact = inference_artifact_from_prediction(&prediction).unwrap();
+        assert_eq!(artifact.provider, "mock");
+        assert_eq!(artifact.model.as_deref(), Some("mock-v2"));
+        assert_eq!(artifact.model_hash, model_hash);
+        assert_eq!(artifact.input_hash, state_hash(&input).unwrap());
+        assert_eq!(artifact.output_hash, state_hash(&output).unwrap());
+        assert_eq!(
+            artifact
+                .provenance
+                .as_ref()
+                .and_then(|provenance| provenance.backend.as_deref()),
+            Some("fixture")
+        );
+    }
+
+    #[test]
     fn test_latest_inference_artifact_requires_two_history_entries() {
         let state = sample_state("world", "mock", 0.0);
         let err = latest_inference_artifact(&state, None).unwrap_err();
@@ -1259,6 +1360,7 @@ mod tests {
                 physics_score: 0.9,
                 latency_ms: 12,
                 model: Some("mock-v2".to_string()),
+                provenance: None,
             }),
             provider: "mock".to_string(),
             snapshot: None,
@@ -1268,6 +1370,64 @@ mod tests {
         assert_eq!(artifact.provider, "mock");
         assert_eq!(artifact.model.as_deref(), Some("mock-v2"));
         assert_eq!(artifact.model_hash, source_commitment("mock-v2"));
+        assert_eq!(artifact.input_hash, previous_hash);
+        assert_eq!(artifact.output_hash, current_hash);
+    }
+
+    #[test]
+    fn test_latest_inference_artifact_prefers_recorded_provenance() {
+        let mut world = sample_state("world", "mock", 2.0);
+        let previous = sample_state("previous", "mock", 1.0);
+        let previous_hash = state_hash(&previous).unwrap();
+        let current_hash = state_hash(&world).unwrap();
+        let model_hash = sha256_hash(b"history-provenance");
+
+        world.history.push(HistoryEntry {
+            time: SimTime {
+                step: 1,
+                seconds: 0.5,
+                dt: 0.5,
+            },
+            state_hash: previous_hash,
+            action: None,
+            prediction: None,
+            provider: "mock".to_string(),
+            snapshot: None,
+        });
+        world.history.push(HistoryEntry {
+            time: SimTime {
+                step: 2,
+                seconds: 1.0,
+                dt: 0.5,
+            },
+            state_hash: current_hash,
+            action: Some(Action::SetWeather {
+                weather: worldforge_core::action::Weather::Clear,
+            }),
+            prediction: Some(PredictionSummary {
+                confidence: 0.8,
+                physics_score: 0.9,
+                latency_ms: 12,
+                model: Some("mock-v2".to_string()),
+                provenance: Some(PredictionProvenance {
+                    model_hash,
+                    asset_fingerprint: Some(5),
+                    backend: Some("fixture".to_string()),
+                }),
+            }),
+            provider: "mock".to_string(),
+            snapshot: None,
+        });
+
+        let artifact = latest_inference_artifact(&world, None).unwrap();
+        assert_eq!(artifact.model_hash, model_hash);
+        assert_eq!(
+            artifact
+                .provenance
+                .as_ref()
+                .and_then(|provenance| provenance.backend.as_deref()),
+            Some("fixture")
+        );
         assert_eq!(artifact.input_hash, previous_hash);
         assert_eq!(artifact.output_hash, current_hash);
     }
@@ -1306,6 +1466,7 @@ mod tests {
                 physics_score: 0.9,
                 latency_ms: 12,
                 model: None,
+                provenance: None,
             }),
             provider: "mock".to_string(),
             snapshot: None,

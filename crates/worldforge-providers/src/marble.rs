@@ -143,6 +143,7 @@ impl WorldModelProvider for MarbleProvider {
                 steps: config.steps,
                 resolution: config.resolution,
             }),
+            provenance: None,
             guardrail_results: Vec::new(),
             timestamp: chrono::Utc::now(),
         })

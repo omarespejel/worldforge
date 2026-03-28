@@ -1156,6 +1156,7 @@ async fn test_jepa_provider_predict_workflow() {
         .position;
 
     assert!(after.x > before.x);
+    assert!(prediction.model.starts_with("vjepa2-local-burn-"));
     assert!(prediction.confidence > 0.4);
     assert!(prediction.physics_scores.overall > 0.4);
 }
@@ -1187,10 +1188,18 @@ async fn test_world_predict_with_jepa() {
 
     let prediction = world.predict(&action, &config).await.unwrap();
     let updated = world.current_state().scene.get_object(&object_id).unwrap();
+    let archived = world.current_state().history.latest().unwrap();
 
     assert_eq!(prediction.provider, "jepa");
     assert!(world.current_state().time.step > 0);
     assert!(updated.pose.position.y <= 1.0);
+    assert_eq!(
+        archived
+            .prediction
+            .as_ref()
+            .and_then(|summary| summary.model.as_deref()),
+        Some(prediction.model.as_str())
+    );
 }
 
 #[tokio::test]

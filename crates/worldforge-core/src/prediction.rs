@@ -15,6 +15,19 @@ use crate::scene::SpatialRelationship;
 use crate::state::WorldState;
 use crate::types::{ObjectId, PredictionId, VideoClip};
 
+/// Execution provenance for a prediction.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PredictionProvenance {
+    /// Deterministic hash of the executed model or inspected asset bundle.
+    pub model_hash: [u8; 32],
+    /// Asset fingerprint captured while inspecting local weights, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset_fingerprint: Option<u64>,
+    /// Backend or execution engine used for the prediction, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
+}
+
 /// Result of a single forward prediction.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Prediction {
@@ -40,6 +53,9 @@ pub struct Prediction {
     pub latency_ms: u64,
     /// Cost of the prediction.
     pub cost: CostEstimate,
+    /// Execution provenance for the model run, if the provider surfaced it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<PredictionProvenance>,
     /// Guardrail evaluation results.
     pub guardrail_results: Vec<GuardrailResult>,
     /// When the prediction was generated.

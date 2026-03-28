@@ -1130,6 +1130,15 @@ async fn test_world_predict_basic() {
     assert!(world.current_state().time.step > initial_step);
     // History retains the initial checkpoint plus the latest transition.
     assert_eq!(world.current_state().history.len(), 2);
+    let latest = world.current_state().history.latest().unwrap();
+    assert_eq!(latest.provider, "mock");
+    assert_eq!(
+        latest
+            .prediction
+            .as_ref()
+            .and_then(|summary| summary.model.as_deref()),
+        Some(prediction.model.as_str())
+    );
 }
 
 #[tokio::test]

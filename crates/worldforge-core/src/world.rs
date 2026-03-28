@@ -176,6 +176,7 @@ impl World {
                 physics_score: prediction.physics_scores.overall,
                 latency_ms: prediction.latency_ms,
                 model: Some(prediction.model.clone()),
+                provenance: prediction.provenance.clone(),
             }),
             prediction.provider.clone(),
         )?;
@@ -2564,7 +2565,7 @@ mod tests {
 
     use crate::error::WorldForgeError;
     use crate::prediction::PlanGoal;
-    use crate::prediction::{PhysicsScores, Prediction};
+    use crate::prediction::{PhysicsScores, Prediction, PredictionProvenance};
     use crate::provider::{
         CostEstimate, GenerationConfig, GenerationPrompt, HealthStatus, LatencyProfile, Operation,
         ProviderCapabilities, ReasoningInput, ReasoningOutput, SpatialControls, TransferConfig,
@@ -4592,6 +4593,11 @@ mod tests {
             physics_scores: PhysicsScores::default(),
             latency_ms: 0,
             cost: CostEstimate::default(),
+            provenance: Some(PredictionProvenance {
+                model_hash: crate::state::sha256_hash(format!("{provider}-model").as_bytes()),
+                asset_fingerprint: None,
+                backend: Some("test".to_string()),
+            }),
             guardrail_results: Vec::new(),
             timestamp: chrono::Utc::now(),
         }
@@ -4944,6 +4950,7 @@ mod tests {
                 },
                 latency_ms: 1,
                 cost: CostEstimate::default(),
+                provenance: None,
                 guardrail_results: Vec::new(),
                 timestamp: chrono::Utc::now(),
             })
@@ -5039,6 +5046,7 @@ mod tests {
                 },
                 latency_ms: 1,
                 cost: CostEstimate::default(),
+                provenance: None,
                 guardrail_results: Vec::new(),
                 timestamp: chrono::Utc::now(),
             })

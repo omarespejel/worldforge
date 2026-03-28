@@ -1512,6 +1512,91 @@ async fn test_live_http_verify_proof_endpoint() {
 }
 
 #[tokio::test]
+async fn test_live_http_verify_latest_inference_uses_archived_prediction_model() {
+    use worldforge_core::action::{Action, Weather};
+    use worldforge_core::prediction::PredictionConfig;
+    use worldforge_core::provider::ProviderRegistry;
+    use worldforge_core::state::WorldState;
+    use worldforge_core::world::World;
+    use worldforge_providers::MockProvider;
+
+    let state_dir =
+        std::env::temp_dir().join(format!("wf-http-inference-verify-{}", uuid::Uuid::new_v4()));
+    let store = FileStateStore::new(&state_dir);
+
+    let mut registry = ProviderRegistry::new();
+    registry.register(Box::new(MockProvider::new()));
+    let registry = Arc::new(registry);
+
+    let mut world = World::new(
+        WorldState::new("archived_inference", "mock"),
+        "mock",
+        registry.clone(),
+    );
+    let action = Action::SetWeather {
+        weather: Weather::Rain,
+    };
+    let config = PredictionConfig::default();
+    let mut prediction = world.predict(&action, &config).await.unwrap();
+    store.save(&world.state).await.unwrap();
+    let world_id = world.id().to_string();
+
+    let model_hash = worldforge_core::state::sha256_hash(b"http-archived-inference-model");
+    prediction.provenance = Some(worldforge_core::prediction::PredictionProvenance {
+        model_hash,
+        asset_fingerprint: Some(77),
+        backend: Some("mock".to_string()),
+    });
+
+    let server = Server::bind(
+        ServerConfig {
+            bind_address: "127.0.0.1:0".to_string(),
+            state_dir: state_dir.display().to_string(),
+            ..ServerConfig::default()
+        },
+        registry,
+    )
+    .await
+    .unwrap();
+    let address = server.local_addr().unwrap();
+    let task = tokio::spawn(server.run());
+
+    let body = serde_json::json!({
+        "backend": "Mock",
+        "proof_type": "inference",
+        "prediction": prediction,
+    })
+    .to_string();
+    let (status, response) = http_request(
+        address,
+        "POST",
+        &format!("/v1/worlds/{world_id}/verify"),
+        &body,
+    )
+    .await;
+
+    assert_eq!(status, 200);
+    assert_eq!(response["data"]["artifact"]["provider"], "mock");
+    assert_eq!(response["data"]["artifact"]["model"], prediction.model);
+    assert_eq!(
+        response["data"]["artifact"]["model_hash"],
+        serde_json::json!(model_hash)
+    );
+    assert_eq!(
+        response["data"]["artifact"]["provenance"]["backend"],
+        serde_json::json!("mock")
+    );
+    assert_eq!(
+        response["data"]["artifact"]["provenance"]["model_hash"],
+        serde_json::json!(model_hash)
+    );
+
+    task.abort();
+    let _ = task.await;
+    let _ = tokio::fs::remove_dir_all(&state_dir).await;
+}
+
+#[tokio::test]
 async fn test_live_http_plan_uses_requested_planner() {
     let server = spawn_test_server().await;
 

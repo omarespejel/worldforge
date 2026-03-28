@@ -147,6 +147,7 @@ impl WorldModelProvider for MockProvider {
             physics_scores,
             latency_ms: self.latency_ms,
             cost: CostEstimate::default(),
+            provenance: None,
             guardrail_results: Vec::new(),
             timestamp: chrono::Utc::now(),
         })

@@ -40,6 +40,7 @@ use worldforge_verify::{
     prove_guardrail_plan as prove_guardrail_plan_bundle,
     prove_inference_transition as prove_inference_transition_bundle,
     prove_latest_inference as prove_latest_inference_bundle,
+    prove_prediction_inference as prove_prediction_inference_bundle,
     prove_provenance as prove_provenance_state_bundle,
     verifier_for_backend as verify_backend_resolver, verify_bundle, verify_proof,
     BundleVerificationReport, GuardrailArtifact, InferenceArtifact, ProvenanceArtifact,
@@ -1887,6 +1888,33 @@ impl PyPrediction {
         serde_json::to_string(&self.inner).map_err(|e| {
             pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
         })
+    }
+
+    /// Deserialize a prediction from JSON.
+    #[staticmethod]
+    fn from_json(json: &str) -> PyResult<Self> {
+        let inner: worldforge_core::prediction::Prediction =
+            serde_json::from_str(json).map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!("deserialization error: {e}"))
+            })?;
+        Ok(Self {
+            inner,
+            registry: auto_detect_registry(),
+        })
+    }
+
+    /// Generate an inference-verification bundle directly from this archived prediction.
+    #[pyo3(signature = (backend="mock"))]
+    fn prove_inference_bundle(&self, backend: &str) -> PyResult<PyInferenceBundle> {
+        let backend = backend.parse::<VerificationBackend>().map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("invalid verification backend: {e}"))
+        })?;
+        let verifier = verify_backend_resolver(backend);
+        let bundle =
+            prove_prediction_inference_bundle(verifier.as_ref(), &self.inner).map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("proof generation failed: {e}"))
+            })?;
+        Ok(PyInferenceBundle { inner: bundle })
     }
 
     fn __repr__(&self) -> String {
@@ -6994,6 +7022,37 @@ mod tests {
         assert_eq!(prediction.provider(), "mock");
         assert_eq!(world.step(), 1);
         assert_eq!(world.history_length(), 2);
+    }
+
+    #[test]
+    fn test_prediction_prove_inference_bundle_uses_archived_provenance() {
+        let mut world = PyWorld::new("predict_world", "mock");
+        let prediction = world
+            .predict(
+                &PyAction::move_to(1.0, 0.0, 0.0, 1.0),
+                1,
+                None,
+                None,
+                false,
+                None,
+                false,
+            )
+            .unwrap();
+
+        let mut value: serde_json::Value =
+            serde_json::from_str(&prediction.to_json().unwrap()).unwrap();
+        let model_hash = worldforge_verify::sha256_hash(b"python-prediction-model");
+        value["provenance"] = serde_json::json!({
+            "model_hash": model_hash,
+            "asset_fingerprint": 7,
+            "backend": "fixture",
+        });
+        let restored = PyPrediction::from_json(&value.to_string()).unwrap();
+        let bundle = restored.prove_inference_bundle("mock").unwrap();
+
+        assert_eq!(bundle.model_hash_hex(), format_hash_hex(&model_hash));
+        assert_eq!(bundle.provider(), "mock");
+        assert!(bundle.verify().unwrap().current_verification().valid());
     }
 
     #[test]

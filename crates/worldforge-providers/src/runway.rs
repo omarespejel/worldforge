@@ -899,6 +899,7 @@ impl WorldModelProvider for RunwayProvider {
                 steps: config.steps,
                 resolution: config.resolution,
             }),
+            provenance: None,
             guardrail_results: Vec::new(),
             timestamp: chrono::Utc::now(),
         })

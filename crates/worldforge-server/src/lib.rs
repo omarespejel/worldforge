@@ -33,8 +33,9 @@ use worldforge_core::types::{
 use worldforge_core::world::World;
 use worldforge_eval::{EvalReportFormat, EvalSuite};
 use worldforge_verify::{
-    prove_guardrail_plan, prove_inference_transition, prove_latest_inference, prove_provenance,
-    sha256_hash, verifier_for_backend as verify_backend_resolver, verify_bundle, verify_proof,
+    prove_guardrail_plan, prove_inference_transition, prove_latest_inference,
+    prove_prediction_inference, prove_provenance, sha256_hash,
+    verifier_for_backend as verify_backend_resolver, verify_bundle, verify_proof,
     VerificationBackend, VerificationBundle, VerificationResult, ZkProof, ZkVerifier,
 };
 
@@ -797,6 +798,9 @@ struct VerifyRequest {
     /// Explicit output state for inference/provenance verification.
     #[serde(default)]
     output_state: Option<WorldState>,
+    /// Explicit archived prediction for inference verification.
+    #[serde(default)]
+    prediction: Option<Prediction>,
     /// Explicit plan for guardrail verification.
     #[serde(default)]
     plan: Option<worldforge_core::prediction::Plan>,
@@ -2600,10 +2604,14 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                         match req.proof_type.as_str() {
                             "inference" => {
                                 let bundle = match (
+                                    req.prediction.as_ref(),
                                     req.input_state.as_ref(),
                                     req.output_state.as_ref(),
                                 ) {
-                                    (Some(input_state), Some(output_state)) => {
+                                    (Some(prediction), None, None) => {
+                                        prove_prediction_inference(verifier.as_ref(), prediction)
+                                    }
+                                    (None, Some(input_state), Some(output_state)) => {
                                         let provider_name = req
                                             .provider
                                             .as_deref()
@@ -2616,7 +2624,7 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                                             output_state,
                                         )
                                     }
-                                    (None, None) => prove_latest_inference(
+                                    (None, None, None) => prove_latest_inference(
                                         verifier.as_ref(),
                                         &ws,
                                         req.provider.as_deref(),
@@ -2625,7 +2633,7 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                                         return (
                                             400,
                                             error_response(
-                                                "inference verification requires both input_state and output_state when either is provided",
+                                                "inference verification requires exactly one of prediction, both input_state and output_state, or an archived world history",
                                             ),
                                         );
                                     }
@@ -2952,6 +2960,7 @@ mod tests {
                 credits: 1.0,
                 estimated_latency_ms: latency_ms,
             },
+            provenance: None,
             guardrail_results: Vec::new(),
             timestamp: chrono::Utc::now(),
         }
@@ -4857,6 +4866,49 @@ mod tests {
         // Check verification is valid
         let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
         assert!(v["data"]["verification"]["valid"].as_bool().unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_route_verify_inference_from_prediction_payload() {
+        let state = test_state();
+        let body = r#"{"name":"verify_world","provider":"mock"}"#;
+        let (status, resp) = route("POST", "/v1/worlds", body, &state).await;
+        assert_eq!(status, 201);
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        let id = value["data"]["id"].as_str().unwrap();
+
+        let mut prediction = sample_prediction("mock", 0.25, 120);
+        let model_hash = worldforge_core::state::sha256_hash(b"server-prediction-model");
+        prediction.provenance = Some(worldforge_core::prediction::PredictionProvenance {
+            model_hash,
+            asset_fingerprint: Some(7),
+            backend: Some("fixture".to_string()),
+        });
+
+        let verify_body = serde_json::json!({
+            "proof_type": "inference",
+            "prediction": prediction,
+        })
+        .to_string();
+        let (status, resp) = route(
+            "POST",
+            &format!("/v1/worlds/{id}/verify"),
+            &verify_body,
+            &state,
+        )
+        .await;
+        assert_eq!(status, 200);
+
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(
+            value["data"]["artifact"]["model_hash"],
+            serde_json::json!(model_hash)
+        );
+        assert_eq!(
+            value["data"]["artifact"]["provenance"]["backend"],
+            "fixture"
+        );
+        assert!(value["data"]["verification"]["valid"].as_bool().unwrap());
     }
 
     #[tokio::test]

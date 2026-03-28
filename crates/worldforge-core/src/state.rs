@@ -17,6 +17,7 @@ use tokio::net::TcpStream;
 use crate::action::Action;
 use crate::bootstrap::seed_world_state_from_prompt;
 use crate::error::{Result, WorldForgeError};
+use crate::prediction::PredictionProvenance;
 use crate::scene::SceneGraph;
 use crate::types::{SimTime, WorldId};
 
@@ -106,6 +107,9 @@ pub struct PredictionSummary {
     /// Provider model identifier, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Execution provenance for the underlying prediction, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<PredictionProvenance>,
 }
 
 /// Recoverable world checkpoint stored alongside a history entry.

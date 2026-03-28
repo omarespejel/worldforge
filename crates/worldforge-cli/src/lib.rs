@@ -33,10 +33,10 @@ use worldforge_core::state::{
 use worldforge_core::types::{BBox, Pose, Position, Rotation, Vec3, Velocity, VideoClip};
 use worldforge_eval::{EvalReportFormat, EvalSuite};
 use worldforge_verify::{
-    prove_guardrail_plan, prove_inference_transition, prove_latest_inference, prove_provenance,
-    verifier_for_backend as verify_backend_resolver, verify_bundle, verify_proof,
-    BundleVerificationReport, VerificationBackend, VerificationBundle, VerificationResult, ZkProof,
-    ZkVerifier,
+    prove_guardrail_plan, prove_inference_transition, prove_latest_inference,
+    prove_prediction_inference, prove_provenance, verifier_for_backend as verify_backend_resolver,
+    verify_bundle, verify_proof, BundleVerificationReport, VerificationBackend, VerificationBundle,
+    VerificationResult, ZkProof, ZkVerifier,
 };
 
 /// Persistence backend used by the CLI.
@@ -670,6 +670,9 @@ pub enum Commands {
         /// JSON file containing the output `WorldState` for inference verification.
         #[arg(long)]
         output_state_json: Option<PathBuf>,
+        /// JSON file containing a serialized `Prediction` for archived inference verification.
+        #[arg(long)]
+        prediction_json: Option<PathBuf>,
         /// JSON file containing a fully materialized `Plan` for guardrail verification.
         #[arg(long)]
         plan_json: Option<PathBuf>,
@@ -1344,6 +1347,7 @@ pub async fn run() -> Result<()> {
             proof_type,
             input_state_json,
             output_state_json,
+            prediction_json,
             plan_json,
             goal,
             goal_json,
@@ -1365,6 +1369,7 @@ pub async fn run() -> Result<()> {
                     proof_type: &proof_type,
                     input_state_json: input_state_json.as_deref(),
                     output_state_json: output_state_json.as_deref(),
+                    prediction_json: prediction_json.as_deref(),
                     plan_json: plan_json.as_deref(),
                     goal: goal.as_deref(),
                     goal_json: goal_json.as_deref(),
@@ -1844,6 +1849,7 @@ struct VerifyOptions<'a> {
     proof_type: &'a str,
     input_state_json: Option<&'a Path>,
     output_state_json: Option<&'a Path>,
+    prediction_json: Option<&'a Path>,
     plan_json: Option<&'a Path>,
     goal: Option<&'a str>,
     goal_json: Option<&'a Path>,
@@ -3462,8 +3468,17 @@ async fn cmd_verify(
 
     match options.proof_type {
         "inference" => {
-            let bundle = match (options.input_state_json, options.output_state_json) {
-                (Some(input_path), Some(output_path)) => {
+            let bundle = match (
+                options.prediction_json,
+                options.input_state_json,
+                options.output_state_json,
+            ) {
+                (Some(prediction_path), None, None) => {
+                    let prediction: Prediction = read_json_file(prediction_path)?;
+                    prove_prediction_inference(verifier.as_ref(), &prediction)
+                        .map_err(|e| anyhow::anyhow!("{e}"))?
+                }
+                (None, Some(input_path), Some(output_path)) => {
                     let input_state: WorldState = read_json_file(input_path)?;
                     let output_state: WorldState = read_json_file(output_path)?;
                     let provider_name = options
@@ -3478,15 +3493,15 @@ async fn cmd_verify(
                     )
                     .map_err(|e| anyhow::anyhow!("{e}"))?
                 }
-                (None, None) => {
+                (None, None, None) => {
                     let state = loaded_state.as_ref().context(
-                        "inference verification requires either --world with at least two recorded history entries, or both --input-state-json and --output-state-json",
+                        "inference verification requires --prediction-json, --world with at least two recorded history entries, or both --input-state-json and --output-state-json",
                     )?;
                     prove_latest_inference(verifier.as_ref(), state, options.provider)
                         .map_err(|e| anyhow::anyhow!("{e}"))?
                 }
                 _ => anyhow::bail!(
-                    "inference verification requires both --input-state-json and --output-state-json"
+                    "inference verification requires exactly one of --prediction-json, both --input-state-json and --output-state-json, or --world"
                 ),
             };
 
@@ -4166,6 +4181,7 @@ mod tests {
             output_state,
             video: None,
             confidence: 0.8,
+            provenance: None,
             physics_scores: worldforge_core::prediction::PhysicsScores {
                 overall: 0.8,
                 object_permanence: 0.8,
@@ -5662,6 +5678,7 @@ mod tests {
             Commands::Verify {
                 world,
                 proof_type,
+                prediction_json,
                 plan_json,
                 disable_guardrails,
                 output_json,
@@ -5670,10 +5687,42 @@ mod tests {
             } => {
                 assert!(world.is_none());
                 assert_eq!(proof_type, "guardrail");
+                assert!(prediction_json.is_none());
                 assert_eq!(plan_json, Some(PathBuf::from("/tmp/plan.json")));
                 assert!(!disable_guardrails);
                 assert_eq!(output_json, Some(PathBuf::from("/tmp/proof.json")));
                 assert_eq!(source_label, "ci");
+            }
+            _ => panic!("expected Verify"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_verify_command_with_prediction_json() {
+        let cli = Cli::try_parse_from([
+            "worldforge",
+            "verify",
+            "--proof-type",
+            "inference",
+            "--prediction-json",
+            "/tmp/prediction.json",
+            "--output-json",
+            "/tmp/bundle.json",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Verify {
+                prediction_json,
+                input_state_json,
+                output_state_json,
+                output_json,
+                ..
+            } => {
+                assert_eq!(prediction_json, Some(PathBuf::from("/tmp/prediction.json")));
+                assert!(input_state_json.is_none());
+                assert!(output_state_json.is_none());
+                assert_eq!(output_json, Some(PathBuf::from("/tmp/bundle.json")));
             }
             _ => panic!("expected Verify"),
         }
@@ -7257,6 +7306,7 @@ mod tests {
                 proof_type: "inference",
                 input_state_json: Some(&input_path),
                 output_state_json: Some(&output_path),
+                prediction_json: None,
                 plan_json: None,
                 goal: None,
                 goal_json: None,
@@ -7276,6 +7326,62 @@ mod tests {
 
         let bundle: serde_json::Value = read_json_file(&bundle_path).unwrap();
         assert_eq!(bundle["verification"]["valid"], true);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn test_cmd_verify_inference_from_prediction_json() {
+        let dir =
+            std::env::temp_dir().join(format!("wf-cli-verify-prediction-{}", uuid::Uuid::new_v4()));
+        let store = StateStoreKind::File(dir.join("state"))
+            .open()
+            .await
+            .unwrap();
+        let prediction_path = dir.join("prediction.json");
+        let bundle_path = dir.join("bundle.json");
+        let mut prediction = sample_prediction("mock", 0.25, 120);
+        let model_hash = worldforge_core::state::sha256_hash(b"prediction-json-model");
+        prediction.provenance = Some(worldforge_core::prediction::PredictionProvenance {
+            model_hash,
+            asset_fingerprint: Some(42),
+            backend: Some("fixture".to_string()),
+        });
+        write_json_file(&prediction_path, &prediction).unwrap();
+
+        cmd_verify(
+            store.as_ref(),
+            None,
+            VerifyOptions {
+                backend: VerifyBackend::Mock,
+                proof_type: "inference",
+                input_state_json: None,
+                output_state_json: None,
+                prediction_json: Some(&prediction_path),
+                plan_json: None,
+                goal: None,
+                goal_json: None,
+                max_steps: 4,
+                planner_name: "sampling",
+                timeout: 10.0,
+                provider: None,
+                fallback_provider: None,
+                guardrails_json: None,
+                disable_guardrails: false,
+                source_label: "worldforge-cli",
+                output_json: Some(&bundle_path),
+            },
+        )
+        .await
+        .unwrap();
+
+        let bundle: serde_json::Value = read_json_file(&bundle_path).unwrap();
+        assert_eq!(bundle["verification"]["valid"], true);
+        assert_eq!(
+            bundle["artifact"]["model_hash"],
+            serde_json::json!(model_hash)
+        );
+        assert_eq!(bundle["artifact"]["provenance"]["backend"], "fixture");
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -7320,6 +7426,7 @@ mod tests {
                 proof_type: "guardrail",
                 input_state_json: None,
                 output_state_json: None,
+                prediction_json: None,
                 plan_json: Some(&plan_path),
                 goal: None,
                 goal_json: None,
@@ -7374,6 +7481,7 @@ mod tests {
                 proof_type: "guardrail",
                 input_state_json: None,
                 output_state_json: None,
+                prediction_json: None,
                 plan_json: None,
                 goal: Some("spawn cube"),
                 goal_json: None,

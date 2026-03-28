@@ -24,7 +24,7 @@ use worldforge_core::error::{Result, WorldForgeError};
 use worldforge_core::goal_image;
 use worldforge_core::guardrail::{evaluate_guardrails, has_blocking_violation};
 use worldforge_core::prediction::{
-    PhysicsScores, Plan, PlanGoal, PlanRequest, Prediction, PredictionConfig,
+    PhysicsScores, Plan, PlanGoal, PlanRequest, Prediction, PredictionConfig, PredictionProvenance,
 };
 use worldforge_core::provider::{
     CostEstimate, GenerationConfig, GenerationPrompt, HealthStatus, LatencyProfile, Operation,
@@ -32,7 +32,7 @@ use worldforge_core::provider::{
     WorldModelProvider,
 };
 use worldforge_core::scene::{SceneGraph, SceneObject, SpatialRelationship};
-use worldforge_core::state::WorldState;
+use worldforge_core::state::{sha256_hash, WorldState};
 use worldforge_core::types::{BBox, Pose, Position, Rotation, Vec3, Velocity, VideoClip};
 
 const DEFAULT_MODEL_NAME: &str = "v-jepa-2-surrogate";
@@ -213,6 +213,25 @@ impl JepaProvider {
         let size_penalty = (assets.total_bytes / (8 * 1024 * 1024)).min(64);
         self.backend.base_latency_ms() + u64::from(steps.max(1)) * 18 + dim_penalty + size_penalty
     }
+
+    fn prediction_provenance(&self, assets: &JepaAssets) -> PredictionProvenance {
+        let model_hash = sha256_hash(
+            format!(
+                "jepa:{}:{}:{}:{}",
+                assets.manifest.effective_model_name(),
+                self.backend.as_str(),
+                assets.fingerprint,
+                assets.total_bytes
+            )
+            .as_bytes(),
+        );
+
+        PredictionProvenance {
+            model_hash,
+            asset_fingerprint: Some(assets.fingerprint),
+            backend: Some(self.backend.as_str().to_string()),
+        }
+    }
 }
 
 #[async_trait]
@@ -280,6 +299,7 @@ impl WorldModelProvider for JepaProvider {
                 steps: config.steps,
                 resolution: config.resolution,
             }),
+            provenance: Some(self.prediction_provenance(&assets)),
             guardrail_results: Vec::new(),
             timestamp: chrono::Utc::now(),
         })
@@ -1965,6 +1985,18 @@ mod tests {
         assert!(prediction.physics_scores.overall > 0.4);
         assert!(prediction.latency_ms > 0);
         assert!(prediction.model.contains("vjepa2-local"));
+        assert_eq!(
+            prediction
+                .provenance
+                .as_ref()
+                .and_then(|provenance| provenance.backend.as_deref()),
+            Some("burn")
+        );
+        assert!(prediction
+            .provenance
+            .as_ref()
+            .and_then(|provenance| provenance.asset_fingerprint)
+            .is_some());
     }
 
     #[tokio::test]
