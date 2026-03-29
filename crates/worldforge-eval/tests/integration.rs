@@ -4,6 +4,7 @@
 //! verifies the full eval pipeline: suite creation → run → report.
 
 use async_trait::async_trait;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use uuid::Uuid;
 use worldforge_core::action::Condition;
 use worldforge_core::error::{Result, WorldForgeError};
@@ -150,6 +151,22 @@ impl SamplingFixtureProvider {
     }
 }
 
+#[derive(Debug)]
+struct FailingSamplingProvider {
+    fail_every: usize,
+    calls: AtomicUsize,
+}
+
+impl FailingSamplingProvider {
+    fn new(fail_every: usize) -> Self {
+        assert!(fail_every > 0);
+        Self {
+            fail_every,
+            calls: AtomicUsize::new(0),
+        }
+    }
+}
+
 fn sampled_prediction(
     provider: &str,
     state: &WorldState,
@@ -170,6 +187,40 @@ fn sampled_prediction(
         video: None,
         confidence,
         physics_scores: physics,
+        latency_ms: 1,
+        cost: CostEstimate::default(),
+        provenance: None,
+        sampling: None,
+        guardrail_results: Vec::new(),
+        timestamp: chrono::Utc::now(),
+    }
+}
+
+fn failing_prediction(
+    provider: &str,
+    state: &WorldState,
+    action: &worldforge_core::action::Action,
+) -> Prediction {
+    let mut output_state = state.clone();
+    output_state.time.step += 1;
+
+    Prediction {
+        id: Uuid::new_v4(),
+        provider: provider.to_string(),
+        model: "sampling-fixture".to_string(),
+        input_state: state.clone(),
+        action: action.clone(),
+        output_state,
+        video: None,
+        confidence: 0.95,
+        physics_scores: PhysicsScores {
+            overall: 0.95,
+            object_permanence: 0.95,
+            gravity_compliance: 0.95,
+            collision_accuracy: 0.95,
+            spatial_consistency: 0.95,
+            temporal_consistency: 0.95,
+        },
         latency_ms: 1,
         cost: CostEstimate::default(),
         provenance: None,
@@ -274,6 +325,97 @@ impl WorldModelProvider for SamplingFixtureProvider {
             guardrail_results: Vec::new(),
             timestamp: chrono::Utc::now(),
         })
+    }
+
+    async fn generate(
+        &self,
+        _prompt: &GenerationPrompt,
+        _config: &GenerationConfig,
+    ) -> Result<VideoClip> {
+        Err(WorldForgeError::UnsupportedCapability {
+            provider: self.name().to_string(),
+            capability: "generate".to_string(),
+        })
+    }
+
+    async fn reason(&self, _input: &ReasoningInput, _query: &str) -> Result<ReasoningOutput> {
+        Err(WorldForgeError::UnsupportedCapability {
+            provider: self.name().to_string(),
+            capability: "reason".to_string(),
+        })
+    }
+
+    async fn transfer(
+        &self,
+        _source: &VideoClip,
+        _controls: &SpatialControls,
+        _config: &TransferConfig,
+    ) -> Result<VideoClip> {
+        Err(WorldForgeError::UnsupportedCapability {
+            provider: self.name().to_string(),
+            capability: "transfer".to_string(),
+        })
+    }
+
+    async fn health_check(&self) -> Result<HealthStatus> {
+        Ok(HealthStatus {
+            healthy: true,
+            message: "healthy".to_string(),
+            latency_ms: 1,
+        })
+    }
+
+    fn estimate_cost(&self, _operation: &Operation) -> CostEstimate {
+        CostEstimate::default()
+    }
+}
+
+#[async_trait]
+impl WorldModelProvider for FailingSamplingProvider {
+    fn name(&self) -> &str {
+        "failing-sampling-fixture"
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            predict: true,
+            generate: false,
+            reason: false,
+            transfer: false,
+            embed: false,
+            action_conditioned: true,
+            multi_view: false,
+            max_video_length_seconds: 0.0,
+            max_resolution: (0, 0),
+            fps_range: (0.0, 0.0),
+            supported_action_spaces: Vec::new(),
+            supports_depth: false,
+            supports_segmentation: false,
+            supports_planning: false,
+            latency_profile: LatencyProfile {
+                p50_ms: 1,
+                p95_ms: 1,
+                p99_ms: 1,
+                throughput_fps: 1.0,
+            },
+        }
+    }
+
+    async fn predict(
+        &self,
+        state: &WorldState,
+        action: &worldforge_core::action::Action,
+        _config: &worldforge_core::prediction::PredictionConfig,
+    ) -> Result<Prediction> {
+        let call_index = self.calls.fetch_add(1, Ordering::SeqCst);
+        if call_index.is_multiple_of(self.fail_every) {
+            return Err(WorldForgeError::ProviderUnavailable {
+                provider: self.name().to_string(),
+                reason: format!("sample {call_index} failed intentionally"),
+            });
+        }
+
+        Ok(failing_prediction(self.name(), state, action))
     }
 
     async fn generate(
@@ -488,6 +630,108 @@ async fn test_sampling_diagnostics_flow_into_report_metrics() {
     let markdown = report.to_markdown().unwrap();
     assert!(markdown.contains("Sampling completion rate"));
     assert!(markdown.contains("Sampling steps"));
+}
+
+#[tokio::test]
+async fn test_sampled_eval_survives_partial_sample_failures() {
+    let suite = EvalSuite {
+        name: "Partial Sampling Failures".to_string(),
+        scenarios: vec![EvalScenario {
+            name: "partial_sampling".to_string(),
+            description: "Ensure sampled evaluation completes when some samples fail".to_string(),
+            initial_state: WorldState::new("partial_sampling", "eval"),
+            actions: vec![worldforge_core::action::Action::Move {
+                target: Position {
+                    x: 0.2,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                speed: 0.5,
+            }],
+            expected_outcomes: vec![ExpectedOutcome::MinConfidence { threshold: 0.5 }],
+            ground_truth: None,
+        }],
+        dimensions: vec![EvalDimension::ObjectPermanence],
+        providers: vec![],
+    };
+    let provider = FailingSamplingProvider::new(2);
+    let providers: Vec<&dyn WorldModelProvider> = vec![&provider];
+    let run_options = worldforge_eval::EvalRunOptions {
+        num_samples: Some(4),
+    };
+
+    let report = suite
+        .run_with_options(&providers, &run_options)
+        .await
+        .unwrap();
+    assert_eq!(report.results.len(), 1);
+
+    let result = &report.results[0];
+    assert_eq!(result.provider, "failing-sampling-fixture");
+    assert_eq!(result.scenario, "partial_sampling");
+    assert_eq!(result.outcomes.len(), 1);
+    assert!(result.outcomes.iter().all(|outcome| outcome.passed));
+
+    let sampling = result.sampling.as_ref().expect("sampling diagnostics");
+    assert_eq!(sampling.summary.prediction_steps, 1);
+    assert_eq!(sampling.summary.sampled_steps, 1);
+    assert_eq!(sampling.summary.requested_samples, 4);
+    assert_eq!(sampling.summary.completed_samples, 2);
+    assert!((sampling.summary.completion_rate - 0.5).abs() < f32::EPSILON);
+    assert_eq!(result.scores["sampling_requested_samples"], 4.0);
+    assert_eq!(result.scores["sampling_completed_samples"], 2.0);
+    assert_eq!(result.scores["sampling_prediction_steps"], 1.0);
+    assert_eq!(result.scores["sampling_sampled_steps"], 1.0);
+    assert_eq!(result.scores["sampling_completion_rate"], 0.5);
+
+    assert!(report.provider_summaries[0].sampling.is_some());
+    assert!(report.scenario_summaries[0].sampling.is_some());
+}
+
+#[tokio::test]
+async fn test_sampled_eval_reports_prediction_failure_when_all_samples_fail() {
+    let suite = EvalSuite {
+        name: "All Sampling Failures".to_string(),
+        scenarios: vec![EvalScenario {
+            name: "all_failures".to_string(),
+            description: "Ensure evaluation records a prediction failure when every sample fails"
+                .to_string(),
+            initial_state: WorldState::new("all_failures", "eval"),
+            actions: vec![worldforge_core::action::Action::Move {
+                target: Position {
+                    x: 0.2,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                speed: 0.5,
+            }],
+            expected_outcomes: vec![],
+            ground_truth: None,
+        }],
+        dimensions: vec![EvalDimension::ObjectPermanence],
+        providers: vec![],
+    };
+    let provider = FailingSamplingProvider::new(1);
+    let providers: Vec<&dyn WorldModelProvider> = vec![&provider];
+    let run_options = worldforge_eval::EvalRunOptions {
+        num_samples: Some(4),
+    };
+
+    let report = suite
+        .run_with_options(&providers, &run_options)
+        .await
+        .unwrap();
+    assert_eq!(report.results.len(), 1);
+
+    let result = &report.results[0];
+    assert_eq!(result.provider, "failing-sampling-fixture");
+    assert_eq!(result.scenario, "all_failures");
+    assert_eq!(result.outcomes.len(), 1);
+    assert!(!result.outcomes[0].passed);
+    assert_eq!(result.outcomes[0].description, "prediction");
+    assert!(result.outcomes[0].details.is_some());
+    assert!(result.scores.is_empty());
+    assert!(result.sampling.is_none());
 }
 
 #[test]

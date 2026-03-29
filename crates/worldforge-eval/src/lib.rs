@@ -1806,10 +1806,25 @@ async fn predict_for_evaluation(
             Box::pin(provider.predict(state, action, &sample_config)) as BoxFuture<'_, Result<_>>
         })
         .collect();
-    let predictions = join_all_ordered(futures)
-        .await
-        .into_iter()
-        .collect::<Result<Vec<_>>>()?;
+    let mut predictions = Vec::new();
+    let mut first_error: Option<WorldForgeError> = None;
+
+    for result in join_all_ordered(futures).await {
+        match result {
+            Ok(prediction) => predictions.push(prediction),
+            Err(error) => {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+    }
+
+    if predictions.is_empty() {
+        return Err(first_error.unwrap_or_else(|| {
+            WorldForgeError::InternalError("no evaluation prediction samples generated".to_string())
+        }));
+    }
 
     select_best_prediction_sample(predictions, config.num_samples)
 }
