@@ -34,6 +34,12 @@ pub struct World {
     registry: std::sync::Arc<ProviderRegistry>,
 }
 
+#[derive(Clone, Copy)]
+struct ProviderPlanningCapability {
+    name: &'static str,
+    supported: fn(&ProviderCapabilities) -> bool,
+}
+
 impl World {
     /// Create a new world with the given state and provider registry.
     pub fn new(
@@ -481,10 +487,21 @@ impl World {
                 num_samples,
                 replanning_interval,
             } => mpc_search(&context, *horizon, *num_samples, *replanning_interval, seed).await?,
-            PlannerType::Gradient {
-                learning_rate,
-                num_iterations,
-            } => gradient_search(&context, *learning_rate, *num_iterations, seed).await?,
+            PlannerType::Gradient { .. } => {
+                return self
+                    .plan_with_provider_fallback(
+                        request,
+                        provider_name,
+                        fallback_provider,
+                        start,
+                        timeout,
+                        ProviderPlanningCapability {
+                            name: "gradient planning",
+                            supported: |capabilities| capabilities.supports_gradient_planning,
+                        },
+                    )
+                    .await;
+            }
             PlannerType::ProviderNative => {
                 return self
                     .plan_with_provider_fallback(
@@ -493,6 +510,10 @@ impl World {
                         fallback_provider,
                         start,
                         timeout,
+                        ProviderPlanningCapability {
+                            name: "native planning",
+                            supported: |capabilities| capabilities.supports_planning,
+                        },
                     )
                     .await;
             }
@@ -530,9 +551,10 @@ impl World {
         fallback_provider: Option<&str>,
         start: std::time::Instant,
         timeout: Duration,
+        capability: ProviderPlanningCapability,
     ) -> Result<Plan> {
         match self
-            .run_provider_native_plan(request, provider_name, start, timeout)
+            .run_provider_plan(request, provider_name, start, timeout, capability)
             .await
         {
             Ok(plan) => Ok(plan),
@@ -546,12 +568,13 @@ impl World {
                 tracing::warn!(
                     provider = provider_name,
                     fallback = fallback_provider,
+                    capability = capability.name,
                     error = %primary_error,
-                    "native planning failed on primary provider, attempting fallback"
+                    "provider planning failed on primary provider, attempting fallback"
                 );
 
                 match self
-                    .run_provider_native_plan(request, fallback_provider, start, timeout)
+                    .run_provider_plan(request, fallback_provider, start, timeout, capability)
                     .await
                 {
                     Ok(plan) => Ok(plan),
@@ -566,18 +589,19 @@ impl World {
         }
     }
 
-    async fn run_provider_native_plan(
+    async fn run_provider_plan(
         &self,
         request: &PlanRequest,
         provider_name: &str,
         start: std::time::Instant,
         timeout: Duration,
+        capability: ProviderPlanningCapability,
     ) -> Result<Plan> {
         let provider = self.registry.get(provider_name)?;
-        if !provider.capabilities().supports_planning {
+        if !(capability.supported)(&provider.capabilities()) {
             return Err(WorldForgeError::UnsupportedCapability {
                 provider: provider_name.to_string(),
-                capability: "native planning".to_string(),
+                capability: capability.name.to_string(),
             });
         }
 
@@ -586,7 +610,13 @@ impl World {
             .map_err(|_| WorldForgeError::PlanningTimeout {
                 elapsed_ms: timeout.as_millis() as u64,
             })??;
-        finalize_provider_plan(provider_name, request, plan, start.elapsed())
+        finalize_provider_plan(
+            provider_name,
+            request,
+            plan,
+            start.elapsed(),
+            capability.name,
+        )
     }
 
     /// Execute a materialized plan against the world's default provider.
@@ -1028,12 +1058,13 @@ fn finalize_provider_plan(
     request: &PlanRequest,
     mut plan: Plan,
     elapsed: Duration,
+    capability: &str,
 ) -> Result<Plan> {
     let step_count = plan.actions.len();
     if step_count > request.max_steps as usize {
         return Err(WorldForgeError::PlanningFailed {
             reason: format!(
-                "provider-native plan from '{provider_name}' exceeded max_steps ({} > {})",
+                "{capability} plan from '{provider_name}' exceeded max_steps ({} > {})",
                 step_count, request.max_steps
             ),
         });
@@ -1041,7 +1072,7 @@ fn finalize_provider_plan(
     if plan.predicted_states.len() != step_count {
         return Err(WorldForgeError::PlanningFailed {
             reason: format!(
-                "provider-native plan from '{provider_name}' returned {} predicted states for {step_count} actions",
+                "{capability} plan from '{provider_name}' returned {} predicted states for {step_count} actions",
                 plan.predicted_states.len()
             ),
         });
@@ -1050,7 +1081,7 @@ fn finalize_provider_plan(
         if videos.len() != step_count {
             return Err(WorldForgeError::PlanningFailed {
                 reason: format!(
-                    "provider-native plan from '{provider_name}' returned {} videos for {step_count} actions",
+                    "{capability} plan from '{provider_name}' returned {} videos for {step_count} actions",
                     videos.len()
                 ),
             });
@@ -1274,67 +1305,6 @@ async fn cem_search(
 
     Ok(best.map(|mut candidate| {
         candidate.plan.iterations_used = num_iterations.max(1);
-        candidate
-    }))
-}
-
-async fn gradient_search(
-    context: &PlanningContext<'_>,
-    learning_rate: f32,
-    num_iterations: u32,
-    seed: u64,
-) -> Result<Option<EvaluatedCandidate>> {
-    let mut rng = PlannerRng::new(seed);
-    let mut candidates = generate_gradient_candidates(
-        &context.request.current_state,
-        context.request.max_steps,
-        context.goal_hints,
-        learning_rate,
-    );
-    if candidates.is_empty() {
-        candidates = generate_candidate_actions(
-            &context.request.current_state,
-            context.request.max_steps,
-            24,
-            context.goal_hints,
-            seed,
-        );
-    }
-
-    let mut best: Option<EvaluatedCandidate> = None;
-    let iterations = num_iterations.max(1);
-
-    for iteration in 0..iterations {
-        ensure_planning_budget(context.start, context.timeout)?;
-        if let Some(round_best) =
-            evaluate_candidates(context, candidates.clone(), iteration + 1).await?
-        {
-            if best
-                .as_ref()
-                .is_none_or(|current| round_best.score > current.score)
-            {
-                best = Some(round_best);
-            }
-        }
-
-        let shrink = (1.0 - learning_rate.clamp(0.01, 0.95)).powi((iteration + 1) as i32);
-        candidates = candidates
-            .iter()
-            .map(|candidate| {
-                mutate_candidate_actions(
-                    &context.request.current_state,
-                    candidate,
-                    context.request.max_steps,
-                    context.goal_hints,
-                    &mut rng,
-                    shrink.max(0.02),
-                )
-            })
-            .collect();
-    }
-
-    Ok(best.map(|mut candidate| {
-        candidate.plan.iterations_used = iterations;
         candidate
     }))
 }
@@ -1964,43 +1934,6 @@ fn mutate_candidate_actions(
 
     mutated.truncate(max_steps.max(1) as usize);
     mutated
-}
-
-fn generate_gradient_candidates(
-    state: &WorldState,
-    max_steps: u32,
-    goal_hints: &[GoalHint],
-    learning_rate: f32,
-) -> Vec<Vec<Action>> {
-    let mut candidates = Vec::new();
-    let step_count = max_steps.clamp(1, 4) as usize;
-    let rate = learning_rate.clamp(0.05, 0.95);
-
-    for hint in goal_hints {
-        if let GoalHint::ObjectAt {
-            object_id, target, ..
-        } = hint
-        {
-            if let Some(current) = state.scene.get_object(object_id) {
-                let mut sequence = Vec::new();
-                let mut cursor = current.pose.position;
-                for _ in 0..step_count {
-                    cursor = lerp_position(cursor, *target, rate);
-                    sequence.push(Action::Place {
-                        object: *object_id,
-                        target: cursor,
-                    });
-                }
-                candidates.push(sequence);
-            }
-        }
-    }
-
-    if candidates.is_empty() {
-        candidates.extend(goal_directed_candidates(state, max_steps, goal_hints));
-    }
-
-    candidates
 }
 
 fn derive_goal_hints(goal: &crate::prediction::PlanGoal, state: &WorldState) -> Vec<GoalHint> {
@@ -3417,6 +3350,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_gradient_requires_provider_support() {
+        let (state, _) = sample_planning_state();
+        let registry = std::sync::Arc::new({
+            let mut registry = ProviderRegistry::new();
+            registry.register(Box::new(PlanningProvider::new("planner", 1.0, true)));
+            registry
+        });
+        let world = World::new(state.clone(), "planner", registry);
+        let request = PlanRequest {
+            current_state: state,
+            goal: PlanGoal::Description("move ball to position (2.0, 0.0, 0.0)".to_string()),
+            max_steps: 4,
+            guardrails: Vec::new(),
+            planner: PlannerType::Gradient {
+                learning_rate: 0.2,
+                num_iterations: 8,
+            },
+            timeout_seconds: 5.0,
+            fallback_provider: None,
+        };
+
+        let error = world.plan(&request).await.unwrap_err();
+        assert!(matches!(
+            error,
+            WorldForgeError::UnsupportedCapability { provider, capability }
+                if provider == "planner" && capability == "gradient planning"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_gradient_uses_fallback_provider_when_primary_lacks_support() {
+        let (state, object_id) = sample_planning_state();
+        let registry = std::sync::Arc::new({
+            let mut registry = ProviderRegistry::new();
+            registry.register(Box::new(PlanningProvider::new("primary", 1.0, true)));
+            registry.register(Box::new(PlanningProvider::with_capabilities(
+                "fallback", 1.0, true, true,
+            )));
+            registry
+        });
+        let world = World::new(state.clone(), "primary", registry);
+        let request = PlanRequest {
+            current_state: state,
+            goal: PlanGoal::Description("move ball to position (2.0, 0.0, 0.0)".to_string()),
+            max_steps: 4,
+            guardrails: Vec::new(),
+            planner: PlannerType::Gradient {
+                learning_rate: 0.2,
+                num_iterations: 8,
+            },
+            timeout_seconds: 5.0,
+            fallback_provider: Some("fallback".to_string()),
+        };
+
+        let plan = world.plan(&request).await.unwrap();
+        let final_position = plan
+            .predicted_states
+            .last()
+            .unwrap()
+            .scene
+            .get_object(&object_id)
+            .unwrap()
+            .pose
+            .position;
+
+        assert_eq!(plan.iterations_used, 13);
+        assert!(final_position.x > 1.5);
+    }
+
+    #[tokio::test]
     async fn test_execute_plan_commits_final_state_and_history() {
         let (state, object_id) = sample_planning_state();
         let registry = std::sync::Arc::new({
@@ -3950,7 +3953,7 @@ mod tests {
     #[tokio::test]
     async fn test_predict_uses_fallback_provider_when_primary_lacks_depth_support() {
         let state = WorldState::new("depth-fallback", "primary");
-        let mut fallback_capabilities = test_capabilities(false);
+        let mut fallback_capabilities = test_capabilities(false, false);
         fallback_capabilities.supports_depth = true;
         let registry = std::sync::Arc::new({
             let mut registry = ProviderRegistry::new();
@@ -4579,7 +4582,7 @@ mod tests {
         let mut registry = ProviderRegistry::new();
         registry.register(Box::new(SuccessfulProvider::with_capabilities(
             "mock",
-            test_capabilities(false),
+            test_capabilities(false, false),
         )));
         let registry = std::sync::Arc::new(registry);
         let mut world = World::new(WorldState::new("branch-source", "mock"), "mock", registry);
@@ -4610,7 +4613,7 @@ mod tests {
         let mut registry = ProviderRegistry::new();
         registry.register(Box::new(SuccessfulProvider::with_capabilities(
             "mock",
-            test_capabilities(false),
+            test_capabilities(false, false),
         )));
         let registry = std::sync::Arc::new(registry);
         let mut world = World::new(WorldState::new("history-branch", "mock"), "mock", registry);
@@ -4710,7 +4713,7 @@ mod tests {
 
     impl SuccessfulProvider {
         fn new(name: &str) -> Self {
-            Self::with_capabilities(name, test_capabilities(false))
+            Self::with_capabilities(name, test_capabilities(false, false))
         }
 
         fn with_capabilities(name: &str, capabilities: ProviderCapabilities) -> Self {
@@ -4736,6 +4739,7 @@ mod tests {
         name: String,
         movement_scale: f32,
         supports_planning: bool,
+        supports_gradient_planning: bool,
     }
 
     #[derive(Debug, Clone)]
@@ -4743,6 +4747,7 @@ mod tests {
         name: String,
         movement_scale: f32,
         supports_planning: bool,
+        supports_gradient_planning: bool,
         native_plan_delay_ms: u64,
     }
 
@@ -4758,10 +4763,20 @@ mod tests {
 
     impl PlanningProvider {
         fn new(name: &str, movement_scale: f32, supports_planning: bool) -> Self {
+            Self::with_capabilities(name, movement_scale, supports_planning, false)
+        }
+
+        fn with_capabilities(
+            name: &str,
+            movement_scale: f32,
+            supports_planning: bool,
+            supports_gradient_planning: bool,
+        ) -> Self {
             Self {
                 name: name.to_string(),
                 movement_scale,
                 supports_planning,
+                supports_gradient_planning,
             }
         }
     }
@@ -4773,10 +4788,27 @@ mod tests {
             supports_planning: bool,
             native_plan_delay_ms: u64,
         ) -> Self {
+            Self::with_capabilities(
+                name,
+                movement_scale,
+                supports_planning,
+                false,
+                native_plan_delay_ms,
+            )
+        }
+
+        fn with_capabilities(
+            name: &str,
+            movement_scale: f32,
+            supports_planning: bool,
+            supports_gradient_planning: bool,
+            native_plan_delay_ms: u64,
+        ) -> Self {
             Self {
                 name: name.to_string(),
                 movement_scale,
                 supports_planning,
+                supports_gradient_planning,
                 native_plan_delay_ms,
             }
         }
@@ -4798,7 +4830,10 @@ mod tests {
         }
     }
 
-    fn test_capabilities(supports_planning: bool) -> ProviderCapabilities {
+    fn test_capabilities(
+        supports_planning: bool,
+        supports_gradient_planning: bool,
+    ) -> ProviderCapabilities {
         ProviderCapabilities {
             predict: true,
             generate: false,
@@ -4814,6 +4849,7 @@ mod tests {
             supports_depth: false,
             supports_segmentation: false,
             supports_planning,
+            supports_gradient_planning,
             latency_profile: LatencyProfile {
                 p50_ms: 1,
                 p95_ms: 1,
@@ -4828,7 +4864,7 @@ mod tests {
             generate: true,
             reason: true,
             transfer: true,
-            ..test_capabilities(false)
+            ..test_capabilities(false, false)
         }
     }
 
@@ -5133,6 +5169,16 @@ mod tests {
         }
     }
 
+    fn build_gradient_plan(
+        request: &PlanRequest,
+        movement_scale: f32,
+        iterations_used: u32,
+    ) -> Plan {
+        let mut plan = build_native_plan(request, movement_scale, iterations_used);
+        plan.success_probability = plan.success_probability.max(0.95);
+        plan
+    }
+
     #[async_trait]
     impl WorldModelProvider for FailingProvider {
         fn name(&self) -> &str {
@@ -5140,7 +5186,7 @@ mod tests {
         }
 
         fn capabilities(&self) -> ProviderCapabilities {
-            test_capabilities(false)
+            test_capabilities(false, false)
         }
 
         async fn predict(
@@ -5205,7 +5251,7 @@ mod tests {
         }
 
         fn capabilities(&self) -> ProviderCapabilities {
-            test_capabilities(false)
+            test_capabilities(false, false)
         }
 
         async fn predict(
@@ -5336,7 +5382,7 @@ mod tests {
         }
 
         fn capabilities(&self) -> ProviderCapabilities {
-            test_capabilities(false)
+            test_capabilities(false, false)
         }
 
         async fn predict(
@@ -5444,7 +5490,7 @@ mod tests {
         }
 
         fn capabilities(&self) -> ProviderCapabilities {
-            test_capabilities(self.supports_planning)
+            test_capabilities(self.supports_planning, self.supports_gradient_planning)
         }
 
         async fn predict(
@@ -5520,11 +5566,23 @@ mod tests {
         }
 
         async fn plan(&self, request: &PlanRequest) -> Result<Plan> {
-            if !self.supports_planning {
-                return Err(WorldForgeError::UnsupportedCapability {
-                    provider: self.name.clone(),
-                    capability: "native planning".to_string(),
-                });
+            match request.planner {
+                PlannerType::Gradient { .. } if !self.supports_gradient_planning => {
+                    return Err(WorldForgeError::UnsupportedCapability {
+                        provider: self.name.clone(),
+                        capability: "gradient planning".to_string(),
+                    });
+                }
+                PlannerType::Gradient { .. } => {
+                    return Ok(build_gradient_plan(request, self.movement_scale, 13));
+                }
+                _ if !self.supports_planning => {
+                    return Err(WorldForgeError::UnsupportedCapability {
+                        provider: self.name.clone(),
+                        capability: "native planning".to_string(),
+                    });
+                }
+                _ => {}
             }
             Ok(build_native_plan(request, self.movement_scale, 97))
         }
@@ -5541,7 +5599,7 @@ mod tests {
         }
 
         fn capabilities(&self) -> ProviderCapabilities {
-            test_capabilities(self.supports_planning)
+            test_capabilities(self.supports_planning, self.supports_gradient_planning)
         }
 
         async fn predict(
@@ -5617,11 +5675,24 @@ mod tests {
         }
 
         async fn plan(&self, request: &PlanRequest) -> Result<Plan> {
-            if !self.supports_planning {
-                return Err(WorldForgeError::UnsupportedCapability {
-                    provider: self.name.clone(),
-                    capability: "native planning".to_string(),
-                });
+            match request.planner {
+                PlannerType::Gradient { .. } if !self.supports_gradient_planning => {
+                    return Err(WorldForgeError::UnsupportedCapability {
+                        provider: self.name.clone(),
+                        capability: "gradient planning".to_string(),
+                    });
+                }
+                PlannerType::Gradient { .. } => {
+                    tokio::time::sleep(Duration::from_millis(self.native_plan_delay_ms)).await;
+                    return Ok(build_gradient_plan(request, self.movement_scale, 13));
+                }
+                _ if !self.supports_planning => {
+                    return Err(WorldForgeError::UnsupportedCapability {
+                        provider: self.name.clone(),
+                        capability: "native planning".to_string(),
+                    });
+                }
+                _ => {}
             }
 
             tokio::time::sleep(Duration::from_millis(self.native_plan_delay_ms)).await;
@@ -5640,7 +5711,7 @@ mod tests {
         }
 
         fn capabilities(&self) -> ProviderCapabilities {
-            test_capabilities(true)
+            test_capabilities(true, false)
         }
 
         async fn predict(

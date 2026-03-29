@@ -319,6 +319,7 @@ impl WorldModelProvider for MarbleProvider {
             supports_depth: true,
             supports_segmentation: true,
             supports_planning: true,
+            supports_gradient_planning: false,
             latency_profile: LatencyProfile {
                 p50_ms: 22,
                 p95_ms: 40,
@@ -1546,6 +1547,7 @@ mod tests {
         assert!(caps.supports_depth);
         assert!(caps.supports_segmentation);
         assert!(caps.supports_planning);
+        assert!(!caps.supports_gradient_planning);
         assert_eq!(provider.name(), "marble");
     }
 

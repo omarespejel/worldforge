@@ -747,6 +747,7 @@ impl WorldModelProvider for RunwayProvider {
             supports_depth: false,
             supports_segmentation: false,
             supports_planning: true,
+            supports_gradient_planning: false,
             latency_profile: self.latency_profile_for_models(),
         }
     }
@@ -1440,6 +1441,7 @@ mod tests {
         assert!(caps.transfer);
         assert!(caps.reason);
         assert!(caps.supports_planning);
+        assert!(!caps.supports_gradient_planning);
         assert!(
             provider
                 .estimate_cost(&worldforge_core::provider::Operation::Reason)

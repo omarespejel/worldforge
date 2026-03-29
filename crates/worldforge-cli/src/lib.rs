@@ -1831,7 +1831,7 @@ fn available_eval_metric_names() -> String {
 }
 
 fn available_provider_capabilities() -> &'static str {
-    "predict, generate, reason, transfer, embed, planning, action-conditioned, multi-view, depth, segmentation"
+    "predict, generate, reason, transfer, embed, planning, gradient-planning, action-conditioned, multi-view, depth, segmentation"
 }
 
 fn resolve_provider_name<'a>(state: &'a WorldState, provider: Option<&'a str>) -> &'a str {
@@ -2424,6 +2424,9 @@ fn summarize_capabilities(descriptor: &ProviderDescriptor) -> String {
     }
     if descriptor.capabilities.supports_planning {
         labels.push("planning");
+    }
+    if descriptor.capabilities.supports_gradient_planning {
+        labels.push("gradient-planning");
     }
     if descriptor.capabilities.supports_depth {
         labels.push("depth");

@@ -1656,6 +1656,7 @@ impl WorldModelProvider for CosmosProvider {
             supports_depth: false,
             supports_segmentation: false,
             supports_planning: true,
+            supports_gradient_planning: false,
             latency_profile: LatencyProfile {
                 p50_ms: 2000,
                 p95_ms: 5000,

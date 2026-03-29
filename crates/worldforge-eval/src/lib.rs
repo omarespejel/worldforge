@@ -3654,6 +3654,7 @@ mod tests {
                 supports_depth: false,
                 supports_segmentation: false,
                 supports_planning: false,
+                supports_gradient_planning: false,
                 latency_profile: LatencyProfile {
                     p50_ms: 1,
                     p95_ms: 1,
@@ -3758,6 +3759,7 @@ mod tests {
                 supports_depth: true,
                 supports_segmentation: true,
                 supports_planning: false,
+                supports_gradient_planning: false,
                 latency_profile: LatencyProfile {
                     p50_ms: 1,
                     p95_ms: 1,
@@ -3866,6 +3868,7 @@ mod tests {
                 supports_depth: false,
                 supports_segmentation: false,
                 supports_planning: false,
+                supports_gradient_planning: false,
                 latency_profile: LatencyProfile {
                     p50_ms: 1,
                     p95_ms: 1,

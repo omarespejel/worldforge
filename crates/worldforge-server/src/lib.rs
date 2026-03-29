@@ -2983,6 +2983,7 @@ fn openapi_component_schemas() -> serde_json::Map<String, serde_json::Value> {
                 "supports_depth",
                 "supports_segmentation",
                 "supports_planning",
+                "supports_gradient_planning",
                 "latency_profile",
             ],
             vec![
@@ -3025,6 +3026,10 @@ fn openapi_component_schemas() -> serde_json::Map<String, serde_json::Value> {
                 ),
                 (
                     "supports_planning",
+                    serde_json::json!({ "type": "boolean" }),
+                ),
+                (
+                    "supports_gradient_planning",
                     serde_json::json!({ "type": "boolean" }),
                 ),
                 ("latency_profile", openapi_ref_schema("LatencyProfile")),

@@ -477,6 +477,7 @@ impl WorldModelProvider for JepaProvider {
             supports_depth: false,
             supports_segmentation: false,
             supports_planning: true,
+            supports_gradient_planning: true,
             latency_profile: LatencyProfile {
                 p50_ms: 90,
                 p95_ms: 180,
@@ -625,79 +626,16 @@ impl WorldModelProvider for JepaProvider {
     async fn plan(&self, request: &PlanRequest) -> Result<Plan> {
         let assets = self.inspect_assets()?;
         let start = Instant::now();
-        let native_goal =
-            derive_native_goal(&request.goal, &request.current_state).ok_or_else(|| {
-                WorldForgeError::NoFeasiblePlan {
-                    goal: format!("{:?}", request.goal),
-                    reason: "JEPA native planner could not interpret the requested goal"
-                        .to_string(),
-                }
-            })?;
-
-        let mut state = request.current_state.clone();
-        let config = PredictionConfig::default();
-        let mut actions = Vec::new();
-        let mut predicted_states = Vec::new();
-        let mut guardrail_compliance = Vec::new();
-
-        while actions.len() < request.max_steps as usize {
-            if native_goal_satisfied(&native_goal, &state) {
-                break;
-            }
-
-            let Some(action) = next_native_action(&native_goal, &state) else {
-                break;
-            };
-
-            let next_state = simulate_prediction(&state, &action, &config, &assets);
-            let guardrail_results = if request.guardrails.is_empty() {
-                Vec::new()
-            } else {
-                let results = evaluate_guardrails(&request.guardrails, &next_state);
-                if has_blocking_violation(&results) {
-                    return Err(WorldForgeError::NoFeasiblePlan {
-                        goal: format!("{:?}", request.goal),
-                        reason: "JEPA native planner generated a guardrail-blocked step"
-                            .to_string(),
-                    });
-                }
-                results
-            };
-
-            actions.push(action);
-            state = next_state;
-            predicted_states.push(state.clone());
-            guardrail_compliance.push(guardrail_results);
+        match request.planner {
+            // Discrete goals still rely on the native symbolic planner because
+            // the surrogate gradient objective only applies to continuous
+            // spatial targets.
+            worldforge_core::prediction::PlannerType::Gradient {
+                learning_rate,
+                num_iterations,
+            } => gradient_plan(&assets, request, start, learning_rate, num_iterations),
+            _ => native_plan(&assets, request, start),
         }
-
-        if !native_goal_satisfied(&native_goal, &state) {
-            return Err(WorldForgeError::NoFeasiblePlan {
-                goal: format!("{:?}", request.goal),
-                reason: "JEPA native planner exhausted the step budget before satisfying the goal"
-                    .to_string(),
-            });
-        }
-
-        let step_cost = self.estimate_cost(&Operation::Predict {
-            steps: 1,
-            resolution: config.resolution,
-        });
-        let total_cost = step_cost.usd as f32 * actions.len() as f32;
-
-        let iterations_used = u32::try_from(predicted_states.len()).unwrap_or(u32::MAX);
-
-        Ok(Plan {
-            actions,
-            predicted_states,
-            predicted_videos: None,
-            total_cost,
-            success_probability: native_goal_score(&native_goal, &state),
-            guardrail_compliance,
-            planning_time_ms: start.elapsed().as_millis() as u64,
-            iterations_used,
-            stored_plan_id: None,
-            verification_proof: None,
-        })
     }
 
     fn estimate_cost(&self, operation: &Operation) -> CostEstimate {
@@ -722,6 +660,418 @@ impl WorldModelProvider for JepaProvider {
 
     fn supported_actions(&self) -> Vec<ActionType> {
         ActionTranslator::supported_actions(self)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct GradientPlanTarget {
+    goal: NativePlanGoal,
+    controlled_object: uuid::Uuid,
+    target_state: WorldState,
+}
+
+fn native_plan(assets: &JepaAssets, request: &PlanRequest, start: Instant) -> Result<Plan> {
+    let native_goal =
+        derive_native_goal(&request.goal, &request.current_state).ok_or_else(|| {
+            WorldForgeError::NoFeasiblePlan {
+                goal: format!("{:?}", request.goal),
+                reason: "JEPA native planner could not interpret the requested goal".to_string(),
+            }
+        })?;
+
+    let mut state = request.current_state.clone();
+    let config = PredictionConfig::default();
+    let mut actions = Vec::new();
+    let mut predicted_states = Vec::new();
+    let mut guardrail_compliance = Vec::new();
+
+    while actions.len() < request.max_steps as usize {
+        if native_goal_satisfied(&native_goal, &state) {
+            break;
+        }
+
+        let Some(action) = next_native_action(&native_goal, &state) else {
+            break;
+        };
+
+        let next_state = simulate_prediction(&state, &action, &config, assets);
+        let guardrail_results = if request.guardrails.is_empty() {
+            Vec::new()
+        } else {
+            let results = evaluate_guardrails(&request.guardrails, &next_state);
+            if has_blocking_violation(&results) {
+                return Err(WorldForgeError::NoFeasiblePlan {
+                    goal: format!("{:?}", request.goal),
+                    reason: "JEPA native planner generated a guardrail-blocked step".to_string(),
+                });
+            }
+            results
+        };
+
+        actions.push(action);
+        state = next_state;
+        predicted_states.push(state.clone());
+        guardrail_compliance.push(guardrail_results);
+    }
+
+    if !native_goal_satisfied(&native_goal, &state) {
+        return Err(WorldForgeError::NoFeasiblePlan {
+            goal: format!("{:?}", request.goal),
+            reason: "JEPA native planner exhausted the step budget before satisfying the goal"
+                .to_string(),
+        });
+    }
+
+    let iterations_used = u32::try_from(predicted_states.len()).unwrap_or(u32::MAX);
+    Ok(plan_from_rollout(
+        actions,
+        predicted_states,
+        guardrail_compliance,
+        native_goal_score(&native_goal, &state),
+        iterations_used,
+        start,
+    ))
+}
+
+fn gradient_plan(
+    assets: &JepaAssets,
+    request: &PlanRequest,
+    start: Instant,
+    learning_rate: f32,
+    num_iterations: u32,
+) -> Result<Plan> {
+    let native_goal =
+        derive_native_goal(&request.goal, &request.current_state).ok_or_else(|| {
+            WorldForgeError::NoFeasiblePlan {
+                goal: format!("{:?}", request.goal),
+                reason: "JEPA gradient planner could not interpret the requested goal".to_string(),
+            }
+        })?;
+
+    if matches!(native_goal, NativePlanGoal::AlreadySatisfied) {
+        return Ok(plan_from_rollout(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            1.0,
+            0,
+            start,
+        ));
+    }
+
+    let Some(target) = gradient_target_from_goal(&native_goal, &request.current_state) else {
+        return native_plan(assets, request, start);
+    };
+
+    let mut parameter = request
+        .current_state
+        .scene
+        .get_object(&target.controlled_object)
+        .map(|object| object.pose.position)
+        .ok_or_else(|| WorldForgeError::NoFeasiblePlan {
+            goal: format!("{:?}", request.goal),
+            reason: "JEPA gradient planner could not locate the controlled object".to_string(),
+        })?;
+
+    let iterations = num_iterations.max(1);
+    let step_size = learning_rate.clamp(0.01, 1.0);
+    let epsilon = 0.05;
+    let mut best: Option<(Plan, f32)> = None;
+
+    for iteration in 0..iterations {
+        if let Some((plan, score)) =
+            evaluate_gradient_candidate(assets, request, &target, parameter, iteration + 1, start)
+        {
+            if best
+                .as_ref()
+                .is_none_or(|(_, best_score)| score > *best_score)
+            {
+                best = Some((plan, score));
+            }
+        }
+
+        let gradient = finite_difference_gradient(parameter, epsilon, |probe| {
+            evaluate_gradient_candidate_score(assets, request, &target, probe, iteration + 1, start)
+                .unwrap_or(-1.0)
+        });
+        if position_distance(Position::default(), gradient) <= 1e-3 {
+            break;
+        }
+
+        let decayed = step_size / (1.0 + iteration as f32 * 0.08);
+        parameter = clamp_gradient_target(Position {
+            x: parameter.x + gradient.x * decayed,
+            y: parameter.y + gradient.y * decayed,
+            z: parameter.z + gradient.z * decayed,
+        });
+    }
+
+    best.map(|(plan, _)| plan)
+        .ok_or_else(|| WorldForgeError::NoFeasiblePlan {
+            goal: format!("{:?}", request.goal),
+            reason: "JEPA gradient planner could not produce a guardrail-compliant rollout"
+                .to_string(),
+        })
+}
+
+fn gradient_target_from_goal(
+    goal: &NativePlanGoal,
+    state: &WorldState,
+) -> Option<GradientPlanTarget> {
+    match goal {
+        NativePlanGoal::ObjectAt {
+            object_id,
+            target,
+            tolerance,
+        } => {
+            let mut target_state = state.clone();
+            let object = target_state.scene.get_object_mut(object_id)?;
+            set_object_position(object, *target);
+            Some(GradientPlanTarget {
+                goal: NativePlanGoal::ObjectAt {
+                    object_id: *object_id,
+                    target: *target,
+                    tolerance: *tolerance,
+                },
+                controlled_object: *object_id,
+                target_state,
+            })
+        }
+        NativePlanGoal::ObjectsTouching { mover, anchor } => {
+            let anchor_position = state.scene.get_object(anchor)?.pose.position;
+            let mut target_state = state.clone();
+            let mover_object = target_state.scene.get_object_mut(mover)?;
+            set_object_position(mover_object, anchor_position);
+            refresh_touching_relationships(&mut target_state.scene);
+            Some(GradientPlanTarget {
+                goal: NativePlanGoal::ObjectsTouching {
+                    mover: *mover,
+                    anchor: *anchor,
+                },
+                controlled_object: *mover,
+                target_state,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn evaluate_gradient_candidate_score(
+    assets: &JepaAssets,
+    request: &PlanRequest,
+    target: &GradientPlanTarget,
+    target_position: Position,
+    iterations_used: u32,
+    start: Instant,
+) -> Option<f32> {
+    evaluate_gradient_candidate(
+        assets,
+        request,
+        target,
+        target_position,
+        iterations_used,
+        start,
+    )
+    .map(|(_, score)| score)
+}
+
+fn evaluate_gradient_candidate(
+    assets: &JepaAssets,
+    request: &PlanRequest,
+    target: &GradientPlanTarget,
+    target_position: Position,
+    iterations_used: u32,
+    start: Instant,
+) -> Option<(Plan, f32)> {
+    let current = request
+        .current_state
+        .scene
+        .get_object(&target.controlled_object)?
+        .pose
+        .position;
+    let step_count = request.max_steps.max(1) as usize;
+    let actions: Vec<_> = interpolate_positions(current, target_position, step_count)
+        .into_iter()
+        .map(|position| Action::Place {
+            object: target.controlled_object,
+            target: position,
+        })
+        .collect();
+
+    let config = PredictionConfig::default();
+    let mut state = request.current_state.clone();
+    let mut predicted_states = Vec::with_capacity(actions.len());
+    let mut guardrail_compliance = Vec::with_capacity(actions.len());
+
+    for action in &actions {
+        let next_state = simulate_prediction(&state, action, &config, assets);
+        let guardrail_results = if request.guardrails.is_empty() {
+            Vec::new()
+        } else {
+            let results = evaluate_guardrails(&request.guardrails, &next_state);
+            if has_blocking_violation(&results) {
+                return None;
+            }
+            results
+        };
+
+        state = next_state;
+        predicted_states.push(state.clone());
+        guardrail_compliance.push(guardrail_results);
+    }
+
+    let score = gradient_objective_score(target, &state, &target.target_state, assets);
+    let plan = plan_from_rollout(
+        actions,
+        predicted_states,
+        guardrail_compliance,
+        score,
+        iterations_used,
+        start,
+    );
+    Some((plan, score))
+}
+
+fn gradient_objective_score(
+    target: &GradientPlanTarget,
+    final_state: &WorldState,
+    target_state: &WorldState,
+    assets: &JepaAssets,
+) -> f32 {
+    let goal_score = native_goal_score(&target.goal, final_state);
+    let representation_score = representation_alignment_score(final_state, target_state, assets);
+    (goal_score * 0.65 + representation_score * 0.35).clamp(0.0, 1.0)
+}
+
+fn interpolate_positions(start: Position, end: Position, step_count: usize) -> Vec<Position> {
+    let steps = step_count.max(1);
+    (0..steps)
+        .map(|index| {
+            let ratio = (index + 1) as f32 / steps as f32;
+            lerp_position(start, end, ratio)
+        })
+        .collect()
+}
+
+fn finite_difference_gradient(
+    position: Position,
+    epsilon: f32,
+    score: impl Fn(Position) -> f32,
+) -> Position {
+    let dx = (score(Position {
+        x: position.x + epsilon,
+        ..position
+    }) - score(Position {
+        x: position.x - epsilon,
+        ..position
+    })) / (2.0 * epsilon);
+    let dy = (score(Position {
+        y: position.y + epsilon,
+        ..position
+    }) - score(Position {
+        y: position.y - epsilon,
+        ..position
+    })) / (2.0 * epsilon);
+    let dz = (score(Position {
+        z: position.z + epsilon,
+        ..position
+    }) - score(Position {
+        z: position.z - epsilon,
+        ..position
+    })) / (2.0 * epsilon);
+    Position {
+        x: dx,
+        y: dy,
+        z: dz,
+    }
+}
+
+fn clamp_gradient_target(position: Position) -> Position {
+    Position {
+        x: position.x.clamp(-8.0, 8.0),
+        y: position.y.clamp(0.0, 8.0),
+        z: position.z.clamp(-8.0, 8.0),
+    }
+}
+
+fn representation_alignment_score(
+    current: &WorldState,
+    target: &WorldState,
+    assets: &JepaAssets,
+) -> f32 {
+    let current = encode_state_representation(current, assets);
+    let target = encode_state_representation(target, assets);
+    let dot = current
+        .iter()
+        .zip(target.iter())
+        .map(|(left, right)| left * right)
+        .sum::<f32>();
+    ((dot + 1.0) * 0.5).clamp(0.0, 1.0)
+}
+
+fn encode_state_representation(state: &WorldState, assets: &JepaAssets) -> Vec<f32> {
+    let dimension = embedding_dimension(assets).clamp(8, 64);
+    let mut values = vec![0.0f32; dimension];
+    let action_gain = assets.manifest.action_gain();
+    let gravity_bias = assets.manifest.gravity_bias();
+    let collision_bias = assets.manifest.collision_bias();
+
+    for (object_index, object) in sorted_objects(state).into_iter().enumerate() {
+        let semantic_bias = object
+            .semantic_label
+            .as_ref()
+            .map(|label| scalar_from_bytes(label.as_bytes()))
+            .unwrap_or(0.0);
+        let slots = [
+            object.pose.position.x * action_gain,
+            object.pose.position.y * gravity_bias,
+            object.pose.position.z * action_gain,
+            object.velocity.x * 0.1,
+            object.velocity.y * 0.1,
+            object.velocity.z * 0.1,
+            if object.physics.is_static { -0.2 } else { 0.2 },
+            semantic_bias + object_index as f32 * 0.01,
+        ];
+        for (slot_index, feature) in slots.into_iter().enumerate() {
+            values[(object_index * 8 + slot_index) % dimension] += feature;
+        }
+    }
+
+    for (tag_index, tag) in state.metadata.tags.iter().enumerate() {
+        values[(tag_index * 5) % dimension] += scalar_from_bytes(tag.as_bytes()) * collision_bias;
+    }
+
+    l2_normalize(&mut values);
+    values
+}
+
+fn scalar_from_bytes(bytes: &[u8]) -> f32 {
+    let digest = sha256_hash(bytes);
+    let mut raw = [0u8; 4];
+    raw.copy_from_slice(&digest[..4]);
+    let value = u32::from_le_bytes(raw) as f32 / u32::MAX as f32;
+    value * 2.0 - 1.0
+}
+
+fn plan_from_rollout(
+    actions: Vec<Action>,
+    predicted_states: Vec<WorldState>,
+    guardrail_compliance: Vec<Vec<worldforge_core::guardrail::GuardrailResult>>,
+    success_probability: f32,
+    iterations_used: u32,
+    start: Instant,
+) -> Plan {
+    Plan {
+        actions,
+        predicted_states,
+        predicted_videos: None,
+        total_cost: 0.0,
+        success_probability,
+        guardrail_compliance,
+        planning_time_ms: start.elapsed().as_millis() as u64,
+        iterations_used,
+        stored_plan_id: None,
+        verification_proof: None,
     }
 }
 
@@ -2592,6 +2942,7 @@ mod tests {
         assert!(!caps.transfer);
         assert!(caps.embed);
         assert!(caps.supports_planning);
+        assert!(caps.supports_gradient_planning);
         assert!(caps.action_conditioned);
     }
 
@@ -2913,6 +3264,51 @@ mod tests {
         assert!(!plan.actions.is_empty());
         assert!(final_position.x > 1.0);
         assert!(plan.success_probability > 0.9);
+    }
+
+    #[tokio::test]
+    async fn test_jepa_gradient_plan_moves_object_to_continuous_goal() {
+        let model_dir = TestModelDir::new("gradient-plan");
+        model_dir.write_weights("model.safetensors", b"latent-weights-go-here");
+        model_dir.write_manifest(&manifest_json("vjepa2-local"));
+
+        let provider = JepaProvider::new(&model_dir.path, JepaBackend::Burn);
+        let (state, object_id) = sample_state();
+        let initial_position = state.scene.get_object(&object_id).unwrap().pose.position;
+        let target_position = Position {
+            x: 1.2,
+            y: 1.0,
+            z: 0.0,
+        };
+        let request = PlanRequest {
+            current_state: state,
+            goal: PlanGoal::Description("move block to position (1.2, 1.0, 0.0)".to_string()),
+            max_steps: 4,
+            guardrails: Vec::new(),
+            planner: worldforge_core::prediction::PlannerType::Gradient {
+                learning_rate: 0.4,
+                num_iterations: 24,
+            },
+            timeout_seconds: 5.0,
+            fallback_provider: None,
+        };
+
+        let plan = provider.plan(&request).await.unwrap();
+        let final_state = plan.predicted_states.last().unwrap();
+        let final_position = final_state
+            .scene
+            .get_object(&object_id)
+            .unwrap()
+            .pose
+            .position;
+        let initial_distance = position_distance(initial_position, target_position);
+        let final_distance = position_distance(final_position, target_position);
+
+        assert!(!plan.actions.is_empty());
+        assert!(plan.iterations_used > 0);
+        assert!(final_position.x > initial_position.x);
+        assert!(final_distance < initial_distance);
+        assert!(plan.success_probability > 0.75);
     }
 
     #[tokio::test]

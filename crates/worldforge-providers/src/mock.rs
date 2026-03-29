@@ -103,6 +103,7 @@ impl WorldModelProvider for MockProvider {
             supports_depth: true,
             supports_segmentation: true,
             supports_planning: true,
+            supports_gradient_planning: false,
             latency_profile: LatencyProfile {
                 p50_ms: 10,
                 p95_ms: 20,
@@ -2683,6 +2684,7 @@ mod tests {
         assert!(caps.supports_depth);
         assert!(caps.supports_segmentation);
         assert!(caps.supports_planning);
+        assert!(!caps.supports_gradient_planning);
     }
 
     #[test]

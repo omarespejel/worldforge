@@ -36,7 +36,7 @@ A `Prediction` is the result of asking a world model "what happens next?" It con
 An `Embedding` is a provider-generated vector representation of text and/or video input. WorldForge treats embeddings as a first-class capability alongside prediction, generation, reasoning, and transfer.
 
 ### Plans
-A `Plan` is a sequence of actions optimized to reach a goal state. WorldForge can use gradient-based planning (for differentiable world models like JEPA) or sampling-based planning (for generative models like Cosmos/GWM).
+A `Plan` is a sequence of actions optimized to reach a goal state. Gradient planning is provider-backed and only available on providers that explicitly advertise `supports_gradient_planning`, currently JEPA for continuous spatial goals. Sampling and provider-native planning remain available on broader planning-capable providers like Cosmos, Runway, Marble, Genie, and Mock.
 
 ### Guardrails
 A `Guardrail` is a safety constraint. Define forbidden states, energy thresholds, or physical laws. WorldForge checks every prediction against guardrails before returning results. Optional: ZK verification of guardrail compliance for safety-critical applications.

@@ -45,6 +45,8 @@ pub struct ProviderCapabilities {
     pub supports_segmentation: bool,
     /// Whether planning is supported natively.
     pub supports_planning: bool,
+    /// Whether the provider supports differentiable/gradient-based planning.
+    pub supports_gradient_planning: bool,
     /// Latency profile for the provider.
     pub latency_profile: LatencyProfile,
 }
@@ -526,6 +528,10 @@ fn supports_capability(capabilities: &ProviderCapabilities, capability: &str) ->
         "transfer" => capabilities.transfer,
         "embed" => capabilities.embed,
         "planning" => capabilities.supports_planning,
+        "gradient-planning"
+        | "gradient_planning"
+        | "differentiable-planning"
+        | "differentiable_planning" => capabilities.supports_gradient_planning,
         "action-conditioned" | "action_conditioned" => capabilities.action_conditioned,
         "multi-view" | "multi_view" => capabilities.multi_view,
         "depth" => capabilities.supports_depth,
@@ -852,6 +858,7 @@ mod tests {
             supports_depth: true,
             supports_segmentation: false,
             supports_planning: false,
+            supports_gradient_planning: false,
             latency_profile: LatencyProfile {
                 p50_ms: 200,
                 p95_ms: 500,
@@ -915,6 +922,7 @@ mod tests {
 
         let mut predict_caps = test_capabilities();
         predict_caps.supports_planning = true;
+        predict_caps.supports_gradient_planning = true;
         let mut reason_only_caps = test_capabilities();
         reason_only_caps.predict = false;
         reason_only_caps.generate = false;
@@ -939,6 +947,14 @@ mod tests {
         let reports = registry.health_check_by_capability("planning").await;
         let names: Vec<_> = reports.iter().map(|report| report.name.as_str()).collect();
         assert_eq!(names, vec!["alpha", "beta"]);
+        let gradient_reports = registry
+            .health_check_by_capability("gradient-planning")
+            .await;
+        let gradient_names: Vec<_> = gradient_reports
+            .iter()
+            .map(|report| report.name.as_str())
+            .collect();
+        assert_eq!(gradient_names, vec!["alpha", "beta"]);
         assert!(reports.iter().all(ProviderHealthReport::is_healthy));
     }
 
@@ -1015,6 +1031,9 @@ mod tests {
 
         let embeds = registry.describe_by_capability("embed");
         assert_eq!(embeds.len(), 0);
+
+        let gradients = registry.describe_by_capability("gradient-planning");
+        assert_eq!(gradients.len(), 0);
     }
 
     #[test]

@@ -1694,6 +1694,7 @@ impl WorldModelProvider for GenieProvider {
             supports_depth: true,
             supports_segmentation: true,
             supports_planning: true,
+            supports_gradient_planning: false,
             latency_profile: LatencyProfile {
                 p50_ms: 220,
                 p95_ms: 500,
@@ -2673,6 +2674,7 @@ mod tests {
         assert!(caps.supports_depth);
         assert!(caps.supports_segmentation);
         assert!(caps.supports_planning);
+        assert!(!caps.supports_gradient_planning);
         assert_eq!(caps.max_resolution, (256, 256));
         assert_eq!(caps.fps_range, (6.0, 12.0));
     }

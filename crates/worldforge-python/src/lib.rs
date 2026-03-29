@@ -4059,6 +4059,11 @@ impl PyProviderCapabilities {
     }
 
     #[getter]
+    fn supports_gradient_planning(&self) -> bool {
+        self.inner.supports_gradient_planning
+    }
+
+    #[getter]
     fn action_conditioned(&self) -> bool {
         self.inner.action_conditioned
     }
@@ -4096,13 +4101,14 @@ impl PyProviderCapabilities {
 
     fn __repr__(&self) -> String {
         format!(
-            "ProviderCapabilities(predict={}, generate={}, reason={}, transfer={}, embed={}, planning={})",
+            "ProviderCapabilities(predict={}, generate={}, reason={}, transfer={}, embed={}, planning={}, gradient_planning={})",
             self.inner.predict,
             self.inner.generate,
             self.inner.reason,
             self.inner.transfer,
             self.inner.embed,
-            self.inner.supports_planning
+            self.inner.supports_planning,
+            self.inner.supports_gradient_planning
         )
     }
 }
@@ -10224,7 +10230,13 @@ mod tests {
             .unwrap()
             .capabilities()
             .supports_planning();
+        let supports_gradient = wf
+            .provider_info("mock")
+            .unwrap()
+            .capabilities()
+            .supports_gradient_planning();
         let world = PyWorld::new("plan_native", "mock");
+        assert!(!supports_gradient);
         let result = world.plan(
             Some("spawn cube"),
             None,
