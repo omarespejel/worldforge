@@ -32,6 +32,7 @@ use worldforge_core::state::{
     StateHistory, StateStore, StateStoreKind, WorldState, WORLD_STATE_SNAPSHOT_SCHEMA_VERSION,
 };
 use worldforge_core::types::{BBox, Pose, Position, Rotation, Vec3, Velocity, VideoClip};
+use worldforge_core::world::resolve_plan_execution_provider;
 use worldforge_eval::{EvalReportFormat, EvalSuite};
 use worldforge_verify::{
     prove_guardrail_plan, prove_inference_transition, prove_latest_inference,
@@ -3985,23 +3986,19 @@ async fn cmd_execute_plan(
 ) -> Result<()> {
     let id: uuid::Uuid = world_id.parse().context("invalid world ID")?;
     let state = store.load(&id).await.map_err(|e| anyhow::anyhow!("{e}"))?;
-    let plan = match (options.plan_json, options.plan_id) {
-        (Some(path), None) => read_json_file(path)?,
-        (None, Some(plan_id)) => {
-            let plan_id: uuid::Uuid = plan_id.parse().context("invalid plan ID")?;
-            state
-                .stored_plan(&plan_id)
-                .map(|record| record.plan.clone())
-                .context("stored plan not found")?
-        }
+    let explicit_provider = options.provider.filter(|name| !name.is_empty());
+    let (plan, plan_id) = match (options.plan_json, options.plan_id) {
+        (Some(path), None) => (Some(read_json_file(path)?), None),
+        (None, Some(plan_id)) => (
+            None,
+            Some(plan_id.parse::<uuid::Uuid>().context("invalid plan ID")?),
+        ),
         _ => anyhow::bail!("execute-plan requires exactly one of --plan-json or --plan-id"),
     };
 
-    let provider_name = options
-        .provider
-        .filter(|name| !name.is_empty())
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| state.current_state_provider());
+    let provider_name =
+        resolve_plan_execution_provider(&state, plan_id.as_ref(), explicit_provider)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
     let provider_name = provider_name.as_str();
     let registry = Arc::new(auto_detect_registry());
     require_provider(&registry, provider_name)?;
@@ -4025,10 +4022,21 @@ async fn cmd_execute_plan(
         config = config.disable_guardrails();
     }
 
-    let report = world
-        .execute_plan_with_provider(&plan, &config, provider_name)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let report = match (plan, plan_id, explicit_provider) {
+        (Some(plan), None, _) => world
+            .execute_plan_with_provider(&plan, &config, provider_name)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?,
+        (None, Some(plan_id), Some(_)) => world
+            .execute_stored_plan_with_provider(&plan_id, &config, provider_name)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?,
+        (None, Some(plan_id), None) => world
+            .execute_stored_plan(&plan_id, &config)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?,
+        _ => unreachable!("execute-plan request should have exactly one plan source"),
+    };
 
     store
         .save(world.current_state())
@@ -7763,8 +7771,13 @@ mod tests {
         .await
         .unwrap();
 
-        let persisted = store.load(&state.id).await.unwrap();
+        let mut persisted = store.load(&state.id).await.unwrap();
         let plan_id = persisted.stored_plans.keys().next().unwrap().to_string();
+        persisted.metadata.created_by = "genie".to_string();
+        if let Some(entry) = persisted.history.states.back_mut() {
+            entry.provider = "genie".to_string();
+        }
+        store.save(&persisted).await.unwrap();
 
         cmd_execute_plan(
             store.as_ref(),
@@ -7789,6 +7802,7 @@ mod tests {
 
         let updated = store.load(&state.id).await.unwrap();
         assert!(updated.time.step >= 1);
+        assert_eq!(updated.history.latest().unwrap().provider, "mock");
 
         let _ = fs::remove_dir_all(dir);
     }

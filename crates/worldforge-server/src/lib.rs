@@ -31,6 +31,7 @@ use worldforge_core::state::{
 use worldforge_core::types::{
     BBox, Mesh, PlanId, Pose, Position, Rotation, Tensor, Velocity, VideoClip, WorldId,
 };
+use worldforge_core::world::resolve_plan_execution_provider;
 use worldforge_eval::{EvalReportFormat, EvalSuite};
 use worldforge_verify::{
     prove_guardrail_plan, prove_inference_transition, prove_latest_inference,
@@ -5883,7 +5884,21 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                             Ok(ws) => ws,
                             Err(e) => return (404, error_response(&e.to_string())),
                         };
-                        let provider_name = resolve_world_provider(&ws, req.provider.as_deref());
+                        let explicit_provider =
+                            req.provider.as_deref().filter(|name| !name.is_empty());
+                        let provider_name = match resolve_plan_execution_provider(
+                            &ws,
+                            req.plan_id.as_ref(),
+                            explicit_provider,
+                        ) {
+                            Ok(provider_name) => provider_name,
+                            Err(error) => {
+                                return (
+                                    api_error_status(&error),
+                                    worldforge_error_response(&error),
+                                );
+                            }
+                        };
                         if let Err(e) = state.registry.get(&provider_name) {
                             return (404, error_response(&e.to_string()));
                         }
@@ -5898,13 +5913,13 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                             config = config.disable_guardrails();
                         }
 
-                        let execution = match (&req.plan, req.plan_id) {
-                            (Some(plan), None) => {
+                        let execution = match (&req.plan, req.plan_id, explicit_provider) {
+                            (Some(plan), None, _) => {
                                 world
                                     .execute_plan_with_provider(plan, &config, &provider_name)
                                     .await
                             }
-                            (None, Some(plan_id)) => {
+                            (None, Some(plan_id), Some(_)) => {
                                 world
                                     .execute_stored_plan_with_provider(
                                         &plan_id,
@@ -5912,6 +5927,9 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                                         &provider_name,
                                     )
                                     .await
+                            }
+                            (None, Some(plan_id), None) => {
+                                world.execute_stored_plan(&plan_id, &config).await
                             }
                             _ => Err(WorldForgeError::InvalidState(
                                 "execute-plan requires exactly one of plan or plan_id".to_string(),
@@ -8438,7 +8456,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_route_execute_plan_uses_stored_plan_id() {
-        let state = test_state();
+        let state = test_state_with_providers(&["mock", "genie"]);
         let id = seed_world(&state, "execute-stored-plan", "mock").await;
 
         let plan_body = serde_json::json!({
@@ -8450,6 +8468,13 @@ mod tests {
         assert_eq!(status, 200);
         let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
         let plan_id = value["data"]["stored_plan_id"].as_str().unwrap();
+
+        let mut persisted = state.store.load(&id).await.unwrap();
+        persisted.metadata.created_by = "genie".to_string();
+        if let Some(entry) = persisted.history.states.back_mut() {
+            entry.provider = "genie".to_string();
+        }
+        state.store.save(&persisted).await.unwrap();
 
         let execute_body = serde_json::json!({
             "plan_id": plan_id
@@ -8469,6 +8494,7 @@ mod tests {
             .as_array()
             .unwrap()
             .is_empty());
+        assert_eq!(execution["data"]["predictions"][0]["provider"], "mock");
         assert!(
             execution["data"]["final_state"]["time"]["step"]
                 .as_u64()

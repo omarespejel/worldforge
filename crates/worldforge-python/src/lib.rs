@@ -32,7 +32,7 @@ use worldforge_core::state::{
 use worldforge_core::types::{
     BBox, Mesh, Position, Rotation, Tensor, TensorData, Velocity, VideoClip,
 };
-use worldforge_core::world::World as CoreWorld;
+use worldforge_core::world::{resolve_plan_execution_provider, World as CoreWorld};
 use worldforge_providers::{
     CosmosProvider, GenieProvider, JepaBackend, JepaProvider, MarbleProvider, MockProvider,
     RunwayProvider,
@@ -1870,7 +1870,14 @@ impl PyWorld {
     ) -> PyResult<PyPlanExecution> {
         let plan_id = parse_plan_id(plan_id)?;
         let rt = new_runtime()?;
-        let provider_name = resolve_provider_name(&self.world, provider);
+        let explicit_provider = provider.filter(|name| !name.is_empty());
+        let provider_name =
+            resolve_plan_execution_provider(&self.world.state, Some(&plan_id), explicit_provider)
+                .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "failed to resolve execution provider: {e}"
+                ))
+            })?;
         let mut world = CoreWorld::new(
             self.world.state.clone(),
             provider_name.clone(),
@@ -1890,11 +1897,14 @@ impl PyWorld {
             config = config.disable_guardrails();
         }
 
-        let execution = rt
-            .block_on(world.execute_stored_plan_with_provider(&plan_id, &config, &provider_name))
-            .map_err(|e| {
-                pyo3::exceptions::PyRuntimeError::new_err(format!("plan execution failed: {e}"))
-            })?;
+        let execution = if explicit_provider.is_some() {
+            rt.block_on(world.execute_stored_plan_with_provider(&plan_id, &config, &provider_name))
+        } else {
+            rt.block_on(world.execute_stored_plan(&plan_id, &config))
+        }
+        .map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("plan execution failed: {e}"))
+        })?;
         self.world.state = world.current_state().clone();
 
         Ok(plan_execution_from_inner(
@@ -8262,32 +8272,36 @@ mod tests {
 
     #[test]
     fn test_world_stored_plan_lifecycle_and_execution() {
-        let mut world = PyWorld::new("stored_plan_world", "mock");
-        let record = world
-            .plan_and_store(
-                Some("spawn cube"),
-                None,
-                4,
-                30.0,
-                Some("missing"),
-                Some("mock"),
-                "sampling",
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                false,
-                true,
-                false,
-                false,
-                Some("mock"),
-            )
-            .unwrap();
+        let make_stored_plan = |world: &mut PyWorld| {
+            world
+                .plan_and_store(
+                    Some("spawn cube"),
+                    None,
+                    4,
+                    30.0,
+                    Some("missing"),
+                    Some("mock"),
+                    "sampling",
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    false,
+                    true,
+                    false,
+                    false,
+                    Some("mock"),
+                )
+                .unwrap()
+        };
+
+        let mut default_world = PyWorld::new("stored_plan_world", "genie");
+        let record = make_stored_plan(&mut default_world);
 
         let plan_id = record.id();
         let plan = record.plan();
@@ -8299,28 +8313,55 @@ mod tests {
             plan.verification_proof().unwrap().unwrap().backend(),
             "Mock"
         );
-        assert_eq!(world.stored_plan_count(), 1);
-        assert_eq!(world.stored_plans().len(), 1);
-        assert_eq!(world.stored_plan(&plan_id).unwrap().id(), plan_id);
+        assert_eq!(default_world.stored_plan_count(), 1);
+        assert_eq!(default_world.stored_plans().len(), 1);
+        assert_eq!(default_world.stored_plan(&plan_id).unwrap().id(), plan_id);
 
-        let execution = world
+        let execution = default_world
             .execute_stored_plan(
                 &plan_id, 1, None, None, false, None, None, false, false, false,
             )
             .unwrap();
         assert!(execution.step_count() >= 1);
-        assert!(world.history_length() >= 2);
+        assert!(default_world.history_length() >= 2);
+        assert_eq!(execution.predictions()[0].provider(), "mock");
+
+        let mut override_world = PyWorld::new("stored_plan_world_override", "genie");
+        let override_record = make_stored_plan(&mut override_world);
+        let override_plan_id = override_record.id();
+        assert_eq!(override_world.stored_plan_count(), 1);
+        assert_eq!(
+            override_world.stored_plan(&override_plan_id).unwrap().id(),
+            override_plan_id
+        );
+
+        let overridden = override_world
+            .execute_stored_plan(
+                &override_plan_id,
+                1,
+                Some("genie"),
+                None,
+                false,
+                None,
+                None,
+                false,
+                false,
+                false,
+            )
+            .unwrap();
+        assert!(overridden.step_count() >= 1);
+        assert_eq!(overridden.predictions()[0].provider(), "genie");
 
         let restored = PyStoredPlanRecord {
             inner: serde_json::from_str::<StoredPlanRecord>(&record.to_json().unwrap()).unwrap(),
         };
         assert_eq!(restored.id(), plan_id);
 
-        let deleted = world.delete_stored_plan(&plan_id).unwrap();
+        let deleted = default_world.delete_stored_plan(&plan_id).unwrap();
         assert_eq!(deleted.id(), plan_id);
-        assert_eq!(world.stored_plan_count(), 0);
-        assert!(world.stored_plans().is_empty());
-        assert!(world.stored_plan(&plan_id).is_err());
+        assert_eq!(default_world.stored_plan_count(), 0);
+        assert!(default_world.stored_plans().is_empty());
+        assert!(default_world.stored_plan(&plan_id).is_err());
     }
 
     #[test]

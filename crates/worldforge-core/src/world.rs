@@ -46,6 +46,36 @@ struct ResolvedPlan {
     resolved_provider: String,
 }
 
+/// Resolve the provider that should execute a plan.
+///
+/// Explicit overrides take precedence. When no override is supplied and a
+/// stored plan ID is available, the stored plan record's provider is used.
+/// If the stored provider is empty, the world's current default provider is
+/// used as a defensive fallback.
+pub fn resolve_plan_execution_provider(
+    state: &WorldState,
+    plan_id: Option<&PlanId>,
+    provider: Option<&str>,
+) -> Result<String> {
+    if let Some(provider) = provider.filter(|name| !name.is_empty()) {
+        return Ok(provider.to_owned());
+    }
+
+    if let Some(plan_id) = plan_id {
+        let record = state.stored_plan(plan_id).ok_or_else(|| {
+            WorldForgeError::InvalidState(format!("stored plan not found: {plan_id}"))
+        })?;
+        let provider = record.provider.trim();
+        return Ok(if provider.is_empty() {
+            state.current_state_provider()
+        } else {
+            record.provider.clone()
+        });
+    }
+
+    Ok(state.current_state_provider())
+}
+
 impl World {
     /// Create a new world with the given state and provider registry.
     pub fn new(
@@ -710,7 +740,7 @@ impl World {
         plan_id: &PlanId,
         config: &PredictionConfig,
     ) -> Result<PlanExecution> {
-        let provider_name = self.default_provider.clone();
+        let provider_name = resolve_plan_execution_provider(&self.state, Some(plan_id), None)?;
         self.execute_stored_plan_with_provider(plan_id, config, &provider_name)
             .await
     }
@@ -3446,6 +3476,75 @@ mod tests {
             Some(record.plan.actions.len())
         );
         assert!(final_position.x > 1.5);
+    }
+
+    #[tokio::test]
+    async fn test_execute_stored_plan_defaults_to_recorded_provider() {
+        let (mut state, _) = sample_planning_state();
+        state.metadata.created_by = "world-default".to_string();
+        if let Some(entry) = state.history.states.back_mut() {
+            entry.provider = "world-default".to_string();
+        }
+
+        let plan_id = Uuid::from_u128(42);
+        let request = PlanRequest {
+            current_state: state.clone(),
+            goal: PlanGoal::Description("move ball".to_string()),
+            max_steps: 2,
+            guardrails: Vec::new(),
+            planner: PlannerType::Sampling {
+                num_samples: 1,
+                top_k: 1,
+            },
+            timeout_seconds: 5.0,
+            fallback_provider: None,
+            return_video: false,
+            return_depth: false,
+            return_segmentation: false,
+        };
+        let plan = Plan {
+            actions: vec![Action::Move {
+                target: Position {
+                    x: 1.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                speed: 1.0,
+            }],
+            predicted_states: vec![state.clone()],
+            predicted_videos: None,
+            total_cost: 0.0,
+            success_probability: 1.0,
+            guardrail_compliance: vec![Vec::new()],
+            planning_time_ms: 0,
+            iterations_used: 0,
+            stored_plan_id: Some(plan_id),
+            verification_proof: None,
+        };
+        let mut record = StoredPlanRecord::from_request("stored", &request, &plan);
+        record.provider = "stored".to_string();
+
+        let registry = std::sync::Arc::new({
+            let mut registry = ProviderRegistry::new();
+            registry.register(Box::new(PlanningProvider::new("world-default", 1.0, false)));
+            registry.register(Box::new(PlanningProvider::new("stored", 1.0, false)));
+            registry.register(Box::new(PlanningProvider::new("override", 1.0, false)));
+            registry
+        });
+        let mut world = World::new(state, "world-default", registry);
+        world.state.store_plan_record(record);
+
+        let default_execution = world
+            .execute_stored_plan(&plan_id, &PredictionConfig::default())
+            .await
+            .unwrap();
+        assert_eq!(default_execution.predictions[0].provider, "stored");
+
+        let override_execution = world
+            .execute_stored_plan_with_provider(&plan_id, &PredictionConfig::default(), "override")
+            .await
+            .unwrap();
+        assert_eq!(override_execution.predictions[0].provider, "override");
     }
 
     #[tokio::test]
