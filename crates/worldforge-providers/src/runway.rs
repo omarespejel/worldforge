@@ -1381,6 +1381,9 @@ mod tests {
             planner: PlannerType::ProviderNative,
             timeout_seconds: 5.0,
             fallback_provider: None,
+            return_video: false,
+            return_depth: false,
+            return_segmentation: false,
         };
 
         let runway_plan = runway.plan(&request).await.unwrap();

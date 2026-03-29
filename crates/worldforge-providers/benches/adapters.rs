@@ -416,6 +416,9 @@ fn sample_plan_request(state: &WorldState) -> PlanRequest {
         },
         timeout_seconds: 5.0,
         fallback_provider: None,
+        return_video: false,
+        return_depth: false,
+        return_segmentation: false,
     }
 }
 

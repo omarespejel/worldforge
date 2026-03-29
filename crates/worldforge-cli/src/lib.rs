@@ -702,6 +702,15 @@ pub enum Commands {
         /// Optional fallback provider if the primary provider fails.
         #[arg(long)]
         fallback_provider: Option<String>,
+        /// Return preview clips for each planned step.
+        #[arg(long, default_value_t = false)]
+        return_video: bool,
+        /// Return depth maps alongside planned preview clips.
+        #[arg(long, default_value_t = false)]
+        return_depth: bool,
+        /// Return segmentation maps alongside planned preview clips.
+        #[arg(long, default_value_t = false)]
+        return_segmentation: bool,
         /// Attach a guardrail-compliance proof to the generated plan.
         #[arg(long, value_enum)]
         verify_backend: Option<VerifyBackend>,
@@ -1541,6 +1550,9 @@ pub async fn run() -> Result<()> {
             timeout,
             provider,
             fallback_provider,
+            return_video,
+            return_depth,
+            return_segmentation,
             verify_backend,
             guardrails_json,
             disable_guardrails,
@@ -1566,6 +1578,9 @@ pub async fn run() -> Result<()> {
                     timeout,
                     provider: &provider,
                     fallback_provider: fallback_provider.as_deref(),
+                    return_video,
+                    return_depth,
+                    return_segmentation,
                     verify_backend: verify_backend.map(VerifyBackend::as_core),
                     goal_json: goal_json.as_deref(),
                     guardrails_json: guardrails_json.as_deref(),
@@ -2119,6 +2134,9 @@ struct PlanOptions<'a> {
     timeout: f64,
     provider: &'a str,
     fallback_provider: Option<&'a str>,
+    return_video: bool,
+    return_depth: bool,
+    return_segmentation: bool,
     verify_backend: Option<VerificationBackend>,
     goal_json: Option<&'a Path>,
     guardrails_json: Option<&'a Path>,
@@ -3900,21 +3918,23 @@ async fn cmd_plan(
         planner,
         timeout_seconds: options.timeout,
         fallback_provider: options.fallback_provider.map(ToOwned::to_owned),
+        return_video: options.return_video,
+        return_depth: options.return_depth,
+        return_segmentation: options.return_segmentation,
     };
 
-    let record = world
+    let mut record = world
         .plan_and_store(&request)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let mut plan = record.plan;
+    let mut plan = record.plan.clone();
     let proof_attached = attach_plan_verification(&mut plan, options.verify_backend)?;
-    world
-        .state
-        .store_plan_record(worldforge_core::prediction::StoredPlanRecord::from_request(
-            options.provider,
-            &request,
-            &plan,
-        ));
+    record = worldforge_core::prediction::StoredPlanRecord::from_request(
+        record.provider.clone(),
+        &request,
+        &plan,
+    );
+    world.state.store_plan_record(record.clone());
     store
         .save(world.current_state())
         .await
@@ -3926,6 +3946,10 @@ async fn cmd_plan(
     println!("  Success probability: {:.2}", plan.success_probability);
     println!("  Planning time: {}ms", plan.planning_time_ms);
     println!("  Iterations: {}", plan.iterations_used);
+    println!("  Provider: {}", record.provider);
+    if let Some(videos) = &plan.predicted_videos {
+        println!("  Preview clips: {}", videos.len());
+    }
     if proof_attached {
         let backend = plan
             .verification_proof
@@ -4136,6 +4160,9 @@ async fn cmd_verify(
                     )?,
                     timeout_seconds: options.timeout,
                     fallback_provider: options.fallback_provider.map(ToOwned::to_owned),
+                    return_video: false,
+                    return_depth: false,
+                    return_segmentation: false,
                 };
                 world
                     .plan(&request)
@@ -7664,8 +7691,11 @@ mod tests {
                 planner_name: "sampling",
                 planner_options: PlannerOptions::default(),
                 timeout: 10.0,
-                provider: "mock",
-                fallback_provider: None,
+                provider: "missing",
+                fallback_provider: Some("mock"),
+                return_video: true,
+                return_depth: false,
+                return_segmentation: false,
                 verify_backend: Some(VerificationBackend::Mock),
                 goal_json: None,
                 guardrails_json: Some(&guardrails_path),
@@ -7685,8 +7715,16 @@ mod tests {
                 .map(|proof| proof.backend.as_str()),
             Some("mock")
         );
+        assert_eq!(
+            plan.predicted_videos.as_ref().map(Vec::len),
+            Some(plan.actions.len())
+        );
         let persisted = store.load(&state.id).await.unwrap();
         assert_eq!(persisted.stored_plans.len(), 1);
+        assert_eq!(
+            persisted.stored_plans.values().next().unwrap().provider,
+            "mock"
+        );
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -7712,6 +7750,9 @@ mod tests {
                 timeout: 10.0,
                 provider: "mock",
                 fallback_provider: None,
+                return_video: false,
+                return_depth: false,
+                return_segmentation: false,
                 verify_backend: None,
                 goal_json: None,
                 guardrails_json: None,
@@ -7872,6 +7913,9 @@ mod tests {
                 timeout: 10.0,
                 provider: "mock",
                 fallback_provider: None,
+                return_video: false,
+                return_depth: false,
+                return_segmentation: false,
                 verify_backend: None,
                 goal_json: Some(&goal_path),
                 guardrails_json: None,
@@ -7966,6 +8010,9 @@ mod tests {
                 timeout: 10.0,
                 provider: "mock",
                 fallback_provider: None,
+                return_video: false,
+                return_depth: false,
+                return_segmentation: false,
                 verify_backend: None,
                 goal_json: Some(&goal_path),
                 guardrails_json: None,
@@ -8013,6 +8060,9 @@ mod tests {
                 timeout: 10.0,
                 provider: "missing",
                 fallback_provider: Some("mock"),
+                return_video: false,
+                return_depth: false,
+                return_segmentation: false,
                 verify_backend: None,
                 goal_json: None,
                 guardrails_json: None,
@@ -9014,6 +9064,9 @@ mod tests {
                 timeout: 10.0,
                 provider: "mock",
                 fallback_provider: None,
+                return_video: false,
+                return_depth: false,
+                return_segmentation: false,
                 verify_backend: None,
                 goal_json: None,
                 guardrails_json: None,
@@ -9082,6 +9135,9 @@ mod tests {
                 timeout: 10.0,
                 provider: "mock",
                 fallback_provider: None,
+                return_video: false,
+                return_depth: false,
+                return_segmentation: false,
                 verify_backend: None,
                 goal_json: None,
                 guardrails_json: None,

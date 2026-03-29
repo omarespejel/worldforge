@@ -1458,6 +1458,15 @@ pub struct PlanRequest {
     /// Optional fallback provider used if the primary planning provider fails.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback_provider: Option<String>,
+    /// Return preview video clips for each planned step.
+    #[serde(default)]
+    pub return_video: bool,
+    /// Return depth maps alongside planned preview clips.
+    #[serde(default)]
+    pub return_depth: bool,
+    /// Return segmentation maps alongside planned preview clips.
+    #[serde(default)]
+    pub return_segmentation: bool,
 }
 
 /// Goal specification for planning.
@@ -1685,7 +1694,7 @@ pub struct Plan {
 pub struct StoredPlanRecord {
     /// Stable identifier for the persisted plan artifact.
     pub id: PlanId,
-    /// Provider used for the planning request.
+    /// Provider or provider set used while materializing the persisted plan.
     pub provider: String,
     /// Canonical planner identifier used to generate the plan.
     pub planner: String,

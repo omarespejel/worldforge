@@ -2984,6 +2984,9 @@ mod tests {
                 guardrails: Vec::new(),
                 timeout_seconds: 10.0,
                 fallback_provider: None,
+                return_video: false,
+                return_depth: false,
+                return_segmentation: false,
             })
             .await
             .unwrap();

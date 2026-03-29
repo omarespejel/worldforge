@@ -377,6 +377,12 @@ struct PlanRequest {
     guardrails: Vec<GuardrailConfig>,
     #[serde(default)]
     disable_guardrails: bool,
+    #[serde(default)]
+    return_video: bool,
+    #[serde(default)]
+    return_depth: bool,
+    #[serde(default)]
+    return_segmentation: bool,
     #[serde(default = "default_persist_plan")]
     persist: bool,
 }
@@ -525,6 +531,7 @@ fn planner_from_verify_request(
     .map_err(|e| e.to_string())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_plan_request(
     current_state: WorldState,
     goal: PlanGoal,
@@ -533,6 +540,9 @@ fn build_plan_request(
     planner: PlannerType,
     timeout_seconds: f64,
     fallback_provider: Option<String>,
+    return_video: bool,
+    return_depth: bool,
+    return_segmentation: bool,
 ) -> worldforge_core::prediction::PlanRequest {
     worldforge_core::prediction::PlanRequest {
         current_state,
@@ -542,6 +552,9 @@ fn build_plan_request(
         planner,
         timeout_seconds,
         fallback_provider,
+        return_video,
+        return_depth,
+        return_segmentation,
     }
 }
 
@@ -3837,6 +3850,12 @@ fn openapi_component_schemas() -> serde_json::Map<String, serde_json::Value> {
                     "disable_guardrails",
                     serde_json::json!({ "type": "boolean" }),
                 ),
+                ("return_video", serde_json::json!({ "type": "boolean" })),
+                ("return_depth", serde_json::json!({ "type": "boolean" })),
+                (
+                    "return_segmentation",
+                    serde_json::json!({ "type": "boolean" }),
+                ),
                 (
                     "persist",
                     serde_json::json!({ "type": "boolean", "default": true }),
@@ -5790,17 +5809,24 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                             planner,
                             req.timeout_seconds,
                             req.fallback_provider,
+                            req.return_video,
+                            req.return_depth,
+                            req.return_segmentation,
                         );
                         let plan_result = if req.persist {
-                            world
-                                .plan_and_store(&plan_req)
-                                .await
-                                .map(|record| record.plan)
+                            world.plan_and_store(&plan_req).await
                         } else {
-                            world.plan(&plan_req).await
+                            world.plan(&plan_req).await.map(|plan| {
+                                worldforge_core::prediction::StoredPlanRecord::from_request(
+                                    provider_name.clone(),
+                                    &plan_req,
+                                    &plan,
+                                )
+                            })
                         };
                         match plan_result {
-                            Ok(mut plan) => {
+                            Ok(mut record) => {
+                                let mut plan = record.plan.clone();
                                 let verification_backend =
                                     match parse_requested_verification_backend(
                                         req.verification_backend.as_deref(),
@@ -5811,13 +5837,12 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                                 match attach_plan_verification(&mut plan, verification_backend) {
                                     Ok(_) => {
                                         if req.persist {
-                                            world.state.store_plan_record(
-                                                worldforge_core::prediction::StoredPlanRecord::from_request(
-                                                    provider_name.clone(),
-                                                    &plan_req,
-                                                    &plan,
-                                                ),
+                                            record = worldforge_core::prediction::StoredPlanRecord::from_request(
+                                                record.provider.clone(),
+                                                &plan_req,
+                                                &plan,
                                             );
+                                            world.state.store_plan_record(record.clone());
                                             if let Err(error) =
                                                 state.store.save(world.current_state()).await
                                             {
@@ -6023,6 +6048,9 @@ async fn route(method: &str, path: &str, body: &str, state: &AppState) -> (u16, 
                                         planner,
                                         req.timeout_seconds,
                                         req.fallback_provider.clone(),
+                                        false,
+                                        false,
+                                        false,
                                     );
                                     match world.plan(&plan_req).await {
                                         Ok(plan) => plan,
@@ -8193,6 +8221,7 @@ mod tests {
             "goal": "spawn cube",
             "provider": "missing",
             "fallback_provider": "mock",
+            "return_video": true,
             "verification_backend": "mock"
         })
         .to_string();
@@ -8212,6 +8241,14 @@ mod tests {
             value["data"]["verification_proof"]["proof_type"]["GuardrailCompliance"]["all_passed"],
             true
         );
+        assert!(value["data"]["predicted_videos"]
+            .as_array()
+            .is_some_and(|videos| !videos.is_empty()));
+        let plan_id = value["data"]["stored_plan_id"].as_str().unwrap();
+        let persisted = state.store.load(&id).await.unwrap();
+        let parsed_plan_id: uuid::Uuid = plan_id.parse().unwrap();
+        let stored = persisted.stored_plan(&parsed_plan_id).unwrap();
+        assert_eq!(stored.provider, "mock");
     }
 
     #[tokio::test]

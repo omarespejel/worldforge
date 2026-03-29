@@ -3250,6 +3250,9 @@ mod tests {
             planner: worldforge_core::prediction::PlannerType::ProviderNative,
             timeout_seconds: 5.0,
             fallback_provider: None,
+            return_video: false,
+            return_depth: false,
+            return_segmentation: false,
         };
 
         let plan = provider.plan(&request).await.unwrap();
@@ -3291,6 +3294,9 @@ mod tests {
             },
             timeout_seconds: 5.0,
             fallback_provider: None,
+            return_video: false,
+            return_depth: false,
+            return_segmentation: false,
         };
 
         let plan = provider.plan(&request).await.unwrap();
@@ -3342,6 +3348,9 @@ mod tests {
             planner: worldforge_core::prediction::PlannerType::ProviderNative,
             timeout_seconds: 5.0,
             fallback_provider: None,
+            return_video: false,
+            return_depth: false,
+            return_segmentation: false,
         };
 
         let plan = provider.plan(&request).await.unwrap();

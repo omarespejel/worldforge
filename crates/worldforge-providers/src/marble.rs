@@ -1764,6 +1764,9 @@ mod tests {
             },
             timeout_seconds: 2.0,
             fallback_provider: None,
+            return_video: false,
+            return_depth: false,
+            return_segmentation: false,
         };
 
         let first = provider.plan(&request).await.unwrap();
@@ -1798,6 +1801,9 @@ mod tests {
             },
             timeout_seconds: 2.0,
             fallback_provider: None,
+            return_video: false,
+            return_depth: false,
+            return_segmentation: false,
         };
 
         let error = provider.plan(&request).await.unwrap_err();

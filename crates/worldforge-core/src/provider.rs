@@ -1084,6 +1084,9 @@ mod tests {
             planner: PlannerType::ProviderNative,
             timeout_seconds: 1.0,
             fallback_provider: None,
+            return_video: false,
+            return_depth: false,
+            return_segmentation: false,
         };
 
         let error = provider.plan(&request).await.unwrap_err();

@@ -642,6 +642,9 @@ async fn test_cosmos_full_stack_native_planning_surface() {
         planner: PlannerType::ProviderNative,
         timeout_seconds: 5.0,
         fallback_provider: None,
+        return_video: false,
+        return_depth: false,
+        return_segmentation: false,
     };
 
     let plan = provider.plan(&request).await.unwrap();
@@ -744,6 +747,9 @@ async fn test_runway_full_stack_native_planning_surface() {
         planner: PlannerType::ProviderNative,
         timeout_seconds: 5.0,
         fallback_provider: None,
+        return_video: false,
+        return_depth: false,
+        return_segmentation: false,
     };
 
     let plan = provider.plan(&request).await.unwrap();
@@ -801,6 +807,9 @@ async fn test_provider_native_planning_profiles_diverge_on_same_goal() {
         planner: PlannerType::ProviderNative,
         timeout_seconds: 5.0,
         fallback_provider: None,
+        return_video: false,
+        return_depth: false,
+        return_segmentation: false,
     };
 
     let cosmos_plan = cosmos.plan(&request).await.unwrap();
@@ -884,6 +893,9 @@ async fn test_runway_native_planning_blocks_boundary_constraint() {
         planner: PlannerType::ProviderNative,
         timeout_seconds: 5.0,
         fallback_provider: None,
+        return_video: false,
+        return_depth: false,
+        return_segmentation: false,
     };
 
     let error = provider.plan(&request).await.unwrap_err();
@@ -1115,6 +1127,9 @@ async fn test_genie_provider_native_plan_spawn_goal() {
         planner: PlannerType::ProviderNative,
         timeout_seconds: 5.0,
         fallback_provider: None,
+        return_video: false,
+        return_depth: false,
+        return_segmentation: false,
     };
 
     let caps = provider.capabilities();
@@ -1354,6 +1369,9 @@ async fn test_mock_provider_native_plan_spawn_goal() {
         planner: PlannerType::ProviderNative,
         timeout_seconds: 5.0,
         fallback_provider: None,
+        return_video: false,
+        return_depth: false,
+        return_segmentation: false,
     };
 
     if mock_supports_native_planning() {
@@ -1403,6 +1421,9 @@ async fn test_mock_provider_native_plan_respects_blocking_guardrail() {
         planner: PlannerType::ProviderNative,
         timeout_seconds: 5.0,
         fallback_provider: None,
+        return_video: false,
+        return_depth: false,
+        return_segmentation: false,
     };
 
     if mock_supports_native_planning() {
@@ -1743,6 +1764,9 @@ async fn test_marble_native_planning_plans_target_state() {
         planner: PlannerType::ProviderNative,
         timeout_seconds: 5.0,
         fallback_provider: None,
+        return_video: false,
+        return_depth: false,
+        return_segmentation: false,
     };
 
     let plan = provider.plan(&request).await.unwrap();
@@ -1882,6 +1906,9 @@ async fn test_genie_native_plan_supports_goal_image() {
             planner: PlannerType::ProviderNative,
             timeout_seconds: 5.0,
             fallback_provider: None,
+            return_video: false,
+            return_depth: false,
+            return_segmentation: false,
         })
         .await
         .unwrap();

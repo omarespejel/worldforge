@@ -1655,7 +1655,7 @@ impl PyWorld {
     }
 
     /// Plan a sequence of actions to achieve either a natural-language or structured goal.
-    #[pyo3(signature = (goal=None, goal_json=None, max_steps=10, timeout_seconds=30.0, provider=None, fallback_provider=None, planner="sampling", num_samples=None, top_k=None, population_size=None, elite_fraction=None, num_iterations=None, learning_rate=None, horizon=None, replanning_interval=None, guardrails_json=None, disable_guardrails=false, verify_backend=None))]
+    #[pyo3(signature = (goal=None, goal_json=None, max_steps=10, timeout_seconds=30.0, provider=None, fallback_provider=None, planner="sampling", num_samples=None, top_k=None, population_size=None, elite_fraction=None, num_iterations=None, learning_rate=None, horizon=None, replanning_interval=None, guardrails_json=None, disable_guardrails=false, return_video=false, return_depth=false, return_segmentation=false, verify_backend=None))]
     #[allow(clippy::too_many_arguments)]
     fn plan(
         &self,
@@ -1676,6 +1676,9 @@ impl PyWorld {
         replanning_interval: Option<u32>,
         guardrails_json: Option<&str>,
         disable_guardrails: bool,
+        return_video: bool,
+        return_depth: bool,
+        return_segmentation: bool,
         verify_backend: Option<&str>,
     ) -> PyResult<PyPlan> {
         let rt = tokio::runtime::Runtime::new().map_err(|e| {
@@ -1709,6 +1712,9 @@ impl PyWorld {
             planner,
             timeout_seconds,
             fallback_provider: fallback_provider.map(ToOwned::to_owned),
+            return_video,
+            return_depth,
+            return_segmentation,
         };
         if disable_guardrails {
             request = request.disable_guardrails();
@@ -1722,7 +1728,7 @@ impl PyWorld {
     }
 
     /// Plan a sequence of actions and persist the resulting plan on this world.
-    #[pyo3(signature = (goal=None, goal_json=None, max_steps=10, timeout_seconds=30.0, provider=None, fallback_provider=None, planner="sampling", num_samples=None, top_k=None, population_size=None, elite_fraction=None, num_iterations=None, learning_rate=None, horizon=None, replanning_interval=None, guardrails_json=None, disable_guardrails=false, verify_backend=None))]
+    #[pyo3(signature = (goal=None, goal_json=None, max_steps=10, timeout_seconds=30.0, provider=None, fallback_provider=None, planner="sampling", num_samples=None, top_k=None, population_size=None, elite_fraction=None, num_iterations=None, learning_rate=None, horizon=None, replanning_interval=None, guardrails_json=None, disable_guardrails=false, return_video=false, return_depth=false, return_segmentation=false, verify_backend=None))]
     #[allow(clippy::too_many_arguments)]
     fn plan_and_store(
         &mut self,
@@ -1743,6 +1749,9 @@ impl PyWorld {
         replanning_interval: Option<u32>,
         guardrails_json: Option<&str>,
         disable_guardrails: bool,
+        return_video: bool,
+        return_depth: bool,
+        return_segmentation: bool,
         verify_backend: Option<&str>,
     ) -> PyResult<PyStoredPlanRecord> {
         let rt = new_runtime()?;
@@ -1773,6 +1782,9 @@ impl PyWorld {
             planner,
             timeout_seconds,
             fallback_provider: fallback_provider.map(ToOwned::to_owned),
+            return_video,
+            return_depth,
+            return_segmentation,
         };
         if disable_guardrails {
             request = request.disable_guardrails();
@@ -1783,7 +1795,7 @@ impl PyWorld {
         })?;
         let mut plan = record.plan.clone();
         attach_plan_verification(&mut plan, verify_backend)?;
-        record = StoredPlanRecord::from_request(provider_name, &request, &plan);
+        record = StoredPlanRecord::from_request(record.provider.clone(), &request, &plan);
         world.state.store_plan_record(record.clone());
         self.world.state = world.current_state().clone();
 
@@ -4956,11 +4968,33 @@ impl PyPlan {
         self.inner.total_cost
     }
 
+    /// Number of preview clips attached to this plan.
+    #[getter]
+    fn preview_clip_count(&self) -> usize {
+        self.inner
+            .predicted_videos
+            .as_ref()
+            .map_or(0, std::vec::Vec::len)
+    }
+
     /// Get actions as JSON array.
     fn actions_json(&self) -> PyResult<String> {
         serde_json::to_string(&self.inner.actions).map_err(|e| {
             pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
         })
+    }
+
+    /// Serialize the attached preview clips to JSON, if present.
+    fn predicted_videos_json(&self) -> PyResult<Option<String>> {
+        self.inner
+            .predicted_videos
+            .as_ref()
+            .map(|videos| {
+                serde_json::to_string(videos).map_err(|e| {
+                    pyo3::exceptions::PyValueError::new_err(format!("serialization error: {e}"))
+                })
+            })
+            .transpose()
     }
 
     /// Serialize the full plan to JSON.
@@ -5106,7 +5140,7 @@ impl PyPlanExecution {
 ///
 /// Supports sampling, CEM, MPC, gradient, and provider-native planning.
 #[pyfunction]
-#[pyo3(signature = (world, goal=None, goal_json=None, max_steps=10, timeout_seconds=30.0, provider="mock", fallback_provider=None, planner="sampling", num_samples=None, top_k=None, population_size=None, elite_fraction=None, num_iterations=None, learning_rate=None, horizon=None, replanning_interval=None, guardrails_json=None, disable_guardrails=false, verify_backend=None))]
+#[pyo3(signature = (world, goal=None, goal_json=None, max_steps=10, timeout_seconds=30.0, provider="mock", fallback_provider=None, planner="sampling", num_samples=None, top_k=None, population_size=None, elite_fraction=None, num_iterations=None, learning_rate=None, horizon=None, replanning_interval=None, guardrails_json=None, disable_guardrails=false, return_video=false, return_depth=false, return_segmentation=false, verify_backend=None))]
 #[allow(clippy::too_many_arguments)]
 fn plan(
     world: &PyWorld,
@@ -5127,6 +5161,9 @@ fn plan(
     replanning_interval: Option<u32>,
     guardrails_json: Option<&str>,
     disable_guardrails: bool,
+    return_video: bool,
+    return_depth: bool,
+    return_segmentation: bool,
     verify_backend: Option<&str>,
 ) -> PyResult<PyPlan> {
     world.plan(
@@ -5147,6 +5184,9 @@ fn plan(
         replanning_interval,
         guardrails_json,
         disable_guardrails,
+        return_video,
+        return_depth,
+        return_segmentation,
         verify_backend,
     )
 }
@@ -8229,8 +8269,8 @@ mod tests {
                 None,
                 4,
                 30.0,
-                None,
-                None,
+                Some("missing"),
+                Some("mock"),
                 "sampling",
                 None,
                 None,
@@ -8242,15 +8282,22 @@ mod tests {
                 None,
                 None,
                 false,
-                None,
+                true,
+                false,
+                false,
+                Some("mock"),
             )
             .unwrap();
 
         let plan_id = record.id();
+        let plan = record.plan();
         assert_eq!(record.goal_summary(), "spawn cube");
+        assert_eq!(record.provider(), "mock");
+        assert_eq!(plan.stored_plan_id().as_deref(), Some(plan_id.as_str()));
+        assert!(plan.preview_clip_count() > 0);
         assert_eq!(
-            record.plan().stored_plan_id().as_deref(),
-            Some(plan_id.as_str())
+            plan.verification_proof().unwrap().unwrap().backend(),
+            "Mock"
         );
         assert_eq!(world.stored_plan_count(), 1);
         assert_eq!(world.stored_plans().len(), 1);
@@ -9606,6 +9653,9 @@ mod tests {
                 None,
                 None,
                 false,
+                false,
+                false,
+                false,
                 None,
             )
             .unwrap();
@@ -10045,6 +10095,9 @@ mod tests {
                 None,
                 None,
                 false,
+                false,
+                false,
+                false,
                 None,
             )
             .unwrap();
@@ -10075,6 +10128,9 @@ mod tests {
                 None,
                 None,
                 false,
+                false,
+                false,
+                false,
                 None,
             )
             .unwrap();
@@ -10103,6 +10159,9 @@ mod tests {
             None,
             None,
             None,
+            false,
+            false,
+            false,
             false,
             Some("mock"),
         )
@@ -10133,6 +10192,9 @@ mod tests {
                 None,
                 None,
                 None,
+                false,
+                false,
+                false,
                 false,
                 Some("mock"),
             )
@@ -10169,6 +10231,9 @@ mod tests {
             None,
             None,
             false,
+            false,
+            false,
+            false,
             Some("mock"),
         )
         .unwrap();
@@ -10197,6 +10262,9 @@ mod tests {
                 None,
                 None,
                 None,
+                false,
+                false,
+                false,
                 false,
                 None,
             )
@@ -10255,6 +10323,9 @@ mod tests {
             None,
             None,
             false,
+            false,
+            false,
+            false,
             None,
         );
 
@@ -10292,6 +10363,9 @@ mod tests {
                 None,
                 None,
                 Some(guardrails_json),
+                false,
+                false,
+                false,
                 false,
                 None,
             )
@@ -10342,6 +10416,9 @@ mod tests {
                 None,
                 None,
                 None,
+                false,
+                false,
+                false,
                 false,
                 None,
             )
@@ -10439,6 +10516,9 @@ mod tests {
                 None,
                 None,
                 false,
+                false,
+                false,
+                false,
                 None,
             )
             .unwrap();
@@ -10488,6 +10568,9 @@ mod tests {
                 None,
                 None,
                 None,
+                false,
+                false,
+                false,
                 false,
                 None,
             )
@@ -10564,6 +10647,9 @@ mod tests {
                 None,
                 None,
                 None,
+                false,
+                false,
+                false,
                 false,
                 None,
             )
@@ -10994,6 +11080,9 @@ mod tests {
                 None,
                 Some(r#"[{"guardrail":"NoCollisions","blocking":true}]"#),
                 false,
+                false,
+                false,
+                false,
                 None,
             )
             .unwrap();
@@ -11024,6 +11113,9 @@ mod tests {
                 None,
                 None,
                 Some(r#"[{"guardrail":"NoCollisions","blocking":true}]"#),
+                false,
+                false,
+                false,
                 false,
                 None,
             )
@@ -11091,6 +11183,9 @@ mod tests {
                 None,
                 None,
                 Some(r#"[{"guardrail":"NoCollisions","blocking":true}]"#),
+                false,
+                false,
+                false,
                 false,
                 None,
             )

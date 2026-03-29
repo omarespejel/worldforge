@@ -3145,6 +3145,9 @@ async fn test_e2e_plan_and_verify_pipeline() {
         },
         timeout_seconds: 10.0,
         fallback_provider: None,
+        return_video: false,
+        return_depth: false,
+        return_segmentation: false,
     };
 
     let plan = world.plan(&plan_request).await.unwrap();

@@ -3,6 +3,7 @@
 //! The `World` struct is the primary user-facing object for interacting
 //! with a simulated world through one or more providers.
 
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 use tracing::instrument;
@@ -38,6 +39,11 @@ pub struct World {
 struct ProviderPlanningCapability {
     name: &'static str,
     supported: fn(&ProviderCapabilities) -> bool,
+}
+
+struct ResolvedPlan {
+    plan: Plan,
+    resolved_provider: String,
 }
 
 impl World {
@@ -445,6 +451,13 @@ impl World {
     /// or `WorldForgeError::NoFeasiblePlan` if no valid plan is found.
     #[instrument(skip(self, request))]
     pub async fn plan(&self, request: &PlanRequest) -> Result<Plan> {
+        self.plan_with_resolution(request)
+            .await
+            .map(|result| result.plan)
+    }
+
+    #[instrument(skip(self, request))]
+    async fn plan_with_resolution(&self, request: &PlanRequest) -> Result<ResolvedPlan> {
         let start = std::time::Instant::now();
         let timeout = std::time::Duration::from_secs_f64(request.timeout_seconds);
         let provider_name = &self.default_provider;
@@ -527,14 +540,21 @@ impl World {
         };
 
         candidate.plan.planning_time_ms = start.elapsed().as_millis() as u64;
-        Ok(candidate.plan)
+        Ok(ResolvedPlan {
+            plan: candidate.plan,
+            resolved_provider: summarize_resolved_providers(
+                &candidate.resolved_providers,
+                provider_name,
+            ),
+        })
     }
 
     /// Plan a sequence of actions and persist the resulting plan artifact on the world.
     #[instrument(skip(self, request))]
     pub async fn plan_and_store(&mut self, request: &PlanRequest) -> Result<StoredPlanRecord> {
-        let plan = self.plan(request).await?;
-        let record = StoredPlanRecord::from_request(self.default_provider.clone(), request, &plan);
+        let resolved = self.plan_with_resolution(request).await?;
+        let record =
+            StoredPlanRecord::from_request(resolved.resolved_provider, request, &resolved.plan);
         self.state.store_plan_record(record.clone());
         Ok(record)
     }
@@ -552,12 +572,15 @@ impl World {
         start: std::time::Instant,
         timeout: Duration,
         capability: ProviderPlanningCapability,
-    ) -> Result<Plan> {
+    ) -> Result<ResolvedPlan> {
         match self
             .run_provider_plan(request, provider_name, start, timeout, capability)
             .await
         {
-            Ok(plan) => Ok(plan),
+            Ok(plan) => Ok(ResolvedPlan {
+                plan,
+                resolved_provider: provider_name.to_string(),
+            }),
             Err(primary_error) => {
                 let Some(fallback_provider) =
                     fallback_provider.filter(|fallback| *fallback != provider_name)
@@ -577,7 +600,10 @@ impl World {
                     .run_provider_plan(request, fallback_provider, start, timeout, capability)
                     .await
                 {
-                    Ok(plan) => Ok(plan),
+                    Ok(plan) => Ok(ResolvedPlan {
+                        plan,
+                        resolved_provider: fallback_provider.to_string(),
+                    }),
                     Err(fallback_error) => Err(combine_fallback_errors(
                         provider_name,
                         fallback_provider,
@@ -610,6 +636,15 @@ impl World {
             .map_err(|_| WorldForgeError::PlanningTimeout {
                 elapsed_ms: timeout.as_millis() as u64,
             })??;
+        let plan = attach_provider_plan_previews(
+            self.registry.as_ref(),
+            request,
+            provider_name,
+            plan,
+            start,
+            timeout,
+        )
+        .await?;
         finalize_provider_plan(
             provider_name,
             request,
@@ -1027,6 +1062,19 @@ fn validate_prediction_modalities(
     Ok(())
 }
 
+fn planning_preview_requested(request: &PlanRequest) -> bool {
+    request.return_video || request.return_depth || request.return_segmentation
+}
+
+fn planning_prediction_config(request: &PlanRequest) -> PredictionConfig {
+    PredictionConfig {
+        return_video: planning_preview_requested(request),
+        return_depth: request.return_depth,
+        return_segmentation: request.return_segmentation,
+        ..PredictionConfig::default()
+    }
+}
+
 fn blocking_guardrail_error(results: &[crate::guardrail::GuardrailResult]) -> WorldForgeError {
     WorldForgeError::GuardrailBlocked {
         violations: results
@@ -1051,6 +1099,53 @@ fn combine_fallback_errors(
             "primary provider error: {primary_error}; fallback provider '{fallback_provider}' error: {fallback_error}"
         ),
     }
+}
+
+fn summarize_resolved_providers(providers: &BTreeSet<String>, default_provider: &str) -> String {
+    if providers.is_empty() {
+        default_provider.to_string()
+    } else {
+        providers.iter().cloned().collect::<Vec<_>>().join(",")
+    }
+}
+
+async fn attach_provider_plan_previews(
+    registry: &ProviderRegistry,
+    request: &PlanRequest,
+    provider_name: &str,
+    mut plan: Plan,
+    start: std::time::Instant,
+    timeout: Duration,
+) -> Result<Plan> {
+    if !planning_preview_requested(request)
+        || plan.predicted_videos.is_some()
+        || plan.actions.is_empty()
+    {
+        return Ok(plan);
+    }
+
+    let config = planning_prediction_config(request);
+    let mut state = request.current_state.clone();
+    let mut videos = Vec::with_capacity(plan.actions.len());
+
+    for action in &plan.actions {
+        ensure_planning_budget(start, timeout)?;
+        let prediction =
+            run_planning_prediction(registry, &state, action, &config, provider_name, timeout)
+                .await?;
+        let video = prediction
+            .video
+            .ok_or_else(|| WorldForgeError::PlanningFailed {
+                reason: format!(
+                    "provider '{provider_name}' did not return preview video for a planned action"
+                ),
+            })?;
+        state = prediction.output_state;
+        videos.push(video);
+    }
+
+    plan.predicted_videos = Some(videos);
+    Ok(plan)
 }
 
 fn finalize_provider_plan(
@@ -1133,6 +1228,7 @@ fn finalize_provider_plan(
 struct EvaluatedCandidate {
     plan: Plan,
     score: f32,
+    resolved_providers: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1320,9 +1416,11 @@ async fn mpc_search(
     let mut simulated_state = context.request.current_state.clone();
     let mut actions = Vec::new();
     let mut predicted_states = Vec::new();
+    let mut predicted_videos = planning_preview_requested(context.request).then(Vec::new);
     let mut guardrail_compliance = Vec::new();
     let mut total_cost = 0.0f32;
     let mut iterations = 0u32;
+    let mut resolved_providers = BTreeSet::new();
 
     while actions.len() < context.request.max_steps as usize {
         ensure_planning_budget(context.start, context.timeout)?;
@@ -1352,6 +1450,9 @@ async fn mpc_search(
             },
             timeout_seconds: context.request.timeout_seconds,
             fallback_provider: context.request.fallback_provider.clone(),
+            return_video: context.request.return_video,
+            return_depth: context.request.return_depth,
+            return_segmentation: context.request.return_segmentation,
         };
         let local_context = PlanningContext {
             registry: context.registry,
@@ -1385,8 +1486,17 @@ async fn mpc_search(
             actions.push(local_best.plan.actions[idx].clone());
             predicted_states.push(local_best.plan.predicted_states[idx].clone());
             guardrail_compliance.push(local_best.plan.guardrail_compliance[idx].clone());
+            if let Some(videos) = predicted_videos.as_mut() {
+                let local_videos = local_best.plan.predicted_videos.as_ref().ok_or_else(|| {
+                    WorldForgeError::PlanningFailed {
+                        reason: "planner candidate is missing requested preview videos".to_string(),
+                    }
+                })?;
+                videos.push(local_videos[idx].clone());
+            }
             total_cost += per_step_cost;
         }
+        resolved_providers.extend(local_best.resolved_providers.iter().cloned());
         simulated_state = predicted_states
             .last()
             .cloned()
@@ -1407,7 +1517,7 @@ async fn mpc_search(
         plan: Plan {
             actions,
             predicted_states,
-            predicted_videos: None,
+            predicted_videos,
             total_cost,
             success_probability: evaluate_goal_score(&context.request.goal, &simulated_state),
             guardrail_compliance,
@@ -1416,6 +1526,7 @@ async fn mpc_search(
             stored_plan_id: None,
             verification_proof: None,
         },
+        resolved_providers,
     }))
 }
 
@@ -1450,13 +1561,15 @@ async fn evaluate_candidate_sequence(
 ) -> Result<Option<EvaluatedCandidate>> {
     ensure_planning_budget(context.start, context.timeout)?;
 
-    let config = PredictionConfig::default();
+    let config = planning_prediction_config(context.request);
     let mut simulated_state = initial_state.clone();
     let mut predicted_states = Vec::new();
+    let mut predicted_videos = planning_preview_requested(context.request).then(Vec::new);
     let mut guardrail_compliance = Vec::new();
     let mut total_physics = 0.0f32;
     let mut total_cost = 0.0f32;
     let mut last_provider_name = context.provider_name.to_string();
+    let mut resolved_providers = BTreeSet::new();
 
     for action in actions {
         ensure_planning_budget(context.start, context.timeout)?;
@@ -1478,6 +1591,18 @@ async fn evaluate_candidate_sequence(
         total_physics += prediction.physics_scores.overall;
         total_cost += prediction.cost.usd as f32;
         last_provider_name = prediction.provider.clone();
+        resolved_providers.insert(prediction.provider.clone());
+        if let Some(videos) = predicted_videos.as_mut() {
+            let video = prediction
+                .video
+                .ok_or_else(|| WorldForgeError::PlanningFailed {
+                    reason: format!(
+                        "provider '{}' did not return preview video for a planned action",
+                        prediction.provider
+                    ),
+                })?;
+            videos.push(video);
+        }
         simulated_state = prediction.output_state;
         predicted_states.push(simulated_state.clone());
         guardrail_compliance.push(gr_results);
@@ -1499,7 +1624,7 @@ async fn evaluate_candidate_sequence(
         plan: Plan {
             actions: actions.to_vec(),
             predicted_states,
-            predicted_videos: None,
+            predicted_videos,
             total_cost: if total_cost == 0.0 {
                 estimate_plan_cost(
                     context.registry.get(&last_provider_name)?,
@@ -1516,6 +1641,7 @@ async fn evaluate_candidate_sequence(
             stored_plan_id: None,
             verification_proof: None,
         },
+        resolved_providers,
     }))
 }
 
@@ -1575,6 +1701,8 @@ async fn run_planning_prediction(
     timeout: Duration,
 ) -> Result<Prediction> {
     let provider = registry.get(provider_name)?;
+    let capabilities = provider.capabilities();
+    validate_prediction_modalities(provider_name, &capabilities, config)?;
     tokio::time::timeout(timeout, provider.predict(state, action, config))
         .await
         .map_err(|_| WorldForgeError::ProviderTimeout {
@@ -2718,6 +2846,9 @@ mod tests {
             },
             timeout_seconds: 5.0,
             fallback_provider: None,
+            return_video: false,
+            return_depth: false,
+            return_segmentation: false,
         };
         let plan = Plan {
             actions: Vec::new(),
@@ -2969,6 +3100,9 @@ mod tests {
             },
             timeout_seconds: 5.0,
             fallback_provider: None,
+            return_video: false,
+            return_depth: false,
+            return_segmentation: false,
         };
 
         let plan = world.plan(&request).await.unwrap();
@@ -3005,6 +3139,9 @@ mod tests {
             },
             timeout_seconds: 5.0,
             fallback_provider: None,
+            return_video: false,
+            return_depth: false,
+            return_segmentation: false,
         };
 
         let plan = world.plan(&request).await.unwrap();
@@ -3050,6 +3187,9 @@ mod tests {
             },
             timeout_seconds: 5.0,
             fallback_provider: None,
+            return_video: false,
+            return_depth: false,
+            return_segmentation: false,
         };
 
         let plan = world.plan(&request).await.unwrap();
@@ -3080,6 +3220,9 @@ mod tests {
             },
             timeout_seconds: 5.0,
             fallback_provider: None,
+            return_video: false,
+            return_depth: false,
+            return_segmentation: false,
         };
 
         let plan = world.plan(&request).await.unwrap();
@@ -3139,6 +3282,9 @@ mod tests {
             planner: PlannerType::ProviderNative,
             timeout_seconds: 5.0,
             fallback_provider: None,
+            return_video: false,
+            return_depth: false,
+            return_segmentation: false,
         };
 
         let plan = world.plan(&request).await.unwrap();
@@ -3170,6 +3316,9 @@ mod tests {
             planner: PlannerType::ProviderNative,
             timeout_seconds: 5.0,
             fallback_provider: None,
+            return_video: false,
+            return_depth: false,
+            return_segmentation: false,
         };
 
         let error = world.plan(&request).await.unwrap_err();
@@ -3197,6 +3346,9 @@ mod tests {
             planner: PlannerType::ProviderNative,
             timeout_seconds: 5.0,
             fallback_provider: None,
+            return_video: false,
+            return_depth: false,
+            return_segmentation: false,
         };
 
         let error = world.plan(&request).await.unwrap_err();
@@ -3228,6 +3380,9 @@ mod tests {
             },
             timeout_seconds: 5.0,
             fallback_provider: Some("fallback".to_string()),
+            return_video: false,
+            return_depth: false,
+            return_segmentation: false,
         };
 
         let plan = world.plan(&request).await.unwrap();
@@ -3242,6 +3397,54 @@ mod tests {
             .position;
 
         assert!(!plan.actions.is_empty());
+        assert!(final_position.x > 1.5);
+    }
+
+    #[tokio::test]
+    async fn test_plan_and_store_persists_fallback_provider_and_preview_clips() {
+        let (state, object_id) = sample_planning_state();
+        let registry = std::sync::Arc::new({
+            let mut registry = ProviderRegistry::new();
+            registry.register(Box::new(FailingProvider::new("primary")));
+            registry.register(Box::new(PlanningProvider::new("fallback", 1.0, false)));
+            registry
+        });
+        let mut world = World::new(state.clone(), "primary", registry);
+        let request = PlanRequest {
+            current_state: state,
+            goal: PlanGoal::Description("move ball to position (2.0, 0.0, 0.0)".to_string()),
+            max_steps: 3,
+            guardrails: Vec::new(),
+            planner: PlannerType::Sampling {
+                num_samples: 16,
+                top_k: 4,
+            },
+            timeout_seconds: 5.0,
+            fallback_provider: Some("fallback".to_string()),
+            return_video: true,
+            return_depth: false,
+            return_segmentation: false,
+        };
+
+        let record = world.plan_and_store(&request).await.unwrap();
+        let stored = world.get_stored_plan(&record.id).unwrap();
+        let final_position = stored
+            .plan
+            .predicted_states
+            .last()
+            .unwrap()
+            .scene
+            .get_object(&object_id)
+            .unwrap()
+            .pose
+            .position;
+
+        assert_eq!(record.provider, "fallback");
+        assert_eq!(stored.provider, "fallback");
+        assert_eq!(
+            record.plan.predicted_videos.as_ref().map(Vec::len),
+            Some(record.plan.actions.len())
+        );
         assert!(final_position.x > 1.5);
     }
 
@@ -3265,6 +3468,9 @@ mod tests {
             planner: PlannerType::ProviderNative,
             timeout_seconds: 0.01,
             fallback_provider: Some("fallback".to_string()),
+            return_video: false,
+            return_depth: false,
+            return_segmentation: false,
         };
 
         let plan = world.plan(&request).await.unwrap();
@@ -3300,6 +3506,9 @@ mod tests {
             planner: PlannerType::ProviderNative,
             timeout_seconds: 5.0,
             fallback_provider: Some("fallback".to_string()),
+            return_video: true,
+            return_depth: false,
+            return_segmentation: false,
         };
 
         let plan = world.plan(&request).await.unwrap();
@@ -3315,6 +3524,10 @@ mod tests {
 
         assert_eq!(plan.iterations_used, 97);
         assert!(final_position.x > 1.5);
+        assert_eq!(
+            plan.predicted_videos.as_ref().map(Vec::len),
+            Some(plan.actions.len())
+        );
     }
 
     #[tokio::test]
@@ -3335,6 +3548,9 @@ mod tests {
             planner: PlannerType::ProviderNative,
             timeout_seconds: 5.0,
             fallback_provider: Some("fallback".to_string()),
+            return_video: false,
+            return_depth: false,
+            return_segmentation: false,
         };
 
         let error = world.plan(&request).await.unwrap_err();
@@ -3369,6 +3585,9 @@ mod tests {
             },
             timeout_seconds: 5.0,
             fallback_provider: None,
+            return_video: false,
+            return_depth: false,
+            return_segmentation: false,
         };
 
         let error = world.plan(&request).await.unwrap_err();
@@ -3402,6 +3621,9 @@ mod tests {
             },
             timeout_seconds: 5.0,
             fallback_provider: Some("fallback".to_string()),
+            return_video: false,
+            return_depth: false,
+            return_segmentation: false,
         };
 
         let plan = world.plan(&request).await.unwrap();
@@ -3439,6 +3661,9 @@ mod tests {
             },
             timeout_seconds: 5.0,
             fallback_provider: None,
+            return_video: false,
+            return_depth: false,
+            return_segmentation: false,
         };
         let plan = planner_world.plan(&request).await.unwrap();
 
@@ -5054,6 +5279,15 @@ mod tests {
         }
     }
 
+    fn preview_clip(config: &PredictionConfig) -> VideoClip {
+        VideoClip {
+            frames: Vec::new(),
+            fps: config.fps,
+            resolution: config.resolution,
+            duration: config.steps.max(1) as f64 / f64::from(config.fps.max(1.0)),
+        }
+    }
+
     fn build_native_plan(request: &PlanRequest, movement_scale: f32, iterations_used: u32) -> Plan {
         let goal_hints = derive_goal_hints(&request.goal, &request.current_state);
         let mut state = request.current_state.clone();
@@ -5497,7 +5731,7 @@ mod tests {
             &self,
             state: &WorldState,
             action: &Action,
-            _config: &PredictionConfig,
+            config: &PredictionConfig,
         ) -> Result<Prediction> {
             let mut output_state = state.clone();
             apply_planning_action(&mut output_state, action, self.movement_scale);
@@ -5508,7 +5742,7 @@ mod tests {
                 input_state: state.clone(),
                 action: action.clone(),
                 output_state,
-                video: None,
+                video: config.return_video.then(|| preview_clip(config)),
                 confidence: 0.9,
                 physics_scores: PhysicsScores {
                     overall: 0.95,
@@ -5606,7 +5840,7 @@ mod tests {
             &self,
             state: &WorldState,
             action: &Action,
-            _config: &PredictionConfig,
+            config: &PredictionConfig,
         ) -> Result<Prediction> {
             let mut output_state = state.clone();
             apply_planning_action(&mut output_state, action, self.movement_scale);
@@ -5617,7 +5851,7 @@ mod tests {
                 input_state: state.clone(),
                 action: action.clone(),
                 output_state,
-                video: None,
+                video: config.return_video.then(|| preview_clip(config)),
                 confidence: 0.9,
                 physics_scores: PhysicsScores {
                     overall: 0.95,
