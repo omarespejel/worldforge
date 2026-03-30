@@ -19,28 +19,28 @@
 ---
 
 ```
-             ┌──────────────────────────────────────────────────────┐
-             │                    Your Application                  │
-             │   Python  ·  Rust  ·  CLI  ·  REST API (27 routes)  │
-             └───────────────────────┬──────────────────────────────┘
-                                     │
-                    ┌────────────────┴────────────────┐
-                    │          WorldForge Core         │
-                    │  predict · plan · eval · verify  │
-                    │  state · guardrails · scene graph │
-                    └────────────────┬────────────────┘
-                                     │
-        ┌──────────┬──────────┬──────┴──────┬──────────┬──────────┐
-        │  Cosmos  │  Runway  │    JEPA     │   Sora   │   PAN    │
-        │  Predict │  GWM-1   │  V-JEPA 2   │  Sora 2  │  MBZUAI  │
-        │  Reason  │  Worlds  │  (local)    │ (OpenAI) │ (stateful│
-        │  Embed   │  Robots  │  Gradient   │          │  rounds) │
-        └──────────┴──────────┴─────────────┴──────────┴──────────┘
-        ┌──────────┬──────────┬─────────────┬──────────┬──────────┐
-        │   Veo    │  KLING   │   MiniMax   │  Genie   │  Marble  │
-        │  Veo 3   │ Kuaishou │  Hailuo     │ (local)  │ (local)  │
-        │ (Google) │  (JWT)   │  T2V-01     │          │          │
-        └──────────┴──────────┴─────────────┴──────────┴──────────┘
+        ┌─────────────────────────────────────────────────┐
+        │                 Your Application                │
+        │    Python · Rust · CLI · REST API (27 routes)   │
+        └────────────────────────┬────────────────────────┘
+                                 │
+              ┌──────────────────┴──────────────────┐
+              │           WorldForge Core            │
+              │   predict · plan · eval · verify     │
+              │   state · guardrails · scene graph   │
+              └──────────────────┬──────────────────┘
+                                 │
+  ┌──────────┬──────────┬────────┴─┬──────────┬──────────┐
+  │  Cosmos  │  Runway  │   JEPA   │  Sora 2  │   PAN    │
+  │  Predict │  GWM-1   │ V-JEPA 2 │  OpenAI  │  MBZUAI  │
+  │  Reason  │  Worlds  │  local   │          │ stateful │
+  │  Embed   │  Robots  │ gradient │          │  rounds  │
+  └──────────┴──────────┴──────────┴──────────┴──────────┘
+  ┌──────────┬──────────┬──────────┬──────────┬──────────┐
+  │  Veo 3   │  KLING   │ MiniMax  │  Genie   │  Marble  │
+  │  Google  │ Kuaishou │  Hailuo  │  local   │  local   │
+  │          │   JWT    │  T2V-01  │          │          │
+  └──────────┴──────────┴──────────┴──────────┴──────────┘
 ```
 
 ## Quick Start
