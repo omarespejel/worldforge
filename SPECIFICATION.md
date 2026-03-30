@@ -42,7 +42,7 @@ WorldForge solves all of these problems by providing a unified orchestration lay
 ### 1.2 Scope
 
 WorldForge covers:
-- Unified provider abstraction (Cosmos, GWM, JEPA, Genie, Marble, local models)
+- Unified provider abstraction (Cosmos, GWM, JEPA, Genie, Marble, PAN, KLING, Sora, Veo, MiniMax, local models)
 - Persistent world state management
 - Standardized action type system
 - Multi-step prediction and planning
@@ -708,6 +708,21 @@ pub enum PlannerType {
     },
     /// Use provider's built-in planning if available
     ProviderNative,
+
+    /// VLM-guided planning: iterative VLM + WFM loop (WR-Arena pattern).
+    /// A vision-language model proposes candidate actions, the world model
+    /// simulates each, and the VLM selects the best outcome. Repeats until
+    /// the goal is achieved or max_steps is reached.
+    VlmGuided {
+        /// VLM provider for action proposal and selection ("claude", "gpt-4o", "o3")
+        vlm_provider: String,
+        /// Number of candidate actions proposed per step (default 3)
+        candidates_per_step: u32,
+        /// Number of simulation variants per candidate for best-of-N selection
+        variants_per_candidate: u32,
+        /// Maximum planning steps before timeout
+        max_steps: u32,
+    },
 }
 ```
 
@@ -755,6 +770,56 @@ pub enum EvalDimension {
     /// Serialized suite definitions retain only the metric name; Rust callers
     /// can supply an explicit evaluator registry when running the suite.
     Custom { name: String },
+
+    // === WR-Arena evaluation dimensions (arXiv 2603.25887) ===
+
+    /// Can the model follow action instructions? (LLM-as-judge, 0-3 scale)
+    /// Evaluates via multimodal LLM scoring of extracted video frames against
+    /// instruction text. Split into Agent (robot/human actions) and Environment
+    /// (physics, lighting, shadows) sub-types.
+    ActionSimulationFidelity {
+        simulation_type: SimulationType,
+    },
+
+    /// Is multi-round video temporally smooth? (MRS metric via optical flow)
+    /// Formula: MRS = vmag_median * exp(-λ * amag_median)
+    /// Higher MRS = smoother motion without sudden acceleration changes.
+    TransitionSmoothness {
+        lambda: f32, // Smoothness penalty weight (default 1.0)
+    },
+
+    /// Does multi-round generation maintain visual/3D consistency?
+    /// Evaluates camera control, object control, content alignment,
+    /// 3D consistency, photometric consistency, style consistency,
+    /// and subjective quality. Based on WorldScore framework.
+    GenerationConsistency {
+        aspects: Vec<ConsistencyAspect>,
+    },
+
+    /// Can the model support VLM-guided planning loops?
+    /// Measures planning success rate when WFM is used as simulator
+    /// in an iterative VLM+WM planning loop.
+    SimulativeReasoning {
+        max_steps: u32,
+        candidates_per_step: u32,
+    },
+}
+
+pub enum SimulationType {
+    /// Agent actions: robot picks up cup, person walks to door
+    Agent,
+    /// Environment changes: shadow moves, water flows, leaves rustle
+    Environment,
+}
+
+pub enum ConsistencyAspect {
+    CameraControl,
+    ObjectControl,
+    ContentAlignment,
+    ThreeDConsistency,
+    PhotometricConsistency,
+    StyleConsistency,
+    SubjectiveQuality,
 }
 
 pub trait Evaluator {
@@ -766,7 +831,37 @@ pub struct CustomMetricRegistry {
 }
 ```
 
-### 9.2 Evaluation Suite
+### 9.2 Evaluation Datasets
+
+WorldForge supports loading WR-Arena benchmark datasets for evaluation:
+
+```rust
+/// Action simulation evaluation instance.
+pub struct ActionSimulationInstance {
+    pub id: String,
+    pub image_path: PathBuf,
+    pub prompt_list: Vec<String>,
+    pub simulation_type: SimulationType,
+}
+
+/// Multi-round evaluation instance (smoothness, consistency).
+pub struct MultiRoundInstance {
+    pub id: String,
+    pub image_path: PathBuf,
+    pub prompt_list: Vec<String>,
+    pub camera_path: Vec<CameraMotion>,
+    pub visual_style: String,
+    pub scene_type: String,
+}
+
+pub enum CameraMotion {
+    PanLeft, PanRight, PanUp, PanDown,
+    ZoomIn, ZoomOut, TiltUp, TiltDown,
+    Orbit, Static,
+}
+```
+
+### 9.3 Evaluation Suite
 
 ```rust
 pub struct EvalSuite {
@@ -1070,6 +1165,165 @@ worldforge verify --plan <plan-id> --backend stark
 | plan() | Gradient-based planning through differentiable model |
 | physics_score() | Energy function (L2 distance in representation space) |
 | verify() | ZK proof of forward pass (primary target for verification) |
+
+### 13.4 MBZUAI PAN Integration
+
+**API Surface:**
+- PAN: General world model with stateful multi-round generation
+- Unique architecture: server maintains state across rounds
+
+**Authentication:** API key via `PAN_API_KEY`
+**Endpoint:** `https://ifm.mbzuai.ac.ae/pan/` (configurable via `PAN_API_ENDPOINT`)
+**HuggingFace:** MBZUAI-IFM
+**Resolution:** 832x480
+**Frames per round:** 41
+
+**API Pattern (Stateful Multi-Round):**
+```
+# Round 1: Initialize
+POST <endpoint>/first_round
+{ "prompt": "...", "image_path": "...", "state_id": "session-001" }
+→ { "frames": [...], "state_id": "session-001", "video_id": "v001" }
+
+# Round N: Continue (server maintains internal state)
+POST <endpoint>/continue
+{ "prompt": "...", "state_id": "session-001", "video_id": "v001" }
+→ { "frames": [...], "state_id": "session-001", "video_id": "v002" }
+```
+
+**Key features:**
+- Server-side state persistence (no need to pass frames back)
+- Load-balanced endpoints
+- Prompt upsampling (enriches short prompts to detailed descriptions)
+- Best planning model per WR-Arena benchmark (+26.7% over VLM-only)
+- Flattest long-horizon degradation curve of all evaluated models
+
+**WorldForge mapping:**
+| WorldForge concept | PAN implementation |
+|-------------------|-------------------|
+| predict() | first_round / continue API |
+| generate() | first_round with text prompt |
+| plan() | VLM+WM loop (PAN as world model) |
+| Multi-round | continue endpoint (stateful) |
+
+### 13.5 Kuaishou KLING Integration
+
+**API Surface:** Video generation (image-to-video)
+**Authentication:** JWT (HS256) from `KLING_API_KEY` + `KLING_API_SECRET`
+**Endpoint:** `https://api-singapore.klingai.com`
+**Resolution:** 1280x720
+**Frames:** 153
+**License:** Proprietary API
+
+**API Pattern (JWT REST + Polling):**
+```
+# 1. Generate JWT: sign { iss: API_KEY, exp: now+1800, iat: now } with API_SECRET
+# 2. POST /v1/videos/image2video
+#    Authorization: Bearer <jwt>
+#    Body: { model, image (base64), prompt, negative_prompt, cfg_scale, duration, aspect_ratio }
+#    → { task_id }
+# 3. GET /v1/videos/image2video/<task_id> (poll until completed)
+#    → { status: "completed", video_url: "..." }
+# 4. Download video from URL
+```
+
+**WorldForge mapping:**
+| WorldForge concept | KLING implementation |
+|-------------------|---------------------|
+| predict() | image2video with action prompt |
+| generate() | image2video with scene prompt |
+
+### 13.6 OpenAI Sora 2 Integration
+
+**API Surface:** Video generation
+**Authentication:** OpenAI API key via `OPENAI_API_KEY`
+**Endpoint:** `https://api.openai.com`
+**Resolution:** 1280x720
+**Frames:** 120
+**License:** Proprietary API
+
+**API Pattern (OpenAI REST):**
+```
+POST /v1/videos
+Authorization: Bearer <OPENAI_API_KEY>
+{ "model": "sora-2", "prompt": "...", "image": "<base64>", "duration": 5 }
+→ Poll for completion → Download video
+```
+
+**WorldForge mapping:**
+| WorldForge concept | Sora 2 implementation |
+|-------------------|-----------------------|
+| predict() | video generation with action prompt |
+| generate() | video generation with scene prompt |
+
+### 13.7 Google Veo 3 Integration
+
+**API Surface:** Video generation
+**Authentication:** Google API key via `GOOGLE_API_KEY`
+**Model:** `veo-3.1-fast-generate-preview`
+**Resolution:** 1280x720
+**Frames:** 96
+**License:** Proprietary API
+
+**API Pattern (GenAI REST):**
+```
+POST https://generativelanguage.googleapis.com/v1beta/models/veo-3.1:generateVideos
+Authorization: Bearer <GOOGLE_API_KEY>
+{ "prompt": "...", "image": { "bytes": "<base64>", "mimeType": "image/png" },
+  "config": { "aspectRatio": "16:9" } }
+→ Returns operation ID → Poll → Download from generated_videos[0].video.uri
+```
+
+**WorldForge mapping:**
+| WorldForge concept | Veo 3 implementation |
+|-------------------|-----------------------|
+| predict() | video generation with action prompt |
+| generate() | video generation with scene prompt |
+
+### 13.8 MiniMax/Hailuo Integration
+
+**API Surface:** Video generation (T2V-01)
+**Authentication:** API key via `MINIMAX_API_KEY`
+**Endpoint:** `https://api.minimax.io`
+**Resolution:** 1072x720
+**Frames:** 141
+**License:** Proprietary API
+
+**API Pattern (REST Submit/Poll/Download):**
+```
+# 1. POST /v1/video_generation
+#    Authorization: Bearer <API_KEY>
+#    Body: { model: "T2V-01", prompt, first_frame_image (base64) }
+#    → { task_id }
+# 2. GET /v1/query/video_generation?task_id=<id> (poll)
+#    → { status: "Success", file_id: "..." }
+# 3. GET /v1/files/retrieve?file_id=<id>
+#    → { download_url: "..." }
+```
+
+**WorldForge mapping:**
+| WorldForge concept | MiniMax implementation |
+|-------------------|-----------------------|
+| predict() | video generation with action prompt |
+| generate() | video generation with scene prompt |
+
+### 13.9 Multi-Round Generation Protocol
+
+All video generation providers support multi-round generation through frame chaining:
+
+```
+1. Load initial image I₀
+2. For round r = 1..N:
+   a. Generate video segment V_r = provider.predict(prompt_r, I_{r-1})
+   b. Extract last frame: I_r = last_frame(V_r)
+   c. Store segment V_r
+3. Concatenate: V = V_1[all] + V_2[1:] + ... + V_N[1:]
+   (Drop first frame of rounds 2+ to avoid duplicate boundary frames)
+```
+
+**Provider-specific exceptions:**
+- Cosmos: Pass entire previous video as context (not just last frame)
+- PAN: Server maintains state; use `continue` endpoint with state_id
 
 ---
 

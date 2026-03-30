@@ -14,9 +14,17 @@
 | Runway GWM-1 | Yes (REST) | Python, Node.js, React | API Secret | Usage-based | No (proprietary) | No |
 | Meta JEPA | Code only | Python (PyTorch) | N/A | Free (research) | Yes (CC-BY-NC) | Yes (local) |
 | Google Genie 3 | Research preview only | None public | N/A | N/A | No | No |
+| Google Veo 3 | Yes (GenAI) | Python (genai SDK) | API Key | Usage-based | No (proprietary) | No |
 | World Labs Marble | Yes (freemium) | Web API | Account | Freemium tiers | No | No |
+| MBZUAI PAN | Yes (REST) | None public | API Key | TBD | Weights on HF | No |
+| Kuaishou KLING | Yes (REST) | None public | JWT (key+secret) | Usage-based | No (proprietary) | No |
+| OpenAI Sora 2 | Yes (REST) | Python (openai SDK) | API Key | Usage-based | No (proprietary) | No |
+| MiniMax/Hailuo | Yes (REST) | None public | API Key | Usage-based | No (proprietary) | No |
+| Alibaba WAN 2.x | Code only | Python | N/A | Free (open source) | Yes | Yes (multi-GPU) |
 | Decart Oasis | Demo only | None public | N/A | N/A | Partial | No |
 | Tencent Hunyuan WM | Yes | Python | API Key | Free (open source) | Yes | Yes |
+
+> **Updated March 2026** with WR-Arena providers (arXiv 2603.25887). PAN, KLING, Sora 2, Veo 3, MiniMax, and WAN 2.x added based on WR-Arena benchmark evaluation.
 
 ### 1.2 Key Insight: The Integration Pain
 
@@ -173,10 +181,37 @@ comparison = wf.compare([cosmos_pred, jepa_pred])
 | Hugging Face | World model evaluation for their hub | Distribution to 500K+ ML developers |
 | AMI Labs | Ecosystem tooling for their world models | First design partner credibility, research collaboration |
 | University labs (CMU, Stanford, ETH) | Free tooling for research | Academic citations, student contributors, hiring pipeline |
+| MBZUAI IFM | Ecosystem tooling for PAN, WR-Arena integration | Access to best planning model, benchmark datasets, research collaboration |
 
 ---
 
-## 5. Technology Risks and Mitigations
+## 5. WR-Arena Benchmark Insights (March 2026)
+
+Based on WR-Arena (arXiv 2603.25887), a diagnostic benchmark evaluating 10 world models:
+
+### 5.1 Key Market Signals
+
+**Visual quality ≠ world understanding.** Commercial video generators (KLING, MiniMax, Gen-3, Veo 3) produce the best-looking videos but fail at planning integration and action fidelity. This validates WorldForge's focus on evaluation beyond visual metrics.
+
+**Planning is the differentiator.** PAN (MBZUAI) outperforms all other WFMs in planning: +26.7% in open-ended, +23.4% in structured planning. Most video generators actually *hurt* planning when used in a VLM+WM loop. This suggests the market will split between "pretty video" and "useful simulation."
+
+**Long-horizon is unsolved.** No model sustains above 65% quality over many rounds. WAN 2.1 degrades from ~90% to ~30% over 9 rounds. This is an open research problem and an opportunity for WorldForge to provide degradation analysis tooling.
+
+**Environment simulation is hard.** No model exceeds 60% on environment-level interventions (shadows, lighting, fluid dynamics). Agent simulation averages 11.5% higher. This gap suggests current WFMs model agent actions but not physics.
+
+### 5.2 Strategic Implications for WorldForge
+
+1. **Evaluation framework is the moat.** WR-Arena proves there's demand for standardized WFM evaluation. WorldForge's eval crate should adopt WR-Arena's 4 dimensions as first-class metrics.
+
+2. **PAN partnership is high-value.** PAN is the only model that consistently helps planning. WorldForge should be the easiest way to use PAN, which creates a pull effect for the rest of the platform.
+
+3. **Multi-round generation is a first-class concern.** All WR-Arena evaluations test multi-round capability. WorldForge must support round chaining, boundary smoothness analysis, and degradation tracking.
+
+4. **LLM-as-judge is the evaluation standard.** WR-Arena uses GPT-4o for action fidelity scoring. WorldForge should support configurable LLM judges (GPT-4o, Claude, Gemini) for evaluation.
+
+---
+
+## 6. Technology Risks and Mitigations
 
 | Risk | Severity | Mitigation |
 |------|----------|------------|

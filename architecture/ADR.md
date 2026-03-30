@@ -161,3 +161,89 @@
 - CLI is the fastest way to demo WorldForge
 - CLI exercises the full stack (creates a natural integration test)
 - Aligns with "Claude Code" / "agentic CLI tool" culture
+
+---
+
+## ADR-009: WR-Arena Evaluation Integration
+
+**Status:** Accepted
+
+**Context:** WR-Arena (arXiv 2603.25887, March 2026) introduces a diagnostic benchmark for world foundation models that evaluates 10 models across 4 dimensions. Their evaluation methodology goes beyond visual quality to test instruction-following, temporal smoothness, generation consistency, and planning capability. No existing tool provides a unified way to run these evaluations across providers.
+
+**Decision:** Adopt WR-Arena's 4 evaluation dimensions as first-class metrics in worldforge-eval, alongside our existing physics-based evaluation dimensions.
+
+**New evaluation dimensions:**
+1. **ActionSimulationFidelity** — LLM-as-judge scoring (0-3) for instruction following
+2. **TransitionSmoothness** — MRS metric via optical flow for temporal quality
+3. **GenerationConsistency** — WorldScore-based multi-aspect consistency scoring
+4. **SimulativeReasoning** — VLM+WFM planning loop evaluation
+
+**Rationale:**
+- WR-Arena is the first systematic benchmark for WFMs. Integrating it positions WorldForge as the reference evaluation platform.
+- Their 4 dimensions are complementary to our 8 physics dimensions, creating a comprehensive 12-dimension evaluation framework.
+- LLM-as-judge scoring is provider-agnostic and doesn't require ground truth video data.
+- The MRS smoothness metric is computationally simple and highly informative for multi-round generation quality.
+- WR-Arena datasets (60 action sim, 100 smoothness, 100 consistency instances) provide ready-made benchmarks.
+
+**Consequences:**
+- LLM-as-judge evaluation requires multimodal LLM API access (additional cost)
+- Optical flow estimation for MRS may require Python sidecar or Rust bindings
+- WorldScore integration depends on external models (DROID-SLAM, GroundingDINO, etc.)
+- Mitigated by: starting with simpler metrics (Action Fidelity, MRS) before full WorldScore
+
+---
+
+## ADR-010: Expanded Provider Support (API-based video generators)
+
+**Status:** Accepted
+
+**Context:** WR-Arena evaluates 10 world models. WorldForge currently supports 5 (Cosmos, Runway, JEPA, Genie, Marble). The missing models — PAN, KLING, Sora 2, Veo 3, MiniMax — are all commercially available via REST APIs and represent the majority of production video generation usage.
+
+**Decision:** Add provider adapters for PAN, KLING, Sora 2, Veo 3, and MiniMax to worldforge-providers. Defer WAN 2.x (requires multi-GPU local infrastructure).
+
+**Rationale:**
+- PAN is the best planning model per WR-Arena. Supporting it makes WorldForge the primary interface for the best WFM planner.
+- KLING, Sora 2, Veo 3, MiniMax are the most popular commercial video generators. Supporting them makes WorldForge relevant to the largest user base.
+- All 5 new providers use REST APIs with submit/poll/download patterns, which maps cleanly to our async provider trait.
+- WAN 2.x requires multi-GPU orchestration (8 GPUs, Ulysses parallelism) which is beyond our initial scope.
+
+**Provider-specific decisions:**
+- PAN: Implement stateful multi-round API (first_round/continue endpoints with state_id tracking)
+- KLING: JWT authentication (HS256 signing) — add jsonwebtoken dependency
+- Sora 2: Direct REST API calls (not OpenAI SDK — keep dependency-free in Rust)
+- Veo 3: Direct REST API calls to GenAI endpoint
+- MiniMax: Standard REST submit/poll/download
+
+**Consequences:**
+- 5 new provider modules to maintain as APIs evolve
+- Need shared polling infrastructure for submit/poll patterns
+- PAN's stateful API is architecturally different from other providers (server-side state)
+- Mitigated by: shared polling module, consistent error handling, per-provider integration tests
+
+---
+
+## ADR-011: VLM-Guided Planning
+
+**Status:** Accepted
+
+**Context:** WR-Arena demonstrates that pairing a VLM (vision-language model) with a WFM in an iterative planning loop produces significantly better plans than either alone — but only with the right WFM (PAN shows +26.7% improvement, while most video generators hurt planning).
+
+**Decision:** Add a `VlmGuided` planner type to worldforge-core that implements the iterative VLM + WFM planning loop pattern.
+
+**Protocol:**
+1. VLM proposes K candidate actions given goal + history + current frame
+2. WFM generates video segment for each candidate (with best-of-N selection)
+3. VLM evaluates resulting frames and selects the best action
+4. Repeat until goal achieved or max steps
+
+**Rationale:**
+- This is the most practically useful planning pattern from WR-Arena
+- It's provider-agnostic: any WFM can be the simulator, any VLM can be the planner
+- Fits naturally into WorldForge's existing plan() API as a new PlannerType variant
+- Enables WorldForge to demonstrate tangible value (better plans with less effort)
+
+**Consequences:**
+- Requires VLM API access (Claude, GPT-4o, Gemini) in addition to WFM providers
+- Planning loop is compute-intensive (K * N * steps generations per plan)
+- Need careful prompt engineering for VLM action proposal and evaluation
+- Mitigated by: configurable K, N, max_steps; cost estimation before planning
