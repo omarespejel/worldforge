@@ -11,26 +11,41 @@
 //! - [`jepa`] — Meta JEPA (local deterministic inference, reasoning, embeddings, and native planning)
 //! - [`genie`] — Google Genie (deterministic local surrogate for prediction, reasoning, transfer, depth/segmentation outputs, and native planning)
 //! - [`marble`] — Experimental deterministic local surrogate for Marble with native planning
+//! - [`minimax`] — MiniMax/Hailuo T2V-01 (async submit/poll video generation)
+//! - [`pan`] — MBZUAI PAN (stateful multi-round generation with native planning)
+//! - [`sora`] — OpenAI Sora 2 (async submit/poll video generation)
+//! - [`veo`] — Google Veo 3 (async submit/poll video generation via Generative Language API)
 //! - [`native_planning`] — shared deterministic adapter-native planning helper
 
 pub mod cosmos;
 pub mod genie;
 pub mod jepa;
+pub mod kling;
 pub mod marble;
+pub mod minimax;
 pub mod mock;
 mod native_planning;
+pub mod pan;
+pub(crate) mod polling;
 pub mod runway;
+pub mod sora;
+pub mod veo;
 
 /// Backward-compatible Cosmos action translator helper.
 pub use cosmos::CosmosActionTranslator;
 pub use cosmos::CosmosProvider;
 pub use genie::GenieProvider;
 pub use jepa::{JepaBackend, JepaModelManifest, JepaProvider};
+pub use kling::KlingProvider;
 pub use marble::MarbleProvider;
+pub use minimax::MiniMaxProvider;
 pub use mock::MockProvider;
+pub use pan::PanProvider;
 /// Backward-compatible Runway action translator helper.
 pub use runway::RunwayActionTranslator;
 pub use runway::RunwayProvider;
+pub use sora::SoraProvider;
+pub use veo::VeoProvider;
 
 use std::path::PathBuf;
 
@@ -48,6 +63,14 @@ use worldforge_core::WorldForge;
 /// - `GENIE_API_KEY` → optional credential hint for `GenieProvider`
 /// - `GENIE_API_ENDPOINT` → optional endpoint override for `GenieProvider`
 /// - `MarbleProvider` → always registered as an experimental local surrogate with native planning
+/// - `MINIMAX_API_KEY` → registers a `MiniMaxProvider`
+/// - `MINIMAX_API_ENDPOINT` → optional endpoint override for `MiniMaxProvider`
+/// - `OPENAI_API_KEY` → registers a `SoraProvider`
+/// - `OPENAI_API_ENDPOINT` → optional endpoint override for `SoraProvider`
+/// - `GOOGLE_API_KEY` → registers a `VeoProvider`
+/// - `GOOGLE_API_ENDPOINT` → optional endpoint override for `VeoProvider`
+/// - `PAN_API_KEY` → registers a `PanProvider`
+/// - `PAN_API_ENDPOINT` → optional endpoint override for `PanProvider`
 ///
 /// A `MockProvider` is always registered for testing.
 /// The auto-detected Cosmos entry is capability-complete for its documented
@@ -133,6 +156,54 @@ pub fn auto_detect() -> ProviderRegistry {
     registry.register(Box::new(genie));
 
     registry.register(Box::new(MarbleProvider::new()));
+
+    // MiniMax: requires MINIMAX_API_KEY for remote video generation.
+    if let Ok(api_key) = std::env::var("MINIMAX_API_KEY") {
+        let minimax = match std::env::var("MINIMAX_API_ENDPOINT") {
+            Ok(endpoint) => MiniMaxProvider::with_endpoint(api_key, endpoint),
+            Err(_) => MiniMaxProvider::new(api_key),
+        };
+        registry.register(Box::new(minimax));
+    }
+
+    // Sora: requires OPENAI_API_KEY for OpenAI video generation.
+    if let Ok(api_key) = std::env::var("OPENAI_API_KEY") {
+        let sora = match std::env::var("OPENAI_API_ENDPOINT") {
+            Ok(endpoint) => SoraProvider::with_endpoint(api_key, endpoint),
+            Err(_) => SoraProvider::new(api_key),
+        };
+        registry.register(Box::new(sora));
+    }
+
+    // Veo: requires GOOGLE_API_KEY for Google Generative Language API.
+    if let Ok(api_key) = std::env::var("GOOGLE_API_KEY") {
+        let veo = match std::env::var("GOOGLE_API_ENDPOINT") {
+            Ok(endpoint) => VeoProvider::with_endpoint(api_key, endpoint),
+            Err(_) => VeoProvider::new(api_key),
+        };
+        registry.register(Box::new(veo));
+    }
+
+    // KLING: requires KLING_API_KEY and KLING_API_SECRET for JWT auth.
+    if let (Ok(api_key), Ok(api_secret)) = (
+        std::env::var("KLING_API_KEY"),
+        std::env::var("KLING_API_SECRET"),
+    ) {
+        let kling = match std::env::var("KLING_API_ENDPOINT") {
+            Ok(endpoint) => KlingProvider::with_endpoint(api_key, api_secret, endpoint),
+            Err(_) => KlingProvider::new(api_key, api_secret),
+        };
+        registry.register(Box::new(kling));
+    }
+
+    // PAN: requires PAN_API_KEY for MBZUAI PAN world model.
+    if let Ok(api_key) = std::env::var("PAN_API_KEY") {
+        let pan_provider = match std::env::var("PAN_API_ENDPOINT") {
+            Ok(endpoint) => pan::PanProvider::with_endpoint(api_key, endpoint),
+            Err(_) => pan::PanProvider::new(api_key),
+        };
+        registry.register(Box::new(pan_provider));
+    }
 
     registry
 }

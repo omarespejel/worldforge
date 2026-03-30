@@ -5,6 +5,8 @@
 //! temporal coherence.
 
 mod async_utils;
+pub mod datasets;
+pub mod wrarena;
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
