@@ -10,6 +10,7 @@ members = [
     "crates/worldforge-python",
     "crates/worldforge-media",
     "crates/worldforge-auth",
+    "crates/worldforge-physics",
 ]
 
 [workspace.package]

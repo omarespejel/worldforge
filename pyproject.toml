@@ -5,16 +5,18 @@ build-backend = "maturin"
 [project]
 name = "worldforge"
 version = "0.1.0"
-description = "Python bindings for WorldForge via PyO3"
+description = "Unified orchestration layer for world foundation models — predict, plan, evaluate, and verify across NVIDIA Cosmos, Runway GWM, Meta JEPA, Google Veo, OpenAI Sora, and more."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 authors = [{ name = "WorldForge contributors" }]
-keywords = ["world-models", "simulation", "robotics", "ai"]
+keywords = ["world-models", "simulation", "robotics", "ai", "foundation-models", "physics", "planning"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
     "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.10",
@@ -24,11 +26,17 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Programming Language :: Rust",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
 ]
 
 [project.urls]
 Homepage = "https://worldforge.ai"
 Repository = "https://github.com/AbdelStark/worldforge"
+Documentation = "https://docs.worldforge.ai"
+Issues = "https://github.com/AbdelStark/worldforge/issues"
+Changelog = "https://github.com/AbdelStark/worldforge/blob/main/CHANGELOG.md"
 
 [tool.maturin]
 manifest-path = "crates/worldforge-python/Cargo.toml"

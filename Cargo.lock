@@ -4011,6 +4011,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "worldforge-physics"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tracing",
+ "uuid",
+ "worldforge-core",
+]
+
+[[package]]
 name = "worldforge-providers"
 version = "0.1.0"
 dependencies = [
