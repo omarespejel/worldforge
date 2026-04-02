@@ -48,7 +48,10 @@ pub mod video_download;
 pub use cosmos::CosmosActionTranslator;
 pub use cosmos::CosmosProvider;
 pub use genie::GenieProvider;
-pub use jepa::{JepaBackend, JepaModelManifest, JepaProvider};
+pub use jepa::{
+    download_vjepa_onnx_model, vjepa_model_cache_dir, vjepa_onnx_model_path, JepaBackend,
+    JepaModelManifest, JepaProvider,
+};
 pub use kling::KlingProvider;
 pub use marble::MarbleProvider;
 pub use minimax::MiniMaxProvider;

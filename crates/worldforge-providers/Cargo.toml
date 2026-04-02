@@ -17,6 +17,18 @@ chrono = { workspace = true }
 tracing = { workspace = true }
 reqwest = { workspace = true }
 
+[features]
+default = []
+onnx-inference = ["dep:ort", "dep:ndarray"]
+
+[dependencies.ort]
+version = "2.0.0-rc.12"
+optional = true
+
+[dependencies.ndarray]
+version = "0.16"
+optional = true
+
 [dev-dependencies]
 criterion = { workspace = true }
 proptest = { workspace = true }
