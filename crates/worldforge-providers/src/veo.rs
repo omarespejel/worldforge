@@ -6,7 +6,10 @@
 //!   text prompts and optional image conditioning.
 //!
 //! Uses the Google Generative Language API with an async submit/poll/download
-//! pattern.
+//! pattern.  Built on the shared `HttpClientBuilder`, `RetryPolicy`,
+//! `TokenBucket`, and `AsyncJobRunner` infrastructure.
+
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -22,9 +25,11 @@ use worldforge_core::provider::{
 use worldforge_core::state::WorldState;
 use worldforge_core::types::VideoClip;
 
-use crate::polling::{
-    build_stub_video_clip, check_http_response, poll_until_complete, PollStatus, PollingConfig,
-};
+use crate::async_job::{AsyncJobRunner, PollStatus, PollingConfig};
+use crate::http_client::{check_response, HttpClientBuilder};
+use crate::polling::build_stub_video_clip;
+use crate::rate_limit::{RateLimitConfig, TokenBucket};
+use crate::retry::{retry_with_policy, RetryPolicy};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -117,47 +122,70 @@ struct VeoError {
 /// Google Veo 3 provider adapter.
 ///
 /// Wraps the Google Generative Language API to implement the
-/// `WorldModelProvider` trait for Veo video generation.
+/// `WorldModelProvider` trait for Veo video generation.  Uses the shared
+/// `HttpClientBuilder`, `RetryPolicy`, `TokenBucket`, and `AsyncJobRunner`
+/// infrastructure for robust, production-ready API interaction.
 #[derive(Debug, Clone)]
 pub struct VeoProvider {
-    /// API key used for authentication.
+    /// API key used for authentication (also passed as query param).
     api_key: String,
     /// Base endpoint URL (without trailing slash).
     endpoint: String,
     /// Model identifier.
     model: String,
-    /// HTTP client.
+    /// HTTP client built via `HttpClientBuilder` with Bearer auth baked in.
     client: reqwest::Client,
+    /// Retry policy for transient failures.
+    retry_policy: RetryPolicy,
+    /// Token-bucket rate limiter.
+    rate_limiter: TokenBucket,
 }
 
 impl VeoProvider {
     /// Create a new Veo provider with default endpoint and model.
     pub fn new(api_key: impl Into<String>) -> Self {
-        Self {
-            api_key: api_key.into(),
-            endpoint: DEFAULT_ENDPOINT.to_string(),
-            model: DEFAULT_MODEL.to_string(),
-            client: reqwest::Client::new(),
-        }
+        Self::build(api_key.into(), DEFAULT_ENDPOINT.to_string(), DEFAULT_MODEL.to_string())
     }
 
     /// Create a new Veo provider with a custom endpoint.
     pub fn with_endpoint(api_key: impl Into<String>, endpoint: impl Into<String>) -> Self {
-        Self {
-            api_key: api_key.into(),
-            endpoint: endpoint.into(),
-            model: DEFAULT_MODEL.to_string(),
-            client: reqwest::Client::new(),
-        }
+        Self::build(api_key.into(), endpoint.into(), DEFAULT_MODEL.to_string())
     }
 
     /// Create a new Veo provider with a custom model identifier.
     pub fn with_model(api_key: impl Into<String>, model: impl Into<String>) -> Self {
+        Self::build(api_key.into(), DEFAULT_ENDPOINT.to_string(), model.into())
+    }
+
+    /// Internal constructor that wires up shared infrastructure.
+    fn build(api_key: String, endpoint: String, model: String) -> Self {
+        // Build HTTP client via shared HttpClientBuilder with Bearer auth
+        let client = HttpClientBuilder::new()
+            .timeout(Duration::from_secs(120))
+            .bearer_token(&api_key)
+            .default_header("Content-Type", "application/json")
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
+        // Retry policy: 3 retries with exponential backoff
+        let retry_policy = RetryPolicy {
+            max_retries: 3,
+            initial_delay: Duration::from_millis(500),
+            max_delay: Duration::from_secs(30),
+            backoff_multiplier: 2.0,
+            jitter: true,
+        };
+
+        // Rate limiter: Google API typically allows ~5 requests/sec for Veo
+        let rate_limiter = TokenBucket::new(&RateLimitConfig::requests_per_second(5.0));
+
         Self {
-            api_key: api_key.into(),
-            endpoint: DEFAULT_ENDPOINT.to_string(),
-            model: model.into(),
-            client: reqwest::Client::new(),
+            api_key,
+            endpoint,
+            model,
+            client,
+            retry_policy,
+            rate_limiter,
         }
     }
 
@@ -169,17 +197,27 @@ impl VeoProvider {
         )
     }
 
-    /// Build the URL for polling an operation by name.
-    fn poll_url(&self, operation_name: &str) -> String {
-        format!("{}/v1beta/{}", self.endpoint, operation_name)
-    }
-
     /// Build the URL for the models list endpoint (used for health checks).
     fn models_url(&self) -> String {
         format!("{}/v1beta/models", self.endpoint)
     }
 
+    /// Build an `AsyncJobRunner` for long-running generation tasks.
+    fn async_job_runner(&self) -> AsyncJobRunner {
+        AsyncJobRunner::new(PROVIDER_NAME)
+            .with_poll_config(PollingConfig {
+                initial_delay: Duration::from_secs(2),
+                max_delay: Duration::from_secs(15),
+                backoff_factor: 1.5,
+                max_attempts: 60,
+            })
+            .with_timeout(Duration::from_secs(480))
+    }
+
     /// Submit a video generation request and poll until completion.
+    ///
+    /// Uses shared retry policy for the initial submit, then the AsyncJobRunner
+    /// for LRO polling.
     #[tracing::instrument(skip(self, prompt_text))]
     async fn submit_and_poll(
         &self,
@@ -187,34 +225,53 @@ impl VeoProvider {
         config: Option<VeoConfig>,
         image: Option<VeoImage>,
     ) -> Result<VeoResponse> {
+        // Rate-limit before making the request
+        self.rate_limiter.acquire(1).await;
+
         let body = VeoGenerateRequest {
             prompt: prompt_text.to_string(),
             image,
             config,
         };
 
-        let response = self
-            .client
-            .post(self.generate_url())
-            .query(&[("key", &self.api_key)])
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| WorldForgeError::ProviderUnavailable {
-                provider: PROVIDER_NAME.to_string(),
-                reason: format!("request failed: {e}"),
-            })?;
+        // Submit with retry policy
+        let client = self.client.clone();
+        let url = self.generate_url();
+        let api_key = self.api_key.clone();
 
-        let status = response.status();
-        let response_text = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "unknown error".to_string());
+        let operation: VeoOperation = retry_with_policy(
+            PROVIDER_NAME,
+            &self.retry_policy,
+            || {
+                let client = client.clone();
+                let url = url.clone();
+                let api_key = api_key.clone();
+                let body_json = serde_json::to_value(&body).unwrap_or_default();
+                async move {
+                    let response = client
+                        .post(&url)
+                        .query(&[("key", &api_key)])
+                        .json(&body_json)
+                        .send()
+                        .await
+                        .map_err(|e| WorldForgeError::ProviderUnavailable {
+                            provider: PROVIDER_NAME.to_string(),
+                            reason: format!("request failed: {e}"),
+                        })?;
 
-        check_http_response(PROVIDER_NAME, status, &response_text)?;
+                    let response = check_response(PROVIDER_NAME, response).await?;
 
-        let operation: VeoOperation = serde_json::from_str(&response_text)
-            .map_err(|e| WorldForgeError::SerializationError(e.to_string()))?;
+                    let response_text = response
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "unknown error".to_string());
+
+                    serde_json::from_str::<VeoOperation>(&response_text)
+                        .map_err(|e| WorldForgeError::SerializationError(e.to_string()))
+                }
+            },
+        )
+        .await?;
 
         // If the operation completed synchronously, return immediately.
         if operation.done {
@@ -232,52 +289,69 @@ impl VeoProvider {
                 });
         }
 
-        // Poll until completion.
+        // Use AsyncJobRunner for LRO polling
         let operation_name = operation.name.clone();
-        let polling_config = PollingConfig::default();
+        let runner = self.async_job_runner();
+        let client = self.client.clone();
+        let endpoint = self.endpoint.clone();
+        let api_key = self.api_key.clone();
 
-        poll_until_complete(PROVIDER_NAME, &polling_config, || {
-            let op_name = operation_name.clone();
-            async move {
-                let poll_resp = self
-                    .client
-                    .get(self.poll_url(&op_name))
-                    .query(&[("key", &self.api_key)])
-                    .send()
-                    .await
-                    .map_err(|e| WorldForgeError::ProviderUnavailable {
-                        provider: PROVIDER_NAME.to_string(),
-                        reason: format!("poll request failed: {e}"),
-                    })?;
+        let job = runner
+            .run(
+                || {
+                    let name = operation_name.clone();
+                    async move { Ok(name) }
+                },
+                |op_name| {
+                    let client = client.clone();
+                    let endpoint = endpoint.clone();
+                    let api_key = api_key.clone();
+                    async move {
+                        let poll_url = format!("{}/v1beta/{}", endpoint, op_name);
+                        let poll_resp = client
+                            .get(&poll_url)
+                            .query(&[("key", &api_key)])
+                            .send()
+                            .await
+                            .map_err(|e| WorldForgeError::ProviderUnavailable {
+                                provider: PROVIDER_NAME.to_string(),
+                                reason: format!("poll request failed: {e}"),
+                            })?;
 
-                let poll_status = poll_resp.status();
-                let poll_text = poll_resp
-                    .text()
-                    .await
-                    .unwrap_or_else(|_| "unknown error".to_string());
+                        let poll_resp = check_response(PROVIDER_NAME, poll_resp).await?;
 
-                check_http_response(PROVIDER_NAME, poll_status, &poll_text)?;
+                        let poll_text = poll_resp
+                            .text()
+                            .await
+                            .unwrap_or_else(|_| "unknown error".to_string());
 
-                let op: VeoOperation = serde_json::from_str(&poll_text)
-                    .map_err(|e| WorldForgeError::SerializationError(e.to_string()))?;
+                        let op: VeoOperation = serde_json::from_str(&poll_text)
+                            .map_err(|e| WorldForgeError::SerializationError(e.to_string()))?;
 
-                if !op.done {
-                    return Ok(PollStatus::Pending);
-                }
+                        if !op.done {
+                            return Ok(PollStatus::Pending);
+                        }
 
-                if let Some(error) = op.error {
-                    return Ok(PollStatus::Failed(error.message));
-                }
+                        if let Some(error) = op.error {
+                            return Ok(PollStatus::Failed(error.message));
+                        }
 
-                match op.response {
-                    Some(resp) => Ok(PollStatus::Complete(resp)),
-                    None => Ok(PollStatus::Failed(
-                        "operation completed but no response body".to_string(),
-                    )),
-                }
-            }
-        })
-        .await
+                        match op.response {
+                            Some(resp) => Ok(PollStatus::Complete(resp)),
+                            None => Ok(PollStatus::Failed(
+                                "operation completed but no response body".to_string(),
+                            )),
+                        }
+                    }
+                },
+            )
+            .await?;
+
+        job.result
+            .ok_or_else(|| WorldForgeError::ProviderUnavailable {
+                provider: PROVIDER_NAME.to_string(),
+                reason: "async job completed but no result".to_string(),
+            })
     }
 }
 
@@ -445,24 +519,39 @@ impl WorldModelProvider for VeoProvider {
     async fn health_check(&self) -> Result<HealthStatus> {
         let start = std::time::Instant::now();
 
-        let response = self
-            .client
-            .get(self.models_url())
-            .query(&[("key", &self.api_key)])
-            .send()
-            .await;
+        // Rate-limit health checks too
+        self.rate_limiter.acquire(1).await;
+
+        let client = self.client.clone();
+        let url = self.models_url();
+        let api_key = self.api_key.clone();
+
+        let result = retry_with_policy(PROVIDER_NAME, &self.retry_policy, || {
+            let client = client.clone();
+            let url = url.clone();
+            let api_key = api_key.clone();
+            async move {
+                let resp = client
+                    .get(&url)
+                    .query(&[("key", &api_key)])
+                    .send()
+                    .await
+                    .map_err(|e| WorldForgeError::ProviderUnavailable {
+                        provider: PROVIDER_NAME.to_string(),
+                        reason: format!("health check request failed: {e}"),
+                    })?;
+                let _ = check_response(PROVIDER_NAME, resp).await?;
+                Ok(())
+            }
+        })
+        .await;
 
         let latency_ms = start.elapsed().as_millis() as u64;
 
-        match response {
-            Ok(resp) if resp.status().is_success() => Ok(HealthStatus {
+        match result {
+            Ok(()) => Ok(HealthStatus {
                 healthy: true,
                 message: format!("Veo provider ready: {} at {}", self.model, self.endpoint),
-                latency_ms,
-            }),
-            Ok(resp) => Ok(HealthStatus {
-                healthy: false,
-                message: format!("Veo health check failed: HTTP {}", resp.status()),
                 latency_ms,
             }),
             Err(e) => Ok(HealthStatus {
@@ -611,15 +700,6 @@ mod tests {
         assert_eq!(
             provider.generate_url(),
             "https://generativelanguage.googleapis.com/v1beta/models/veo-3.1-fast-generate-preview:generateVideos"
-        );
-    }
-
-    #[test]
-    fn test_veo_poll_url() {
-        let provider = VeoProvider::new("key");
-        assert_eq!(
-            provider.poll_url("operations/12345"),
-            "https://generativelanguage.googleapis.com/v1beta/operations/12345"
         );
     }
 

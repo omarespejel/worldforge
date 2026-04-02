@@ -6,6 +6,8 @@
 //! - GWM-1 Robotics: action-conditioned video prediction
 //! - GWM-1 Avatars: audio-driven character generation
 
+use std::time::Duration;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -20,8 +22,12 @@ use worldforge_core::provider::{
 use worldforge_core::state::WorldState;
 use worldforge_core::types::{DType, Device, Frame, SimTime, Tensor, TensorData, VideoClip};
 
+use crate::async_job::{AsyncJobRunner, PollStatus, PollingConfig};
 use crate::cosmos::CosmosProvider;
+use crate::http_client::{check_response, HttpClientBuilder};
 use crate::native_planning;
+use crate::rate_limit::{RateLimitConfig, TokenBucket};
+use crate::retry::{retry_with_policy, RetryPolicy};
 
 /// Runway model variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -169,6 +175,8 @@ impl Default for RunwayConfig {
 /// Runway GWM provider adapter.
 ///
 /// Wraps the Runway HTTP API to implement the `WorldModelProvider` trait.
+/// Uses the shared `HttpClientBuilder`, `RetryPolicy`, `TokenBucket`, and
+/// `AsyncJobRunner` infrastructure for robust, production-ready API interaction.
 #[derive(Debug, Clone)]
 pub struct RunwayProvider {
     /// Model variant to use.
@@ -180,6 +188,7 @@ pub struct RunwayProvider {
     /// Model route used for transfer, if available.
     transfer_model: Option<RunwayModel>,
     /// API secret for authentication.
+    #[allow(dead_code)]
     api_secret: String,
     /// API endpoint URL.
     pub endpoint: String,
@@ -187,8 +196,12 @@ pub struct RunwayProvider {
     pub config: RunwayConfig,
     /// Optional Cosmos fallback used for reasoning.
     reason_fallback: Option<CosmosProvider>,
-    /// HTTP client.
+    /// HTTP client built via `HttpClientBuilder` with Bearer auth baked in.
     client: reqwest::Client,
+    /// Retry policy for transient failures.
+    retry_policy: RetryPolicy,
+    /// Token-bucket rate limiter.
+    rate_limiter: TokenBucket,
 }
 
 impl RunwayProvider {
@@ -272,16 +285,41 @@ impl RunwayProvider {
         transfer_model: Option<RunwayModel>,
         reason_fallback: Option<CosmosProvider>,
     ) -> Self {
+        let api_secret = api_secret.into();
+        let config = RunwayConfig::default();
+
+        // Build HTTP client via shared HttpClientBuilder with Bearer auth
+        let client = HttpClientBuilder::new()
+            .timeout(Duration::from_millis(config.timeout_ms))
+            .bearer_token(&api_secret)
+            .default_header("Content-Type", "application/json")
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
+        // Retry policy from config
+        let retry_policy = RetryPolicy {
+            max_retries: config.max_retries,
+            initial_delay: Duration::from_millis(500),
+            max_delay: Duration::from_secs(30),
+            backoff_multiplier: 2.0,
+            jitter: true,
+        };
+
+        // Rate limiter: Runway API typically allows ~5 requests/sec
+        let rate_limiter = TokenBucket::new(&RateLimitConfig::requests_per_second(5.0));
+
         Self {
             model,
             predict_model,
             generate_model,
             transfer_model,
-            api_secret: api_secret.into(),
+            api_secret,
             endpoint: endpoint.into(),
-            config: RunwayConfig::default(),
+            config,
             reason_fallback,
-            client: reqwest::Client::new(),
+            client,
+            retry_policy,
+            rate_limiter,
         }
     }
 
@@ -364,6 +402,18 @@ impl RunwayProvider {
             }
         }
         action_spaces
+    }
+
+    /// Build an `AsyncJobRunner` for long-running generation tasks.
+    fn async_job_runner(&self) -> AsyncJobRunner {
+        AsyncJobRunner::new("runway")
+            .with_poll_config(PollingConfig {
+                initial_delay: Duration::from_secs(2),
+                max_delay: Duration::from_secs(15),
+                backoff_factor: 1.5,
+                max_attempts: 60,
+            })
+            .with_timeout(Duration::from_millis(self.config.timeout_ms * 4))
     }
 
     fn latency_profile_for_models(&self) -> LatencyProfile {
@@ -778,47 +828,37 @@ impl WorldModelProvider for RunwayProvider {
             "return_segmentation": config.return_segmentation,
         });
 
-        let response = self
-            .client
-            .post(format!("{}/v1/robotics/predict", self.endpoint))
-            .header("Authorization", format!("Bearer {}", self.api_secret))
-            .header("Content-Type", "application/json")
-            .timeout(std::time::Duration::from_millis(self.config.timeout_ms))
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|e| WorldForgeError::NetworkError(e.to_string()))?;
+        // Acquire rate-limit token before making request
+        self.rate_limiter.acquire(1).await;
 
-        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(WorldForgeError::ProviderAuthError(
-                "invalid Runway API secret".to_string(),
-            ));
-        }
+        let client = self.client.clone();
+        let url = format!("{}/v1/robotics/predict", self.endpoint);
+        let body = request_body.clone();
 
-        if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            return Err(WorldForgeError::ProviderRateLimited {
-                provider: "runway".to_string(),
-                retry_after_ms: 10_000,
-            });
-        }
+        let response_body: serde_json::Value =
+            retry_with_policy("runway", &self.retry_policy, || {
+                let client = client.clone();
+                let url = url.clone();
+                let body = body.clone();
+                async move {
+                    let response = client
+                        .post(&url)
+                        .json(&body)
+                        .send()
+                        .await
+                        .map_err(|e| WorldForgeError::NetworkError(e.to_string()))?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "unknown error".to_string());
-            return Err(WorldForgeError::ProviderUnavailable {
-                provider: "runway".to_string(),
-                reason: format!("HTTP {status}: {body}"),
-            });
-        }
+                    let response = check_response("runway", response).await?;
+
+                    response
+                        .json::<serde_json::Value>()
+                        .await
+                        .map_err(|e| WorldForgeError::SerializationError(e.to_string()))
+                }
+            })
+            .await?;
 
         let latency_ms = start.elapsed().as_millis() as u64;
-        let response_body: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| WorldForgeError::SerializationError(e.to_string()))?;
         let response_payload = Self::parse_response_payload(response_body)?;
         let media = Self::response_media_payloads(&response_payload);
 
@@ -928,28 +968,101 @@ impl WorldModelProvider for RunwayProvider {
             "fps": config.fps,
         });
 
-        let response = self
-            .client
-            .post(format!("{}/v1/worlds/generate", self.endpoint))
-            .header("Authorization", format!("Bearer {}", self.api_secret))
-            .header("Content-Type", "application/json")
-            .timeout(std::time::Duration::from_millis(self.config.timeout_ms))
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|e| WorldForgeError::NetworkError(e.to_string()))?;
+        // Acquire rate-limit token
+        self.rate_limiter.acquire(1).await;
 
-        if !response.status().is_success() {
-            return Err(WorldForgeError::ProviderUnavailable {
-                provider: "runway".to_string(),
-                reason: format!("HTTP {}", response.status()),
-            });
-        }
+        let client = self.client.clone();
+        let submit_url = format!("{}/v1/worlds/generate", self.endpoint);
+        let body = request_body.clone();
+        let poll_base = self.endpoint.clone();
+        let poll_client = client.clone();
 
-        let response_body: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| WorldForgeError::SerializationError(e.to_string()))?;
+        // Step 1: Submit the generation request with retry
+        let initial_response: serde_json::Value =
+            retry_with_policy("runway", &self.retry_policy, || {
+                let client = client.clone();
+                let url = submit_url.clone();
+                let body = body.clone();
+                async move {
+                    let response = client
+                        .post(&url)
+                        .json(&body)
+                        .send()
+                        .await
+                        .map_err(|e| WorldForgeError::NetworkError(e.to_string()))?;
+
+                    let response = check_response("runway", response).await?;
+
+                    response
+                        .json::<serde_json::Value>()
+                        .await
+                        .map_err(|e| WorldForgeError::SerializationError(e.to_string()))
+                }
+            })
+            .await?;
+
+        // Step 2: Check if the response is async (has a task_id/request_id but no data yet)
+        // or if it already contains the full result. Runway may return immediately or
+        // return a task ID for polling via the async job pattern.
+        let has_async_id = initial_response
+            .pointer("/id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let response_body = if let Some(task_id) = has_async_id {
+            // Async pattern: poll /v1/tasks/{id} until completion
+            let runner = self.async_job_runner();
+            let job = runner
+                .run(
+                    || {
+                        let id = task_id.clone();
+                        async move { Ok(id) }
+                    },
+                    |job_id: String| {
+                        let client = poll_client.clone();
+                        let base = poll_base.clone();
+                        async move {
+                            let response = client
+                                .get(format!("{base}/v1/tasks/{job_id}"))
+                                .send()
+                                .await
+                                .map_err(|e| WorldForgeError::NetworkError(e.to_string()))?;
+
+                            let response = check_response("runway", response).await?;
+
+                            let envelope: serde_json::Value = response
+                                .json()
+                                .await
+                                .map_err(|e| {
+                                    WorldForgeError::SerializationError(e.to_string())
+                                })?;
+
+                            let status = envelope
+                                .pointer("/status")
+                                .and_then(|v| v.as_str());
+
+                            match status {
+                                Some("SUCCEEDED") | Some("completed") | Some("ok") => {
+                                    Ok(PollStatus::Complete(envelope))
+                                }
+                                Some("FAILED") | Some("failed") | Some("error") => {
+                                    Err(WorldForgeError::ProviderUnavailable {
+                                        provider: "runway".to_string(),
+                                        reason: "generation job failed".to_string(),
+                                    })
+                                }
+                                _ => Ok(PollStatus::Pending),
+                            }
+                        }
+                    },
+                )
+                .await?;
+            job.result.unwrap_or(initial_response)
+        } else {
+            // Direct response: the full result was returned immediately
+            initial_response
+        };
+
         let response_payload = Self::parse_response_payload(response_body)?;
         let media = Self::response_media_payloads(&response_payload);
         Ok(Self::build_video_clip(
@@ -1011,28 +1124,35 @@ impl WorldModelProvider for RunwayProvider {
             "control_strength": config.control_strength,
         });
 
-        let response = self
-            .client
-            .post(format!("{}/v1/worlds/transfer", self.endpoint))
-            .header("Authorization", format!("Bearer {}", self.api_secret))
-            .header("Content-Type", "application/json")
-            .timeout(std::time::Duration::from_millis(self.config.timeout_ms))
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|e| WorldForgeError::NetworkError(e.to_string()))?;
+        // Acquire rate-limit token before making request
+        self.rate_limiter.acquire(1).await;
 
-        if !response.status().is_success() {
-            return Err(WorldForgeError::ProviderUnavailable {
-                provider: "runway".to_string(),
-                reason: format!("HTTP {}", response.status()),
-            });
-        }
+        let client = self.client.clone();
+        let url = format!("{}/v1/worlds/transfer", self.endpoint);
+        let body = request_body.clone();
 
-        let response_body: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| WorldForgeError::SerializationError(e.to_string()))?;
+        let response_body: serde_json::Value =
+            retry_with_policy("runway", &self.retry_policy, || {
+                let client = client.clone();
+                let url = url.clone();
+                let body = body.clone();
+                async move {
+                    let response = client
+                        .post(&url)
+                        .json(&body)
+                        .send()
+                        .await
+                        .map_err(|e| WorldForgeError::NetworkError(e.to_string()))?;
+
+                    let response = check_response("runway", response).await?;
+
+                    response
+                        .json::<serde_json::Value>()
+                        .await
+                        .map_err(|e| WorldForgeError::SerializationError(e.to_string()))
+                }
+            })
+            .await?;
         let response_payload = Self::parse_response_payload(response_body)?;
         let media = Self::response_media_payloads(&response_payload);
         let duration = if let Some(duration) = response_payload.duration_seconds {
@@ -1115,8 +1235,7 @@ impl RunwayProvider {
         let response = self
             .client
             .get(format!("{}/v1/health", self.endpoint))
-            .header("Authorization", format!("Bearer {}", self.api_secret))
-            .timeout(std::time::Duration::from_millis(5000))
+            .timeout(Duration::from_millis(5000))
             .send()
             .await;
 
