@@ -8,6 +8,7 @@ members = [
     "crates/worldforge-server",
     "crates/worldforge-cli",
     "crates/worldforge-python",
+    "crates/worldforge-media",
 ]
 
 [workspace.package]
@@ -35,6 +36,9 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 # ML framework
 burn = { version = "0.16", features = ["ndarray", "wgpu"] }
 safetensors = "0.4"
+
+# Image/media
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 
 # Unique identifiers
 uuid = { version = "1", features = ["v4", "serde"] }
