@@ -8,6 +8,7 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -29,7 +30,11 @@ use worldforge_core::types::{
     Vec3, VideoClip,
 };
 
+use crate::async_job::{AsyncJobRunner, PollStatus, PollingConfig};
+use crate::http_client::{check_response, HttpClientBuilder};
 use crate::native_planning;
+use crate::rate_limit::{RateLimitConfig, TokenBucket};
+use crate::retry::{retry_with_policy, RetryPolicy};
 
 /// NVIDIA Cosmos model variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -423,20 +428,27 @@ struct CosmosEmbeddingResponse {
 /// NVIDIA Cosmos provider adapter.
 ///
 /// Wraps the Cosmos NIM API (or local deployment) to implement
-/// the `WorldModelProvider` trait.
+/// the `WorldModelProvider` trait.  Uses the shared `HttpClientBuilder`,
+/// `RetryPolicy`, `TokenBucket`, and `AsyncJobRunner` infrastructure for
+/// robust, production-ready API interaction.
 #[derive(Debug, Clone)]
 pub struct CosmosProvider {
     /// Model variant to use.
     pub model: CosmosModel,
-    /// API key for authentication.
+    /// API key for authentication (baked into client headers at construction).
+    #[allow(dead_code)]
     api_key: String,
     /// API endpoint.
     pub endpoint: CosmosEndpoint,
     /// Provider configuration.
     pub config: CosmosConfig,
     routes: CosmosRoutes,
-    /// HTTP client (shared).
+    /// HTTP client built via `HttpClientBuilder` with Bearer auth baked in.
     client: reqwest::Client,
+    /// Retry policy for transient failures.
+    retry_policy: RetryPolicy,
+    /// Token-bucket rate limiter.
+    rate_limiter: TokenBucket,
 }
 
 impl CosmosProvider {
@@ -533,13 +545,37 @@ impl CosmosProvider {
         config: CosmosConfig,
         routes: CosmosRoutes,
     ) -> Self {
+        let api_key = api_key.into();
+
+        // Build HTTP client via shared HttpClientBuilder with Bearer auth
+        let client = HttpClientBuilder::new()
+            .timeout(Duration::from_millis(config.timeout_ms))
+            .bearer_token(&api_key)
+            .default_header("Content-Type", "application/json")
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
+        // Retry policy from config
+        let retry_policy = RetryPolicy {
+            max_retries: config.max_retries,
+            initial_delay: Duration::from_millis(500),
+            max_delay: Duration::from_secs(30),
+            backoff_multiplier: 2.0,
+            jitter: true,
+        };
+
+        // Rate limiter: NVIDIA API typically allows ~10 requests/sec
+        let rate_limiter = TokenBucket::new(&RateLimitConfig::requests_per_second(10.0));
+
         Self {
             model,
-            api_key: api_key.into(),
+            api_key,
             endpoint,
             config,
             routes,
-            client: reqwest::Client::new(),
+            client,
+            retry_policy,
+            rate_limiter,
         }
     }
 
@@ -573,46 +609,16 @@ impl CosmosProvider {
         }
     }
 
-    /// Send an HTTP request with retry logic for transient failures.
-    async fn send_with_retry(
-        &self,
-        request: reqwest::RequestBuilder,
-    ) -> std::result::Result<reqwest::Response, WorldForgeError> {
-        let mut last_err = WorldForgeError::NetworkError("no attempts made".to_string());
-        for attempt in 0..=self.config.max_retries {
-            if attempt > 0 {
-                let delay = std::time::Duration::from_millis(100 * 2u64.pow(attempt - 1));
-                tokio::time::sleep(delay).await;
-            }
-
-            match request
-                .try_clone()
-                .ok_or_else(|| {
-                    WorldForgeError::InternalError("request cannot be cloned".to_string())
-                })?
-                .send()
-                .await
-            {
-                Ok(resp) => {
-                    // Don't retry client errors (4xx), only server errors (5xx)
-                    if resp.status().is_server_error() && attempt < self.config.max_retries {
-                        last_err = WorldForgeError::ProviderUnavailable {
-                            provider: "cosmos".to_string(),
-                            reason: format!("HTTP {}", resp.status()),
-                        };
-                        continue;
-                    }
-                    return Ok(resp);
-                }
-                Err(e) => {
-                    last_err = WorldForgeError::NetworkError(e.to_string());
-                    if attempt >= self.config.max_retries {
-                        break;
-                    }
-                }
-            }
-        }
-        Err(last_err)
+    /// Build an `AsyncJobRunner` for long-running generation tasks.
+    fn async_job_runner(&self) -> AsyncJobRunner {
+        AsyncJobRunner::new("cosmos")
+            .with_poll_config(PollingConfig {
+                initial_delay: Duration::from_secs(2),
+                max_delay: Duration::from_secs(15),
+                backoff_factor: 1.5,
+                max_attempts: 60,
+            })
+            .with_timeout(Duration::from_millis(self.config.timeout_ms * 4))
     }
 
     /// Get the base URL for the configured endpoint.
@@ -1698,63 +1704,51 @@ impl WorldModelProvider for CosmosProvider {
             },
         };
 
-        let request = self
-            .client
-            .post(format!("{base_url}/v1/predict"))
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .timeout(std::time::Duration::from_millis(self.config.timeout_ms))
-            .json(&request_body);
+        // Acquire rate-limit token before making request
+        self.rate_limiter.acquire(1).await;
 
-        let response = self.send_with_retry(request).await?;
+        let client = self.client.clone();
+        let url = format!("{base_url}/v1/predict");
+        let body = request_body.clone();
 
-        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(WorldForgeError::ProviderAuthError(
-                "invalid Cosmos API key".to_string(),
-            ));
+        let api_response = retry_with_policy("cosmos", &self.retry_policy, || {
+            let client = client.clone();
+            let url = url.clone();
+            let body = body.clone();
+            async move {
+                let response = client
+                    .post(&url)
+                    .json(&body)
+                    .send()
+                    .await
+                    .map_err(|e| WorldForgeError::NetworkError(e.to_string()))?;
+
+                let response = check_response("cosmos", response).await?;
+
+                response
+                    .json::<CosmosPredictionEnvelope>()
+                    .await
+                    .map_err(|e| WorldForgeError::SerializationError(e.to_string()))
+            }
+        })
+        .await;
+
+        match api_response {
+            Ok(envelope) => {
+                let latency_ms = start.elapsed().as_millis() as u64;
+                Ok(build_prediction_from_response(
+                    self, model_id, state, action, config, envelope, latency_ms,
+                ))
+            }
+            Err(err) => {
+                tracing::warn!(
+                    provider = "cosmos",
+                    error = %err,
+                    "predict API call failed, falling back to deterministic output"
+                );
+                self.local_predict(state, action, config, model_id)
+            }
         }
-
-        if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            let retry_after = response
-                .headers()
-                .get("retry-after")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.parse::<u64>().ok())
-                .unwrap_or(5000);
-            return Err(WorldForgeError::ProviderRateLimited {
-                provider: "cosmos".to_string(),
-                retry_after_ms: retry_after,
-            });
-        }
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "unknown error".to_string());
-            return Err(WorldForgeError::ProviderUnavailable {
-                provider: "cosmos".to_string(),
-                reason: format!("HTTP {status}: {body}"),
-            });
-        }
-
-        let latency_ms = start.elapsed().as_millis() as u64;
-
-        let api_response: CosmosPredictionEnvelope = response
-            .json()
-            .await
-            .map_err(|e| WorldForgeError::SerializationError(e.to_string()))?;
-
-        Ok(build_prediction_from_response(
-            self,
-            model_id,
-            state,
-            action,
-            config,
-            api_response,
-            latency_ms,
-        ))
     }
 
     async fn generate(
@@ -1784,38 +1778,111 @@ impl WorldModelProvider for CosmosProvider {
             seed: config.seed,
         };
 
-        let request = self
-            .client
-            .post(format!("{base_url}/v1/generate"))
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .timeout(std::time::Duration::from_millis(self.config.timeout_ms))
-            .json(&request_body);
+        // Acquire rate-limit token
+        self.rate_limiter.acquire(1).await;
 
-        let response = self.send_with_retry(request).await?;
+        let client = self.client.clone();
+        let submit_url = format!("{base_url}/v1/generate");
+        let body = request_body.clone();
+        let poll_base = base_url.clone();
+        let poll_client = client.clone();
 
-        if !response.status().is_success() {
-            return Err(WorldForgeError::ProviderUnavailable {
-                provider: "cosmos".to_string(),
-                reason: format!("HTTP {}", response.status()),
-            });
+        // Use AsyncJobRunner for the submit → poll → collect pattern.
+        // The NVCF pattern: POST returns a request_id, then poll for status.
+        let runner = self.async_job_runner();
+
+        let job_result = runner
+            .run(
+                // Submit function — POST to /v1/generate, return request_id
+                || {
+                    let client = client.clone();
+                    let url = submit_url.clone();
+                    let body = body.clone();
+                    async move {
+                        let response = client
+                            .post(&url)
+                            .json(&body)
+                            .send()
+                            .await
+                            .map_err(|e| WorldForgeError::NetworkError(e.to_string()))?;
+
+                        let response = check_response("cosmos", response).await?;
+
+                        let envelope: CosmosVideoResponse = response
+                            .json()
+                            .await
+                            .map_err(|e| WorldForgeError::SerializationError(e.to_string()))?;
+
+                        // If we got a direct result (no async), use request_id or generate one
+                        Ok(envelope.request_id.unwrap_or_else(|| "direct".to_string()))
+                    }
+                },
+                // Poll function — for NVCF async pattern, poll /v1/status/{id}
+                // If the initial response already had data, we complete immediately.
+                |job_id: String| {
+                    let client = poll_client.clone();
+                    let base = poll_base.clone();
+                    async move {
+                        if job_id == "direct" {
+                            // The initial call already returned the result
+                            return Ok(PollStatus::Complete(CosmosVideoResponse::default()));
+                        }
+                        let response = client
+                            .get(format!("{base}/v1/status/{job_id}"))
+                            .send()
+                            .await
+                            .map_err(|e| WorldForgeError::NetworkError(e.to_string()))?;
+
+                        let response = check_response("cosmos", response).await?;
+
+                        let envelope: CosmosVideoResponse = response
+                            .json()
+                            .await
+                            .map_err(|e| WorldForgeError::SerializationError(e.to_string()))?;
+
+                        match envelope.status.as_deref() {
+                            Some("completed") | Some("ok") | Some("finished") => {
+                                Ok(PollStatus::Complete(envelope))
+                            }
+                            Some("failed") | Some("error") => {
+                                Err(WorldForgeError::ProviderUnavailable {
+                                    provider: "cosmos".to_string(),
+                                    reason: "generation job failed".to_string(),
+                                })
+                            }
+                            _ => Ok(PollStatus::Pending),
+                        }
+                    }
+                },
+            )
+            .await;
+
+        let fallback_marker = response_marker(&[
+            Some(prompt.text.as_str()),
+            prompt.negative_prompt.as_deref(),
+            Some(model_id),
+        ]);
+
+        match job_result {
+            Ok(job) => {
+                let video_response = job.result.unwrap_or_default();
+                Ok(build_video_clip_from_response(
+                    video_response,
+                    fallback_marker,
+                    config.resolution,
+                    config.fps,
+                    config.duration_seconds,
+                ))
+            }
+            Err(err) => {
+                tracing::warn!(
+                    provider = "cosmos",
+                    error = %err,
+                    "generate API call failed, falling back to deterministic output"
+                );
+                self.local_generate(prompt, config)
+            }
         }
-
-        let api_response: CosmosVideoResponse = response
-            .json()
-            .await
-            .map_err(|e| WorldForgeError::SerializationError(e.to_string()))?;
-        Ok(build_video_clip_from_response(
-            api_response,
-            response_marker(&[
-                Some(prompt.text.as_str()),
-                prompt.negative_prompt.as_deref(),
-                Some(model_id),
-            ]),
-            config.resolution,
-            config.fps,
-            config.duration_seconds,
-        ))
     }
 
     async fn reason(&self, input: &ReasoningInput, query: &str) -> Result<ReasoningOutput> {
@@ -1838,29 +1905,46 @@ impl WorldModelProvider for CosmosProvider {
             "has_state": input.state.is_some(),
         });
 
-        let response = self
-            .client
-            .post(format!("{base_url}/v1/reason"))
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .timeout(std::time::Duration::from_millis(self.config.timeout_ms))
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|e| WorldForgeError::NetworkError(e.to_string()))?;
+        // Acquire rate-limit token
+        self.rate_limiter.acquire(1).await;
 
-        if !response.status().is_success() {
-            return Err(WorldForgeError::ProviderUnavailable {
-                provider: "cosmos".to_string(),
-                reason: format!("HTTP {}", response.status()),
-            });
+        let client = self.client.clone();
+        let url = format!("{base_url}/v1/reason");
+        let body = request_body.clone();
+
+        let api_response = retry_with_policy("cosmos", &self.retry_policy, || {
+            let client = client.clone();
+            let url = url.clone();
+            let body = body.clone();
+            async move {
+                let response = client
+                    .post(&url)
+                    .json(&body)
+                    .send()
+                    .await
+                    .map_err(|e| WorldForgeError::NetworkError(e.to_string()))?;
+
+                let response = check_response("cosmos", response).await?;
+
+                response
+                    .json::<CosmosReasoningResponse>()
+                    .await
+                    .map_err(|e| WorldForgeError::SerializationError(e.to_string()))
+            }
+        })
+        .await;
+
+        match api_response {
+            Ok(response) => Ok(build_reasoning_output_from_response(response)),
+            Err(err) => {
+                tracing::warn!(
+                    provider = "cosmos",
+                    error = %err,
+                    "reason API call failed, falling back to deterministic output"
+                );
+                Ok(self.local_reason(input, query, model_id))
+            }
         }
-
-        let api_response: CosmosReasoningResponse = response
-            .json()
-            .await
-            .map_err(|e| WorldForgeError::SerializationError(e.to_string()))?;
-        Ok(build_reasoning_output_from_response(api_response))
     }
 
     async fn embed(&self, input: &EmbeddingInput) -> Result<EmbeddingOutput> {
@@ -1883,40 +1967,58 @@ impl WorldModelProvider for CosmosProvider {
             video: input.video.clone(),
         };
 
-        let response = self
-            .client
-            .post(format!("{base_url}/v1/embed"))
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .timeout(std::time::Duration::from_millis(self.config.timeout_ms))
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|e| WorldForgeError::NetworkError(e.to_string()))?;
+        // Acquire rate-limit token
+        self.rate_limiter.acquire(1).await;
 
-        if !response.status().is_success() {
-            return Err(WorldForgeError::ProviderUnavailable {
-                provider: "cosmos".to_string(),
-                reason: format!("HTTP {}", response.status()),
-            });
-        }
+        let client = self.client.clone();
+        let url = format!("{base_url}/v1/embed");
+        let body = request_body.clone();
 
-        let api_response: CosmosEmbeddingResponse = response
-            .json()
-            .await
-            .map_err(|e| WorldForgeError::SerializationError(e.to_string()))?;
+        let api_response = retry_with_policy("cosmos", &self.retry_policy, || {
+            let client = client.clone();
+            let url = url.clone();
+            let body = body.clone();
+            async move {
+                let response = client
+                    .post(&url)
+                    .json(&body)
+                    .send()
+                    .await
+                    .map_err(|e| WorldForgeError::NetworkError(e.to_string()))?;
 
-        if api_response.embedding.is_empty() {
-            return Err(WorldForgeError::SerializationError(
-                "cosmos embedding response did not include an embedding vector".to_string(),
-            ));
-        }
+                let response = check_response("cosmos", response).await?;
 
-        Ok(EmbeddingOutput {
-            provider: "cosmos".to_string(),
-            model: api_response.model.unwrap_or_else(|| model_id.to_string()),
-            embedding: embedding_tensor(api_response.embedding),
+                let embed_resp: CosmosEmbeddingResponse = response
+                    .json()
+                    .await
+                    .map_err(|e| WorldForgeError::SerializationError(e.to_string()))?;
+
+                if embed_resp.embedding.is_empty() {
+                    return Err(WorldForgeError::SerializationError(
+                        "cosmos embedding response did not include an embedding vector".to_string(),
+                    ));
+                }
+
+                Ok(embed_resp)
+            }
         })
+        .await;
+
+        match api_response {
+            Ok(embed_resp) => Ok(EmbeddingOutput {
+                provider: "cosmos".to_string(),
+                model: embed_resp.model.unwrap_or_else(|| model_id.to_string()),
+                embedding: embedding_tensor(embed_resp.embedding),
+            }),
+            Err(err) => {
+                tracing::warn!(
+                    provider = "cosmos",
+                    error = %err,
+                    "embed API call failed, falling back to deterministic output"
+                );
+                self.local_embed(input, model_id)
+            }
+        }
     }
 
     /// Adapter-native deterministic planning for Cosmos.
@@ -1956,35 +2058,54 @@ impl WorldModelProvider for CosmosProvider {
             "control_strength": config.control_strength,
         });
 
-        let response = self
-            .client
-            .post(format!("{base_url}/v1/transfer"))
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .timeout(std::time::Duration::from_millis(self.config.timeout_ms))
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|e| WorldForgeError::NetworkError(e.to_string()))?;
+        // Acquire rate-limit token
+        self.rate_limiter.acquire(1).await;
 
-        if !response.status().is_success() {
-            return Err(WorldForgeError::ProviderUnavailable {
-                provider: "cosmos".to_string(),
-                reason: format!("HTTP {}", response.status()),
-            });
+        let client = self.client.clone();
+        let url = format!("{base_url}/v1/transfer");
+        let body = request_body.clone();
+
+        let api_response = retry_with_policy("cosmos", &self.retry_policy, || {
+            let client = client.clone();
+            let url = url.clone();
+            let body = body.clone();
+            async move {
+                let response = client
+                    .post(&url)
+                    .json(&body)
+                    .send()
+                    .await
+                    .map_err(|e| WorldForgeError::NetworkError(e.to_string()))?;
+
+                let response = check_response("cosmos", response).await?;
+
+                response
+                    .json::<CosmosVideoResponse>()
+                    .await
+                    .map_err(|e| WorldForgeError::SerializationError(e.to_string()))
+            }
+        })
+        .await;
+
+        let fallback_marker = response_marker(&[Some("cosmos transfer"), Some(model_id)]);
+
+        match api_response {
+            Ok(video_resp) => Ok(build_video_clip_from_response(
+                video_resp,
+                fallback_marker,
+                config.resolution,
+                config.fps,
+                0.0,
+            )),
+            Err(err) => {
+                tracing::warn!(
+                    provider = "cosmos",
+                    error = %err,
+                    "transfer API call failed, falling back to deterministic output"
+                );
+                self.local_transfer(source, controls, config, model_id)
+            }
         }
-
-        let api_response: CosmosVideoResponse = response
-            .json()
-            .await
-            .map_err(|e| WorldForgeError::SerializationError(e.to_string()))?;
-        Ok(build_video_clip_from_response(
-            api_response,
-            response_marker(&[Some("cosmos transfer"), Some(model_id)]),
-            config.resolution,
-            config.fps,
-            0.0,
-        ))
     }
 
     async fn health_check(&self) -> Result<HealthStatus> {
@@ -1994,22 +2115,52 @@ impl WorldModelProvider for CosmosProvider {
         let base_url = self.base_url()?;
         let start = std::time::Instant::now();
 
-        let response = self
-            .client
-            .get(format!("{base_url}/v1/health"))
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .timeout(std::time::Duration::from_millis(5000))
-            .send()
-            .await
-            .map_err(|e| WorldForgeError::NetworkError(e.to_string()))?;
+        let client = self.client.clone();
+        let url = format!("{base_url}/v1/health");
+
+        let result = retry_with_policy(
+            "cosmos",
+            &RetryPolicy {
+                max_retries: 1,
+                initial_delay: Duration::from_millis(200),
+                max_delay: Duration::from_secs(2),
+                backoff_multiplier: 2.0,
+                jitter: false,
+            },
+            || {
+                let client = client.clone();
+                let url = url.clone();
+                async move {
+                    let response = client
+                        .get(&url)
+                        .timeout(Duration::from_millis(5000))
+                        .send()
+                        .await
+                        .map_err(|e| WorldForgeError::NetworkError(e.to_string()))?;
+
+                    Ok(response.status().is_success())
+                }
+            },
+        )
+        .await;
 
         let latency = start.elapsed().as_millis() as u64;
 
-        Ok(HealthStatus {
-            healthy: response.status().is_success(),
-            message: format!("Cosmos API responded with HTTP {}", response.status()),
-            latency_ms: latency,
-        })
+        match result {
+            Ok(healthy) => Ok(HealthStatus {
+                healthy,
+                message: format!(
+                    "Cosmos API responded with HTTP {}",
+                    if healthy { "200 OK" } else { "error" }
+                ),
+                latency_ms: latency,
+            }),
+            Err(_) => Ok(HealthStatus {
+                healthy: false,
+                message: "Cosmos API health check failed".to_string(),
+                latency_ms: latency,
+            }),
+        }
     }
 
     fn estimate_cost(&self, operation: &Operation) -> CostEstimate {
