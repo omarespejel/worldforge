@@ -16,9 +16,21 @@
 //! - [`sora`] — OpenAI Sora 2 (async submit/poll video generation)
 //! - [`veo`] — Google Veo 3 (async submit/poll video generation via Generative Language API)
 //! - [`native_planning`] — shared deterministic adapter-native planning helper
+//!
+//! # Shared Infrastructure
+//!
+//! - [`http_client`] — Shared HTTP client builder with auth, headers, error mapping
+//! - [`rate_limit`] — Token bucket rate limiter for per-provider throttling
+//! - [`retry`] — Retry with exponential backoff and jitter
+//! - [`async_job`] — Generic async job submission + polling lifecycle
+//! - [`video_download`] — Download and decode video/image from provider URLs
 
+pub mod async_job;
 pub mod cosmos;
+pub mod http_client;
 pub mod genie;
+pub mod rate_limit;
+pub mod retry;
 pub mod jepa;
 pub mod kling;
 pub mod marble;
@@ -30,6 +42,7 @@ pub(crate) mod polling;
 pub mod runway;
 pub mod sora;
 pub mod veo;
+pub mod video_download;
 
 /// Backward-compatible Cosmos action translator helper.
 pub use cosmos::CosmosActionTranslator;
