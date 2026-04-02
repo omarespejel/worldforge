@@ -21,6 +21,12 @@ use crate::prediction::{PredictionProvenance, StoredPlanRecord};
 use crate::scene::SceneGraph;
 use crate::types::{PlanId, SimTime, WorldId};
 
+/// Current schema version for persisted `WorldState` payloads.
+///
+/// Bump this when the `WorldState` shape changes in a way that requires
+/// migration logic on load.
+pub const WORLD_STATE_SCHEMA_VERSION: u32 = 1;
+
 const SHA256_INITIAL_STATE: [u32; 8] = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
 ];
@@ -52,6 +58,23 @@ pub struct WorldState {
     /// Persisted plan artifacts associated with this world.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub stored_plans: BTreeMap<PlanId, StoredPlanRecord>,
+    /// Schema version used when this state was last serialized.
+    ///
+    /// Defaults to the current [`WORLD_STATE_SCHEMA_VERSION`] for newly-created
+    /// states and is used to drive migration logic on load.
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
+    /// Optimistic-locking version counter.
+    ///
+    /// Automatically incremented on every successful save.  When persisting,
+    /// the store checks that the on-disk version matches the expected value
+    /// to prevent lost updates in multi-process scenarios.
+    #[serde(default)]
+    pub version: u64,
+}
+
+fn default_schema_version() -> u32 {
+    WORLD_STATE_SCHEMA_VERSION
 }
 
 /// Metadata describing a world instance.
@@ -192,6 +215,8 @@ impl WorldState {
                 tags: Vec::new(),
             },
             stored_plans: BTreeMap::new(),
+            schema_version: WORLD_STATE_SCHEMA_VERSION,
+            version: 0,
         }
     }
 
@@ -385,6 +410,8 @@ impl WorldState {
             history,
             metadata: snapshot.metadata,
             stored_plans: self.stored_plans.clone(),
+            schema_version: self.schema_version,
+            version: self.version,
         })
     }
 
@@ -416,6 +443,8 @@ impl WorldState {
             },
             metadata: snapshot.metadata,
             stored_plans: self.stored_plans.clone(),
+            schema_version: WORLD_STATE_SCHEMA_VERSION,
+            version: 0,
         };
         forked.metadata.name = derive_fork_name(&forked.metadata.name, name_override);
         forked.metadata.created_by = provider.clone();
@@ -2093,6 +2122,115 @@ impl StateStore for SqliteStateStore {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Schema migration
+// ---------------------------------------------------------------------------
+
+/// Migrate a loaded `WorldState` from an older `schema_version` to the current one.
+///
+/// Each version bump should add a migration step.  Legacy payloads that lack a
+/// `schema_version` field default to `WORLD_STATE_SCHEMA_VERSION` via serde,
+/// so they pass through unchanged.
+pub fn migrate_world_state(mut state: WorldState) -> Result<WorldState> {
+    // Version 0 → 1: add schema_version + version fields (serde defaults handle it).
+    if state.schema_version < 1 {
+        state.schema_version = 1;
+        state.version = 0;
+    }
+
+    // Future migrations go here:
+    // if state.schema_version < 2 { ... state.schema_version = 2; }
+
+    state.schema_version = WORLD_STATE_SCHEMA_VERSION;
+    Ok(state)
+}
+
+// ---------------------------------------------------------------------------
+// Optimistic locking helpers
+// ---------------------------------------------------------------------------
+
+/// Save a world state to the store with optimistic-locking version check.
+///
+/// The caller must supply the `expected_version` they read.  If the on-disk
+/// state has been modified (version != expected), a `VersionConflict` error is
+/// returned.  On success the state's `version` is incremented.
+pub async fn save_with_version_check(
+    store: &dyn StateStore,
+    state: &mut WorldState,
+    expected_version: u64,
+) -> Result<()> {
+    // Try loading the current state to compare versions.
+    match store.load(&state.id).await {
+        Ok(existing) => {
+            if existing.version != expected_version {
+                return Err(WorldForgeError::VersionConflict {
+                    world_id: state.id,
+                    expected: expected_version,
+                    found: existing.version,
+                });
+            }
+        }
+        // If the world doesn't exist yet, expected version must be 0.
+        Err(WorldForgeError::WorldNotFound(_)) => {
+            if expected_version != 0 {
+                return Err(WorldForgeError::VersionConflict {
+                    world_id: state.id,
+                    expected: expected_version,
+                    found: 0,
+                });
+            }
+        }
+        Err(other) => return Err(other),
+    }
+
+    state.version = expected_version + 1;
+    state.schema_version = WORLD_STATE_SCHEMA_VERSION;
+    store.save(state).await
+}
+
+// ---------------------------------------------------------------------------
+// State compaction
+// ---------------------------------------------------------------------------
+
+/// Compact the history of a persisted world, keeping only the last `keep_last_n` entries.
+///
+/// Loads the state, trims history, and saves back.
+pub async fn compact_history(
+    store: &dyn StateStore,
+    world_id: &WorldId,
+    keep_last_n: usize,
+) -> Result<usize> {
+    let mut state = store.load(world_id).await?;
+    let before = state.history.len();
+    if before > keep_last_n {
+        let drain_count = before - keep_last_n;
+        state.history.states.drain(..drain_count);
+    }
+    let after = state.history.len();
+    store.save(&state).await?;
+    Ok(before - after)
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot export / import
+// ---------------------------------------------------------------------------
+
+/// Export a full world state as a portable byte blob (JSON envelope).
+pub async fn export_snapshot(store: &dyn StateStore, world_id: &WorldId) -> Result<Vec<u8>> {
+    let state = store.load(world_id).await?;
+    serialize_world_state(StateFileFormat::Json, &state)
+}
+
+/// Import a world state from a portable snapshot blob, assigning it a fresh world ID.
+pub fn import_snapshot(bytes: &[u8]) -> Result<WorldState> {
+    let mut state = deserialize_world_state(StateFileFormat::Json, bytes)?;
+    state = migrate_world_state(state)?;
+    // Give the imported state a fresh identity so it doesn't collide.
+    state.id = uuid::Uuid::new_v4();
+    state.version = 0;
+    Ok(state)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{HashMap, HashSet};
@@ -3517,5 +3655,170 @@ mod tests {
                 "expected Redis string, got {other:?}"
             ))),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // RFC-0007: Schema versioning tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_world_state_schema_version_default() {
+        let state = WorldState::new("versioned", "mock");
+        assert_eq!(state.schema_version, WORLD_STATE_SCHEMA_VERSION);
+        assert_eq!(state.version, 0);
+    }
+
+    #[test]
+    fn test_migrate_world_state_noop_on_current_version() {
+        let state = WorldState::new("migrate", "mock");
+        let migrated = migrate_world_state(state.clone()).unwrap();
+        assert_eq!(migrated.schema_version, WORLD_STATE_SCHEMA_VERSION);
+        assert_eq!(migrated.id, state.id);
+    }
+
+    #[test]
+    fn test_migrate_world_state_upgrades_version_zero() {
+        let mut state = WorldState::new("old", "mock");
+        state.schema_version = 0;
+        let migrated = migrate_world_state(state).unwrap();
+        assert_eq!(migrated.schema_version, WORLD_STATE_SCHEMA_VERSION);
+    }
+
+    // -----------------------------------------------------------------------
+    // RFC-0007: Optimistic locking tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_optimistic_locking_success() {
+        let dir = std::env::temp_dir().join(format!("worldforge-lock-ok-{}", Uuid::new_v4()));
+        let store = FileStateStore::new(&dir);
+        let mut state = WorldState::new("lock-test", "mock");
+        state.ensure_history_initialized("mock").unwrap();
+
+        // First save with expected version 0.
+        save_with_version_check(&store, &mut state, 0).await.unwrap();
+        assert_eq!(state.version, 1);
+
+        // Second save with expected version 1.
+        save_with_version_check(&store, &mut state, 1).await.unwrap();
+        assert_eq!(state.version, 2);
+    }
+
+    #[tokio::test]
+    async fn test_optimistic_locking_conflict() {
+        let dir = std::env::temp_dir().join(format!("worldforge-lock-conflict-{}", Uuid::new_v4()));
+        let store = FileStateStore::new(&dir);
+        let mut state = WorldState::new("lock-conflict", "mock");
+        state.ensure_history_initialized("mock").unwrap();
+
+        save_with_version_check(&store, &mut state, 0).await.unwrap();
+
+        // Try saving with stale expected version 0 (current is 1).
+        let result = save_with_version_check(&store, &mut state, 0).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            WorldForgeError::VersionConflict { expected, found, .. } => {
+                assert_eq!(expected, 0);
+                assert_eq!(found, 1);
+            }
+            other => panic!("expected VersionConflict, got: {other}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // RFC-0007: Compaction tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_compact_history() {
+        let dir = std::env::temp_dir().join(format!("worldforge-compact-{}", Uuid::new_v4()));
+        let store = FileStateStore::new(&dir);
+        let mut state = WorldState::new("compact-test", "mock");
+        state.ensure_history_initialized("mock").unwrap();
+
+        // Record 10 additional entries.
+        for i in 1..=10 {
+            state.time.step = i;
+            state.record_current_state(None, None, "mock").unwrap();
+        }
+        store.save(&state).await.unwrap();
+        assert_eq!(state.history.len(), 11); // 1 initial + 10
+
+        let removed = compact_history(&store, &state.id, 3).await.unwrap();
+        assert_eq!(removed, 8);
+
+        let loaded = store.load(&state.id).await.unwrap();
+        assert_eq!(loaded.history.len(), 3);
+    }
+
+    // -----------------------------------------------------------------------
+    // RFC-0007: Snapshot export/import tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_export_import_snapshot() {
+        let dir = std::env::temp_dir().join(format!("worldforge-export-{}", Uuid::new_v4()));
+        let store = FileStateStore::new(&dir);
+        let mut state = WorldState::new("export-test", "mock");
+        state.ensure_history_initialized("mock").unwrap();
+        store.save(&state).await.unwrap();
+
+        let bytes = export_snapshot(&store, &state.id).await.unwrap();
+        assert!(!bytes.is_empty());
+
+        let imported = import_snapshot(&bytes).unwrap();
+        // Must have a different ID.
+        assert_ne!(imported.id, state.id);
+        assert_eq!(imported.metadata.name, state.metadata.name);
+        assert_eq!(imported.version, 0);
+        assert_eq!(imported.schema_version, WORLD_STATE_SCHEMA_VERSION);
+    }
+
+    // -----------------------------------------------------------------------
+    // RFC-0007: Stress test — 100 worlds × 50 transitions
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_stress_100_worlds_50_transitions() {
+        let dir = std::env::temp_dir().join(format!("worldforge-stress-{}", Uuid::new_v4()));
+        let store = FileStateStore::new(&dir);
+
+        let start = std::time::Instant::now();
+
+        let mut world_ids = Vec::new();
+        for world_idx in 0..100 {
+            let mut state = WorldState::new(format!("stress-{world_idx}"), "mock");
+            state.ensure_history_initialized("mock").unwrap();
+
+            for step in 1..=50 {
+                state.time.step = step;
+                state.time.seconds = step as f64 * 0.1;
+                state.record_current_state(None, None, "mock").unwrap();
+            }
+
+            store.save(&state).await.unwrap();
+            world_ids.push(state.id);
+        }
+
+        let save_elapsed = start.elapsed();
+
+        // Verify all states load correctly.
+        let load_start = std::time::Instant::now();
+        for (world_idx, id) in world_ids.iter().enumerate() {
+            let loaded = store.load(id).await.unwrap();
+            assert_eq!(loaded.metadata.name, format!("stress-{world_idx}"));
+            // 1 initial + 50 transitions = 51 entries
+            assert_eq!(loaded.history.len(), 51, "world {world_idx} history len mismatch");
+            assert_eq!(loaded.history.latest().unwrap().time.step, 50);
+            assert_eq!(loaded.schema_version, WORLD_STATE_SCHEMA_VERSION);
+        }
+        let load_elapsed = load_start.elapsed();
+
+        eprintln!(
+            "Stress test: 100 worlds × 50 transitions — save: {:?}, load+verify: {:?}, total: {:?}",
+            save_elapsed,
+            load_elapsed,
+            start.elapsed()
+        );
     }
 }

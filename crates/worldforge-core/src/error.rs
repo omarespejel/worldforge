@@ -58,6 +58,14 @@ pub enum WorldForgeError {
     #[error("state corrupted for world {world_id}: {details}")]
     StateCorrupted { world_id: WorldId, details: String },
 
+    /// Optimistic locking conflict: the stored version does not match.
+    #[error("version conflict for world {world_id}: expected {expected}, found {found}")]
+    VersionConflict {
+        world_id: WorldId,
+        expected: u64,
+        found: u64,
+    },
+
     // -- Guardrail errors --
     /// A guardrail was violated.
     #[error("guardrail violation: {guardrail} — {details}")]
@@ -187,6 +195,13 @@ mod tests {
                         violation_details: Some(details),
                         severity: crate::guardrail::ViolationSeverity::Blocking,
                     }],
+                }),
+                (any::<u128>(), any::<u64>(), any::<u64>()).prop_map(|(id, e, f)| {
+                    WorldForgeError::VersionConflict {
+                        world_id: uuid::Uuid::from_u128(id),
+                        expected: e,
+                        found: f,
+                    }
                 }),
                 ".*".prop_map(WorldForgeError::SerializationError),
                 ".*".prop_map(WorldForgeError::NetworkError),

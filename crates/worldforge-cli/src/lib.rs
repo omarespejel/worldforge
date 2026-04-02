@@ -3244,6 +3244,8 @@ fn fork_world_state(
         },
         metadata: source.metadata,
         stored_plans: source.stored_plans,
+        schema_version: source.schema_version,
+        version: 0,
     };
     forked.metadata.name = default_fork_name(&forked.metadata.name, name_override);
     forked.metadata.created_by = provider.clone();

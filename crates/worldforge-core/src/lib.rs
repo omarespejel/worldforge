@@ -25,6 +25,8 @@ pub mod error;
 /// Goal-image rendering and similarity utilities.
 pub mod goal_image;
 pub mod guardrail;
+/// Planning algorithms (CEM, Sampling, MPC) for action-sequence optimisation.
+pub mod planner;
 pub mod prediction;
 pub mod proof;
 pub mod provider;

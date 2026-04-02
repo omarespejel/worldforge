@@ -6,6 +6,7 @@
 
 mod async_utils;
 pub mod datasets;
+pub mod metrics;
 pub mod wrarena;
 
 use std::collections::{HashMap, HashSet};
@@ -3092,7 +3093,7 @@ fn tensor_values(data: &TensorData) -> Vec<f64> {
     }
 }
 
-fn half_bits_to_f32(bits: u16) -> f32 {
+pub(crate) fn half_bits_to_f32(bits: u16) -> f32 {
     let sign = ((bits & 0x8000) as u32) << 16;
     let exponent = ((bits & 0x7c00) >> 10) as u32;
     let mantissa = (bits & 0x03ff) as u32;
@@ -3119,7 +3120,7 @@ fn half_bits_to_f32(bits: u16) -> f32 {
     f32::from_bits(f32_bits)
 }
 
-fn bfloat16_bits_to_f32(bits: u16) -> f32 {
+pub(crate) fn bfloat16_bits_to_f32(bits: u16) -> f32 {
     f32::from_bits((bits as u32) << 16)
 }
 
