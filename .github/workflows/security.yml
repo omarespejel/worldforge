@@ -1,40 +1,57 @@
 name: Security
 
 on:
-  schedule:
-    - cron: "0 6 * * 1" # Weekly on Monday at 06:00 UTC
   pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
-  CARGO_TERM_COLOR: always
+  UV_LOCKED: "true"
 
 jobs:
-  audit:
-    name: cargo audit
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@v4
+
+  pip-audit:
+    name: pip-audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out repository
+        uses: actions/checkout@v4
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
-      - name: Install cargo-audit
-        run: cargo install cargo-audit
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.9.18"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
 
-      - name: Run audit
-        run: cargo audit
+      - name: Export locked dependencies
+        run: uv export --frozen --all-groups --no-emit-project --no-hashes -o requirements-ci.txt
 
-  deny:
-    name: cargo deny
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install cargo-deny
-        run: cargo install cargo-deny
-
-      - name: Run cargo deny
-        run: cargo deny check
+      - name: Audit dependencies
+        run: uvx --from pip-audit pip-audit -r requirements-ci.txt
