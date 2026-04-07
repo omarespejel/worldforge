@@ -47,6 +47,18 @@ print(prediction.provider, prediction.physics_score)
 
 plan = world.plan(goal="move the mug to the right")
 print(plan.action_count, plan.success_probability)
+
+doctor = forge.doctor()
+print(doctor.healthy_provider_count, doctor.provider_count)
+```
+
+## Provider DX
+
+```bash
+uv run worldforge doctor
+uv run worldforge provider list
+uv run worldforge provider info mock
+uv run worldforge provider health
 ```
 
 ## Repository Layout

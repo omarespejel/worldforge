@@ -312,6 +312,45 @@ class ProviderInfo:
 
 
 @dataclass(slots=True)
+class ProviderProfile:
+    """Richer provider metadata for routing, docs, and diagnostics."""
+
+    name: str
+    capabilities: ProviderCapabilities
+    is_local: bool
+    description: str = ""
+    package: str = "worldforge"
+    implementation_status: str = "experimental"
+    deterministic: bool = False
+    requires_credentials: bool = False
+    credential_env_var: str | None = None
+    supported_modalities: list[str] = field(default_factory=list)
+    artifact_types: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+    @property
+    def supported_tasks(self) -> list[str]:
+        return self.capabilities.enabled_names()
+
+    def to_dict(self) -> JSONDict:
+        return {
+            "name": self.name,
+            "capabilities": self.capabilities.to_dict(),
+            "supported_tasks": self.supported_tasks,
+            "is_local": self.is_local,
+            "description": self.description,
+            "package": self.package,
+            "implementation_status": self.implementation_status,
+            "deterministic": self.deterministic,
+            "requires_credentials": self.requires_credentials,
+            "credential_env_var": self.credential_env_var,
+            "supported_modalities": list(self.supported_modalities),
+            "artifact_types": list(self.artifact_types),
+            "notes": list(self.notes),
+        }
+
+
+@dataclass(slots=True)
 class ProviderHealth:
     """Health information for a provider."""
 
@@ -327,6 +366,59 @@ class ProviderHealth:
             "latency_ms": self.latency_ms,
             "details": self.details,
         }
+
+
+@dataclass(slots=True)
+class ProviderDoctorStatus:
+    """Diagnostic snapshot for a provider in the active environment."""
+
+    registered: bool
+    profile: ProviderProfile
+    health: ProviderHealth
+
+    def to_dict(self) -> JSONDict:
+        return {
+            "name": self.profile.name,
+            "registered": self.registered,
+            "profile": self.profile.to_dict(),
+            "health": self.health.to_dict(),
+        }
+
+
+@dataclass(slots=True)
+class DoctorReport:
+    """Environment diagnostics for the current WorldForge install."""
+
+    state_dir: str
+    world_count: int
+    providers: list[ProviderDoctorStatus]
+    issues: list[str] = field(default_factory=list)
+
+    @property
+    def provider_count(self) -> int:
+        return len(self.providers)
+
+    @property
+    def healthy_provider_count(self) -> int:
+        return sum(1 for provider in self.providers if provider.health.healthy)
+
+    @property
+    def registered_provider_count(self) -> int:
+        return sum(1 for provider in self.providers if provider.registered)
+
+    def to_dict(self) -> JSONDict:
+        return {
+            "state_dir": self.state_dir,
+            "world_count": self.world_count,
+            "provider_count": self.provider_count,
+            "healthy_provider_count": self.healthy_provider_count,
+            "registered_provider_count": self.registered_provider_count,
+            "providers": [provider.to_dict() for provider in self.providers],
+            "issues": list(self.issues),
+        }
+
+    def to_json(self) -> str:
+        return dump_json(self.to_dict())
 
 
 @dataclass(slots=True)

@@ -13,6 +13,7 @@ from worldforge.models import (
     ProviderCapabilities,
     ProviderHealth,
     ProviderInfo,
+    ProviderProfile,
     ReasoningResult,
     VideoClip,
 )
@@ -46,11 +47,23 @@ class BaseProvider:
         capabilities: ProviderCapabilities | None = None,
         is_local: bool = False,
         description: str = "",
+        package: str = "worldforge",
+        implementation_status: str = "experimental",
+        deterministic: bool = False,
+        supported_modalities: list[str] | None = None,
+        artifact_types: list[str] | None = None,
+        notes: list[str] | None = None,
     ) -> None:
         self.name = name
         self.capabilities = capabilities or ProviderCapabilities()
         self.is_local = is_local
         self.description = description
+        self.package = package
+        self.implementation_status = implementation_status
+        self.deterministic = deterministic
+        self.supported_modalities = list(supported_modalities or [])
+        self.artifact_types = list(artifact_types or [])
+        self.notes = list(notes or [])
 
     def info(self) -> ProviderInfo:
         return ProviderInfo(
@@ -58,6 +71,22 @@ class BaseProvider:
             capabilities=self.capabilities,
             is_local=self.is_local,
             description=self.description,
+        )
+
+    def profile(self) -> ProviderProfile:
+        return ProviderProfile(
+            name=self.name,
+            capabilities=self.capabilities,
+            is_local=self.is_local,
+            description=self.description,
+            package=self.package,
+            implementation_status=self.implementation_status,
+            deterministic=self.deterministic,
+            requires_credentials=self.env_var is not None,
+            credential_env_var=self.env_var,
+            supported_modalities=list(self.supported_modalities),
+            artifact_types=list(self.artifact_types),
+            notes=list(self.notes),
         )
 
     def configured(self) -> bool:

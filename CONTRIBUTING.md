@@ -22,6 +22,7 @@ make build
 - `src/worldforge/models.py`: domain models and serialization helpers
 - `src/worldforge/framework.py`: `WorldForge`, `World`, prediction, comparison, and planning
 - `src/worldforge/providers/`: provider interfaces and adapters
+- `src/worldforge/testing/`: reusable provider contract helpers for adapter packages
 - `src/worldforge/evaluation/`: evaluation suites and report rendering
 - `tests/`: framework and packaging tests
 - `examples/`: runnable examples
@@ -41,3 +42,4 @@ make build
 3. Fail clearly on missing credentials or unsupported flows.
 4. Register the provider in `WorldForge` only when auto-detection is safe.
 5. Add tests covering registration, health reporting, and a successful runtime path.
+6. Run `worldforge.testing.assert_provider_contract()` in adapter tests to validate metadata and capability behavior.
