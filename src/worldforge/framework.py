@@ -12,12 +12,15 @@ from typing import Any
 from worldforge.models import (
     Action,
     BBox,
+    DoctorReport,
     EmbeddingResult,
     HistoryEntry,
     JSONDict,
     Position,
+    ProviderDoctorStatus,
     ProviderHealth,
     ProviderInfo,
+    ProviderProfile,
     ReasoningResult,
     SceneObject,
     SceneObjectPatch,
@@ -483,8 +486,30 @@ class WorldForge:
     def providers(self) -> list[str]:
         return sorted(self._providers)
 
+    def _provider_catalog(self, *, include_known: bool = True) -> dict[str, BaseProvider]:
+        catalog: dict[str, BaseProvider] = {}
+        if include_known:
+            for provider in (
+                MockProvider(),
+                CosmosProvider(),
+                RunwayProvider(),
+                JepaProvider(),
+                GenieProvider(),
+            ):
+                catalog[provider.name] = provider
+        for provider in self._providers.values():
+            catalog[provider.name] = provider
+        return catalog
+
     def list_providers(self) -> list[ProviderInfo]:
         return [self._providers[name].info() for name in self.providers()]
+
+    def list_provider_profiles(self) -> list[ProviderProfile]:
+        return [self._providers[name].profile() for name in self.providers()]
+
+    def builtin_provider_profiles(self) -> list[ProviderProfile]:
+        catalog = self._provider_catalog(include_known=True)
+        return [catalog[name].profile() for name in sorted(catalog)]
 
     def provider_info(self, name: str) -> ProviderInfo:
         return self._require_provider(name).info()
@@ -492,8 +517,21 @@ class WorldForge:
     def get_provider(self, name: str) -> ProviderInfo:
         return self.provider_info(name)
 
+    def provider_profile(self, name: str) -> ProviderProfile:
+        catalog = self._provider_catalog(include_known=True)
+        try:
+            provider = catalog[name]
+        except KeyError as exc:
+            raise ProviderError(f"Provider '{name}' is unknown.") from exc
+        return provider.profile()
+
     def provider_health(self, name: str) -> ProviderHealth:
-        return self._require_provider(name).health()
+        catalog = self._provider_catalog(include_known=True)
+        try:
+            provider = catalog[name]
+        except KeyError as exc:
+            raise ProviderError(f"Provider '{name}' is unknown.") from exc
+        return provider.health()
 
     def provider_healths(self, capability: str | None = None) -> list[ProviderHealth]:
         names = self.providers()
@@ -502,6 +540,44 @@ class WorldForge:
                 name for name in names if self._providers[name].capabilities.supports(capability)
             ]
         return [self._providers[name].health() for name in names]
+
+    def doctor(
+        self,
+        capability: str | None = None,
+        *,
+        registered_only: bool = False,
+    ) -> DoctorReport:
+        catalog = self._provider_catalog(include_known=not registered_only)
+        statuses: list[ProviderDoctorStatus] = []
+        issues: list[str] = []
+
+        for name in sorted(catalog):
+            provider = catalog[name]
+            profile = provider.profile()
+            if capability and not profile.capabilities.supports(capability):
+                continue
+            health = provider.health()
+            statuses.append(
+                ProviderDoctorStatus(
+                    registered=name in self._providers,
+                    profile=profile,
+                    health=health,
+                )
+            )
+            if not health.healthy:
+                if profile.requires_credentials and profile.credential_env_var:
+                    issues.append(
+                        f"Provider '{name}' is unavailable: missing {profile.credential_env_var}."
+                    )
+                else:
+                    issues.append(f"Provider '{name}' is unhealthy: {health.details}.")
+
+        return DoctorReport(
+            state_dir=str(self.state_dir),
+            world_count=len(self.list_worlds()),
+            providers=statuses,
+            issues=issues,
+        )
 
     def create_world(self, name: str, provider: str = "mock", *, description: str = "") -> World:
         self._require_provider(provider)

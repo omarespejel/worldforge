@@ -43,6 +43,14 @@ class MockProvider(BaseProvider):
             description=(
                 "Deterministic local provider for examples, tests, and framework development."
             ),
+            package="worldforge",
+            implementation_status="stable",
+            deterministic=True,
+            supported_modalities=["world_state", "text", "video"],
+            artifact_types=["prediction", "video", "reasoning", "embedding", "transfer"],
+            notes=[
+                "Reference implementation for local development and adapter contract tests.",
+            ],
         )
 
     def _updated_world_state(self, world_state: JSONDict, action: Action, steps: int) -> JSONDict:

@@ -63,6 +63,15 @@ class CosmosProvider(StubRemoteProvider):
             ),
             is_local=False,
             description="Python adapter surface for NVIDIA Cosmos.",
+            package="worldforge",
+            implementation_status="scaffold",
+            deterministic=False,
+            supported_modalities=["world_state", "text", "video"],
+            artifact_types=["prediction", "video", "reasoning", "embedding", "transfer"],
+            notes=[
+                "Credential-gated scaffold adapter.",
+                "Current runtime path falls back to deterministic mock behavior after auth checks.",
+            ],
         )
 
 
@@ -82,6 +91,15 @@ class RunwayProvider(StubRemoteProvider):
             ),
             is_local=False,
             description="Python adapter surface for Runway.",
+            package="worldforge",
+            implementation_status="scaffold",
+            deterministic=False,
+            supported_modalities=["world_state", "text", "video"],
+            artifact_types=["prediction", "video", "transfer"],
+            notes=[
+                "Credential-gated scaffold adapter.",
+                "Current runtime path falls back to deterministic mock behavior after auth checks.",
+            ],
         )
 
 
@@ -101,6 +119,15 @@ class JepaProvider(StubRemoteProvider):
             ),
             is_local=False,
             description="Python adapter surface for JEPA-family models.",
+            package="worldforge",
+            implementation_status="scaffold",
+            deterministic=False,
+            supported_modalities=["world_state", "text"],
+            artifact_types=["prediction", "reasoning", "embedding"],
+            notes=[
+                "Credential-gated scaffold adapter.",
+                "Current runtime path falls back to deterministic mock behavior after auth checks.",
+            ],
         )
 
 
@@ -120,4 +147,13 @@ class GenieProvider(StubRemoteProvider):
             ),
             is_local=False,
             description="Python adapter surface for Genie-family models.",
+            package="worldforge",
+            implementation_status="scaffold",
+            deterministic=False,
+            supported_modalities=["world_state", "text", "video"],
+            artifact_types=["prediction", "video", "reasoning"],
+            notes=[
+                "Credential-gated scaffold adapter.",
+                "Current runtime path falls back to deterministic mock behavior after auth checks.",
+            ],
         )

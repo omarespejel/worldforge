@@ -6,6 +6,7 @@
 
 # Framework runtime data
 .worldforge/
+.research/
 
 # IDE and editor files
 .idea/
