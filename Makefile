@@ -1,24 +1,31 @@
-.PHONY: format lint test test-package build clean check
+.PHONY: sync format lint test test-package build publish check clean
 
-PYTHON ?= python3
+UV ?= uv
+
+sync:
+	$(UV) sync --group dev
 
 format:
-	$(PYTHON) -m compileall -q python
+	$(UV) run ruff format src tests examples
 
 lint:
-	$(PYTHON) -m py_compile $$(find python/worldforge -name '*.py' -print)
+	$(UV) run ruff check src tests examples
+	$(UV) run ruff format --check src tests examples
 
 test:
-	PYTHONPATH=python $(PYTHON) -m unittest discover -s python/tests -v
+	$(UV) run pytest
 
 test-package:
-	bash scripts/test_python_package.sh
+	bash scripts/test_package.sh
 
 build:
-	$(PYTHON) -m pip wheel . --no-deps --wheel-dir dist
+	$(UV) build
 
-check: lint test-package
+publish:
+	$(UV) publish
+
+check: lint test test-package
 
 clean:
-	rm -rf build dist .pytest_cache .worldforge .tmp-state
-	find python -name '__pycache__' -type d -prune -exec rm -rf {} +
+	rm -rf build dist .pytest_cache .ruff_cache .worldforge .coverage
+	find src tests examples -name '__pycache__' -type d -prune -exec rm -rf {} +

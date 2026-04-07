@@ -1,18 +1,12 @@
 # Introduction
 
-WorldForge is a Python-first orchestration layer for world model workflows.
+WorldForge is a Python framework for orchestrating world-model workflows.
 
-The project used to center a Rust workspace with Python bindings. That design has been retired. The current direction optimizes for the ecosystem that actually exists: provider SDKs, experiment tooling, and operational workflows are predominantly Python.
+The project is structured as a framework first:
 
-## Current focus
+- a typed package under `src/worldforge/`
+- a deterministic mock provider for local work
+- a provider registry for real and scaffold adapters
+- framework primitives for state, planning, comparison, and evaluation
 
-- make the package easy to install and modify
-- keep the provider abstraction honest about maturity
-- support local development with a deterministic mock provider
-- preserve clean API boundaries for prediction, planning, evaluation, and verification
-
-## Current implementation status
-
-- fully implemented in-repo: mock provider, package API, CLI, JSON persistence, evaluation/report rendering, verification bundles
-- scaffolded only: remote provider adapters
-- intentionally deferred: production REST server rebuild
+The goal is to provide a clean, public-facing framework surface that fits naturally into the Python ML ecosystem.

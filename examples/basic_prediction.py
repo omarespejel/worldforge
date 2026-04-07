@@ -1,4 +1,4 @@
-"""Basic prediction example for the pure-Python WorldForge package."""
+"""Basic prediction example for WorldForge."""
 
 from worldforge import Action, BBox, Position, SceneObject, WorldForge
 
@@ -18,7 +18,7 @@ def main() -> None:
     prediction = world.predict(Action.move_to(0.3, 0.8, 0.0), steps=2)
     print("prediction:", prediction.provider, prediction.physics_score)
 
-    plan = world.plan(goal="move the mug to the right", verify_backend="mock")
+    plan = world.plan(goal="move the mug to the right")
     print("plan:", plan.action_count, plan.success_probability)
 
     report = world.evaluate("physics")

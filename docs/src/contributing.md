@@ -1,28 +1,16 @@
 # Contributing
 
-## Setup
-
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e .
-```
-
-## Checks
-
-```bash
+uv sync --group dev
 make lint
 make test
 make test-package
 ```
 
-## Provider work
+Key directories:
 
-Provider adapters live in `python/worldforge/providers/`.
+- `src/worldforge/`
+- `tests/`
+- `examples/`
 
-Rules:
-
-- keep capability declarations honest
-- make missing credentials fail clearly
-- add tests for registration and at least one working flow
-- update README and spec when provider behavior changes
+Provider work belongs in `src/worldforge/providers/`. Keep adapter capabilities honest and add tests for every new supported path.

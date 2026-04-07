@@ -4,7 +4,6 @@
 - [Quick Start](./quickstart.md)
 - [Architecture](./architecture.md)
 - [Providers](./providers/README.md)
-- [API](./api/python.md)
-- [REST Guidance](./api/rest.md)
+- [Python API](./api/python.md)
 - [Evaluation](./evaluation.md)
 - [Contributing](./contributing.md)

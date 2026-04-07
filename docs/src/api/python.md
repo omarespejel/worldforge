@@ -1,7 +1,5 @@
 # Python API
 
-WorldForge is a pure-Python package. There is no extension-module bridge in the current architecture.
-
 ## Entry points
 
 ```python
@@ -10,53 +8,28 @@ from worldforge import WorldForge, World, Action
 
 ## `WorldForge`
 
-Responsibilities:
+Top-level framework object responsible for:
 
-- register providers
-- create and persist worlds
-- expose generation, transfer, reasoning, and embedding helpers
-
-Example:
-
-```python
-forge = WorldForge(state_dir=".worldforge/state")
-world = forge.create_world("kitchen", provider="mock")
-```
+- provider registration
+- world creation and persistence
+- generation, transfer, reasoning, and embedding helpers
 
 ## `World`
 
-Responsibilities:
+Stateful runtime object responsible for:
 
-- manage scene objects and history
-- run predictions
-- compare providers
-- produce plans
-- generate verification bundles
-
-Example:
-
-```python
-prediction = world.predict(Action.move_to(0.3, 0.8, 0.0), steps=2)
-comparison = world.compare(Action.move_to(0.4, 0.8, 0.0), ["mock"], steps=1)
-plan = world.plan(goal="move the mug to the right", verify_backend="mock")
-```
+- scene object management
+- prediction
+- comparison
+- planning
+- evaluation
 
 ## Evaluation
 
 ```python
-from worldforge.eval import EvalSuite
+from worldforge.evaluation import EvaluationSuite
 
-suite = EvalSuite.from_builtin("physics")
-report = suite.run_report_data("mock", world=world, forge=forge)
+suite = EvaluationSuite.from_builtin("physics")
+report = suite.run_report("mock", forge=forge)
 print(report.to_markdown())
-```
-
-## Verification
-
-```python
-from worldforge.verify import ZkVerifier
-
-bundle = prediction.prove_inference_bundle()
-report = ZkVerifier().verify_inference_bundle(bundle)
-print(report.current_verification.valid)
 ```

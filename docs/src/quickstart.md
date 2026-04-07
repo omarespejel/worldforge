@@ -3,13 +3,13 @@
 ## Install
 
 ```bash
-python -m pip install worldforge
+uv add worldforge
 ```
 
 For local development:
 
 ```bash
-python -m pip install -e .
+uv sync --group dev
 ```
 
 ## Create a world
@@ -35,7 +35,7 @@ print(prediction.physics_score)
 ## Plan and evaluate
 
 ```python
-plan = world.plan(goal="move the mug to the right", verify_backend="mock")
+plan = world.plan(goal="move the mug to the right")
 print(plan.action_count, plan.success_probability)
 
 report = world.evaluate("physics")
@@ -45,7 +45,7 @@ print(report.to_markdown())
 ## CLI
 
 ```bash
-worldforge providers
-worldforge predict kitchen --provider mock --x 0.3 --y 0.8 --z 0.0 --steps 2
-worldforge eval --suite physics --provider mock
+uv run worldforge providers
+uv run worldforge predict kitchen --provider mock --x 0.3 --y 0.8 --z 0.0 --steps 2
+uv run worldforge eval --suite physics --provider mock
 ```

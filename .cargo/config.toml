@@ -1,5 +1,0 @@
-[env]
-# PyO3 0.22 does not yet recognize Python 3.14 as a supported interpreter.
-# This keeps workspace builds working on newer local interpreters via the
-# stable ABI until the dependency is upgraded.
-PYO3_USE_ABI3_FORWARD_COMPATIBILITY = "1"

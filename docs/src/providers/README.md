@@ -1,25 +1,23 @@
 # Providers
 
-## Implemented provider
+## Implemented in-repo
 
 | Provider | Status | Notes |
 | --- | --- | --- |
-| `mock` | implemented | deterministic local provider used by tests and examples |
+| `mock` | implemented | deterministic local provider used by tests, examples, and framework development |
 
-## Scaffolded adapters
+## Scaffold adapters
 
 | Provider | Env var | Status |
 | --- | --- | --- |
-| `cosmos` | `NVIDIA_API_KEY` | Python adapter scaffold |
-| `runway` | `RUNWAY_API_SECRET` | Python adapter scaffold |
-| `jepa` | `JEPA_MODEL_PATH` | Python adapter scaffold |
-| `genie` | `GENIE_API_KEY` | Python adapter scaffold |
+| `cosmos` | `NVIDIA_API_KEY` | scaffold adapter |
+| `runway` | `RUNWAY_API_SECRET` | scaffold adapter |
+| `jepa` | `JEPA_MODEL_PATH` | scaffold adapter |
+| `genie` | `GENIE_API_KEY` | scaffold adapter |
 
 ## Capability model
 
-Each provider declares capabilities through `ProviderCapabilities`.
-
-Current capability names:
+Providers can declare support for:
 
 - `predict`
 - `generate`
@@ -27,8 +25,3 @@ Current capability names:
 - `embed`
 - `plan`
 - `transfer`
-- `verify`
-
-## Rule
-
-Documentation and provider metadata must match real implementation depth. A scaffolded adapter is not a supported production integration.

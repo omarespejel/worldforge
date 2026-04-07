@@ -1,61 +1,64 @@
-"""Core domain types for the pure-Python WorldForge runtime."""
+"""Core models and serialization helpers for WorldForge."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from hashlib import sha256
 import json
 import math
-import os
-from typing import Any, Iterable
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+from hashlib import sha256
+from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
-
-JsonDict = dict[str, Any]
+JSONDict = dict[str, Any]
 
 
 def generate_id(prefix: str) -> str:
-    """Return a stable-looking opaque identifier with the given prefix."""
+    """Return an opaque identifier with a stable prefix."""
 
     return f"{prefix}_{uuid4().hex[:12]}"
 
 
-def json_dumps(payload: Any) -> str:
-    """Serialize payloads deterministically for persistence and verification."""
+def dump_json(payload: Any) -> str:
+    """Serialize data with deterministic formatting."""
 
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
-def json_hash(payload: Any) -> str:
-    """Hash any JSON-serializable payload."""
+def ensure_directory(path: Path) -> None:
+    """Create a directory tree when it does not already exist."""
 
-    return sha256(json_dumps(payload).encode("utf-8")).hexdigest()
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def average(values: Iterable[float]) -> float:
+    """Return the arithmetic mean for a non-empty iterable."""
+
+    numbers = list(values)
+    if not numbers:
+        return 0.0
+    return sum(numbers) / len(numbers)
 
 
 def deterministic_floats(seed: str, size: int) -> list[float]:
-    """Generate deterministic floats in [0, 1) from a text seed."""
+    """Generate deterministic floats in the range [0, 1)."""
 
     digest = sha256(seed.encode("utf-8")).digest()
     values: list[float] = []
     counter = 0
     while len(values) < size:
         block = sha256(digest + counter.to_bytes(4, "big")).digest()
-        for idx in range(0, len(block), 4):
+        for index in range(0, len(block), 4):
             if len(values) >= size:
                 break
-            chunk = int.from_bytes(block[idx : idx + 4], "big")
+            chunk = int.from_bytes(block[index : index + 4], "big")
             values.append((chunk % 10_000) / 10_000.0)
         counter += 1
     return values
 
 
-def ensure_directory(path: str) -> None:
-    """Create a directory tree if it does not already exist."""
-
-    os.makedirs(path, exist_ok=True)
-
-
-@dataclass(slots=True)
+@dataclass(slots=True, frozen=True)
 class Position:
     """A 3D position in world coordinates."""
 
@@ -63,22 +66,22 @@ class Position:
     y: float
     z: float
 
-    def to_dict(self) -> JsonDict:
+    def to_dict(self) -> JSONDict:
         return {"x": self.x, "y": self.y, "z": self.z}
 
     @classmethod
-    def from_dict(cls, data: JsonDict) -> "Position":
+    def from_dict(cls, payload: JSONDict) -> Position:
         return cls(
-            x=float(data["x"]),
-            y=float(data["y"]),
-            z=float(data["z"]),
+            x=float(payload["x"]),
+            y=float(payload["y"]),
+            z=float(payload["z"]),
         )
 
-    def distance_to(self, other: "Position") -> float:
+    def distance_to(self, other: Position) -> float:
         return math.dist((self.x, self.y, self.z), (other.x, other.y, other.z))
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, frozen=True)
 class Rotation:
     """A quaternion rotation."""
 
@@ -87,52 +90,55 @@ class Rotation:
     y: float = 0.0
     z: float = 0.0
 
-    def to_dict(self) -> JsonDict:
+    def to_dict(self) -> JSONDict:
         return {"w": self.w, "x": self.x, "y": self.y, "z": self.z}
 
     @classmethod
-    def from_dict(cls, data: JsonDict | None) -> "Rotation":
-        if data is None:
+    def from_dict(cls, payload: JSONDict | None) -> Rotation:
+        if payload is None:
             return cls()
         return cls(
-            w=float(data.get("w", 1.0)),
-            x=float(data.get("x", 0.0)),
-            y=float(data.get("y", 0.0)),
-            z=float(data.get("z", 0.0)),
+            w=float(payload.get("w", 1.0)),
+            x=float(payload.get("x", 0.0)),
+            y=float(payload.get("y", 0.0)),
+            z=float(payload.get("z", 0.0)),
         )
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, frozen=True)
 class Pose:
     """A 6DoF pose."""
 
     position: Position
     rotation: Rotation = field(default_factory=Rotation)
 
-    def to_dict(self) -> JsonDict:
+    def to_dict(self) -> JSONDict:
         return {"position": self.position.to_dict(), "rotation": self.rotation.to_dict()}
 
     @classmethod
-    def from_dict(cls, data: JsonDict) -> "Pose":
+    def from_dict(cls, payload: JSONDict) -> Pose:
         return cls(
-            position=Position.from_dict(data["position"]),
-            rotation=Rotation.from_dict(data.get("rotation")),
+            position=Position.from_dict(payload["position"]),
+            rotation=Rotation.from_dict(payload.get("rotation")),
         )
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, frozen=True)
 class BBox:
     """Axis-aligned bounding box."""
 
     min: Position
     max: Position
 
-    def to_dict(self) -> JsonDict:
+    def to_dict(self) -> JSONDict:
         return {"min": self.min.to_dict(), "max": self.max.to_dict()}
 
     @classmethod
-    def from_dict(cls, data: JsonDict) -> "BBox":
-        return cls(min=Position.from_dict(data["min"]), max=Position.from_dict(data["max"]))
+    def from_dict(cls, payload: JSONDict) -> BBox:
+        return cls(
+            min=Position.from_dict(payload["min"]),
+            max=Position.from_dict(payload["max"]),
+        )
 
 
 @dataclass(slots=True)
@@ -140,10 +146,10 @@ class Action:
     """A structured action applied to a world."""
 
     kind: str
-    parameters: JsonDict = field(default_factory=dict)
+    parameters: JSONDict = field(default_factory=dict)
 
     @staticmethod
-    def move_to(x: float, y: float, z: float, speed: float = 1.0) -> "Action":
+    def move_to(x: float, y: float, z: float, speed: float = 1.0) -> Action:
         return Action(
             "move_to",
             {
@@ -157,40 +163,40 @@ class Action:
         name: str,
         position: Position | None = None,
         bbox: BBox | None = None,
-    ) -> "Action":
-        position = position or Position(0.0, 0.5, 0.0)
-        bbox = bbox or BBox(
-            Position(position.x - 0.05, position.y - 0.05, position.z - 0.05),
-            Position(position.x + 0.05, position.y + 0.05, position.z + 0.05),
+    ) -> Action:
+        object_position = position or Position(0.0, 0.5, 0.0)
+        object_bbox = bbox or BBox(
+            Position(object_position.x - 0.05, object_position.y - 0.05, object_position.z - 0.05),
+            Position(object_position.x + 0.05, object_position.y + 0.05, object_position.z + 0.05),
         )
         return Action(
             "spawn_object",
             {
                 "name": name,
-                "position": position.to_dict(),
-                "bbox": bbox.to_dict(),
+                "position": object_position.to_dict(),
+                "bbox": object_bbox.to_dict(),
             },
         )
 
     @staticmethod
-    def from_dict(data: JsonDict) -> "Action":
-        if "type" in data:
-            return Action(str(data["type"]), dict(data.get("parameters", {})))
-        if len(data) != 1:
-            raise ValueError("Action.from_dict expects either {'type': ...} or a single-key mapping.")
-        kind, params = next(iter(data.items()))
-        return Action(str(kind), dict(params))
+    def from_dict(payload: JSONDict) -> Action:
+        if "type" in payload:
+            return Action(str(payload["type"]), dict(payload.get("parameters", {})))
+        if len(payload) != 1:
+            raise ValueError("Action.from_dict expects {'type': ...} or a single-key mapping.")
+        kind, parameters = next(iter(payload.items()))
+        return Action(str(kind), dict(parameters))
 
-    def to_dict(self) -> JsonDict:
+    def to_dict(self) -> JSONDict:
         return {"type": self.kind, "parameters": dict(self.parameters)}
 
     def to_json(self) -> str:
-        return json_dumps(self.to_dict())
+        return dump_json(self.to_dict())
 
 
 @dataclass(slots=True)
 class SceneObjectPatch:
-    """Partial update for a scene object."""
+    """Partial mutation for a scene object."""
 
     name: str | None = None
     position: Position | None = None
@@ -215,13 +221,13 @@ class SceneObject:
     bbox: BBox
     id: str = field(default_factory=lambda: generate_id("obj"))
     is_graspable: bool = False
-    metadata: JsonDict = field(default_factory=dict)
+    metadata: JSONDict = field(default_factory=dict)
 
     @property
     def pose(self) -> Pose:
         return Pose(position=self.position)
 
-    def copy(self) -> "SceneObject":
+    def copy(self) -> SceneObject:
         return SceneObject.from_dict(self.to_dict())
 
     def apply_patch(self, patch: SceneObjectPatch) -> None:
@@ -232,7 +238,7 @@ class SceneObject:
         if patch.graspable is not None:
             self.is_graspable = patch.graspable
 
-    def to_dict(self) -> JsonDict:
+    def to_dict(self) -> JSONDict:
         return {
             "id": self.id,
             "name": self.name,
@@ -243,15 +249,19 @@ class SceneObject:
         }
 
     @classmethod
-    def from_dict(cls, data: JsonDict) -> "SceneObject":
-        pose = Pose.from_dict(data["pose"]) if "pose" in data else Pose(Position.from_dict(data["position"]))
+    def from_dict(cls, payload: JSONDict) -> SceneObject:
+        pose = (
+            Pose.from_dict(payload["pose"])
+            if "pose" in payload
+            else Pose(Position.from_dict(payload["position"]))
+        )
         return cls(
-            id=str(data.get("id") or generate_id("obj")),
-            name=str(data["name"]),
+            id=str(payload.get("id") or generate_id("obj")),
+            name=str(payload["name"]),
             position=pose.position,
-            bbox=BBox.from_dict(data["bbox"]),
-            is_graspable=bool(data.get("is_graspable", False)),
-            metadata=dict(data.get("metadata", {})),
+            bbox=BBox.from_dict(payload["bbox"]),
+            is_graspable=bool(payload.get("is_graspable", False)),
+            metadata=dict(payload.get("metadata", {})),
         )
 
 
@@ -265,9 +275,8 @@ class ProviderCapabilities:
     embed: bool = False
     plan: bool = False
     transfer: bool = False
-    verify: bool = False
 
-    def to_dict(self) -> JsonDict:
+    def to_dict(self) -> JSONDict:
         return {
             "predict": self.predict,
             "generate": self.generate,
@@ -275,14 +284,13 @@ class ProviderCapabilities:
             "embed": self.embed,
             "plan": self.plan,
             "transfer": self.transfer,
-            "verify": self.verify,
         }
 
     def supports(self, capability: str) -> bool:
         return bool(getattr(self, capability, False))
 
     def enabled_names(self) -> list[str]:
-        return [name for name, value in self.to_dict().items() if value]
+        return [name for name, enabled in self.to_dict().items() if enabled]
 
 
 @dataclass(slots=True)
@@ -294,7 +302,7 @@ class ProviderInfo:
     is_local: bool
     description: str = ""
 
-    def to_dict(self) -> JsonDict:
+    def to_dict(self) -> JSONDict:
         return {
             "name": self.name,
             "capabilities": self.capabilities.to_dict(),
@@ -305,14 +313,14 @@ class ProviderInfo:
 
 @dataclass(slots=True)
 class ProviderHealth:
-    """A lightweight provider health report."""
+    """Health information for a provider."""
 
     name: str
     healthy: bool
     latency_ms: float
     details: str = ""
 
-    def to_dict(self) -> JsonDict:
+    def to_dict(self) -> JSONDict:
         return {
             "name": self.name,
             "healthy": self.healthy,
@@ -329,18 +337,18 @@ class VideoClip:
     fps: float
     resolution: tuple[int, int]
     duration_seconds: float
-    metadata: JsonDict = field(default_factory=dict)
+    metadata: JSONDict = field(default_factory=dict)
 
     @property
     def frame_count(self) -> int:
         return len(self.frames)
 
-    def to_dict(self) -> JsonDict:
+    def to_dict(self) -> JSONDict:
         return {
+            "frame_count": self.frame_count,
             "fps": self.fps,
             "resolution": list(self.resolution),
             "duration_seconds": self.duration_seconds,
-            "frame_count": self.frame_count,
             "metadata": dict(self.metadata),
         }
 
@@ -370,14 +378,14 @@ class EmbeddingResult:
 
 @dataclass(slots=True)
 class HistoryEntry:
-    """A recorded state transition inside a world."""
+    """A recorded world snapshot."""
 
     step: int
-    state: JsonDict
+    state: JSONDict
     summary: str
     action_json: str | None = None
 
-    def to_dict(self) -> JsonDict:
+    def to_dict(self) -> JSONDict:
         return {
             "step": self.step,
             "state": self.state,
@@ -386,19 +394,10 @@ class HistoryEntry:
         }
 
     @classmethod
-    def from_dict(cls, data: JsonDict) -> "HistoryEntry":
+    def from_dict(cls, payload: JSONDict) -> HistoryEntry:
         return cls(
-            step=int(data["step"]),
-            state=dict(data["state"]),
-            summary=str(data.get("summary", "")),
-            action_json=data.get("action_json"),
+            step=int(payload["step"]),
+            state=dict(payload["state"]),
+            summary=str(payload.get("summary", "")),
+            action_json=payload.get("action_json"),
         )
-
-
-def average(values: Iterable[float]) -> float:
-    """Return the arithmetic mean for a non-empty iterable."""
-
-    values = list(values)
-    if not values:
-        return 0.0
-    return sum(values) / len(values)

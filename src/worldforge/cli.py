@@ -1,4 +1,4 @@
-"""Command line interface for the pure-Python WorldForge package."""
+"""Command line interface for WorldForge."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import argparse
 import json
 
 from worldforge import Action, WorldForge
-from worldforge.eval import EvalSuite
+from worldforge.evaluation import EvaluationSuite
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -14,7 +14,7 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     providers = subparsers.add_parser("providers", help="List registered providers.")
-    providers.add_argument("--state-dir", default=".worldforge/state")
+    providers.add_argument("--state-dir", default=".worldforge/worlds")
 
     predict = subparsers.add_parser("predict", help="Run a deterministic prediction.")
     predict.add_argument("world_name")
@@ -23,12 +23,12 @@ def _build_parser() -> argparse.ArgumentParser:
     predict.add_argument("--y", type=float, required=True)
     predict.add_argument("--z", type=float, required=True)
     predict.add_argument("--steps", type=int, default=1)
-    predict.add_argument("--state-dir", default=".worldforge/state")
+    predict.add_argument("--state-dir", default=".worldforge/worlds")
 
     evaluate = subparsers.add_parser("eval", help="Run a built-in evaluation suite.")
     evaluate.add_argument("--suite", default="physics")
     evaluate.add_argument("--provider", default="mock")
-    evaluate.add_argument("--state-dir", default=".worldforge/state")
+    evaluate.add_argument("--state-dir", default=".worldforge/worlds")
 
     return parser
 
@@ -60,8 +60,8 @@ def main() -> int:
         return 0
 
     if args.command == "eval":
-        suite = EvalSuite.from_builtin(args.suite)
-        report = suite.run_report_data(args.provider, forge=forge)
+        suite = EvaluationSuite.from_builtin(args.suite)
+        report = suite.run_report(args.provider, forge=forge)
         print(report.to_markdown())
         return 0
 

@@ -1,27 +1,26 @@
 # Architecture
 
-WorldForge is organized as a small Python package with clear runtime boundaries.
+WorldForge follows a standard `src/` layout:
 
 ```text
-python/worldforge/
+src/worldforge/
 ├── __init__.py
-├── _core.py
-├── _runtime.py
 ├── cli.py
-├── providers/
-├── eval/
-└── verify/
+├── framework.py
+├── models.py
+├── evaluation/
+└── providers/
 ```
 
-## Layers
+## Module responsibilities
 
-### `_core.py`
+### `models.py`
 
-Domain types, serialization helpers, capability descriptors, and other shared primitives.
+Core domain objects and JSON serialization helpers.
 
-### `_runtime.py`
+### `framework.py`
 
-Stateful orchestration:
+Framework runtime:
 
 - `WorldForge`
 - `World`
@@ -31,19 +30,16 @@ Stateful orchestration:
 
 ### `providers/`
 
-Provider interfaces and adapters. The mock provider is the reference implementation. Remote adapters are intentionally scaffold-level until verified.
+Provider primitives and adapters. The mock provider is the reference implementation.
 
-### `eval/`
+### `evaluation/`
 
-Evaluation scenarios, suite runners, and report renderers.
+Evaluation suites, scenario runners, and report rendering.
 
-### `verify/`
+## Design principles
 
-Proof-shaped artifacts used for verification flows and integration planning.
-
-## Key decisions
-
-- Python-first core: no Rust bridge, no dual build pipeline
-- library-first surface: CLI wraps the package, not separate logic
-- JSON snapshots: simple persistence and easy debugging
-- honest capabilities: only supported operations are marketed as supported
+- Python-native API surface
+- typed public models
+- simple JSON persistence
+- honest provider capability reporting
+- deterministic local development path

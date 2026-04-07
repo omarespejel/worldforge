@@ -1,19 +1,17 @@
-# Build artifacts
-/target
-
 # Environment and secrets
 .env
 .env.*
 *.pem
 *.key
 
-# State storage (runtime data)
+# Framework runtime data
 .worldforge/
-.worldforge-python-tests/
 
 # IDE and editor files
 .idea/
 .vscode/
+.venv/
+.venv-*/
 *.swp
 *.swo
 *~
@@ -22,23 +20,22 @@
 .DS_Store
 Thumbs.db
 
-# Python artifacts (PyO3 builds)
+# Python artifacts
 __pycache__/
 *.pyc
 *.pyo
 *.egg-info/
 dist/
-*.whl
-python/worldforge/worldforge*.so
-python/worldforge/worldforge*.pyd
+build/
+.pytest_cache/
+.ruff_cache/
+.coverage
 
-# SQLite databases (runtime state)
+# Local data
 *.sqlite
 *.sqlite3
 *.db
 
-# Proptest regression files are checked in intentionally
-# proptest-regressions/
 **/.DS_Store
 .claude/tsc-cache/
 .claude/cache/

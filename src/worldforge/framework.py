@@ -1,19 +1,20 @@
-"""Runtime objects for the pure-Python WorldForge package."""
+"""Framework runtime objects for WorldForge."""
 
 from __future__ import annotations
 
+import json
+from collections.abc import Iterable, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
-import json
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any
 
-from worldforge._core import (
+from worldforge.models import (
     Action,
     BBox,
     EmbeddingResult,
     HistoryEntry,
-    JsonDict,
+    JSONDict,
     Position,
     ProviderHealth,
     ProviderInfo,
@@ -22,10 +23,9 @@ from worldforge._core import (
     SceneObjectPatch,
     VideoClip,
     average,
+    dump_json,
     ensure_directory,
     generate_id,
-    json_dumps,
-    json_hash,
 )
 from worldforge.providers import (
     BaseProvider,
@@ -33,16 +33,14 @@ from worldforge.providers import (
     GenieProvider,
     JepaProvider,
     MockProvider,
-    PredictionPayload,
     ProviderError,
     RunwayProvider,
 )
 
-
 SCHEMA_VERSION = 1
 
 
-def _clone_state(state: JsonDict) -> JsonDict:
+def _clone_state(state: JSONDict) -> JSONDict:
     return deepcopy(state)
 
 
@@ -50,7 +48,7 @@ def _normalize_provider_name(provider: str | None, fallback: str) -> str:
     return provider or fallback
 
 
-def _worlds_file(state_dir: Path, world_id: str) -> Path:
+def _world_file(state_dir: Path, world_id: str) -> Path:
     return state_dir / f"{world_id}.json"
 
 
@@ -62,27 +60,17 @@ class Prediction:
     confidence: float
     physics_score: float
     frames: list[bytes]
-    world_state: JsonDict
-    metadata: JsonDict
+    world_state: JSONDict
+    metadata: JSONDict
     latency_ms: float
-    _forge: "WorldForge"
-    _before_state: JsonDict
+    _forge: WorldForge
 
-    def output_world(self) -> "World":
+    def output_world(self) -> World:
         return World.from_state(self._forge, _clone_state(self.world_state))
-
-    def prove_inference_bundle(self, provider: str | None = None):  # type: ignore[no-untyped-def]
-        from worldforge.verify import prove_inference_transition_bundle
-
-        return prove_inference_transition_bundle(
-            json_dumps(self._before_state),
-            json_dumps(self.world_state),
-            provider=provider or self.provider,
-        )
 
 
 class Comparison:
-    """Result of comparing predictions across providers or runs."""
+    """Result of comparing multiple predictions."""
 
     def __init__(self, predictions: Sequence[Prediction]) -> None:
         self.results = list(predictions)
@@ -120,7 +108,7 @@ class Comparison:
         return "\n".join(rows)
 
     def to_json(self) -> str:
-        return json_dumps(
+        return dump_json(
             {
                 "predictions": [
                     {
@@ -153,9 +141,8 @@ class Plan:
         planner: str,
         provider: str,
         actions: Sequence[Action],
-        predicted_states: Sequence[JsonDict],
+        predicted_states: Sequence[JSONDict],
         success_probability: float,
-        verification_proof: Any = None,
     ) -> None:
         self.goal = goal
         self.planner = planner
@@ -163,13 +150,12 @@ class Plan:
         self.actions = list(actions)
         self.predicted_states = [_clone_state(state) for state in predicted_states]
         self.success_probability = success_probability
-        self.verification_proof = verification_proof
 
     @property
     def action_count(self) -> int:
         return len(self.actions)
 
-    def to_dict(self) -> JsonDict:
+    def to_dict(self) -> JSONDict:
         return {
             "goal": self.goal,
             "planner": self.planner,
@@ -178,51 +164,35 @@ class Plan:
             "action_count": self.action_count,
             "success_probability": self.success_probability,
             "predicted_states": self.predicted_states,
-            "verification_proof": self.verification_proof.to_dict() if self.verification_proof else None,
         }
 
     def to_json(self) -> str:
-        return json_dumps(self.to_dict())
-
-    def verification_proof_json(self) -> str:
-        if self.verification_proof is None:
-            return "null"
-        return json_dumps(self.verification_proof.to_dict())
-
-    def prove_guardrail_bundle(self):  # type: ignore[no-untyped-def]
-        from worldforge.verify import GuardrailBundle
-
-        return GuardrailBundle(
-            provider=self.provider,
-            actions=[action.to_dict() for action in self.actions],
-            claim_type="GuardrailCompliance",
-            plan_digest=json_hash(self.to_dict()),
-        )
+        return dump_json(self.to_dict())
 
 
 class PlanExecution:
     """Execution result for a plan."""
 
-    def __init__(self, final_world: "World", actions_applied: Sequence[Action]) -> None:
+    def __init__(self, final_world: World, actions_applied: Sequence[Action]) -> None:
         self._final_world = final_world
         self.actions_applied = list(actions_applied)
 
-    def final_world(self) -> "World":
+    def final_world(self) -> World:
         return self._final_world
 
 
 class World:
-    """Mutable world state bound to a provider and registry."""
+    """Mutable world state bound to a provider registry."""
 
     def __init__(
         self,
         name: str,
         provider: str = "mock",
         *,
-        forge: "WorldForge | None" = None,
+        forge: WorldForge | None = None,
         description: str = "",
         world_id: str | None = None,
-        metadata: JsonDict | None = None,
+        metadata: JSONDict | None = None,
     ) -> None:
         self._forge = forge or WorldForge()
         self.id = world_id or generate_id("world")
@@ -230,15 +200,14 @@ class World:
         self.provider = provider
         self.description = description
         self.step = 0
-        self.metadata: JsonDict = metadata.copy() if metadata else {}
+        self.metadata: JSONDict = metadata.copy() if metadata else {}
         self.metadata.setdefault("name", self.name)
         self.scene_objects: dict[str, SceneObject] = {}
         self._history: list[HistoryEntry] = []
-        self._last_prediction: Prediction | None = None
         self._record_history(summary="world initialized", action=None)
 
     @classmethod
-    def from_state(cls, forge: "WorldForge", state: JsonDict) -> "World":
+    def from_state(cls, forge: WorldForge, state: JSONDict) -> World:
         world = cls(
             name=str(state["name"]),
             provider=str(state["provider"]),
@@ -252,11 +221,10 @@ class World:
             object_id: SceneObject.from_dict(object_state)
             for object_id, object_state in state.get("scene", {}).get("objects", {}).items()
         }
-        world._history = [
-            HistoryEntry.from_dict(entry)
-            for entry in state.get("history", [])
-        ] or [
-            HistoryEntry(step=world.step, state=world._snapshot(), summary="world restored", action_json=None)
+        world._history = [HistoryEntry.from_dict(entry) for entry in state.get("history", [])] or [
+            HistoryEntry(
+                step=world.step, state=world._snapshot(), summary="world restored", action_json=None
+            )
         ]
         return world
 
@@ -268,7 +236,7 @@ class World:
     def history_length(self) -> int:
         return len(self._history)
 
-    def _snapshot(self) -> JsonDict:
+    def _snapshot(self) -> JSONDict:
         return {
             "schema_version": SCHEMA_VERSION,
             "id": self.id,
@@ -284,12 +252,7 @@ class World:
             "metadata": dict(self.metadata),
         }
 
-    def _export_state(self) -> JsonDict:
-        state = self._snapshot()
-        state["history"] = [entry.to_dict() for entry in self._history]
-        return state
-
-    def _apply_state(self, state: JsonDict, *, preserve_history: bool = False) -> None:
+    def _apply_state(self, state: JSONDict, *, preserve_history: bool = False) -> None:
         self.id = str(state["id"])
         self.name = str(state["name"])
         self.provider = str(state["provider"])
@@ -302,10 +265,14 @@ class World:
         }
         if not preserve_history:
             self._history = [
-                HistoryEntry.from_dict(entry)
-                for entry in state.get("history", [])
+                HistoryEntry.from_dict(entry) for entry in state.get("history", [])
             ] or [
-                HistoryEntry(step=self.step, state=self._snapshot(), summary="world restored", action_json=None)
+                HistoryEntry(
+                    step=self.step,
+                    state=self._snapshot(),
+                    summary="world restored",
+                    action_json=None,
+                )
             ]
 
     def _record_history(self, *, summary: str, action: Action | None) -> None:
@@ -318,11 +285,13 @@ class World:
             )
         )
 
-    def to_dict(self) -> JsonDict:
-        return self._export_state()
+    def to_dict(self) -> JSONDict:
+        state = self._snapshot()
+        state["history"] = [entry.to_dict() for entry in self._history]
+        return state
 
     def to_json(self) -> str:
-        return json_dumps(self.to_dict())
+        return dump_json(self.to_dict())
 
     def add_object(self, obj: SceneObject) -> SceneObject:
         self.scene_objects[obj.id] = obj.copy()
@@ -336,13 +305,13 @@ class World:
         return [obj.copy() for obj in self.scene_objects.values()]
 
     def get_object_by_id(self, object_id: str) -> SceneObject | None:
-        obj = self.scene_objects.get(object_id)
-        return obj.copy() if obj else None
+        scene_object = self.scene_objects.get(object_id)
+        return scene_object.copy() if scene_object else None
 
     def update_object_patch(self, object_id: str, patch: SceneObjectPatch) -> SceneObject:
-        obj = self.scene_objects[object_id]
-        obj.apply_patch(patch)
-        return obj.copy()
+        scene_object = self.scene_objects[object_id]
+        scene_object.apply_patch(patch)
+        return scene_object.copy()
 
     def remove_object_by_id(self, object_id: str) -> SceneObject | None:
         removed = self.scene_objects.pop(object_id, None)
@@ -351,7 +320,7 @@ class World:
     def history(self) -> list[HistoryEntry]:
         return [HistoryEntry.from_dict(entry.to_dict()) for entry in self._history]
 
-    def history_state(self, index: int) -> "World":
+    def history_state(self, index: int) -> World:
         entry = self._history[index]
         state = _clone_state(entry.state)
         state["history"] = [item.to_dict() for item in self._history[: index + 1]]
@@ -366,15 +335,13 @@ class World:
 
     def predict(self, action: Action, steps: int = 1, provider: str | None = None) -> Prediction:
         selected_provider = _normalize_provider_name(provider, self.provider)
-        before_state = self._snapshot()
-        payload = self._provider(selected_provider).predict(before_state, action, steps)
-        after_state = _clone_state(payload.state)
-        after_state["history"] = [entry.to_dict() for entry in self._history]
-        self._apply_state(after_state, preserve_history=True)
+        payload = self._provider(selected_provider).predict(self._snapshot(), action, steps)
+        next_state = _clone_state(payload.state)
+        self._apply_state(next_state, preserve_history=True)
         self.provider = selected_provider
         self.metadata["name"] = self.name
         self._record_history(summary=f"predicted via {selected_provider}", action=action)
-        prediction = Prediction(
+        return Prediction(
             provider=selected_provider,
             confidence=payload.confidence,
             physics_score=payload.physics_score,
@@ -383,16 +350,13 @@ class World:
             metadata=dict(payload.metadata),
             latency_ms=payload.latency_ms,
             _forge=self._forge,
-            _before_state=before_state,
         )
-        self._last_prediction = prediction
-        return prediction
 
     def compare(self, action: Action, providers: Sequence[str], steps: int = 1) -> Comparison:
-        before_state = self._snapshot()
+        state = self._snapshot()
         predictions: list[Prediction] = []
         for provider_name in providers:
-            payload = self._provider(provider_name).predict(before_state, action, steps)
+            payload = self._provider(provider_name).predict(state, action, steps)
             predictions.append(
                 Prediction(
                     provider=provider_name,
@@ -403,7 +367,6 @@ class World:
                     metadata=dict(payload.metadata),
                     latency_ms=payload.latency_ms,
                     _forge=self._forge,
-                    _before_state=before_state,
                 )
             )
         return Comparison(predictions)
@@ -449,7 +412,6 @@ class World:
         planner: str = "cem",
         max_steps: int = 20,
         provider: str | None = None,
-        verify_backend: str | None = None,
         **_: Any,
     ) -> Plan:
         selected_provider = _normalize_provider_name(provider, self.provider)
@@ -458,29 +420,13 @@ class World:
         actions = actions[: max(1, min(max_steps, len(actions)))]
 
         simulated_state = self._snapshot()
-        predicted_states: list[JsonDict] = []
+        predicted_states: list[JSONDict] = []
         scores: list[float] = []
         for action in actions:
             payload = self._provider(selected_provider).predict(simulated_state, action, 1)
             simulated_state = _clone_state(payload.state)
             predicted_states.append(simulated_state)
             scores.append(payload.physics_score)
-
-        verification_proof = None
-        if verify_backend:
-            from worldforge.verify import ZkProof
-
-            verification_proof = ZkProof(
-                backend=verify_backend.title(),
-                claim_type="GuardrailCompliance",
-                payload_hash=json_hash(
-                    {
-                        "provider": selected_provider,
-                        "goal": resolved_goal,
-                        "actions": [action.to_dict() for action in actions],
-                    }
-                ),
-            )
 
         return Plan(
             goal=resolved_goal,
@@ -489,7 +435,6 @@ class World:
             actions=actions,
             predicted_states=predicted_states,
             success_probability=max(0.65, min(0.98, average(scores) if scores else 0.7)),
-            verification_proof=verification_proof,
         )
 
     def execute_plan(self, plan: Plan, *_: Any) -> PlanExecution:
@@ -499,41 +444,26 @@ class World:
         return PlanExecution(executed_world, plan.actions)
 
     def evaluate(self, suite: str = "physics"):  # type: ignore[no-untyped-def]
-        from worldforge.eval import EvalSuite
+        from worldforge.evaluation import EvaluationSuite
 
-        return EvalSuite.from_builtin(suite).run_report_data(self.provider, world=self, forge=self._forge)
-
-    def prove_latest_inference_bundle(self):  # type: ignore[no-untyped-def]
-        if self._last_prediction is None:
-            raise ValueError("No prediction has been executed yet.")
-        return self._last_prediction.prove_inference_bundle(self._last_prediction.provider)
-
-    def prove_provenance_bundle(self, *, source_label: str, timestamp: int):  # type: ignore[no-untyped-def]
-        from worldforge.verify import ProvenanceBundle
-
-        return ProvenanceBundle(
-            provider=self.provider,
-            source_label=source_label,
-            timestamp=timestamp,
-            state_hash=json_hash(self._snapshot()),
+        return EvaluationSuite.from_builtin(suite).run_report(
+            self.provider,
+            world=self,
+            forge=self._forge,
         )
 
 
 class WorldForge:
-    """Top-level entry point for provider orchestration and state persistence."""
+    """Top-level entry point for provider orchestration and JSON persistence."""
 
     def __init__(
         self,
         *,
-        state_dir: str | None = None,
-        state_backend: str | None = None,
-        state_db_path: str | None = None,
+        state_dir: str | Path | None = None,
         auto_register_remote: bool = True,
     ) -> None:
-        del state_backend
-        base_dir = state_dir or state_db_path or ".worldforge/state"
-        self.state_dir = Path(base_dir).expanduser().resolve()
-        ensure_directory(str(self.state_dir))
+        self.state_dir = Path(state_dir or ".worldforge/worlds").expanduser().resolve()
+        ensure_directory(self.state_dir)
         self._providers: dict[str, BaseProvider] = {}
         self.register_provider(MockProvider())
         if auto_register_remote:
@@ -556,11 +486,11 @@ class WorldForge:
     def list_providers(self) -> list[ProviderInfo]:
         return [self._providers[name].info() for name in self.providers()]
 
-    def get_provider(self, name: str) -> ProviderInfo:
-        return self.provider_info(name)
-
     def provider_info(self, name: str) -> ProviderInfo:
         return self._require_provider(name).info()
+
+    def get_provider(self, name: str) -> ProviderInfo:
+        return self.provider_info(name)
 
     def provider_health(self, name: str) -> ProviderHealth:
         return self._require_provider(name).health()
@@ -569,15 +499,13 @@ class WorldForge:
         names = self.providers()
         if capability:
             names = [
-                name
-                for name in names
-                if self._providers[name].capabilities.supports(capability)
+                name for name in names if self._providers[name].capabilities.supports(capability)
             ]
         return [self._providers[name].health() for name in names]
 
-    def create_world(self, name: str, provider: str = "mock") -> World:
+    def create_world(self, name: str, provider: str = "mock", *, description: str = "") -> World:
         self._require_provider(provider)
-        return World(name=name, provider=provider, forge=self)
+        return World(name=name, provider=provider, forge=self, description=description)
 
     def create_world_from_prompt(
         self,
@@ -586,8 +514,7 @@ class WorldForge:
         provider: str = "mock",
         name: str | None = None,
     ) -> World:
-        world = self.create_world(name or "prompt-world", provider)
-        world.description = prompt
+        world = self.create_world(name or "prompt-world", provider, description=prompt)
         prompt_lower = prompt.lower()
         if "kitchen" in prompt_lower:
             world.add_object(
@@ -619,12 +546,12 @@ class WorldForge:
         return world
 
     def save_world(self, world: World) -> str:
-        path = _worlds_file(self.state_dir, world.id)
+        path = _world_file(self.state_dir, world.id)
         path.write_text(world.to_json(), encoding="utf-8")
         return world.id
 
     def load_world(self, world_id: str) -> World:
-        path = _worlds_file(self.state_dir, world_id)
+        path = _world_file(self.state_dir, world_id)
         return World.from_state(self, json.loads(path.read_text(encoding="utf-8")))
 
     def list_worlds(self) -> list[str]:
@@ -634,7 +561,7 @@ class WorldForge:
         if format != "json":
             raise ValueError("Only json export is currently supported.")
         world = self.load_world(world_id)
-        return json_dumps({"schema_version": SCHEMA_VERSION, "state": world.to_dict()})
+        return dump_json({"schema_version": SCHEMA_VERSION, "state": world.to_dict()})
 
     def import_world(
         self,
@@ -657,7 +584,9 @@ class WorldForge:
             state["metadata"] = metadata
         return World.from_state(self, state)
 
-    def fork_world(self, world_id: str, *, history_index: int = 0, name: str | None = None) -> World:
+    def fork_world(
+        self, world_id: str, *, history_index: int = 0, name: str | None = None
+    ) -> World:
         fork = self.load_world(world_id).history_state(history_index)
         if name:
             fork.name = name
@@ -705,48 +634,15 @@ def list_eval_suites() -> list[str]:
 
 
 def run_eval(suite: str, provider: str, *, forge: WorldForge | None = None):
-    """Run a built-in evaluation suite and return raw scenario results."""
+    """Run a built-in evaluation suite and return scenario-level results."""
 
-    from worldforge.eval import EvalSuite
+    from worldforge.evaluation import EvaluationSuite
 
     active_forge = forge or WorldForge()
-    return EvalSuite.from_builtin(suite).run(provider, forge=active_forge)
-
-
-def prove_inference(model_bytes: bytes, input_bytes: bytes, output_bytes: bytes):  # type: ignore[no-untyped-def]
-    """Create a simple proof artifact for an inference triplet."""
-
-    from worldforge.verify import ZkProof
-
-    return ZkProof(
-        backend="Mock",
-        claim_type="Inference",
-        payload_hash=json_hash(
-            {
-                "model": model_bytes.hex(),
-                "input": input_bytes.hex(),
-                "output": output_bytes.hex(),
-            }
-        ),
-    )
+    return EvaluationSuite.from_builtin(suite).run(provider, forge=active_forge)
 
 
 def plan(world: World, *args: Any, **kwargs: Any) -> Plan:
-    """Module-level alias for `World.plan()`."""
+    """Module-level alias for ``World.plan()``."""
 
     return world.plan(*args, **kwargs)
-
-
-__all__ = [
-    "Comparison",
-    "Plan",
-    "PlanExecution",
-    "Prediction",
-    "SCHEMA_VERSION",
-    "World",
-    "WorldForge",
-    "list_eval_suites",
-    "plan",
-    "prove_inference",
-    "run_eval",
-]
