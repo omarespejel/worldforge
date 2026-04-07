@@ -1,10 +1,55 @@
-"""Python package shim for the WorldForge extension module."""
+"""WorldForge: Python-first orchestration for world model workflows."""
 
-from . import worldforge as _worldforge
-from .worldforge import *  # noqa: F401,F403
+from worldforge._core import (
+    Action,
+    BBox,
+    EmbeddingResult,
+    Position,
+    Pose,
+    ProviderCapabilities,
+    ProviderHealth,
+    ProviderInfo,
+    ReasoningResult,
+    Rotation,
+    SceneObject,
+    SceneObjectPatch,
+    VideoClip,
+)
+from worldforge._runtime import (
+    Comparison,
+    Plan,
+    PlanExecution,
+    Prediction,
+    World,
+    WorldForge,
+    list_eval_suites,
+    plan,
+    prove_inference,
+    run_eval,
+)
 
-__doc__ = _worldforge.__doc__
-if hasattr(_worldforge, "__all__"):
-    __all__ = _worldforge.__all__
-
-del _worldforge
+__all__ = [
+    "Action",
+    "BBox",
+    "Comparison",
+    "EmbeddingResult",
+    "Plan",
+    "PlanExecution",
+    "Position",
+    "Pose",
+    "Prediction",
+    "ProviderCapabilities",
+    "ProviderHealth",
+    "ProviderInfo",
+    "ReasoningResult",
+    "Rotation",
+    "SceneObject",
+    "SceneObjectPatch",
+    "VideoClip",
+    "World",
+    "WorldForge",
+    "list_eval_suites",
+    "plan",
+    "prove_inference",
+    "run_eval",
+]

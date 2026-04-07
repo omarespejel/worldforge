@@ -1,116 +1,51 @@
 # Quick Start
 
-This guide walks you through installing WorldForge and running your first
-prediction in under five minutes.
-
-## Prerequisites
-
-- Rust 1.80+ (for building from source)
-- Python 3.10+ (for Python bindings)
-- At least one provider API key (or use the built-in Mock provider)
-
-## Installation
-
-### Rust Library
-
-Add WorldForge crates to your `Cargo.toml`:
-
-```toml
-[dependencies]
-worldforge-core = "0.1"
-worldforge-providers = "0.1"
-```
-
-Or install via cargo:
+## Install
 
 ```bash
-cargo add worldforge-core worldforge-providers
+python -m pip install worldforge
 ```
 
-### Python Bindings
+For local development:
 
 ```bash
-pip install worldforge
+python -m pip install -e .
 ```
 
-### CLI
-
-```bash
-cargo install worldforge-cli
-```
-
-## Configure Provider Credentials
-
-WorldForge auto-detects providers from environment variables:
-
-```bash
-export NVIDIA_API_KEY="your-key"      # Cosmos
-export RUNWAY_API_SECRET="your-key"   # Runway GWM
-export OPENAI_API_KEY="your-key"      # Sora 2
-export GOOGLE_API_KEY="your-key"      # Veo 3
-export PAN_API_KEY="your-key"         # PAN
-```
-
-No key? No problem. The **Mock** provider is always available for testing.
-
-## Your First Prediction (Python)
+## Create a world
 
 ```python
-from worldforge import WorldForge, Action
+from worldforge import Action, BBox, Position, SceneObject, WorldForge
 
-# Initialize — auto-detects providers from env vars
-wf = WorldForge()
+forge = WorldForge()
+world = forge.create_world("kitchen", provider="mock")
 
-# Create a world using a specific provider
-world = wf.create_world("kitchen", provider="mock")
-
-# Predict what happens when an object moves
-prediction = world.predict(
-    Action.move_to(0.5, 0.8, 0.0),
-    steps=10,
+world.add_object(
+    SceneObject(
+        "red_mug",
+        Position(0.0, 0.8, 0.0),
+        BBox(Position(-0.05, 0.75, -0.05), Position(0.05, 0.85, 0.05)),
+    )
 )
 
-print(f"Physics score: {prediction.physics_score}")
-print(f"Frames generated: {len(prediction.frames)}")
+prediction = world.predict(Action.move_to(0.3, 0.8, 0.0), steps=2)
+print(prediction.physics_score)
 ```
 
-## Your First Prediction (Rust)
+## Plan and evaluate
 
-```rust
-use worldforge_providers::auto_detect_worldforge;
+```python
+plan = world.plan(goal="move the mug to the right", verify_backend="mock")
+print(plan.action_count, plan.success_probability)
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let wf = auto_detect_worldforge();
-    let world = wf.create_world("kitchen", "mock")?;
-
-    let action = worldforge_core::Action::move_to(0.5, 0.8, 0.0);
-    let config = worldforge_core::PredictionConfig::default();
-    let prediction = world.predict(&action, &config).await?;
-
-    println!("Physics score: {}", prediction.physics_score);
-    Ok(())
-}
+report = world.evaluate("physics")
+print(report.to_markdown())
 ```
 
-## Using the CLI
+## CLI
 
 ```bash
-# Start the REST server
-worldforge serve
-
-# Run a prediction from the command line
-worldforge predict --world kitchen --provider mock \
-  --action '{"move_to": [0.5, 0.8, 0.0]}' --steps 10
-
-# Run an evaluation suite
-worldforge eval --suite physics --providers mock \
-  --output-markdown report.md
+worldforge providers
+worldforge predict kitchen --provider mock --x 0.3 --y 0.8 --z 0.0 --steps 2
+worldforge eval --suite physics --provider mock
 ```
-
-## Next Steps
-
-- Read the [Architecture](./architecture.md) overview to understand crate layout.
-- Browse the [Providers](./providers/README.md) table for capabilities.
-- Explore the [REST API](./api/rest.md) reference.
-- Try the [Python SDK](./api/python.md) for advanced usage.

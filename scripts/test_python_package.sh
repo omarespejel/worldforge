@@ -6,9 +6,6 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 VENV_DIR="$(mktemp -d "${TMPDIR:-/tmp}/worldforge-python.XXXXXX")"
 
 cleanup() {
-    find "$ROOT_DIR/python/worldforge" -maxdepth 1 -type f \
-        \( -name 'worldforge*.so' -o -name 'worldforge*.pyd' \) \
-        -delete
     rm -rf "$VENV_DIR"
 }
 

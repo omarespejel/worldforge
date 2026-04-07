@@ -1,92 +1,35 @@
 # Evaluation
 
-WorldForge includes a comprehensive evaluation framework with 12 scoring
-dimensions for assessing world foundation model predictions.
+WorldForge currently ships one built-in suite: `physics`.
 
-## Running Evaluations
-
-### CLI
-
-```bash
-# Run the physics suite against multiple providers
-worldforge eval --suite physics --providers cosmos,runway,jepa \
-  --output-markdown report.md --output-csv report.csv
-
-# Run all suites
-worldforge eval --suite comprehensive --providers cosmos \
-  --output-json report.json
-```
-
-### Python
+## Python
 
 ```python
 from worldforge import WorldForge
+from worldforge.eval import EvalSuite
 
-wf = WorldForge()
-world = wf.create_world("eval-scene", provider="cosmos")
-report = world.evaluate(suite="physics")
+forge = WorldForge()
+world = forge.create_world("eval-world", provider="mock")
+suite = EvalSuite.from_builtin("physics")
 
+report = suite.run_report_data("mock", world=world, forge=forge)
 print(report.to_markdown())
-report.to_csv("results.csv")
 ```
 
-### REST API
+## CLI
 
 ```bash
-curl -X POST http://localhost:8080/v1/evals/run \
-  -H "Content-Type: application/json" \
-  -d '{
-    "suite": "physics",
-    "providers": ["cosmos", "runway"]
-  }'
+worldforge eval --suite physics --provider mock
 ```
 
-## Evaluation Dimensions
+## Artifacts
 
-| Dimension                  | Source     | Method                          |
-|----------------------------|------------|---------------------------------|
-| Object Permanence          | WorldForge | Occlusion tracking              |
-| Gravity Compliance         | WorldForge | Unsupported object fall test    |
-| Collision Accuracy         | WorldForge | Contact physics validation      |
-| Spatial Consistency        | WorldForge | Viewpoint stability             |
-| Temporal Consistency       | WorldForge | Time-reversal stability         |
-| Action Prediction          | WorldForge | Physics outcome matching        |
-| Material Understanding     | WorldForge | Material-specific behavior      |
-| Spatial Reasoning          | WorldForge | Depth/scale/distance            |
-| Action Simulation Fidelity | WR-Arena   | LLM-as-judge (0-3 scale)       |
-| Transition Smoothness      | WR-Arena   | MRS metric (optical flow)       |
-| Generation Consistency     | WR-Arena   | WorldScore (7 aspects)          |
-| Simulative Reasoning       | WR-Arena   | VLM + WFM planning loop        |
+Evaluation reports can be rendered as:
 
-## Built-in Suites
+- JSON
+- Markdown
+- CSV
 
-- **physics**: Object permanence, gravity, collisions, material understanding.
-- **manipulation**: Action prediction, spatial reasoning, collision accuracy.
-- **spatial**: Spatial consistency, spatial reasoning, temporal consistency.
-- **comprehensive**: All 12 dimensions.
+## Current status
 
-## Output Formats
-
-Reports can be generated in three formats:
-
-- **JSON**: Machine-readable, includes all raw scores and metadata.
-- **Markdown**: Human-readable tables suitable for documentation.
-- **CSV**: Spreadsheet-compatible for further analysis.
-
-## Custom Evaluations
-
-You can define custom eval suites by combining dimensions:
-
-```python
-from worldforge import EvalSuite, EvalDimension
-
-suite = EvalSuite(
-    name="my-suite",
-    dimensions=[
-        EvalDimension.OBJECT_PERMANENCE,
-        EvalDimension.GRAVITY_COMPLIANCE,
-        EvalDimension.COLLISION_ACCURACY,
-    ],
-)
-report = world.evaluate(suite=suite)
-```
+The evaluation framework is deterministic and lightweight. It is suitable for package-level regression checks and integration scaffolding, not for making strong scientific claims about model quality.

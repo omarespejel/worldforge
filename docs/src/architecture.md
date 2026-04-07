@@ -1,78 +1,49 @@
 # Architecture
 
-WorldForge is organized as a Cargo workspace with seven crates, each with a
-focused responsibility. This page describes the role of each crate and how
-they interact.
+WorldForge is organized as a small Python package with clear runtime boundaries.
 
-## Crate Map
-
-```
-worldforge/
-├── crates/
-│   ├── worldforge-core/       # Types, traits, state, scene graph, planning
-│   ├── worldforge-providers/  # 11 provider adapters + polling infrastructure
-│   ├── worldforge-eval/       # 12 eval dimensions + WR-Arena datasets
-│   ├── worldforge-verify/     # ZK verification (STARK, EZKL)
-│   ├── worldforge-server/     # REST API (27 endpoints via Axum)
-│   ├── worldforge-cli/        # CLI tool (27 commands via Clap)
-│   └── worldforge-python/     # PyO3 bindings for Python
-├── python/worldforge/         # Python package shim
-└── pyproject.toml             # Maturin build config
+```text
+python/worldforge/
+├── __init__.py
+├── _core.py
+├── _runtime.py
+├── cli.py
+├── providers/
+├── eval/
+└── verify/
 ```
 
-## worldforge-core
+## Layers
 
-The foundation crate. Defines all shared types:
+### `_core.py`
 
-- `Action`, `WorldState`, `Prediction`, `Plan` — core domain types.
-- `WorldProvider` trait — the contract every provider must implement.
-- `SceneGraph` — spatial representation of objects and relationships.
-- `Guardrails` — safety constraints applied before and after predictions.
-- `PlanningAlgorithm` — trait for CEM, sampling, MPC, gradient planners.
+Domain types, serialization helpers, capability descriptors, and other shared primitives.
 
-## worldforge-providers
+### `_runtime.py`
 
-Implements the `WorldProvider` trait for each supported backend:
+Stateful orchestration:
 
-- Cloud APIs: Cosmos, Runway, Sora, Veo, PAN, KLING, MiniMax.
-- Local models: JEPA, Genie, Marble.
-- Testing: Mock (deterministic, always available).
-- Shared infrastructure for polling, retries, and rate limiting.
+- `WorldForge`
+- `World`
+- `Prediction`
+- `Comparison`
+- `Plan`
 
-## worldforge-eval
+### `providers/`
 
-Evaluation framework with 12 scoring dimensions covering physics fidelity,
-spatial reasoning, and WR-Arena benchmarks. Supports JSON, Markdown, and CSV
-output. Ships with built-in suites: physics, manipulation, spatial, comprehensive.
+Provider interfaces and adapters. The mock provider is the reference implementation. Remote adapters are intentionally scaffold-level until verified.
 
-## worldforge-verify
+### `eval/`
 
-Zero-knowledge proof generation for guardrail compliance. Supports STARK and
-EZKL backends. Produces proofs that can be verified independently.
+Evaluation scenarios, suite runners, and report renderers.
 
-## worldforge-server
+### `verify/`
 
-Axum-based REST API exposing 27 endpoints under `/v1/`. Handles world lifecycle,
-predictions, planning, evaluation, comparison, and provider health checks.
-Generates OpenAPI specs automatically.
+Proof-shaped artifacts used for verification flows and integration planning.
 
-## worldforge-cli
+## Key decisions
 
-Clap-based command-line interface mirroring every server endpoint. Designed for
-scripting and CI/CD pipelines.
-
-## worldforge-python
-
-PyO3 bindings that expose core types and the `WorldForge` orchestrator to
-Python. Built with Maturin. The `python/worldforge/` directory provides the
-package shim that re-exports the native extension.
-
-## Data Flow
-
-1. User submits an action (via Python, Rust, CLI, or REST).
-2. `worldforge-core` validates the action against guardrails.
-3. `worldforge-providers` dispatches to the selected backend.
-4. The provider returns a prediction (frames + metadata).
-5. `worldforge-eval` optionally scores the prediction.
-6. `worldforge-verify` optionally generates a ZK proof.
-7. Results are returned to the caller.
+- Python-first core: no Rust bridge, no dual build pipeline
+- library-first surface: CLI wraps the package, not separate logic
+- JSON snapshots: simple persistence and easy debugging
+- honest capabilities: only supported operations are marketed as supported

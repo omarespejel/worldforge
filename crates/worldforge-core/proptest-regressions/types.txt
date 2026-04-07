@@ -1,8 +1,0 @@
-# Seeds for failure cases proptest has generated in the past. It is
-# automatically read and these particular cases re-run before any
-# novel cases are generated.
-#
-# It is recommended to check this file in to source control so that
-# everyone who runs the test benefits from these saved cases.
-cc 7fa1651feb31041811d096869838eb62761ca041b18ee0b806a09a8e3b0766c5 # shrinks to t = SimTime { step: 0, seconds: -9.414709121117401e241, dt: -0.0 }
-cc ce39e19e4ed6926164f97077995386a9b92f4184b925fe9b24e9c00fc49f339e # shrinks to t = SimTime { step: 0, seconds: 0.0, dt: -3941390525.4814315 }

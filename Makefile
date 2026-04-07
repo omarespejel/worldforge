@@ -1,45 +1,24 @@
-.PHONY: fmt lint test test-all bench doc build-python clean check audit deny
+.PHONY: format lint test test-package build clean check
 
-# Format all Rust code
-fmt:
-	cargo fmt --all
+PYTHON ?= python3
 
-# Run clippy lints
+format:
+	$(PYTHON) -m compileall -q python
+
 lint:
-	cargo clippy --workspace --all-targets -- -D warnings
+	$(PYTHON) -m py_compile $$(find python/worldforge -name '*.py' -print)
 
-# Run tests (default features)
 test:
-	cargo test --workspace
+	PYTHONPATH=python $(PYTHON) -m unittest discover -s python/tests -v
 
-# Run all tests including ignored / long-running
-test-all:
-	cargo test --workspace -- --include-ignored
+test-package:
+	bash scripts/test_python_package.sh
 
-# Run benchmarks
-bench:
-	cargo bench --workspace
+build:
+	$(PYTHON) -m pip wheel . --no-deps --wheel-dir dist
 
-# Build documentation
-doc:
-	cargo doc --workspace --no-deps --open
+check: lint test-package
 
-# Build Python wheel (dev mode)
-build-python:
-	maturin develop --release
-
-# Full CI check (mirrors the CI pipeline)
-check: fmt lint test doc
-
-# Security: cargo audit
-audit:
-	cargo audit
-
-# Security: cargo deny
-deny:
-	cargo deny check
-
-# Clean build artifacts
 clean:
-	cargo clean
-	rm -rf dist/ target/wheels/
+	rm -rf build dist .pytest_cache .worldforge .tmp-state
+	find python -name '__pycache__' -type d -prune -exec rm -rf {} +

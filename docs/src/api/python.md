@@ -1,114 +1,62 @@
-# Python SDK
+# Python API
 
-The WorldForge Python SDK provides native bindings via PyO3 for high-performance
-access to the full WorldForge API.
+WorldForge is a pure-Python package. There is no extension-module bridge in the current architecture.
 
-## Installation
-
-```bash
-pip install worldforge
-```
-
-Requires Python 3.10+.
-
-## Quick Example
+## Entry points
 
 ```python
-from worldforge import WorldForge, Action
-
-wf = WorldForge()
-world = wf.create_world("kitchen", provider="cosmos")
-
-prediction = world.predict(Action.move_to(0.5, 0.8, 0.0), steps=10)
-print(f"Physics score: {prediction.physics_score}")
+from worldforge import WorldForge, World, Action
 ```
 
-## Core Classes
+## `WorldForge`
 
-### WorldForge
+Responsibilities:
 
-The main entry point. Auto-detects providers from environment variables.
+- register providers
+- create and persist worlds
+- expose generation, transfer, reasoning, and embedding helpers
+
+Example:
 
 ```python
-wf = WorldForge()
-wf = WorldForge(state_backend="sqlite", state_db_path="worlds.db")
+forge = WorldForge(state_dir=".worldforge/state")
+world = forge.create_world("kitchen", provider="mock")
 ```
 
-Methods:
-- `create_world(name, provider) -> World`
-- `list_providers() -> list[ProviderInfo]`
-- `get_provider(name) -> ProviderInfo`
+## `World`
 
-### World
+Responsibilities:
 
-Represents a simulation world bound to a specific provider.
+- manage scene objects and history
+- run predictions
+- compare providers
+- produce plans
+- generate verification bundles
+
+Example:
 
 ```python
-world = wf.create_world("sim", provider="cosmos")
+prediction = world.predict(Action.move_to(0.3, 0.8, 0.0), steps=2)
+comparison = world.compare(Action.move_to(0.4, 0.8, 0.0), ["mock"], steps=1)
+plan = world.plan(goal="move the mug to the right", verify_backend="mock")
 ```
 
-Methods:
-- `predict(action, steps=1) -> Prediction`
-- `plan(goal, planner="cem", max_steps=20) -> Plan`
-- `compare(action, providers, steps=1) -> Comparison`
-- `evaluate(suite="physics") -> EvalReport`
-
-### Action
-
-Describes an action to apply to the world.
+## Evaluation
 
 ```python
-action = Action.move_to(0.5, 0.8, 0.0)
-action = Action.from_dict({"push": {"force": 1.0, "direction": [1, 0, 0]}})
+from worldforge.eval import EvalSuite
+
+suite = EvalSuite.from_builtin("physics")
+report = suite.run_report_data("mock", world=world, forge=forge)
+print(report.to_markdown())
 ```
 
-### Prediction
-
-Result of a prediction call.
-
-Attributes:
-- `physics_score: float` — Overall physics fidelity score (0-1).
-- `frames: list[bytes]` — Generated video frames.
-- `world_state: dict` — Updated world state after prediction.
-- `metadata: dict` — Provider-specific metadata.
-
-### Plan
-
-Result of a planning call.
-
-Attributes:
-- `actions: list[Action]` — Planned action sequence.
-- `success_probability: float` — Estimated probability of success.
-- `verification_proof: bytes | None` — Optional ZK proof.
-
-### EvalReport
-
-Result of an evaluation run.
-
-Methods:
-- `to_markdown() -> str`
-- `to_csv() -> str`
-- `to_dict() -> dict`
-
-## Cross-Provider Comparison
+## Verification
 
 ```python
-comparison = world.compare(
-    Action.move_to(0.5, 0.8, 0.0),
-    providers=["cosmos", "runway", "sora"],
-    steps=10,
-)
-print(comparison.to_markdown())
+from worldforge.verify import ZkVerifier
+
+bundle = prediction.prove_inference_bundle()
+report = ZkVerifier().verify_inference_bundle(bundle)
+print(report.current_verification.valid)
 ```
-
-## State Persistence
-
-```python
-wf = WorldForge(state_backend="sqlite", state_db_path="worlds.db")
-# Also supports: file, redis, s3, msgpack
-```
-
-## Type Stubs
-
-WorldForge ships with PEP 561 type stubs (`py.typed` marker) for full IDE
-support including autocompletion and type checking with mypy/pyright.

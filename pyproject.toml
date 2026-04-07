@@ -1,16 +1,24 @@
 [build-system]
-requires = ["maturin>=1.7,<2.0"]
-build-backend = "maturin"
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "worldforge"
-version = "0.1.0"
-description = "Unified orchestration layer for world foundation models — predict, plan, evaluate, and verify across NVIDIA Cosmos, Runway GWM, Meta JEPA, Google Veo, OpenAI Sora, and more."
+version = "0.2.0"
+description = "Python-first orchestration for world model prediction, planning, evaluation, and verification workflows."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 authors = [{ name = "WorldForge contributors" }]
-keywords = ["world-models", "simulation", "robotics", "ai", "foundation-models", "physics", "planning"]
+keywords = [
+    "world-models",
+    "simulation",
+    "robotics",
+    "ai",
+    "foundation-models",
+    "planning",
+    "evaluation",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -23,10 +31,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    "Programming Language :: Python :: 3.14",
-    "Programming Language :: Rust",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
-    "Topic :: Scientific/Engineering :: Physics",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Typing :: Typed",
 ]
@@ -36,11 +41,18 @@ Homepage = "https://worldforge.ai"
 Repository = "https://github.com/AbdelStark/worldforge"
 Documentation = "https://docs.worldforge.ai"
 Issues = "https://github.com/AbdelStark/worldforge/issues"
-Changelog = "https://github.com/AbdelStark/worldforge/blob/main/CHANGELOG.md"
 
-[tool.maturin]
-manifest-path = "crates/worldforge-python/Cargo.toml"
-python-source = "python"
-features = ["extension-module"]
-bindings = "pyo3"
-module-name = "worldforge"
+[project.scripts]
+worldforge = "worldforge.cli:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.package-dir]
+"" = "python"
+
+[tool.setuptools.packages.find]
+where = ["python"]
+
+[tool.setuptools.package-data]
+worldforge = ["py.typed", "_types.pyi"]

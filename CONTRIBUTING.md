@@ -1,70 +1,47 @@
-# Contributing to WorldForge
+# Contributing
 
-Thank you for your interest in contributing to WorldForge!
+WorldForge is a pure-Python package. The Rust workspace, Cargo build, and PyO3 bridge have been removed.
 
-## Development Setup
+## Setup
 
-1. Install Rust (1.80+): https://rustup.rs/
-2. Clone the repository: `git clone https://github.com/AbdelStark/worldforge`
-3. Build: `cargo build`
-4. Test: `cargo test`
-5. Lint: `cargo clippy`
-6. Format: `cargo fmt`
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e .
+```
 
-### Python bindings
+## Development workflow
 
-The PyO3 module is packaged from the workspace root with `maturin` via
-[`pyproject.toml`](./pyproject.toml):
+```bash
+make lint
+make test
+make test-package
+```
 
-1. Run the canonical package validation script: `bash scripts/test_python_package.sh`
-2. Inspect `python/tests/` for the installed-package smoke coverage that script executes
-3. Use the same script before sending a PR; CI runs it in `.github/workflows/python-package.yml`
+`make test-package` is the authoritative install-contract check because it builds an isolated virtual environment, installs the package in editable mode, and runs the Python test suite against the installed distribution.
 
-The root [`pyproject.toml`](./pyproject.toml) points at
-`crates/worldforge-python/Cargo.toml`, so Python consumers can install the
-package without knowing the Rust crate layout. The validation script creates a
-throwaway virtual environment, performs an editable install, checks the
-installed `worldforge` imports, and then runs the Python smoke tests against
-that environment.
+## Repository layout
 
-### Benchmarks
+- `python/worldforge/_core.py`: domain types, serialization helpers, provider metadata
+- `python/worldforge/_runtime.py`: `WorldForge`, `World`, prediction/plan/comparison orchestration
+- `python/worldforge/providers/`: provider adapter implementations
+- `python/worldforge/eval/`: evaluation scenarios, suite runners, report renderers
+- `python/worldforge/verify/`: verification bundles and verifier facades
+- `python/tests/`: install-contract and behavior tests
 
-The repository includes offline Criterion harnesses for the core, provider,
-evaluation, and verification crates. Run them directly with `cargo bench -p
-worldforge-core`, `cargo bench -p worldforge-providers`, `cargo bench -p
-worldforge-eval`, or `cargo bench -p worldforge-verify`. Use `--no-run` if you
-only want to compile a harness and skip execution.
+## Adding a provider
 
-## Project Structure
+1. Add a Python adapter in `python/worldforge/providers/`.
+2. Be explicit about capability coverage. Do not advertise unsupported operations.
+3. Make unavailable credentials fail clearly.
+4. Register the provider in `WorldForge` only when the adapter is safe to auto-detect.
+5. Add tests that exercise registration, health reporting, and at least one successful flow.
 
-- `crates/worldforge-core/` - Core library (types, traits, state management)
-- `crates/worldforge-providers/` - Provider adapters (Cosmos, GWM, JEPA, etc.)
-- `crates/worldforge-eval/` - Evaluation framework
-- `crates/worldforge-verify/` - ZK verification (optional)
-- `crates/worldforge-server/` - REST API server
-- `crates/worldforge-cli/` - Command-line tool
+## Standards
 
-## How to Contribute
-
-1. Check open issues for "good first issue" or "help wanted" labels
-2. Fork the repository
-3. Create a feature branch: `git checkout -b feature/my-feature`
-4. Write code + tests
-5. Run `cargo test && cargo clippy && cargo fmt`
-6. Submit a pull request
-
-## Adding a New Provider
-
-1. Create a new module in `crates/worldforge-providers/src/`
-2. Implement the `WorldModelProvider` trait from `worldforge-core`
-3. Add integration tests
-4. Add documentation with examples
-5. Update README with provider capabilities
-
-## Code Style
-
-- Follow Rust conventions (rustfmt enforced)
-- All public types must have doc comments
-- All functions must have error handling (no unwrap in library code)
-- Property-based tests for core types (proptest)
-- Integration tests for provider adapters
+- Keep the public API Pythonic and typed.
+- Prefer simple data structures and explicit serialization over hidden magic.
+- Do not introduce heavyweight dependencies without a concrete operational need.
+- Update `README.md`, `SPECIFICATION.md`, and relevant docs when behavior changes.
+- If a historical RFC conflicts with the live implementation, the code and live docs win.

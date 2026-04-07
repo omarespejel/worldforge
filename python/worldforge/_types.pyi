@@ -1,118 +1,226 @@
-"""Type stubs for WorldForge Python bindings."""
+"""Type stubs for the pure-Python WorldForge package."""
 
 from typing import Any, Sequence
 
-class Action:
-    """Describes an action to apply to a world."""
 
+class Position:
+    x: float
+    y: float
+    z: float
+    def __init__(self, x: float, y: float, z: float) -> None: ...
+    def to_dict(self) -> dict[str, Any]: ...
+
+
+class Rotation:
+    w: float
+    x: float
+    y: float
+    z: float
+
+
+class Pose:
+    position: Position
+    rotation: Rotation
+
+
+class BBox:
+    min: Position
+    max: Position
+    def __init__(self, min: Position, max: Position) -> None: ...
+
+
+class Action:
+    kind: str
+    parameters: dict[str, Any]
     @staticmethod
-    def move_to(x: float, y: float, z: float) -> Action: ...
+    def move_to(x: float, y: float, z: float, speed: float = 1.0) -> Action: ...
+    @staticmethod
+    def spawn_object(name: str, position: Position | None = None, bbox: BBox | None = None) -> Action: ...
     @staticmethod
     def from_dict(data: dict[str, Any]) -> Action: ...
     def to_dict(self) -> dict[str, Any]: ...
+    def to_json(self) -> str: ...
+
+
+class SceneObjectPatch:
+    name: str | None
+    position: Position | None
+    graspable: bool | None
+    def set_name(self, name: str) -> None: ...
+    def set_position(self, position: Position) -> None: ...
+    def set_graspable(self, value: bool) -> None: ...
+
+
+class SceneObject:
+    id: str
+    name: str
+    position: Position
+    bbox: BBox
+    is_graspable: bool
+    metadata: dict[str, Any]
+    def __init__(
+        self,
+        name: str,
+        position: Position,
+        bbox: BBox,
+        id: str | None = None,
+        is_graspable: bool = False,
+        metadata: dict[str, Any] | None = None,
+    ) -> None: ...
+
+
+class ProviderCapabilities:
+    predict: bool
+    generate: bool
+    reason: bool
+    embed: bool
+    plan: bool
+    transfer: bool
+    verify: bool
+
 
 class ProviderInfo:
-    """Information about a registered provider."""
-
     name: str
-    capabilities: list[str]
+    capabilities: ProviderCapabilities
     is_local: bool
+    description: str
+
+
+class ProviderHealth:
+    name: str
+    healthy: bool
+    latency_ms: float
+    details: str
+
+
+class VideoClip:
+    frames: list[bytes]
+    fps: float
+    resolution: tuple[int, int]
+    duration_seconds: float
+    metadata: dict[str, Any]
+    frame_count: int
+
+
+class ReasoningResult:
+    provider: str
+    answer: str
+    confidence: float
+    evidence: list[str]
+
+
+class EmbeddingResult:
+    provider: str
+    model: str
+    vector: list[float]
+    shape: list[int]
+
 
 class Prediction:
-    """Result of a prediction call."""
-
+    provider: str
+    confidence: float
     physics_score: float
     frames: list[bytes]
     world_state: dict[str, Any]
     metadata: dict[str, Any]
+    latency_ms: float
+    def output_world(self) -> World: ...
+    def prove_inference_bundle(self, provider: str | None = None) -> Any: ...
 
-class Plan:
-    """Result of a planning call."""
-
-    actions: list[Action]
-    success_probability: float
-    verification_proof: bytes | None
-
-class EvalReport:
-    """Result of an evaluation run."""
-
-    scores: dict[str, float]
-    suite: str
-    provider: str
-
-    def to_markdown(self) -> str: ...
-    def to_csv(self) -> str: ...
-    def to_dict(self) -> dict[str, Any]: ...
 
 class Comparison:
-    """Result of a cross-provider comparison."""
-
-    results: list[ComparisonResult]
-
+    results: list[Prediction]
+    prediction_count: int
+    def best_prediction(self) -> Prediction: ...
     def to_markdown(self) -> str: ...
+    def to_csv(self) -> str: ...
+    def to_json(self) -> str: ...
+    def artifacts(self) -> dict[str, str]: ...
 
-class ComparisonResult:
-    """Single provider result within a comparison."""
 
+class Plan:
+    goal: str
+    planner: str
     provider: str
-    physics_score: float
-    latency_ms: float
-    metadata: dict[str, Any]
+    actions: list[Action]
+    predicted_states: list[dict[str, Any]]
+    success_probability: float
+    verification_proof: Any
+    action_count: int
+    def to_dict(self) -> dict[str, Any]: ...
+    def to_json(self) -> str: ...
+    def verification_proof_json(self) -> str: ...
+    def prove_guardrail_bundle(self) -> Any: ...
 
-class EvalDimension:
-    """Evaluation dimension identifiers."""
 
-    OBJECT_PERMANENCE: str
-    GRAVITY_COMPLIANCE: str
-    COLLISION_ACCURACY: str
-    SPATIAL_CONSISTENCY: str
-    TEMPORAL_CONSISTENCY: str
-    ACTION_PREDICTION: str
-    MATERIAL_UNDERSTANDING: str
-    SPATIAL_REASONING: str
-    ACTION_SIMULATION_FIDELITY: str
-    TRANSITION_SMOOTHNESS: str
-    GENERATION_CONSISTENCY: str
-    SIMULATIVE_REASONING: str
+class PlanExecution:
+    actions_applied: list[Action]
+    def final_world(self) -> World: ...
 
-class EvalSuite:
-    """Custom evaluation suite definition."""
 
-    def __init__(
-        self,
-        name: str,
-        dimensions: Sequence[str],
-    ) -> None: ...
+class HistoryEntry:
+    step: int
+    state: dict[str, Any]
+    summary: str
+    action_json: str | None
+
 
 class World:
-    """Represents a simulation world bound to a provider."""
-
+    id: str
     name: str
     provider: str
+    description: str
+    step: int
+    metadata: dict[str, Any]
+    object_count: int
+    history_length: int
+    def __init__(self, name: str, provider: str = "mock", *, description: str = "", world_id: str | None = None, metadata: dict[str, Any] | None = None) -> None: ...
+    def to_dict(self) -> dict[str, Any]: ...
+    def to_json(self) -> str: ...
+    def add_object(self, obj: SceneObject) -> SceneObject: ...
+    def list_objects(self) -> list[str]: ...
+    def objects(self) -> list[SceneObject]: ...
+    def get_object_by_id(self, object_id: str) -> SceneObject | None: ...
+    def update_object_patch(self, object_id: str, patch: SceneObjectPatch) -> SceneObject: ...
+    def remove_object_by_id(self, object_id: str) -> SceneObject | None: ...
+    def history(self) -> list[HistoryEntry]: ...
+    def history_state(self, index: int) -> World: ...
+    def restore_history(self, index: int) -> None: ...
+    def predict(self, action: Action, steps: int = 1, provider: str | None = None) -> Prediction: ...
+    def compare(self, action: Action, providers: Sequence[str], steps: int = 1) -> Comparison: ...
+    def plan(self, goal: str | None = None, *, goal_json: str | None = None, planner: str = "cem", max_steps: int = 20, provider: str | None = None, verify_backend: str | None = None, **kwargs: Any) -> Plan: ...
+    def execute_plan(self, plan: Plan, *args: Any) -> PlanExecution: ...
+    def evaluate(self, suite: str = "physics") -> Any: ...
+    def prove_latest_inference_bundle(self) -> Any: ...
+    def prove_provenance_bundle(self, *, source_label: str, timestamp: int) -> Any: ...
 
-    def predict(self, action: Action, steps: int = 1) -> Prediction: ...
-    def plan(
-        self,
-        goal: str,
-        planner: str = "cem",
-        max_steps: int = 20,
-    ) -> Plan: ...
-    def compare(
-        self,
-        action: Action,
-        providers: Sequence[str],
-        steps: int = 1,
-    ) -> Comparison: ...
-    def evaluate(self, suite: str | EvalSuite = "physics") -> EvalReport: ...
 
 class WorldForge:
-    """Main entry point for the WorldForge SDK."""
-
-    def __init__(
-        self,
-        state_backend: str | None = None,
-        state_db_path: str | None = None,
-    ) -> None: ...
-    def create_world(self, name: str, provider: str = "mock") -> World: ...
+    state_dir: Any
+    def __init__(self, *, state_dir: str | None = None, state_backend: str | None = None, state_db_path: str | None = None, auto_register_remote: bool = True) -> None: ...
+    def register_provider(self, provider: Any) -> None: ...
+    def providers(self) -> list[str]: ...
     def list_providers(self) -> list[ProviderInfo]: ...
     def get_provider(self, name: str) -> ProviderInfo: ...
+    def provider_info(self, name: str) -> ProviderInfo: ...
+    def provider_health(self, name: str) -> ProviderHealth: ...
+    def provider_healths(self, capability: str | None = None) -> list[ProviderHealth]: ...
+    def create_world(self, name: str, provider: str = "mock") -> World: ...
+    def create_world_from_prompt(self, prompt: str, *, provider: str = "mock", name: str | None = None) -> World: ...
+    def save_world(self, world: World) -> str: ...
+    def load_world(self, world_id: str) -> World: ...
+    def list_worlds(self) -> list[str]: ...
+    def export_world(self, world_id: str, *, format: str = "json") -> str: ...
+    def import_world(self, payload: str, *, format: str = "json", new_id: bool = False, name: str | None = None) -> World: ...
+    def fork_world(self, world_id: str, *, history_index: int = 0, name: str | None = None) -> World: ...
+    def compare(self, predictions: Sequence[Prediction]) -> Comparison: ...
+    def generate(self, prompt: str, provider: str, *, duration_seconds: float = 1.0) -> VideoClip: ...
+    def transfer(self, clip: VideoClip, provider: str, *, width: int, height: int, fps: float) -> VideoClip: ...
+    def reason(self, provider: str, query: str, *, world: World | None = None) -> ReasoningResult: ...
+    def embed(self, provider: str, *, text: str) -> EmbeddingResult: ...
+
+
+def list_eval_suites() -> list[str]: ...
+def run_eval(suite: str, provider: str, *, forge: WorldForge | None = None) -> Any: ...
+def prove_inference(model_bytes: bytes, input_bytes: bytes, output_bytes: bytes) -> Any: ...
+def plan(world: World, *args: Any, **kwargs: Any) -> Plan: ...

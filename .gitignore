@@ -39,3 +39,6 @@ python/worldforge/worldforge*.pyd
 
 # Proptest regression files are checked in intentionally
 # proptest-regressions/
+**/.DS_Store
+.claude/tsc-cache/
+.claude/cache/
