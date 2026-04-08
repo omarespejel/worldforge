@@ -27,6 +27,13 @@ world.add_object(
         BBox(Position(-0.05, 0.75, -0.05), Position(0.05, 0.85, 0.05)),
     )
 )
+world.add_object(
+    SceneObject(
+        "blue_mug",
+        Position(0.3, 0.8, 0.0),
+        BBox(Position(0.25, 0.75, -0.05), Position(0.35, 0.85, 0.05)),
+    )
+)
 
 prediction = world.predict(Action.move_to(0.3, 0.8, 0.0), steps=2)
 print(prediction.physics_score)
@@ -43,12 +50,23 @@ plan = world.plan(
 )
 print(plan.action_count, plan.success_probability)
 
+swap_plan = world.plan(
+    goal_spec=StructuredGoal.swap_objects(
+        object_name="red_mug",
+        reference_object_name="blue_mug",
+    )
+)
+print(swap_plan.to_json())
+
 planning_report = world.evaluate("planning")
 print(planning_report.to_markdown())
 
 reasoning_report = world.evaluate("reasoning")
 print(reasoning_report.to_json())
 ```
+
+`StructuredGoal` also supports `object_near(...)` for relative placement and `spawn_object(...)`
+for object creation.
 
 ## CLI
 

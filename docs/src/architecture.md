@@ -71,7 +71,7 @@ Evaluation suites, scenario runners, and report rendering.
 - remote provider reads use typed retry/backoff policy; mutation requests default to single-attempt behavior
 - forge-level event handlers propagate to builtin providers and to providers later registered at runtime
 - `ProviderMetricsSink.request_count` tracks emitted request attempts; retries increment both `request_count` and `retry_count`
-- `StructuredGoal` is the typed contract for structured planning inputs
+- `StructuredGoal` is the typed contract for structured planning inputs, including relocation, neighbor, spawn, and swap goals
 
 ## Failure model
 

@@ -4,7 +4,7 @@ WorldForge currently ships five built-in suites:
 
 - `generation`: prompt-only and image-conditioned video generation checks
 - `physics`: deterministic object stability and action-response checks
-- `planning`: heuristic plan generation plus execution validation
+- `planning`: relocation, neighbor placement, swap, and spawn execution validation over the predict-driven planner
 - `reasoning`: scene-count and scene-identity checks for providers that implement `reason()`
 - `transfer`: prompt-guided and reference-guided video transfer checks
 

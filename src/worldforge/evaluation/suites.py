@@ -611,6 +611,16 @@ class PlanningEvaluationSuite(EvaluationSuite):
                     required_capabilities=("predict",),
                 ),
                 EvaluationScenario(
+                    "object-neighbor-placement",
+                    "Places one object near another using a typed relational goal.",
+                    required_capabilities=("predict",),
+                ),
+                EvaluationScenario(
+                    "object-swap",
+                    "Swaps the positions of two seeded objects using a typed relational goal.",
+                    required_capabilities=("predict",),
+                ),
+                EvaluationScenario(
                     "object-spawn",
                     "Plans and executes a simple spawn goal.",
                     required_capabilities=("predict",),
@@ -622,6 +632,7 @@ class PlanningEvaluationSuite(EvaluationSuite):
     def _build_world(self, provider: str, *, forge: WorldForge) -> World:
         world = super()._build_world(provider, forge=forge)
         _seed_object(world, "cube", Position(0.0, 0.5, 0.0))
+        _seed_object(world, "mug", Position(0.3, 0.8, 0.0))
         return world
 
     def evaluate_scenario(
@@ -634,6 +645,7 @@ class PlanningEvaluationSuite(EvaluationSuite):
         index: int,
     ) -> EvaluationResult:
         primary = _seed_object(world, "cube", Position(0.0, 0.5, 0.0))
+        reference = _seed_object(world, "mug", Position(0.3, 0.8, 0.0))
 
         if scenario.name == "object-relocation":
             plan = world.plan(
@@ -669,6 +681,105 @@ class PlanningEvaluationSuite(EvaluationSuite):
                     "action_count": plan.action_count,
                     "success_probability": plan.success_probability,
                     "moved_distance": moved_distance,
+                    "final_step": final_world.step,
+                },
+            )
+
+        if scenario.name == "object-neighbor-placement":
+            offset = Position(0.15, 0.0, 0.0)
+            target = Position(
+                reference.position.x + offset.x,
+                reference.position.y + offset.y,
+                reference.position.z + offset.z,
+            )
+            plan = world.plan(
+                goal_spec=StructuredGoal.object_near(
+                    object_id=primary.id,
+                    object_name=primary.name,
+                    reference_object_id=reference.id,
+                    reference_object_name=reference.name,
+                    offset=offset,
+                    tolerance=0.05,
+                ),
+                max_steps=4,
+                provider=provider,
+            )
+            execution = world.execute_plan(plan, provider)
+            final_world = execution.final_world()
+            final_primary = final_world.get_object_by_id(primary.id)
+            final_reference = final_world.get_object_by_id(reference.id)
+            if final_primary is None or final_reference is None:  # pragma: no cover
+                raise WorldForgeError("Evaluation lost an object during relational plan execution.")
+            target_error = _distance(target, final_primary.position)
+            reference_drift = _distance(reference.position, final_reference.position)
+            passed = plan.action_count >= 1 and target_error <= 0.05 and reference_drift <= 0.01
+            score = average(
+                [
+                    plan.success_probability,
+                    _clamp_score(1.0 - min(1.0, target_error / 0.25)),
+                    _clamp_score(1.0 - min(1.0, reference_drift / 0.25)),
+                ]
+            )
+            return EvaluationResult(
+                suite_id=self.suite_id,
+                suite=self.name,
+                scenario=scenario.name,
+                provider=provider,
+                score=score,
+                passed=passed,
+                metrics={
+                    "action_count": plan.action_count,
+                    "success_probability": plan.success_probability,
+                    "target_error": target_error,
+                    "reference_drift": reference_drift,
+                    "final_step": final_world.step,
+                },
+            )
+
+        if scenario.name == "object-swap":
+            plan = world.plan(
+                goal_spec=StructuredGoal.swap_objects(
+                    object_id=primary.id,
+                    object_name=primary.name,
+                    reference_object_id=reference.id,
+                    reference_object_name=reference.name,
+                    tolerance=0.05,
+                ),
+                max_steps=4,
+                provider=provider,
+            )
+            execution = world.execute_plan(plan, provider)
+            final_world = execution.final_world()
+            final_primary = final_world.get_object_by_id(primary.id)
+            final_reference = final_world.get_object_by_id(reference.id)
+            if final_primary is None or final_reference is None:  # pragma: no cover
+                raise WorldForgeError("Evaluation lost an object during swap plan execution.")
+            primary_target_error = _distance(reference.position, final_primary.position)
+            reference_target_error = _distance(primary.position, final_reference.position)
+            passed = (
+                plan.action_count == 2
+                and primary_target_error <= 0.05
+                and reference_target_error <= 0.05
+            )
+            score = average(
+                [
+                    plan.success_probability,
+                    _clamp_score(1.0 - min(1.0, primary_target_error / 0.25)),
+                    _clamp_score(1.0 - min(1.0, reference_target_error / 0.25)),
+                ]
+            )
+            return EvaluationResult(
+                suite_id=self.suite_id,
+                suite=self.name,
+                scenario=scenario.name,
+                provider=provider,
+                score=score,
+                passed=passed,
+                metrics={
+                    "action_count": plan.action_count,
+                    "success_probability": plan.success_probability,
+                    "primary_target_error": primary_target_error,
+                    "reference_target_error": reference_target_error,
                     "final_step": final_world.step,
                 },
             )

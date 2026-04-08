@@ -221,22 +221,123 @@ class StructuredGoal:
     object_id: str | None = None
     object_name: str | None = None
     position: Position | None = None
+    reference_object_id: str | None = None
+    reference_object_name: str | None = None
+    offset: Position | None = None
     tolerance: float = 0.05
 
     def __post_init__(self) -> None:
-        if self.kind not in {"object_at", "spawn_object"}:
-            raise WorldForgeError("StructuredGoal kind must be one of: object_at, spawn_object.")
+        if self.kind not in {"object_at", "spawn_object", "object_near", "swap_objects"}:
+            raise WorldForgeError(
+                "StructuredGoal kind must be one of: object_at, spawn_object, "
+                "object_near, swap_objects."
+            )
+        if self.kind in {"object_at", "object_near", "swap_objects"} and self.tolerance <= 0.0:
+            raise WorldForgeError(f"StructuredGoal {self.kind} tolerance must be greater than 0.")
         if self.kind == "object_at":
             if self.position is None:
                 raise WorldForgeError("StructuredGoal object_at goals require a target position.")
-            if not self.object_id and not self.object_name:
-                raise WorldForgeError(
-                    "StructuredGoal object_at goals require object_id or object_name."
-                )
-            if self.tolerance <= 0.0:
-                raise WorldForgeError("StructuredGoal object_at tolerance must be greater than 0.")
-        if self.kind == "spawn_object" and not self.object_name:
-            raise WorldForgeError("StructuredGoal spawn_object goals require object_name.")
+            self._require_primary_selector("object_at")
+            self._reject_reference_selector("object_at")
+            self._reject_offset("object_at")
+        if self.kind == "spawn_object":
+            if not self.object_name:
+                raise WorldForgeError("StructuredGoal spawn_object goals require object_name.")
+            if self.object_id is not None:
+                raise WorldForgeError("StructuredGoal spawn_object goals do not accept object_id.")
+            self._reject_reference_selector("spawn_object")
+            self._reject_offset("spawn_object")
+        if self.kind == "object_near":
+            self._require_primary_selector("object_near")
+            self._require_reference_selector("object_near")
+            if self.position is not None:
+                raise WorldForgeError("StructuredGoal object_near goals do not accept position.")
+            if self.offset is None:
+                object.__setattr__(self, "offset", Position(0.1, 0.0, 0.0))
+            self._require_distinct_selectors("object_near")
+        if self.kind == "swap_objects":
+            self._require_primary_selector("swap_objects")
+            self._require_reference_selector("swap_objects")
+            if self.position is not None:
+                raise WorldForgeError("StructuredGoal swap_objects goals do not accept position.")
+            self._reject_offset("swap_objects")
+            self._require_distinct_selectors("swap_objects")
+
+    @staticmethod
+    def _has_selector(object_id: str | None, object_name: str | None) -> bool:
+        return bool(object_id or object_name)
+
+    @staticmethod
+    def _selector_label(
+        object_id: str | None,
+        object_name: str | None,
+        *,
+        fallback: str = "object",
+    ) -> str:
+        return object_name or object_id or fallback
+
+    @staticmethod
+    def _normalize_selector_payload(
+        payload: object,
+        *,
+        field_name: str,
+    ) -> JSONDict:
+        if payload is None:
+            return {}
+        if isinstance(payload, str):
+            return {"name": payload}
+        if not isinstance(payload, dict):
+            raise WorldForgeError(f"StructuredGoal field '{field_name}' must be a JSON object.")
+        return payload
+
+    @classmethod
+    def _selector_fields(
+        cls,
+        payload: object,
+        *,
+        field_name: str,
+    ) -> tuple[str | None, str | None]:
+        normalized = cls._normalize_selector_payload(payload, field_name=field_name)
+        object_id = str(normalized["id"]) if normalized.get("id") is not None else None
+        object_name = str(normalized["name"]) if normalized.get("name") is not None else None
+        return object_id, object_name
+
+    def _require_primary_selector(self, kind: str) -> None:
+        if not self._has_selector(self.object_id, self.object_name):
+            raise WorldForgeError(f"StructuredGoal {kind} goals require object_id or object_name.")
+
+    def _require_reference_selector(self, kind: str) -> None:
+        if not self._has_selector(self.reference_object_id, self.reference_object_name):
+            raise WorldForgeError(
+                f"StructuredGoal {kind} goals require reference_object.id or reference_object.name."
+            )
+
+    def _reject_reference_selector(self, kind: str) -> None:
+        if self.reference_object_id is not None or self.reference_object_name is not None:
+            raise WorldForgeError(
+                f"StructuredGoal {kind} goals do not accept reference_object selectors."
+            )
+
+    def _reject_offset(self, kind: str) -> None:
+        if self.offset is not None:
+            raise WorldForgeError(f"StructuredGoal {kind} goals do not accept offset.")
+
+    def _require_distinct_selectors(self, kind: str) -> None:
+        same_id = (
+            self.object_id is not None
+            and self.reference_object_id is not None
+            and self.object_id == self.reference_object_id
+        )
+        same_name = (
+            self.object_id is None
+            and self.reference_object_id is None
+            and self.object_name is not None
+            and self.object_name == self.reference_object_name
+        )
+        if same_id or same_name:
+            raise WorldForgeError(
+                f"StructuredGoal {kind} goals require distinct primary and reference objects."
+            )
 
     @classmethod
     def object_at(
@@ -256,6 +357,27 @@ class StructuredGoal:
         )
 
     @classmethod
+    def object_near(
+        cls,
+        *,
+        object_id: str | None = None,
+        object_name: str | None = None,
+        reference_object_id: str | None = None,
+        reference_object_name: str | None = None,
+        offset: Position | None = None,
+        tolerance: float = 0.05,
+    ) -> StructuredGoal:
+        return cls(
+            kind="object_near",
+            object_id=object_id,
+            object_name=object_name,
+            reference_object_id=reference_object_id,
+            reference_object_name=reference_object_name,
+            offset=offset,
+            tolerance=float(tolerance),
+        )
+
+    @classmethod
     def spawn_object(
         cls,
         object_name: str,
@@ -266,6 +388,25 @@ class StructuredGoal:
             kind="spawn_object",
             object_name=object_name,
             position=position,
+        )
+
+    @classmethod
+    def swap_objects(
+        cls,
+        *,
+        object_id: str | None = None,
+        object_name: str | None = None,
+        reference_object_id: str | None = None,
+        reference_object_name: str | None = None,
+        tolerance: float = 0.05,
+    ) -> StructuredGoal:
+        return cls(
+            kind="swap_objects",
+            object_id=object_id,
+            object_name=object_name,
+            reference_object_id=reference_object_id,
+            reference_object_name=reference_object_name,
+            tolerance=float(tolerance),
         )
 
     @classmethod
@@ -283,26 +424,29 @@ class StructuredGoal:
 
         if "kind" in payload:
             kind = str(payload["kind"])
-            object_payload = payload.get("object", {})
-            if object_payload is None:
-                object_payload = {}
-            if isinstance(object_payload, str):
-                object_payload = {"name": object_payload}
-            if not isinstance(object_payload, dict):
-                raise WorldForgeError("StructuredGoal field 'object' must be a JSON object.")
+            object_id, object_name = cls._selector_fields(
+                payload.get("object"), field_name="object"
+            )
+            reference_object_id, reference_object_name = cls._selector_fields(
+                payload.get("reference_object"),
+                field_name="reference_object",
+            )
             position_payload = payload.get("position")
             position = (
                 Position.from_dict(position_payload) if isinstance(position_payload, dict) else None
             )
+            offset_payload = payload.get("offset")
+            offset = (
+                Position.from_dict(offset_payload) if isinstance(offset_payload, dict) else None
+            )
             return cls(
                 kind=kind,
-                object_id=(
-                    str(object_payload["id"]) if object_payload.get("id") is not None else None
-                ),
-                object_name=(
-                    str(object_payload["name"]) if object_payload.get("name") is not None else None
-                ),
+                object_id=object_id,
+                object_name=object_name,
                 position=position,
+                reference_object_id=reference_object_id,
+                reference_object_name=reference_object_name,
+                offset=offset,
                 tolerance=float(payload.get("tolerance", 0.05)),
             )
 
@@ -353,6 +497,45 @@ class StructuredGoal:
                 ),
             )
 
+        if condition_name == "ObjectNear":
+            object_id, object_name = cls._selector_fields(
+                condition_payload.get("object"),
+                field_name="object",
+            )
+            reference_object_id, reference_object_name = cls._selector_fields(
+                condition_payload.get("reference_object", condition_payload.get("anchor")),
+                field_name="reference_object",
+            )
+            offset_payload = condition_payload.get("offset")
+            offset = (
+                Position.from_dict(offset_payload) if isinstance(offset_payload, dict) else None
+            )
+            return cls.object_near(
+                object_id=object_id,
+                object_name=object_name,
+                reference_object_id=reference_object_id,
+                reference_object_name=reference_object_name,
+                offset=offset,
+                tolerance=float(condition_payload.get("tolerance", 0.05)),
+            )
+
+        if condition_name == "SwapObjects":
+            object_id, object_name = cls._selector_fields(
+                condition_payload.get("object", condition_payload.get("first_object")),
+                field_name="object",
+            )
+            reference_object_id, reference_object_name = cls._selector_fields(
+                condition_payload.get("reference_object", condition_payload.get("second_object")),
+                field_name="reference_object",
+            )
+            return cls.swap_objects(
+                object_id=object_id,
+                object_name=object_name,
+                reference_object_id=reference_object_id,
+                reference_object_name=reference_object_name,
+                tolerance=float(condition_payload.get("tolerance", 0.05)),
+            )
+
         raise WorldForgeError(f"Unsupported legacy structured goal condition '{condition_name}'.")
 
     def to_dict(self) -> JSONDict:
@@ -366,7 +549,15 @@ class StructuredGoal:
             payload["object"]["name"] = self.object_name
         if self.position is not None:
             payload["position"] = self.position.to_dict()
-        if self.kind == "object_at":
+        if self.reference_object_id is not None or self.reference_object_name is not None:
+            payload["reference_object"] = {}
+            if self.reference_object_id is not None:
+                payload["reference_object"]["id"] = self.reference_object_id
+            if self.reference_object_name is not None:
+                payload["reference_object"]["name"] = self.reference_object_name
+        if self.offset is not None:
+            payload["offset"] = self.offset.to_dict()
+        if self.kind in {"object_at", "object_near", "swap_objects"}:
             payload["tolerance"] = self.tolerance
         return payload
 
@@ -376,7 +567,26 @@ class StructuredGoal:
     def summary(self) -> str:
         if self.kind == "spawn_object":
             return f"spawn {self.object_name}"
-        target = self.object_name or self.object_id or "object"
+        target = self._selector_label(self.object_id, self.object_name)
+        if self.kind == "object_near":
+            reference = self._selector_label(
+                self.reference_object_id,
+                self.reference_object_name,
+                fallback="reference object",
+            )
+            if self.offset is None:  # pragma: no cover - guarded by __post_init__
+                raise WorldForgeError("StructuredGoal object_near summary requires an offset.")
+            return (
+                f"move {target} near {reference} "
+                f"with offset ({self.offset.x:.2f}, {self.offset.y:.2f}, {self.offset.z:.2f})"
+            )
+        if self.kind == "swap_objects":
+            reference = self._selector_label(
+                self.reference_object_id,
+                self.reference_object_name,
+                fallback="reference object",
+            )
+            return f"swap {target} with {reference}"
         if self.position is None:  # pragma: no cover - guarded by __post_init__
             raise WorldForgeError("StructuredGoal object_at summary requires a position.")
         return (

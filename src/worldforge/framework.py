@@ -66,6 +66,10 @@ def _require_positive_int(value: int, *, name: str) -> int:
     return value
 
 
+def _offset_position(base: Position, offset: Position) -> Position:
+    return Position(base.x + offset.x, base.y + offset.y, base.z + offset.z)
+
+
 def _validate_world_state_payload(state: JSONDict, *, context: str) -> None:
     if not isinstance(state, dict):
         raise WorldStateError(f"{context} must be a JSON object.")
@@ -445,32 +449,37 @@ class World:
             )
         return Comparison(predictions)
 
-    def _resolve_goal_object(self, goal_spec: StructuredGoal) -> SceneObject:
-        if goal_spec.object_id:
-            scene_object = self.scene_objects.get(goal_spec.object_id)
+    def _resolve_goal_object(
+        self,
+        *,
+        object_id: str | None,
+        object_name: str | None,
+        label: str,
+    ) -> SceneObject:
+        if object_id:
+            scene_object = self.scene_objects.get(object_id)
             if scene_object is None:
                 raise WorldForgeError(
-                    f"Structured goal references missing object id '{goal_spec.object_id}'."
+                    f"Structured goal references missing {label} id '{object_id}'."
                 )
-            if goal_spec.object_name and scene_object.name != goal_spec.object_name:
+            if object_name and scene_object.name != object_name:
                 raise WorldForgeError(
-                    "Structured goal object_id/object_name selectors do not match the same object."
+                    f"Structured goal {label} id/name selectors do not match the same object."
                 )
             return scene_object.copy()
 
         matches = [
             scene_object.copy()
             for scene_object in self.scene_objects.values()
-            if scene_object.name == goal_spec.object_name
+            if scene_object.name == object_name
         ]
         if not matches:
             raise WorldForgeError(
-                f"Structured goal references unknown object name '{goal_spec.object_name}'."
+                f"Structured goal references unknown {label} name '{object_name}'."
             )
         if len(matches) > 1:
             raise WorldForgeError(
-                f"Structured goal object name '{goal_spec.object_name}' is ambiguous; "
-                "use object_id instead."
+                f"Structured goal {label} name '{object_name}' is ambiguous; use object_id instead."
             )
         return matches[0]
 
@@ -483,7 +492,58 @@ class World:
                 )
             ]
 
-        target_object = self._resolve_goal_object(goal_spec)
+        target_object = self._resolve_goal_object(
+            object_id=goal_spec.object_id,
+            object_name=goal_spec.object_name,
+            label="object",
+        )
+        if goal_spec.kind == "object_near":
+            reference_object = self._resolve_goal_object(
+                object_id=goal_spec.reference_object_id,
+                object_name=goal_spec.reference_object_name,
+                label="reference object",
+            )
+            if reference_object.id == target_object.id:
+                raise WorldForgeError(
+                    "Structured goal object_near requires distinct primary and reference objects."
+                )
+            if goal_spec.offset is None:  # pragma: no cover - guarded by StructuredGoal
+                raise WorldForgeError("Structured goal object_near is missing an offset.")
+            target_position = _offset_position(reference_object.position, goal_spec.offset)
+            return [
+                Action.move_to(
+                    target_position.x,
+                    target_position.y,
+                    target_position.z,
+                    object_id=target_object.id,
+                )
+            ]
+
+        if goal_spec.kind == "swap_objects":
+            reference_object = self._resolve_goal_object(
+                object_id=goal_spec.reference_object_id,
+                object_name=goal_spec.reference_object_name,
+                label="reference object",
+            )
+            if reference_object.id == target_object.id:
+                raise WorldForgeError(
+                    "Structured goal swap_objects requires distinct primary and reference objects."
+                )
+            return [
+                Action.move_to(
+                    reference_object.position.x,
+                    reference_object.position.y,
+                    reference_object.position.z,
+                    object_id=target_object.id,
+                ),
+                Action.move_to(
+                    target_object.position.x,
+                    target_object.position.y,
+                    target_object.position.z,
+                    object_id=reference_object.id,
+                ),
+            ]
+
         if goal_spec.position is None:  # pragma: no cover - guarded by StructuredGoal
             raise WorldForgeError("Structured goal is missing a target position.")
         return [

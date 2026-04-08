@@ -190,7 +190,7 @@ def test_cli_supports_provider_listing_predict_transfer_and_eval(
     assert main() == 0
     eval_payload = json.loads(capsys.readouterr().out)
     assert eval_payload["suite_id"] == "planning"
-    assert len(eval_payload["results"]) == 2
+    assert len(eval_payload["results"]) == 4
 
     monkeypatch.setattr(
         sys,

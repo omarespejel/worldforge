@@ -66,7 +66,7 @@ uv run pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
 - Remote adapters emit `ProviderEvent` records for retry, success, and failure. Mock-backed paths emit success events only.
 - `ProviderMetricsSink.request_count` counts emitted request attempts, so retries increment both `request_count` and `retry_count`.
 - Built-in evaluation suites are `generation`, `physics`, `planning`, `reasoning`, and `transfer`; reports can be exported as Markdown, JSON, or CSV from the same run.
-- Structured planning inputs should use `StructuredGoal`; legacy `goal_json` remains supported but is normalized through the typed goal parser.
+- Structured planning inputs should use `StructuredGoal`; the typed goal surface currently covers `object_at`, `object_near`, `spawn_object`, and `swap_objects`, and legacy `goal_json` remains supported but is normalized through the same parser.
 - `ProviderBenchmarkHarness` derives retry and request-attempt metrics from emitted `ProviderEvent` records, so benchmark reports are only as detailed as the provider events emitted by the active adapter path.
 
 ## Observability Example
@@ -93,7 +93,7 @@ print(metrics.get("mock", "generate").to_dict())
 
 As of 2026-04-08, the project is alpha.
 
-- Stable path: local `mock` provider, persistence, CLI, contract tests, built-in generation/physics/planning/reasoning/transfer evaluation flows, benchmark harnesses, typed structured goals, and provider telemetry sinks.
+- Stable path: local `mock` provider, persistence, CLI, contract tests, built-in generation/physics/planning/reasoning/transfer evaluation flows, benchmark harnesses, typed structured goals for relocation/neighbor/spawn/swap planning, and provider telemetry sinks.
 - Beta path: `cosmos` and `runway` HTTP adapters.
 - Scaffold path: `jepa` and `genie`.
 - Known gaps: heuristic string planning remains lightweight, evaluation and benchmark fixtures are still synthetic, there is no distributed load-test harness yet, and there is no built-in exporter integration for OpenTelemetry or Prometheus yet.

@@ -66,6 +66,10 @@ doctor = forge.doctor()
 print(doctor.healthy_provider_count, doctor.provider_count)
 ```
 
+`StructuredGoal` currently supports `object_at`, `object_near`, `spawn_object`, and
+`swap_objects`. Legacy `goal_json` inputs remain supported and are normalized through the
+same typed parser.
+
 Provider observability:
 
 ```python
@@ -169,7 +173,7 @@ Operational invariants:
 - retryable read operations are retried with backoff; mutation requests stay single-attempt by default
 - remote HTTP adapters emit structured `ProviderEvent` records for `retry`, `success`, and `failure`
 - `ProviderMetricsSink.request_count` tracks emitted request attempts, so retry events increment both `request_count` and `retry_count`
-- `StructuredGoal` provides the typed planning contract for `object_at` and `spawn_object` workflows while legacy `goal_json` remains supported
+- `StructuredGoal` provides the typed planning contract for `object_at`, `object_near`, `spawn_object`, and `swap_objects` workflows while legacy `goal_json` remains supported
 - `ProviderBenchmarkHarness` measures per-operation latency percentiles, throughput, and emitted retry/error events across registered providers
 - local `mock` and scaffold adapters emit structured success events for provider operations
 - the deterministic mock path remains available for local tests and examples
@@ -213,7 +217,7 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for contributor workflow details.
 
 ## Current Limitations
 
-- Planning still supports heuristic goal strings, but structured goals are now typed and validated through `StructuredGoal`.
+- Planning still supports heuristic goal strings, but structured goals are now typed and validated through `StructuredGoal`, including relocation, neighbor placement, spawn, and swap workflows.
 - Evaluation remains a deterministic harness; the built-in suites now cover generation, transfer, physics, planning, and reasoning baselines.
 - `jepa` and `genie` are scaffold adapters and should not be treated as production integrations.
 - Remote provider health checks depend on live credentials and network reachability even though they now use typed timeout and retry policy.
@@ -227,7 +231,7 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for contributor workflow details.
 Exit criteria: remote adapters validate more upstream response schemas, expose richer operator-facing error context, and ship broader non-happy-path coverage beyond transport retries.
 
 2. Planner and evaluator maturity.
-Exit criteria: structured planning grows beyond `object_at` / `spawn_object`, evaluation scoring gets less heuristic, and benchmark fixtures expand beyond the synthetic seed clip.
+Exit criteria: structured planning grows beyond the current `object_at` / `object_near` / `spawn_object` / `swap_objects` goal set, evaluation scoring gets less heuristic, and benchmark fixtures expand beyond the synthetic seed clip.
 
 3. Release discipline.
 Exit criteria: changelog, docs, and agent context stay in lockstep with tags, and the first release-candidate criteria are documented.

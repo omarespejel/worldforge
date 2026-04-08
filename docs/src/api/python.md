@@ -72,6 +72,13 @@ plan = world.plan(
 )
 ```
 
+Typed structured goals currently cover:
+
+- `StructuredGoal.object_at(...)`
+- `StructuredGoal.object_near(...)`
+- `StructuredGoal.spawn_object(...)`
+- `StructuredGoal.swap_objects(...)`
+
 ## Evaluation
 
 ```python
