@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from copy import deepcopy
 from time import perf_counter
 
@@ -13,13 +14,14 @@ from worldforge.models import (
     JSONDict,
     Position,
     ProviderCapabilities,
+    ProviderEvent,
     ReasoningResult,
     SceneObject,
     VideoClip,
     deterministic_floats,
 )
 
-from .base import BaseProvider, PredictionPayload
+from .base import BaseProvider, PredictionPayload, ProviderError
 
 
 def _frame_bytes(seed: str, index: int) -> bytes:
@@ -29,7 +31,12 @@ def _frame_bytes(seed: str, index: int) -> bytes:
 class MockProvider(BaseProvider):
     """Deterministic provider for offline development, examples, and tests."""
 
-    def __init__(self, name: str = "mock") -> None:
+    def __init__(
+        self,
+        name: str = "mock",
+        *,
+        event_handler: Callable[[ProviderEvent], None] | None = None,
+    ) -> None:
         super().__init__(
             name=name,
             capabilities=ProviderCapabilities(
@@ -54,6 +61,24 @@ class MockProvider(BaseProvider):
             ],
             default_model="mock-deterministic-v1",
             supported_models=["mock-deterministic-v1"],
+            event_handler=event_handler,
+        )
+
+    def _emit_success_event(
+        self,
+        *,
+        operation: str,
+        duration_ms: float,
+        metadata: JSONDict | None = None,
+    ) -> None:
+        self._emit_event(
+            ProviderEvent(
+                provider=self.name,
+                operation=operation,
+                phase="success",
+                duration_ms=duration_ms,
+                metadata=dict(metadata or {}),
+            )
         )
 
     def _updated_world_state(self, world_state: JSONDict, action: Action, steps: int) -> JSONDict:
@@ -90,7 +115,8 @@ class MockProvider(BaseProvider):
         physics_score = max(0.6, min(0.99, 0.72 + (0.03 * object_count)))
         confidence = max(0.65, min(0.99, physics_score - 0.02))
         frame_count = max(1, steps)
-        return PredictionPayload(
+        latency_ms = max(0.1, (perf_counter() - started) * 1000)
+        payload = PredictionPayload(
             state=updated_state,
             confidence=confidence,
             physics_score=physics_score,
@@ -101,8 +127,14 @@ class MockProvider(BaseProvider):
                 "frame_count": frame_count,
                 "mode": "deterministic-mock",
             },
-            latency_ms=max(0.1, (perf_counter() - started) * 1000),
+            latency_ms=latency_ms,
         )
+        self._emit_success_event(
+            operation="predict",
+            duration_ms=latency_ms,
+            metadata={"steps": steps, "frame_count": frame_count},
+        )
+        return payload
 
     def generate(
         self,
@@ -111,8 +143,11 @@ class MockProvider(BaseProvider):
         *,
         options: GenerationOptions | None = None,
     ) -> VideoClip:
+        if duration_seconds <= 0.0:
+            raise ProviderError("Mock duration_seconds must be greater than 0.")
+        started = perf_counter()
         frame_count = max(1, int(round(duration_seconds * 8)))
-        return VideoClip(
+        clip = VideoClip(
             frames=[_frame_bytes(prompt, index) for index in range(frame_count)],
             fps=8.0,
             resolution=(640, 360),
@@ -125,6 +160,12 @@ class MockProvider(BaseProvider):
                 "content_type": "application/octet-stream",
             },
         )
+        self._emit_success_event(
+            operation="generate",
+            duration_ms=max(0.1, (perf_counter() - started) * 1000),
+            metadata={"duration_seconds": duration_seconds, "frame_count": frame_count},
+        )
+        return clip
 
     def transfer(
         self,
@@ -136,7 +177,12 @@ class MockProvider(BaseProvider):
         prompt: str = "",
         options: GenerationOptions | None = None,
     ) -> VideoClip:
-        return VideoClip(
+        if width <= 0 or height <= 0:
+            raise ProviderError("Mock output width and height must be greater than 0.")
+        if fps <= 0.0:
+            raise ProviderError("Mock fps must be greater than 0.")
+        started = perf_counter()
+        transferred = VideoClip(
             frames=list(clip.frames),
             fps=fps,
             resolution=(width, height),
@@ -149,19 +195,39 @@ class MockProvider(BaseProvider):
                 "options": options.to_dict() if options else {},
             },
         )
+        self._emit_success_event(
+            operation="transfer",
+            duration_ms=max(0.1, (perf_counter() - started) * 1000),
+            metadata={"frame_count": len(clip.frames), "width": width, "height": height},
+        )
+        return transferred
 
     def reason(self, query: str, *, world_state: JSONDict | None = None) -> ReasoningResult:
+        started = perf_counter()
         objects = world_state.get("scene", {}).get("objects", {}) if world_state else {}
-        return ReasoningResult(
+        result = ReasoningResult(
             provider=self.name,
             answer=f"{len(objects)} object(s) tracked. Query: {query}",
             confidence=0.81,
             evidence=[f"Observed object ids: {', '.join(objects) or 'none'}"],
         )
+        self._emit_success_event(
+            operation="reason",
+            duration_ms=max(0.1, (perf_counter() - started) * 1000),
+            metadata={"object_count": len(objects)},
+        )
+        return result
 
     def embed(self, *, text: str) -> EmbeddingResult:
-        return EmbeddingResult(
+        started = perf_counter()
+        result = EmbeddingResult(
             provider=self.name,
             model="mock-embedding-v1",
             vector=deterministic_floats(f"{self.name}:{text}", 32),
         )
+        self._emit_success_event(
+            operation="embed",
+            duration_ms=max(0.1, (perf_counter() - started) * 1000),
+            metadata={"dimensions": len(result.vector)},
+        )
+        return result

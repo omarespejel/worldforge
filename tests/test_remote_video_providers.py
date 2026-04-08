@@ -6,7 +6,7 @@ import json
 import httpx
 import pytest
 
-from worldforge import GenerationOptions, ProviderRequestPolicy, VideoClip
+from worldforge import GenerationOptions, ProviderEvent, ProviderRequestPolicy, VideoClip
 from worldforge.providers import CosmosProvider, ProviderError, RunwayProvider
 
 
@@ -167,6 +167,7 @@ def test_cosmos_provider_rejects_invalid_asset_paths_and_payloads(tmp_path) -> N
 
 def test_cosmos_provider_retries_transient_health_failure() -> None:
     attempts = {"health": 0}
+    events: list[ProviderEvent] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "GET" and request.url.path == "/v1/health/ready":
@@ -183,12 +184,17 @@ def test_cosmos_provider_retries_transient_health_failure() -> None:
             read_retry_attempts=2,
             read_backoff_seconds=0.0,
         ),
+        event_handler=events.append,
         transport=httpx.MockTransport(handler),
     )
 
     health = provider.health()
     assert health.healthy is True
     assert attempts["health"] == 2
+    assert [(event.operation, event.phase) for event in events] == [
+        ("healthcheck", "retry"),
+        ("healthcheck", "success"),
+    ]
 
 
 def test_runway_provider_rejects_invalid_runtime_inputs(monkeypatch) -> None:
@@ -223,6 +229,7 @@ def test_runway_provider_retries_polling_and_download_reads(monkeypatch) -> None
     monkeypatch.setenv("RUNWAYML_API_SECRET", "runway-test-key")
     attempts = {"poll": 0, "download": 0}
     generated_bytes = b"retry-generated"
+    events: list[ProviderEvent] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "POST" and request.url.path == "/v1/image_to_video":
@@ -255,6 +262,7 @@ def test_runway_provider_retries_polling_and_download_reads(monkeypatch) -> None
             read_retry_attempts=2,
             read_backoff_seconds=0.0,
         ),
+        event_handler=events.append,
         transport=httpx.MockTransport(handler),
         poll_interval_seconds=0.0,
         max_polls=1,
@@ -268,11 +276,19 @@ def test_runway_provider_retries_polling_and_download_reads(monkeypatch) -> None
     assert generated.blob() == generated_bytes
     assert attempts["poll"] == 2
     assert attempts["download"] == 2
+    assert [(event.operation, event.phase) for event in events] == [
+        ("generation request", "success"),
+        ("task poll", "retry"),
+        ("task poll", "success"),
+        ("artifact download", "retry"),
+        ("artifact download", "success"),
+    ]
 
 
 def test_runway_provider_does_not_retry_generation_post(monkeypatch) -> None:
     monkeypatch.setenv("RUNWAYML_API_SECRET", "runway-test-key")
     attempts = {"post": 0}
+    events: list[ProviderEvent] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "POST" and request.url.path == "/v1/image_to_video":
@@ -286,6 +302,7 @@ def test_runway_provider_does_not_retry_generation_post(monkeypatch) -> None:
             read_retry_attempts=3,
             read_backoff_seconds=0.0,
         ),
+        event_handler=events.append,
         transport=httpx.MockTransport(handler),
         poll_interval_seconds=0.0,
         max_polls=1,
@@ -298,6 +315,9 @@ def test_runway_provider_does_not_retry_generation_post(monkeypatch) -> None:
             options=GenerationOptions(fps=24.0),
         )
     assert attempts["post"] == 1
+    assert [(event.operation, event.phase, event.status_code) for event in events] == [
+        ("generation request", "failure", 503)
+    ]
 
 
 def _sample_clip() -> VideoClip:

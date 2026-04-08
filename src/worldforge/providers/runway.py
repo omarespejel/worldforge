@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from time import perf_counter
 
 import httpx
@@ -10,6 +11,7 @@ import httpx
 from worldforge.models import (
     GenerationOptions,
     ProviderCapabilities,
+    ProviderEvent,
     ProviderHealth,
     ProviderRequestPolicy,
     VideoClip,
@@ -43,6 +45,7 @@ class RunwayProvider(RemoteProvider):
         poll_interval_seconds: float = 6.0,
         max_polls: int = 60,
         request_policy: ProviderRequestPolicy | None = None,
+        event_handler: Callable[[ProviderEvent], None] | None = None,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         resolved_request_policy = request_policy or ProviderRequestPolicy.remote_defaults(
@@ -74,6 +77,7 @@ class RunwayProvider(RemoteProvider):
             supported_models=["gen4.5", "gen4_turbo", "veo3.1", "veo3.1_fast", "gen4_aleph"],
             required_env_vars=["RUNWAYML_API_SECRET", "RUNWAY_API_SECRET"],
             request_policy=resolved_request_policy,
+            event_handler=event_handler,
         )
         self._base_url = (
             base_url or os.environ.get("RUNWAYML_BASE_URL") or "https://api.dev.runwayml.com"
@@ -125,6 +129,7 @@ class RunwayProvider(RemoteProvider):
                     provider_name=self.name,
                     operation_name="healthcheck",
                     policy=request_policy.health,
+                    emit_event=self._emit_event,
                 )
             details = str(payload.get("name") or payload.get("id") or "organization ok")
             healthy = True
@@ -162,6 +167,7 @@ class RunwayProvider(RemoteProvider):
             max_polls=self._max_polls,
             provider_name=self.name,
             operation_policy=request_policy.polling,
+            emit_event=self._emit_event,
         )
         outputs = payload.get("output")
         if (
@@ -182,6 +188,7 @@ class RunwayProvider(RemoteProvider):
                 provider_name=self.name,
                 operation_name="artifact download",
                 policy=request_policy.download,
+                emit_event=self._emit_event,
             )
 
     def _task_id(self, payload: dict[str, object], *, operation_name: str) -> str:
@@ -237,6 +244,7 @@ class RunwayProvider(RemoteProvider):
                 provider_name=self.name,
                 operation_name="generation request",
                 policy=request_policy.request,
+                emit_event=self._emit_event,
                 json=body,
             )
             task_id = self._task_id(payload, operation_name="generation request")
@@ -307,6 +315,7 @@ class RunwayProvider(RemoteProvider):
                 provider_name=self.name,
                 operation_name="transfer request",
                 policy=request_policy.request,
+                emit_event=self._emit_event,
                 json=body,
             )
             task_id = self._task_id(payload, operation_name="transfer request")

@@ -10,6 +10,7 @@ All notable user-visible changes to this project will be documented in this file
 - Regression coverage for invalid runtime inputs, malformed imports, missing local provider assets, and invalid remote payloads.
 - `.env.example` and `AGENTS.md` so contributors and coding agents share the same live project contract.
 - Typed `RetryPolicy`, `RequestOperationPolicy`, and `ProviderRequestPolicy` models exported through the public API.
+- Typed `ProviderEvent` records and `event_handler=` plumbing on `WorldForge` and provider constructors for host-side observability.
 
 ### Changed
 
@@ -17,6 +18,7 @@ All notable user-visible changes to this project will be documented in this file
 - Remote asset handling now fails fast when a local file path is missing instead of treating the path string as a remote URI.
 - README and provider documentation now reflect the real provider status split: `mock` stable, `cosmos` and `runway` beta, `jepa` and `genie` scaffold.
 - `cosmos` and `runway` now share one typed timeout and retry contract, with retried read operations and single-attempt mutation requests by default.
+- Builtin providers, manually registered providers, and scaffold adapters now share one provider-event contract, so host applications can observe local and remote execution through the same callback surface.
 
 ### Fixed
 

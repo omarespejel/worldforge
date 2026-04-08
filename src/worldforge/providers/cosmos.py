@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import os
+from collections.abc import Callable
 from time import perf_counter
 
 import httpx
@@ -11,6 +12,7 @@ import httpx
 from worldforge.models import (
     GenerationOptions,
     ProviderCapabilities,
+    ProviderEvent,
     ProviderHealth,
     ProviderRequestPolicy,
     VideoClip,
@@ -32,6 +34,7 @@ class CosmosProvider(RemoteProvider):
         base_url: str | None = None,
         timeout_seconds: float = 300.0,
         request_policy: ProviderRequestPolicy | None = None,
+        event_handler: Callable[[ProviderEvent], None] | None = None,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         resolved_request_policy = request_policy or ProviderRequestPolicy.remote_defaults(
@@ -67,6 +70,7 @@ class CosmosProvider(RemoteProvider):
             required_env_vars=["COSMOS_BASE_URL"],
             requires_credentials=False,
             request_policy=resolved_request_policy,
+            event_handler=event_handler,
         )
         self._base_url = base_url
         self._transport = transport
@@ -118,6 +122,7 @@ class CosmosProvider(RemoteProvider):
                     provider_name=self.name,
                     operation_name="healthcheck",
                     policy=request_policy.health,
+                    emit_event=self._emit_event,
                 )
             status = str(payload.get("status", "unknown"))
             healthy = status.lower() == "ready"
@@ -184,6 +189,7 @@ class CosmosProvider(RemoteProvider):
                 provider_name=self.name,
                 operation_name="generation request",
                 policy=request_policy.request,
+                emit_event=self._emit_event,
                 json=body,
             )
 

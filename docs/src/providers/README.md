@@ -25,9 +25,14 @@ Every provider exposes a profile describing:
 Programmatically:
 
 ```python
-from worldforge import WorldForge
+from worldforge import ProviderEvent, WorldForge
 
-forge = WorldForge()
+
+def handle_provider_event(event: ProviderEvent) -> None:
+    print(event.phase, event.operation, event.provider)
+
+
+forge = WorldForge(event_handler=handle_provider_event)
 profile = forge.provider_profile("mock")
 print(profile.supported_tasks, profile.deterministic)
 ```
@@ -57,4 +62,6 @@ Providers can declare support for:
 - Missing local asset paths now fail before the outbound request instead of being treated as opaque remote strings.
 - `cosmos` and `runway` expose a typed `ProviderRequestPolicy` through `provider_profile()` and CLI JSON output.
 - Health checks, polling, and downloads retry with backoff by default. Create-style POST requests remain single-attempt unless a caller passes a custom policy.
+- `WorldForge(event_handler=...)` and provider constructor `event_handler=` arguments accept a `ProviderEvent` callback for host-side logging and metrics.
+- `cosmos` and `runway` emit `retry`, `success`, and `failure` events for HTTP operations. `mock`, `jepa`, and `genie` emit success events for local provider operations.
 - `cosmos` and `runway` are the only in-repo adapters that currently perform real HTTP requests.

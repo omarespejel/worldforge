@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +19,7 @@ from worldforge.models import (
     JSONDict,
     Position,
     ProviderDoctorStatus,
+    ProviderEvent,
     ProviderHealth,
     ProviderInfo,
     ProviderProfile,
@@ -531,15 +532,27 @@ class WorldForge:
         *,
         state_dir: str | Path | None = None,
         auto_register_remote: bool = True,
+        event_handler: Callable[[ProviderEvent], None] | None = None,
     ) -> None:
         self.state_dir = Path(state_dir or ".worldforge/worlds").expanduser().resolve()
         ensure_directory(self.state_dir)
         self._providers: dict[str, BaseProvider] = {}
-        self.register_provider(MockProvider())
+        self._event_handler = event_handler
+        builtin_providers = self._known_providers()
+        self.register_provider(builtin_providers[0])
         if auto_register_remote:
-            for provider in (CosmosProvider(), RunwayProvider(), JepaProvider(), GenieProvider()):
+            for provider in builtin_providers[1:]:
                 if provider.configured():
                     self.register_provider(provider)
+
+    def _known_providers(self) -> tuple[BaseProvider, ...]:
+        return (
+            MockProvider(event_handler=self._event_handler),
+            CosmosProvider(event_handler=self._event_handler),
+            RunwayProvider(event_handler=self._event_handler),
+            JepaProvider(event_handler=self._event_handler),
+            GenieProvider(event_handler=self._event_handler),
+        )
 
     def _require_provider(self, name: str) -> BaseProvider:
         try:
@@ -548,6 +561,8 @@ class WorldForge:
             raise ProviderError(f"Provider '{name}' is not registered.") from exc
 
     def register_provider(self, provider: BaseProvider) -> None:
+        if self._event_handler is not None and provider.event_handler is None:
+            provider.event_handler = self._event_handler
         self._providers[provider.name] = provider
 
     def providers(self) -> list[str]:
@@ -556,13 +571,7 @@ class WorldForge:
     def _provider_catalog(self, *, include_known: bool = True) -> dict[str, BaseProvider]:
         catalog: dict[str, BaseProvider] = {}
         if include_known:
-            for provider in (
-                MockProvider(),
-                CosmosProvider(),
-                RunwayProvider(),
-                JepaProvider(),
-                GenieProvider(),
-            ):
+            for provider in self._known_providers():
                 catalog[provider.name] = provider
         for provider in self._providers.values():
             catalog[provider.name] = provider

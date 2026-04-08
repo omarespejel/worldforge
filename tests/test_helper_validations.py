@@ -6,6 +6,7 @@ import pytest
 from worldforge import (
     Action,
     GenerationOptions,
+    ProviderEvent,
     ProviderRequestPolicy,
     RetryPolicy,
     WorldForge,
@@ -83,6 +84,18 @@ def test_http_utils_validate_assets_size_and_polling(tmp_path) -> None:
     assert default_request_policy.request.retry.max_attempts == 1
     assert default_request_policy.download.retry.max_attempts == 3
     assert default_request_policy.to_dict()["health"]["timeout_seconds"] == 10.0
+
+    event = ProviderEvent(
+        provider="mock",
+        operation="predict",
+        phase="success",
+        duration_ms=12.5,
+        metadata={"steps": 1},
+    )
+    assert event.to_dict()["metadata"] == {"steps": 1}
+
+    with pytest.raises(WorldForgeError, match="duration_ms"):
+        ProviderEvent(provider="mock", operation="predict", phase="success", duration_ms=-1.0)
 
 
 def test_framework_helpers_and_error_paths(tmp_path) -> None:

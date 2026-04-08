@@ -44,7 +44,8 @@ Evaluation suites, scenario runners, and report rendering.
 2. `World` snapshots the current state and sends it to the provider.
 3. The provider returns a `PredictionPayload` or `VideoClip`.
 4. The framework validates and applies the returned state.
-5. History, persistence, evaluation, and CLI output are derived from that validated state.
+5. Optional provider event callbacks receive structured `ProviderEvent` records from local and remote provider operations.
+6. History, persistence, evaluation, and CLI output are derived from that validated state.
 
 ## Invariants
 
@@ -54,6 +55,7 @@ Evaluation suites, scenario runners, and report rendering.
 - provider capability metadata must match the implemented surface
 - missing local asset files fail before network I/O
 - remote provider reads use typed retry/backoff policy; mutation requests default to single-attempt behavior
+- forge-level event handlers propagate to builtin providers and to providers later registered at runtime
 
 ## Failure model
 
@@ -62,6 +64,7 @@ Evaluation suites, scenario runners, and report rendering.
 - provider/runtime integration failures raise `ProviderError`
 - remote health checks may fail due to missing credentials, invalid endpoints, or upstream errors
 - remote HTTP adapters share one typed request policy contract for timeout, polling, download, and retry behavior
+- provider event callbacks surface structured retry, success, and failure records but do not replace host-level logging or metrics sinks
 
 ## Design principles
 

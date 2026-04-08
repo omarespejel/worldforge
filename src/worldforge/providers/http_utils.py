@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import base64
 import mimetypes
+from collections.abc import Callable
 from pathlib import Path
-from time import sleep
+from time import perf_counter, sleep
 from typing import Any
 
 import httpx
 
-from worldforge.models import GenerationOptions, RequestOperationPolicy, VideoClip
+from worldforge.models import (
+    GenerationOptions,
+    ProviderEvent,
+    RequestOperationPolicy,
+    VideoClip,
+)
 
 from .base import ProviderError
 
@@ -102,11 +108,13 @@ def request_with_policy(
     provider_name: str,
     operation_name: str,
     policy: RequestOperationPolicy,
+    emit_event: Callable[[ProviderEvent], None] | None = None,
     **kwargs: Any,
 ) -> httpx.Response:
     """Send an HTTP request using the configured timeout and retry policy."""
 
     for attempt_number in range(1, policy.retry.max_attempts + 1):
+        started = perf_counter()
         try:
             response = client.request(
                 method,
@@ -115,28 +123,105 @@ def request_with_policy(
                 **kwargs,
             )
         except _RETRYABLE_EXCEPTIONS as exc:
+            duration_ms = max(0.0, (perf_counter() - started) * 1000)
             if attempt_number >= policy.retry.max_attempts:
+                if emit_event is not None:
+                    emit_event(
+                        ProviderEvent(
+                            provider=provider_name,
+                            operation=operation_name,
+                            phase="failure",
+                            attempt=attempt_number,
+                            max_attempts=policy.retry.max_attempts,
+                            method=method,
+                            target=url,
+                            duration_ms=duration_ms,
+                            message=str(exc),
+                        )
+                    )
                 raise ProviderError(
                     f"Provider '{provider_name}' {operation_name} failed after "
                     f"{attempt_number} attempt(s): {exc}"
                 ) from exc
             delay = policy.retry.delay_for_attempt(attempt_number + 1)
+            if emit_event is not None:
+                emit_event(
+                    ProviderEvent(
+                        provider=provider_name,
+                        operation=operation_name,
+                        phase="retry",
+                        attempt=attempt_number,
+                        max_attempts=policy.retry.max_attempts,
+                        method=method,
+                        target=url,
+                        duration_ms=duration_ms,
+                        message=str(exc),
+                        metadata={"next_delay_seconds": delay},
+                    )
+                )
             if delay > 0.0:
                 sleep(delay)
             continue
         except httpx.HTTPError as exc:
+            duration_ms = max(0.0, (perf_counter() - started) * 1000)
+            if emit_event is not None:
+                emit_event(
+                    ProviderEvent(
+                        provider=provider_name,
+                        operation=operation_name,
+                        phase="failure",
+                        attempt=attempt_number,
+                        max_attempts=policy.retry.max_attempts,
+                        method=method,
+                        target=url,
+                        duration_ms=duration_ms,
+                        message=str(exc),
+                    )
+                )
             raise ProviderError(
                 f"Provider '{provider_name}' {operation_name} failed: {exc}"
             ) from exc
 
+        duration_ms = max(0.0, (perf_counter() - started) * 1000)
         if response.status_code in policy.retry.retryable_status_codes:
             if attempt_number >= policy.retry.max_attempts:
+                if emit_event is not None:
+                    emit_event(
+                        ProviderEvent(
+                            provider=provider_name,
+                            operation=operation_name,
+                            phase="failure",
+                            attempt=attempt_number,
+                            max_attempts=policy.retry.max_attempts,
+                            method=method,
+                            target=url,
+                            status_code=response.status_code,
+                            duration_ms=duration_ms,
+                            message=_response_summary(response),
+                        )
+                    )
                 _raise_status_error(
                     provider_name=provider_name,
                     operation_name=operation_name,
                     response=response,
                 )
             delay = policy.retry.delay_for_attempt(attempt_number + 1)
+            if emit_event is not None:
+                emit_event(
+                    ProviderEvent(
+                        provider=provider_name,
+                        operation=operation_name,
+                        phase="retry",
+                        attempt=attempt_number,
+                        max_attempts=policy.retry.max_attempts,
+                        method=method,
+                        target=url,
+                        status_code=response.status_code,
+                        duration_ms=duration_ms,
+                        message=_response_summary(response),
+                        metadata={"next_delay_seconds": delay},
+                    )
+                )
             response.close()
             if delay > 0.0:
                 sleep(delay)
@@ -145,10 +230,39 @@ def request_with_policy(
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
+            if emit_event is not None:
+                emit_event(
+                    ProviderEvent(
+                        provider=provider_name,
+                        operation=operation_name,
+                        phase="failure",
+                        attempt=attempt_number,
+                        max_attempts=policy.retry.max_attempts,
+                        method=method,
+                        target=url,
+                        status_code=response.status_code,
+                        duration_ms=duration_ms,
+                        message=_response_summary(response),
+                    )
+                )
             raise ProviderError(
                 f"Provider '{provider_name}' {operation_name} failed with "
                 f"status {response.status_code}: {_response_summary(response)}"
             ) from exc
+        if emit_event is not None:
+            emit_event(
+                ProviderEvent(
+                    provider=provider_name,
+                    operation=operation_name,
+                    phase="success",
+                    attempt=attempt_number,
+                    max_attempts=policy.retry.max_attempts,
+                    method=method,
+                    target=url,
+                    status_code=response.status_code,
+                    duration_ms=duration_ms,
+                )
+            )
         return response
 
     raise AssertionError("request_with_policy exhausted retries without returning or raising")
@@ -162,6 +276,7 @@ def request_json_with_policy(
     provider_name: str,
     operation_name: str,
     policy: RequestOperationPolicy,
+    emit_event: Callable[[ProviderEvent], None] | None = None,
     **kwargs: Any,
 ) -> dict[str, object]:
     """Send an HTTP request and decode a JSON object response."""
@@ -173,6 +288,7 @@ def request_json_with_policy(
         provider_name=provider_name,
         operation_name=operation_name,
         policy=policy,
+        emit_event=emit_event,
         **kwargs,
     )
     try:
@@ -196,6 +312,7 @@ def request_bytes_with_policy(
     provider_name: str,
     operation_name: str,
     policy: RequestOperationPolicy,
+    emit_event: Callable[[ProviderEvent], None] | None = None,
     **kwargs: Any,
 ) -> bytes:
     """Send an HTTP request and return the raw response bytes."""
@@ -207,6 +324,7 @@ def request_bytes_with_policy(
         provider_name=provider_name,
         operation_name=operation_name,
         policy=policy,
+        emit_event=emit_event,
         **kwargs,
     )
     return response.content
@@ -223,6 +341,7 @@ def poll_json_task(
     max_polls: int,
     provider_name: str,
     operation_policy: RequestOperationPolicy,
+    emit_event: Callable[[ProviderEvent], None] | None = None,
 ) -> dict[str, object]:
     """Poll an HTTP task endpoint until it completes or fails."""
 
@@ -234,6 +353,7 @@ def poll_json_task(
             provider_name=provider_name,
             operation_name="task poll",
             policy=operation_policy,
+            emit_event=emit_event,
         )
         status = str(payload.get(status_key, "")).upper()
         if status in success_values:

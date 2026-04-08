@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from time import perf_counter
 
@@ -12,6 +13,7 @@ from worldforge.models import (
     GenerationOptions,
     JSONDict,
     ProviderCapabilities,
+    ProviderEvent,
     ProviderHealth,
     ProviderInfo,
     ProviderProfile,
@@ -60,6 +62,7 @@ class BaseProvider:
         required_env_vars: list[str] | None = None,
         requires_credentials: bool | None = None,
         request_policy: ProviderRequestPolicy | None = None,
+        event_handler: Callable[[ProviderEvent], None] | None = None,
     ) -> None:
         self.name = name
         self.capabilities = capabilities or ProviderCapabilities()
@@ -78,6 +81,7 @@ class BaseProvider:
             requires_credentials if requires_credentials is not None else self.env_var is not None
         )
         self.request_policy = request_policy
+        self.event_handler = event_handler
 
     def info(self) -> ProviderInfo:
         return ProviderInfo(
@@ -120,6 +124,10 @@ class BaseProvider:
             latency_ms=max(0.1, (perf_counter() - started) * 1000),
             details=details,
         )
+
+    def _emit_event(self, event: ProviderEvent) -> None:
+        if self.event_handler is not None:
+            self.event_handler(event)
 
     def predict(self, world_state: JSONDict, action: Action, steps: int) -> PredictionPayload:
         raise NotImplementedError

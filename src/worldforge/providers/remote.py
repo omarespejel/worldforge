@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from worldforge.models import (
     EmbeddingResult,
     GenerationOptions,
     ProviderCapabilities,
+    ProviderEvent,
     ReasoningResult,
     VideoClip,
 )
@@ -19,7 +22,11 @@ class StubRemoteProvider(RemoteProvider):
 
     def predict(self, world_state, action, steps):  # type: ignore[no-untyped-def]
         self._require_credentials()
-        payload = MockProvider(name=self.name).predict(world_state, action, steps)
+        payload = MockProvider(name=self.name, event_handler=self.event_handler).predict(
+            world_state,
+            action,
+            steps,
+        )
         payload.metadata["mode"] = "stub-remote-adapter"
         payload.metadata["credential_env"] = self.env_var
         return payload
@@ -32,7 +39,11 @@ class StubRemoteProvider(RemoteProvider):
         options: GenerationOptions | None = None,
     ) -> VideoClip:
         self._require_credentials()
-        clip = MockProvider(name=self.name).generate(prompt, duration_seconds, options=options)
+        clip = MockProvider(name=self.name, event_handler=self.event_handler).generate(
+            prompt,
+            duration_seconds,
+            options=options,
+        )
         clip.metadata["mode"] = "stub-remote-adapter"
         clip.metadata["credential_env"] = self.env_var
         return clip
@@ -48,7 +59,7 @@ class StubRemoteProvider(RemoteProvider):
         options: GenerationOptions | None = None,
     ) -> VideoClip:
         self._require_credentials()
-        transferred = MockProvider(name=self.name).transfer(
+        transferred = MockProvider(name=self.name, event_handler=self.event_handler).transfer(
             clip,
             width=width,
             height=height,
@@ -62,13 +73,16 @@ class StubRemoteProvider(RemoteProvider):
 
     def reason(self, query: str, *, world_state=None) -> ReasoningResult:  # type: ignore[no-untyped-def]
         self._require_credentials()
-        result = MockProvider(name=self.name).reason(query, world_state=world_state)
+        result = MockProvider(name=self.name, event_handler=self.event_handler).reason(
+            query,
+            world_state=world_state,
+        )
         result.evidence.append(f"Executed via stub adapter gated by {self.env_var}")
         return result
 
     def embed(self, *, text: str) -> EmbeddingResult:
         self._require_credentials()
-        return MockProvider(name=self.name).embed(text=text)
+        return MockProvider(name=self.name, event_handler=self.event_handler).embed(text=text)
 
 
 class JepaProvider(StubRemoteProvider):
@@ -76,7 +90,12 @@ class JepaProvider(StubRemoteProvider):
 
     env_var = "JEPA_MODEL_PATH"
 
-    def __init__(self, name: str = "jepa") -> None:
+    def __init__(
+        self,
+        name: str = "jepa",
+        *,
+        event_handler: Callable[[ProviderEvent], None] | None = None,
+    ) -> None:
         super().__init__(
             name=name,
             capabilities=ProviderCapabilities(
@@ -98,6 +117,7 @@ class JepaProvider(StubRemoteProvider):
             ],
             default_model="jepa-scaffold-v1",
             supported_models=["jepa-scaffold-v1"],
+            event_handler=event_handler,
         )
 
 
@@ -106,7 +126,12 @@ class GenieProvider(StubRemoteProvider):
 
     env_var = "GENIE_API_KEY"
 
-    def __init__(self, name: str = "genie") -> None:
+    def __init__(
+        self,
+        name: str = "genie",
+        *,
+        event_handler: Callable[[ProviderEvent], None] | None = None,
+    ) -> None:
         super().__init__(
             name=name,
             capabilities=ProviderCapabilities(
@@ -128,4 +153,5 @@ class GenieProvider(StubRemoteProvider):
             ],
             default_model="genie-scaffold-v1",
             supported_models=["genie-scaffold-v1"],
+            event_handler=event_handler,
         )

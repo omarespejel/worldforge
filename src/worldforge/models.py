@@ -527,6 +527,48 @@ class ProviderProfile:
 
 
 @dataclass(slots=True)
+class ProviderEvent:
+    """Structured provider event emitted during observable operations."""
+
+    provider: str
+    operation: str
+    phase: str
+    attempt: int = 1
+    max_attempts: int = 1
+    method: str | None = None
+    target: str | None = None
+    status_code: int | None = None
+    duration_ms: float | None = None
+    message: str = ""
+    metadata: JSONDict = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.attempt < 1:
+            raise WorldForgeError("ProviderEvent attempt must be greater than or equal to 1.")
+        if self.max_attempts < self.attempt:
+            raise WorldForgeError(
+                "ProviderEvent max_attempts must be greater than or equal to attempt."
+            )
+        if self.duration_ms is not None and self.duration_ms < 0.0:
+            raise WorldForgeError("ProviderEvent duration_ms must be non-negative when set.")
+
+    def to_dict(self) -> JSONDict:
+        return {
+            "provider": self.provider,
+            "operation": self.operation,
+            "phase": self.phase,
+            "attempt": self.attempt,
+            "max_attempts": self.max_attempts,
+            "method": self.method,
+            "target": self.target,
+            "status_code": self.status_code,
+            "duration_ms": self.duration_ms,
+            "message": self.message,
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(slots=True)
 class ProviderHealth:
     """Health information for a provider."""
 

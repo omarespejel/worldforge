@@ -18,7 +18,7 @@ WorldForge is for Python developers building world-model tooling, provider adapt
 
 ## Status
 
-As of 2026-04-07, WorldForge is **alpha**. It is suitable for local development, contract testing, provider adapter prototyping, and deterministic evaluation flows. It is not yet suitable for claiming real-world physics fidelity, running unattended production workloads against third-party providers without extra operational safeguards, or presenting scaffold adapters as fully implemented integrations. Known limitations are listed in [Current limitations](#current-limitations).
+As of 2026-04-08, WorldForge is **alpha**. It is suitable for local development, contract testing, provider adapter prototyping, and deterministic evaluation flows. It is not yet suitable for claiming real-world physics fidelity, running unattended production workloads against third-party providers without extra operational safeguards, or presenting scaffold adapters as fully implemented integrations. Known limitations are listed in [Current limitations](#current-limitations).
 
 ## Installation
 
@@ -59,6 +59,20 @@ print(plan.action_count, plan.success_probability)
 
 doctor = forge.doctor()
 print(doctor.healthy_provider_count, doctor.provider_count)
+```
+
+Provider observability:
+
+```python
+from worldforge import ProviderEvent, WorldForge
+
+
+def handle_provider_event(event: ProviderEvent) -> None:
+    print(event.to_dict())
+
+
+forge = WorldForge(event_handler=handle_provider_event)
+forge.generate("orbiting cube", "mock", duration_seconds=1.0)
 ```
 
 ## Core Workflows
@@ -121,7 +135,10 @@ Operational invariants:
 - provider adapters must report only capabilities they actually implement
 - missing local assets for remote providers fail before the outbound request
 - remote adapters expose a typed `ProviderRequestPolicy` for health, request, polling, and download operations
+- `WorldForge(event_handler=...)` propagates a single provider event callback to builtin and manually registered providers
 - retryable read operations are retried with backoff; mutation requests stay single-attempt by default
+- remote HTTP adapters emit structured `ProviderEvent` records for `retry`, `success`, and `failure`
+- local `mock` and scaffold adapters emit structured success events for provider operations
 - the deterministic mock path remains available for local tests and examples
 
 More detail lives in [docs/src/architecture.md](./docs/src/architecture.md) and [docs/src/providers/README.md](./docs/src/providers/README.md).
@@ -166,6 +183,7 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for contributor workflow details.
 - Planning is intentionally heuristic and deterministic. It is a framework placeholder, not a learned planner.
 - `jepa` and `genie` are scaffold adapters and should not be treated as production integrations.
 - Remote provider health checks depend on live credentials and network reachability even though they now use typed timeout and retry policy.
+- Provider observability is a typed callback contract, not a built-in logging or metrics backend.
 - World persistence is local JSON state, not a concurrent multi-writer store or service.
 - There is no benchmark suite or load-test harness yet for remote adapter paths.
 

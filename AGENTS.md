@@ -59,12 +59,14 @@ uv run pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
 - `scripts/test_package.sh` is the packaging contract check and must keep passing after public API changes.
 - Provider health checks may perform live network requests when the relevant provider is configured.
 - Remote provider profiles now expose a typed `ProviderRequestPolicy`; read operations retry, mutation operations do not by default.
+- `WorldForge(event_handler=...)` propagates to builtin providers and to providers later added with `register_provider()`.
+- Remote adapters emit `ProviderEvent` records for retry, success, and failure. Mock-backed paths emit success events only.
 
 ## Current State
 
-As of 2026-04-07, the project is alpha.
+As of 2026-04-08, the project is alpha.
 
 - Stable path: local `mock` provider, persistence, CLI, contract tests, and built-in evaluation flow.
 - Beta path: `cosmos` and `runway` HTTP adapters.
 - Scaffold path: `jepa` and `genie`.
-- Known gaps: heuristic planner, limited evaluation suite coverage, no benchmark/load-test harness yet, and no library-level observability contract for host applications yet.
+- Known gaps: heuristic planner, limited evaluation suite coverage, no benchmark/load-test harness yet, and no built-in metrics/logging sink for provider events yet.
