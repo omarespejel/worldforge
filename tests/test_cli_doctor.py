@@ -211,3 +211,26 @@ def test_cli_supports_provider_listing_predict_transfer_and_eval(
     assert main() == 0
     eval_csv = capsys.readouterr().out
     assert eval_csv.startswith("suite_id,suite,provider,scenario,score,passed,metrics_json")
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "worldforge",
+            "benchmark",
+            "--provider",
+            "mock",
+            "--operation",
+            "generate",
+            "--iterations",
+            "2",
+            "--format",
+            "json",
+            "--state-dir",
+            str(tmp_path),
+        ],
+    )
+    assert main() == 0
+    benchmark_payload = json.loads(capsys.readouterr().out)
+    assert benchmark_payload["results"][0]["provider"] == "mock"
+    assert benchmark_payload["results"][0]["operation"] == "generate"

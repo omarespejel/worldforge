@@ -15,7 +15,7 @@ uv sync --group dev
 ## Create a world
 
 ```python
-from worldforge import Action, BBox, Position, SceneObject, WorldForge
+from worldforge import Action, BBox, Position, SceneObject, StructuredGoal, WorldForge
 
 forge = WorldForge()
 world = forge.create_world("kitchen", provider="mock")
@@ -35,7 +35,12 @@ print(prediction.physics_score)
 ## Plan and evaluate
 
 ```python
-plan = world.plan(goal="move the mug to the right")
+plan = world.plan(
+    goal_spec=StructuredGoal.object_at(
+        object_name="red_mug",
+        position=Position(0.3, 0.8, 0.0),
+    )
+)
 print(plan.action_count, plan.success_probability)
 
 planning_report = world.evaluate("planning")
@@ -53,6 +58,8 @@ uv run worldforge provider list
 uv run worldforge provider info mock
 uv run worldforge providers
 uv run worldforge predict kitchen --provider mock --x 0.3 --y 0.8 --z 0.0 --steps 2
+uv run worldforge eval --suite generation --provider mock
 uv run worldforge eval --suite physics --provider mock
 uv run worldforge eval --suite planning --provider mock --format json
+uv run worldforge benchmark --provider mock --iterations 5 --format json
 ```

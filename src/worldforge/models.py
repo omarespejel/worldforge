@@ -158,13 +158,23 @@ class Action:
     parameters: JSONDict = field(default_factory=dict)
 
     @staticmethod
-    def move_to(x: float, y: float, z: float, speed: float = 1.0) -> Action:
+    def move_to(
+        x: float,
+        y: float,
+        z: float,
+        speed: float = 1.0,
+        *,
+        object_id: str | None = None,
+    ) -> Action:
+        parameters: JSONDict = {
+            "target": {"x": float(x), "y": float(y), "z": float(z)},
+            "speed": float(speed),
+        }
+        if object_id is not None:
+            parameters["object_id"] = str(object_id)
         return Action(
             "move_to",
-            {
-                "target": {"x": float(x), "y": float(y), "z": float(z)},
-                "speed": float(speed),
-            },
+            parameters,
         )
 
     @staticmethod
@@ -201,6 +211,178 @@ class Action:
 
     def to_json(self) -> str:
         return dump_json(self.to_dict())
+
+
+@dataclass(slots=True, frozen=True)
+class StructuredGoal:
+    """Typed structured planning goal with explicit validation."""
+
+    kind: str
+    object_id: str | None = None
+    object_name: str | None = None
+    position: Position | None = None
+    tolerance: float = 0.05
+
+    def __post_init__(self) -> None:
+        if self.kind not in {"object_at", "spawn_object"}:
+            raise WorldForgeError("StructuredGoal kind must be one of: object_at, spawn_object.")
+        if self.kind == "object_at":
+            if self.position is None:
+                raise WorldForgeError("StructuredGoal object_at goals require a target position.")
+            if not self.object_id and not self.object_name:
+                raise WorldForgeError(
+                    "StructuredGoal object_at goals require object_id or object_name."
+                )
+            if self.tolerance <= 0.0:
+                raise WorldForgeError("StructuredGoal object_at tolerance must be greater than 0.")
+        if self.kind == "spawn_object" and not self.object_name:
+            raise WorldForgeError("StructuredGoal spawn_object goals require object_name.")
+
+    @classmethod
+    def object_at(
+        cls,
+        *,
+        position: Position,
+        object_id: str | None = None,
+        object_name: str | None = None,
+        tolerance: float = 0.05,
+    ) -> StructuredGoal:
+        return cls(
+            kind="object_at",
+            object_id=object_id,
+            object_name=object_name,
+            position=position,
+            tolerance=float(tolerance),
+        )
+
+    @classmethod
+    def spawn_object(
+        cls,
+        object_name: str,
+        *,
+        position: Position | None = None,
+    ) -> StructuredGoal:
+        return cls(
+            kind="spawn_object",
+            object_name=object_name,
+            position=position,
+        )
+
+    @classmethod
+    def from_json(cls, payload: str) -> StructuredGoal:
+        try:
+            decoded = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise WorldForgeError(f"goal_json must be valid JSON: {exc}") from exc
+        return cls.from_dict(decoded)
+
+    @classmethod
+    def from_dict(cls, payload: JSONDict) -> StructuredGoal:
+        if not isinstance(payload, dict):
+            raise WorldForgeError("Structured goals must decode to a JSON object.")
+
+        if "kind" in payload:
+            kind = str(payload["kind"])
+            object_payload = payload.get("object", {})
+            if object_payload is None:
+                object_payload = {}
+            if isinstance(object_payload, str):
+                object_payload = {"name": object_payload}
+            if not isinstance(object_payload, dict):
+                raise WorldForgeError("StructuredGoal field 'object' must be a JSON object.")
+            position_payload = payload.get("position")
+            position = (
+                Position.from_dict(position_payload) if isinstance(position_payload, dict) else None
+            )
+            return cls(
+                kind=kind,
+                object_id=(
+                    str(object_payload["id"]) if object_payload.get("id") is not None else None
+                ),
+                object_name=(
+                    str(object_payload["name"]) if object_payload.get("name") is not None else None
+                ),
+                position=position,
+                tolerance=float(payload.get("tolerance", 0.05)),
+            )
+
+        if payload.get("type") != "condition":
+            raise WorldForgeError(
+                "StructuredGoal JSON must include either 'kind' or legacy type='condition'."
+            )
+        condition = payload.get("condition")
+        if not isinstance(condition, dict) or len(condition) != 1:
+            raise WorldForgeError(
+                "Legacy goal_json condition payload must contain exactly one condition."
+            )
+
+        condition_name, condition_payload = next(iter(condition.items()))
+        if not isinstance(condition_payload, dict):
+            raise WorldForgeError("Legacy goal_json condition payload must be a JSON object.")
+
+        if condition_name == "ObjectAt":
+            position_payload = condition_payload.get("position")
+            if not isinstance(position_payload, dict):
+                raise WorldForgeError("Legacy ObjectAt goals require a position object.")
+            object_value = condition_payload.get("object")
+            object_name = condition_payload.get("object_name")
+            return cls.object_at(
+                object_id=str(object_value) if object_value is not None else None,
+                object_name=str(object_name) if object_name is not None else None,
+                position=Position.from_dict(position_payload),
+                tolerance=float(condition_payload.get("tolerance", 0.05)),
+            )
+
+        if condition_name == "SpawnObject":
+            object_payload = condition_payload.get("object", {})
+            if isinstance(object_payload, str):
+                object_name = object_payload
+            elif isinstance(object_payload, dict):
+                object_name = object_payload.get("name")
+            else:
+                object_name = condition_payload.get("name")
+            if object_name is None:
+                raise WorldForgeError("Legacy SpawnObject goals require object.name or name.")
+            position_payload = condition_payload.get("position")
+            return cls.spawn_object(
+                str(object_name),
+                position=(
+                    Position.from_dict(position_payload)
+                    if isinstance(position_payload, dict)
+                    else None
+                ),
+            )
+
+        raise WorldForgeError(f"Unsupported legacy structured goal condition '{condition_name}'.")
+
+    def to_dict(self) -> JSONDict:
+        payload: JSONDict = {
+            "kind": self.kind,
+            "object": {},
+        }
+        if self.object_id is not None:
+            payload["object"]["id"] = self.object_id
+        if self.object_name is not None:
+            payload["object"]["name"] = self.object_name
+        if self.position is not None:
+            payload["position"] = self.position.to_dict()
+        if self.kind == "object_at":
+            payload["tolerance"] = self.tolerance
+        return payload
+
+    def to_json(self) -> str:
+        return dump_json(self.to_dict())
+
+    def summary(self) -> str:
+        if self.kind == "spawn_object":
+            return f"spawn {self.object_name}"
+        target = self.object_name or self.object_id or "object"
+        if self.position is None:  # pragma: no cover - guarded by __post_init__
+            raise WorldForgeError("StructuredGoal object_at summary requires a position.")
+        return (
+            f"move {target} to "
+            f"({self.position.x:.2f}, {self.position.y:.2f}, {self.position.z:.2f})"
+        )
 
 
 @dataclass(slots=True)

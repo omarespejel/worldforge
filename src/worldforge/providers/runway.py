@@ -336,5 +336,6 @@ class RunwayProvider(RemoteProvider):
                 "content_type": "video/mp4",
                 "model": model,
                 "mode": "video_to_video",
+                "reference_count": len(references),
             },
         )

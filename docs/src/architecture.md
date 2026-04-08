@@ -5,6 +5,7 @@ WorldForge follows a standard `src/` layout:
 ```text
 src/worldforge/
 ├── __init__.py
+├── benchmark.py
 ├── cli.py
 ├── framework.py
 ├── models.py
@@ -18,6 +19,10 @@ src/worldforge/
 ### `models.py`
 
 Core domain objects and JSON serialization helpers.
+
+### `benchmark.py`
+
+Capability-aware benchmark harness for provider latency, retries, and throughput.
 
 ### `framework.py`
 
@@ -54,7 +59,7 @@ Evaluation suites, scenario runners, and report rendering.
 4. The framework validates and applies the returned state.
 5. Optional provider event callbacks receive structured `ProviderEvent` records from local and remote provider operations.
 6. Host apps can fan those events out to logging, recording, and metrics sinks through `worldforge.observability.compose_event_handlers(...)`.
-7. History, persistence, evaluation, and CLI output are derived from that validated state.
+7. History, persistence, evaluation, benchmarks, and CLI output are derived from that validated state.
 
 ## Invariants
 
@@ -66,6 +71,7 @@ Evaluation suites, scenario runners, and report rendering.
 - remote provider reads use typed retry/backoff policy; mutation requests default to single-attempt behavior
 - forge-level event handlers propagate to builtin providers and to providers later registered at runtime
 - `ProviderMetricsSink.request_count` tracks emitted request attempts; retries increment both `request_count` and `retry_count`
+- `StructuredGoal` is the typed contract for structured planning inputs
 
 ## Failure model
 

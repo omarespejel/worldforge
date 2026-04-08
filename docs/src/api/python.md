@@ -56,8 +56,21 @@ Stateful runtime object responsible for:
 - scene object management
 - prediction
 - comparison
-- planning
+- planning with heuristic strings or typed `StructuredGoal`
 - evaluation
+
+Example:
+
+```python
+from worldforge import Position, StructuredGoal
+
+plan = world.plan(
+    goal_spec=StructuredGoal.object_at(
+        object_name="red_mug",
+        position=Position(0.3, 0.8, 0.0),
+    )
+)
+```
 
 ## Evaluation
 
@@ -70,6 +83,16 @@ suite = EvaluationSuite.from_builtin("reasoning")
 report = suite.run_report(["mock"], forge=forge)
 print(report.results[0].passed)
 print(report.to_markdown())
+```
+
+## Benchmarking
+
+```python
+from worldforge import ProviderBenchmarkHarness
+
+harness = ProviderBenchmarkHarness(forge=forge)
+report = harness.run(["mock"], operations=["predict", "generate"], iterations=5)
+print(report.to_json())
 ```
 
 ## Provider contract testing

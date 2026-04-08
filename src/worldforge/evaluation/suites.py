@@ -12,9 +12,12 @@ from typing import TYPE_CHECKING
 from worldforge.models import (
     Action,
     BBox,
+    GenerationOptions,
     JSONDict,
     Position,
     SceneObject,
+    StructuredGoal,
+    VideoClip,
     WorldForgeError,
     average,
     dump_json,
@@ -47,6 +50,96 @@ def _seed_object(world: World, name: str, position: Position) -> SceneObject:
     )
     world.add_object(obj)
     return obj
+
+
+_SAMPLE_IMAGE_DATA_URI = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jq5kAAAAASUVORK5CYII="
+)
+
+
+def _sample_transfer_clip() -> VideoClip:
+    return VideoClip(
+        frames=[b"worldforge-transfer-seed"],
+        fps=8.0,
+        resolution=(160, 90),
+        duration_seconds=1.0,
+        metadata={
+            "provider": "worldforge",
+            "content_type": "video/mp4",
+            "mode": "evaluation-seed",
+        },
+    )
+
+
+def _duration_score(*, actual_seconds: float, expected_seconds: float) -> float:
+    if expected_seconds <= 0.0:
+        return 1.0 if actual_seconds >= 0.0 else 0.0
+    return _clamp_score(
+        1.0 - min(1.0, abs(actual_seconds - expected_seconds) / max(expected_seconds, 0.001))
+    )
+
+
+def _resolution_score(clip: VideoClip, *, expected: tuple[int, int] | None = None) -> float:
+    width, height = clip.resolution
+    if width <= 0 or height <= 0:
+        return 0.0
+    if expected is None:
+        return 1.0
+    expected_width, expected_height = expected
+    deviation = (
+        abs(width - expected_width) / max(expected_width, 1)
+        + abs(height - expected_height) / max(expected_height, 1)
+    ) / 2
+    return _clamp_score(1.0 - min(1.0, deviation))
+
+
+def _fps_score(clip: VideoClip, *, expected_fps: float) -> float:
+    return _clamp_score(1.0 - min(1.0, abs(clip.fps - expected_fps) / max(expected_fps, 0.001)))
+
+
+def _blob_score(clip: VideoClip) -> float:
+    return 1.0 if clip.frame_count >= 1 and bool(clip.blob()) else 0.0
+
+
+def _content_type_score(clip: VideoClip) -> float:
+    content_type = clip.content_type()
+    return (
+        1.0
+        if content_type.startswith("video/") or content_type == "application/octet-stream"
+        else 0.0
+    )
+
+
+def _prompt_score(clip: VideoClip, *, expected_prompt: str) -> float:
+    return 1.0 if clip.metadata.get("prompt") == expected_prompt else 0.0
+
+
+def _is_image_conditioned(clip: VideoClip) -> bool:
+    options = clip.metadata.get("options", {})
+    mode = str(clip.metadata.get("mode", "")).lower()
+    return isinstance(options, dict) and bool(options.get("image")) or "image" in mode
+
+
+def _is_transfer_clip(clip: VideoClip) -> bool:
+    return bool(clip.metadata.get("transfer")) or (
+        str(clip.metadata.get("mode", "")).lower() == "video_to_video"
+    )
+
+
+def _reference_count(clip: VideoClip) -> int:
+    value = clip.metadata.get("reference_count")
+    if value is not None:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+    options = clip.metadata.get("options", {})
+    if isinstance(options, dict):
+        references = options.get("reference_images", [])
+        if isinstance(references, list):
+            return len(references)
+    return 0
 
 
 @dataclass(slots=True)
@@ -238,9 +331,11 @@ class EvaluationSuite:
     @classmethod
     def _builtin_registry(cls) -> dict[str, Callable[[], EvaluationSuite]]:
         return {
+            "generation": GenerationEvaluationSuite,
             "physics": PhysicsEvaluationSuite,
             "planning": PlanningEvaluationSuite,
             "reasoning": ReasoningEvaluationSuite,
+            "transfer": TransferEvaluationSuite,
         }
 
     @classmethod
@@ -541,7 +636,20 @@ class PlanningEvaluationSuite(EvaluationSuite):
         primary = _seed_object(world, "cube", Position(0.0, 0.5, 0.0))
 
         if scenario.name == "object-relocation":
-            plan = world.plan(goal="move the cube to the right", max_steps=4, provider=provider)
+            plan = world.plan(
+                goal_spec=StructuredGoal.object_at(
+                    object_id=primary.id,
+                    object_name=primary.name,
+                    position=Position(
+                        primary.position.x + 0.35,
+                        primary.position.y,
+                        primary.position.z,
+                    ),
+                    tolerance=0.05,
+                ),
+                max_steps=4,
+                provider=provider,
+            )
             execution = world.execute_plan(plan, provider)
             final_world = execution.final_world()
             final_object = final_world.get_object_by_id(primary.id)
@@ -585,6 +693,295 @@ class PlanningEvaluationSuite(EvaluationSuite):
                     "success_probability": plan.success_probability,
                     "initial_object_count": initial_count,
                     "final_object_count": final_count,
+                },
+            )
+
+        return super().evaluate_scenario(
+            scenario,
+            provider,
+            world=world,
+            forge=forge,
+            index=index,
+        )
+
+
+class GenerationEvaluationSuite(EvaluationSuite):
+    """Built-in suite for text and image-conditioned video generation checks."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Generation Evaluation Suite",
+            scenarios=[
+                EvaluationScenario(
+                    "text-conditioned-video",
+                    "Generates a prompt-only clip and scores basic output integrity.",
+                    required_capabilities=("generate",),
+                ),
+                EvaluationScenario(
+                    "image-conditioned-video",
+                    (
+                        "Generates a prompt plus image-conditioned clip and scores "
+                        "conditioning metadata."
+                    ),
+                    required_capabilities=("generate",),
+                ),
+            ],
+            suite_id="generation",
+        )
+
+    def evaluate_scenario(
+        self,
+        scenario: EvaluationScenario,
+        provider: str,
+        *,
+        world: World,
+        forge: WorldForge,
+        index: int,
+    ) -> EvaluationResult:
+        expected_duration = 1.0
+        expected_resolution = (640, 360)
+        prompt = "orbiting cube over a reflective floor"
+
+        if scenario.name == "text-conditioned-video":
+            clip = forge.generate(
+                prompt,
+                provider,
+                duration_seconds=expected_duration,
+                options=GenerationOptions(ratio="640:360", fps=8.0),
+            )
+            score = average(
+                [
+                    _blob_score(clip),
+                    _duration_score(
+                        actual_seconds=clip.duration_seconds,
+                        expected_seconds=expected_duration,
+                    ),
+                    _resolution_score(clip, expected=expected_resolution),
+                    _content_type_score(clip),
+                    _prompt_score(clip, expected_prompt=prompt),
+                ]
+            )
+            passed = (
+                _blob_score(clip) == 1.0
+                and _duration_score(
+                    actual_seconds=clip.duration_seconds,
+                    expected_seconds=expected_duration,
+                )
+                >= 0.75
+                and _resolution_score(clip, expected=expected_resolution) >= 0.75
+            )
+            return EvaluationResult(
+                suite_id=self.suite_id,
+                suite=self.name,
+                scenario=scenario.name,
+                provider=provider,
+                score=score,
+                passed=passed,
+                metrics={
+                    "frame_count": clip.frame_count,
+                    "fps": clip.fps,
+                    "resolution": list(clip.resolution),
+                    "duration_seconds": clip.duration_seconds,
+                    "content_type": clip.content_type(),
+                    "mode": clip.metadata.get("mode"),
+                },
+            )
+
+        if scenario.name == "image-conditioned-video":
+            clip = forge.generate(
+                prompt,
+                provider,
+                duration_seconds=expected_duration,
+                options=GenerationOptions(
+                    image=_SAMPLE_IMAGE_DATA_URI,
+                    ratio="640:360",
+                    fps=8.0,
+                ),
+            )
+            image_conditioned = _is_image_conditioned(clip)
+            score = average(
+                [
+                    _blob_score(clip),
+                    _duration_score(
+                        actual_seconds=clip.duration_seconds,
+                        expected_seconds=expected_duration,
+                    ),
+                    _resolution_score(clip, expected=expected_resolution),
+                    _content_type_score(clip),
+                    _prompt_score(clip, expected_prompt=prompt),
+                    1.0 if image_conditioned else 0.0,
+                ]
+            )
+            passed = (
+                _blob_score(clip) == 1.0
+                and image_conditioned
+                and _duration_score(
+                    actual_seconds=clip.duration_seconds,
+                    expected_seconds=expected_duration,
+                )
+                >= 0.75
+            )
+            return EvaluationResult(
+                suite_id=self.suite_id,
+                suite=self.name,
+                scenario=scenario.name,
+                provider=provider,
+                score=score,
+                passed=passed,
+                metrics={
+                    "frame_count": clip.frame_count,
+                    "fps": clip.fps,
+                    "resolution": list(clip.resolution),
+                    "duration_seconds": clip.duration_seconds,
+                    "content_type": clip.content_type(),
+                    "mode": clip.metadata.get("mode"),
+                    "image_conditioned": image_conditioned,
+                },
+            )
+
+        return super().evaluate_scenario(
+            scenario,
+            provider,
+            world=world,
+            forge=forge,
+            index=index,
+        )
+
+
+class TransferEvaluationSuite(EvaluationSuite):
+    """Built-in suite for prompt-guided and reference-guided transfer checks."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Transfer Evaluation Suite",
+            scenarios=[
+                EvaluationScenario(
+                    "prompt-guided-transfer",
+                    (
+                        "Transfers a seed clip to a new render while preserving "
+                        "basic media constraints."
+                    ),
+                    required_capabilities=("transfer",),
+                ),
+                EvaluationScenario(
+                    "reference-guided-transfer",
+                    "Transfers a seed clip with reference guidance metadata.",
+                    required_capabilities=("transfer",),
+                ),
+            ],
+            suite_id="transfer",
+        )
+
+    def evaluate_scenario(
+        self,
+        scenario: EvaluationScenario,
+        provider: str,
+        *,
+        world: World,
+        forge: WorldForge,
+        index: int,
+    ) -> EvaluationResult:
+        input_clip = _sample_transfer_clip()
+        expected_resolution = (320, 180)
+        expected_fps = 12.0
+        prompt = "re-render the clip with sharper cinematic contrast"
+
+        if scenario.name == "prompt-guided-transfer":
+            clip = forge.transfer(
+                input_clip,
+                provider,
+                width=expected_resolution[0],
+                height=expected_resolution[1],
+                fps=expected_fps,
+                prompt=prompt,
+            )
+            transfer_mode = _is_transfer_clip(clip)
+            score = average(
+                [
+                    _blob_score(clip),
+                    _duration_score(
+                        actual_seconds=clip.duration_seconds,
+                        expected_seconds=input_clip.duration_seconds,
+                    ),
+                    _resolution_score(clip, expected=expected_resolution),
+                    _fps_score(clip, expected_fps=expected_fps),
+                    _content_type_score(clip),
+                    _prompt_score(clip, expected_prompt=prompt),
+                    1.0 if transfer_mode else 0.0,
+                ]
+            )
+            passed = (
+                _blob_score(clip) == 1.0
+                and transfer_mode
+                and _resolution_score(clip, expected=expected_resolution) == 1.0
+                and _fps_score(clip, expected_fps=expected_fps) == 1.0
+            )
+            return EvaluationResult(
+                suite_id=self.suite_id,
+                suite=self.name,
+                scenario=scenario.name,
+                provider=provider,
+                score=score,
+                passed=passed,
+                metrics={
+                    "frame_count": clip.frame_count,
+                    "fps": clip.fps,
+                    "resolution": list(clip.resolution),
+                    "duration_seconds": clip.duration_seconds,
+                    "content_type": clip.content_type(),
+                    "mode": clip.metadata.get("mode"),
+                    "reference_count": _reference_count(clip),
+                },
+            )
+
+        if scenario.name == "reference-guided-transfer":
+            clip = forge.transfer(
+                input_clip,
+                provider,
+                width=expected_resolution[0],
+                height=expected_resolution[1],
+                fps=expected_fps,
+                prompt=prompt,
+                options=GenerationOptions(reference_images=[_SAMPLE_IMAGE_DATA_URI]),
+            )
+            reference_count = _reference_count(clip)
+            transfer_mode = _is_transfer_clip(clip)
+            score = average(
+                [
+                    _blob_score(clip),
+                    _duration_score(
+                        actual_seconds=clip.duration_seconds,
+                        expected_seconds=input_clip.duration_seconds,
+                    ),
+                    _resolution_score(clip, expected=expected_resolution),
+                    _fps_score(clip, expected_fps=expected_fps),
+                    _content_type_score(clip),
+                    _prompt_score(clip, expected_prompt=prompt),
+                    1.0 if transfer_mode else 0.0,
+                    1.0 if reference_count >= 1 else 0.0,
+                ]
+            )
+            passed = (
+                _blob_score(clip) == 1.0
+                and transfer_mode
+                and reference_count >= 1
+                and _resolution_score(clip, expected=expected_resolution) == 1.0
+            )
+            return EvaluationResult(
+                suite_id=self.suite_id,
+                suite=self.name,
+                scenario=scenario.name,
+                provider=provider,
+                score=score,
+                passed=passed,
+                metrics={
+                    "frame_count": clip.frame_count,
+                    "fps": clip.fps,
+                    "resolution": list(clip.resolution),
+                    "duration_seconds": clip.duration_seconds,
+                    "content_type": clip.content_type(),
+                    "mode": clip.metadata.get("mode"),
+                    "reference_count": reference_count,
                 },
             )
 
@@ -700,6 +1097,8 @@ EvalScenario = EvaluationScenario
 EvalResult = EvaluationResult
 EvalReport = EvaluationReport
 EvalSuite = EvaluationSuite
+GenerationEval = GenerationEvaluationSuite
 PhysicsEval = PhysicsEvaluationSuite
 PlanningEval = PlanningEvaluationSuite
 ReasoningEval = ReasoningEvaluationSuite
+TransferEval = TransferEvaluationSuite

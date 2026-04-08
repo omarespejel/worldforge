@@ -9,7 +9,7 @@ World-model experiments usually start as notebooks and one-off provider scripts.
 - deterministic local execution via `MockProvider`
 - provider metadata, health checks, and environment diagnostics
 - JSON world persistence and history for reproducible workflows
-- built-in planning, comparison, and evaluation helpers
+- typed planning goals, comparison helpers, evaluation suites, and provider benchmarks
 - adapter contract tests for in-repo and external providers
 
 ## Who It Is For
@@ -38,7 +38,7 @@ cp .env.example .env
 ## Quick Start
 
 ```python
-from worldforge import Action, BBox, Position, SceneObject, WorldForge
+from worldforge import Action, BBox, Position, SceneObject, StructuredGoal, WorldForge
 
 forge = WorldForge()
 world = forge.create_world("kitchen", provider="mock")
@@ -54,7 +54,12 @@ world.add_object(
 prediction = world.predict(Action.move_to(0.3, 0.8, 0.0), steps=2)
 print(prediction.provider, prediction.physics_score)
 
-plan = world.plan(goal="move the mug to the right")
+plan = world.plan(
+    goal_spec=StructuredGoal.object_at(
+        object_name="red_mug",
+        position=Position(0.3, 0.8, 0.0),
+    )
+)
 print(plan.action_count, plan.success_probability)
 
 doctor = forge.doctor()
@@ -106,12 +111,15 @@ Prediction and evaluation:
 
 ```bash
 uv run worldforge predict kitchen --provider mock --x 0.3 --y 0.8 --z 0.0 --steps 2
+uv run worldforge eval --suite generation --provider mock
 uv run worldforge eval --suite physics --provider mock
 uv run worldforge eval --suite planning --provider mock --format json
 uv run worldforge eval --suite reasoning --provider mock --format csv
+uv run worldforge eval --suite transfer --provider mock
+uv run worldforge benchmark --provider mock --iterations 5 --format json
 ```
 
-Built-in evaluation suites are `physics`, `planning`, and `reasoning`. Evaluation reports can be exported as Markdown, JSON, or CSV. Remote provider configuration lives in [.env.example](./.env.example). WorldForge only auto-registers remote providers when their required environment variables are present.
+Built-in evaluation suites are `generation`, `physics`, `planning`, `reasoning`, and `transfer`. Evaluation and benchmark reports can be exported as Markdown, JSON, or CSV. Remote provider configuration lives in [.env.example](./.env.example). WorldForge only auto-registers remote providers when their required environment variables are present.
 
 ## Architecture
 
@@ -121,6 +129,7 @@ Repository layout:
 worldforge/
 ├── src/worldforge/
 │   ├── __init__.py
+│   ├── benchmark.py
 │   ├── cli.py
 │   ├── framework.py
 │   ├── models.py
@@ -140,6 +149,7 @@ Module responsibilities:
 
 | Module | Responsibility |
 | --- | --- |
+| `src/worldforge/benchmark.py` | Capability-aware benchmark harness for latency, retry, and throughput measurements |
 | `src/worldforge/models.py` | Typed domain models, serialization helpers, and framework-level validation errors |
 | `src/worldforge/framework.py` | `WorldForge`, `World`, persistence, planning, prediction, comparison, and diagnostics |
 | `src/worldforge/observability.py` | Composable `ProviderEvent` sinks for JSON logging, in-memory recording, and metrics aggregation |
@@ -159,6 +169,8 @@ Operational invariants:
 - retryable read operations are retried with backoff; mutation requests stay single-attempt by default
 - remote HTTP adapters emit structured `ProviderEvent` records for `retry`, `success`, and `failure`
 - `ProviderMetricsSink.request_count` tracks emitted request attempts, so retry events increment both `request_count` and `retry_count`
+- `StructuredGoal` provides the typed planning contract for `object_at` and `spawn_object` workflows while legacy `goal_json` remains supported
+- `ProviderBenchmarkHarness` measures per-operation latency percentiles, throughput, and emitted retry/error events across registered providers
 - local `mock` and scaffold adapters emit structured success events for provider operations
 - the deterministic mock path remains available for local tests and examples
 
@@ -201,13 +213,13 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for contributor workflow details.
 
 ## Current Limitations
 
-- Planning is intentionally heuristic and deterministic. It is a framework placeholder, not a learned planner.
-- Evaluation remains a deterministic harness and currently covers physics, planning, and reasoning baselines only.
+- Planning still supports heuristic goal strings, but structured goals are now typed and validated through `StructuredGoal`.
+- Evaluation remains a deterministic harness; the built-in suites now cover generation, transfer, physics, planning, and reasoning baselines.
 - `jepa` and `genie` are scaffold adapters and should not be treated as production integrations.
 - Remote provider health checks depend on live credentials and network reachability even though they now use typed timeout and retry policy.
 - Provider observability is a typed callback contract, not a built-in logging or metrics backend.
 - World persistence is local JSON state, not a concurrent multi-writer store or service.
-- There is no benchmark suite or load-test harness yet for remote adapter paths.
+- Benchmarks focus on operation latency, retries, and throughput; they are not a distributed load-test or content-fidelity system.
 
 ## Roadmap
 
@@ -215,7 +227,7 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for contributor workflow details.
 Exit criteria: remote adapters validate more upstream response schemas, expose richer operator-facing error context, and ship broader non-happy-path coverage beyond transport retries.
 
 2. Planner and evaluator maturity.
-Exit criteria: evaluation suites expand beyond the current physics/planning/reasoning baselines, planning inputs have clearer contracts, and benchmark data exists for key workflows.
+Exit criteria: structured planning grows beyond `object_at` / `spawn_object`, evaluation scoring gets less heuristic, and benchmark fixtures expand beyond the synthetic seed clip.
 
 3. Release discipline.
 Exit criteria: changelog, docs, and agent context stay in lockstep with tags, and the first release-candidate criteria are documented.

@@ -1,10 +1,12 @@
 # Evaluation
 
-WorldForge currently ships three built-in suites:
+WorldForge currently ships five built-in suites:
 
+- `generation`: prompt-only and image-conditioned video generation checks
 - `physics`: deterministic object stability and action-response checks
 - `planning`: heuristic plan generation plus execution validation
 - `reasoning`: scene-count and scene-identity checks for providers that implement `reason()`
+- `transfer`: prompt-guided and reference-guided video transfer checks
 
 ## Python
 
@@ -21,9 +23,11 @@ print(report.to_json())
 ## CLI
 
 ```bash
+uv run worldforge eval --suite generation --provider mock
 uv run worldforge eval --suite physics --provider mock
 uv run worldforge eval --suite planning --provider mock --format json
 uv run worldforge eval --suite reasoning --provider mock --format csv
+uv run worldforge eval --suite transfer --provider mock
 ```
 
 Repeat `--provider` to compare multiple registered providers in one report.
@@ -38,7 +42,9 @@ Repeat `--provider` to compare multiple registered providers in one report.
 
 Each suite declares the provider capabilities it needs. For example:
 
+- `generation` requires `generate`
 - `physics` and `planning` require `predict`
 - `reasoning` requires `reason`
+- `transfer` requires `transfer`
 
 WorldForge raises `WorldForgeError` when a caller asks a provider to run a suite it cannot satisfy.

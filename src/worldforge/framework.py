@@ -26,6 +26,7 @@ from worldforge.models import (
     ReasoningResult,
     SceneObject,
     SceneObjectPatch,
+    StructuredGoal,
     VideoClip,
     WorldForgeError,
     WorldStateError,
@@ -189,6 +190,7 @@ class Plan:
         actions: Sequence[Action],
         predicted_states: Sequence[JSONDict],
         success_probability: float,
+        goal_spec: JSONDict | None = None,
     ) -> None:
         self.goal = goal
         self.planner = planner
@@ -196,6 +198,7 @@ class Plan:
         self.actions = list(actions)
         self.predicted_states = [_clone_state(state) for state in predicted_states]
         self.success_probability = success_probability
+        self.goal_spec = _clone_state(goal_spec) if goal_spec is not None else None
 
     @property
     def action_count(self) -> int:
@@ -204,6 +207,7 @@ class Plan:
     def to_dict(self) -> JSONDict:
         return {
             "goal": self.goal,
+            "goal_spec": self.goal_spec,
             "planner": self.planner,
             "provider": self.provider,
             "actions": [action.to_dict() for action in self.actions],
@@ -441,18 +445,59 @@ class World:
             )
         return Comparison(predictions)
 
-    def _goal_actions(self, goal: str, goal_json: str | None = None) -> list[Action]:
-        if goal_json:
-            payload = json.loads(goal_json)
-            object_at = payload["condition"]["ObjectAt"]
-            position = object_at["position"]
+    def _resolve_goal_object(self, goal_spec: StructuredGoal) -> SceneObject:
+        if goal_spec.object_id:
+            scene_object = self.scene_objects.get(goal_spec.object_id)
+            if scene_object is None:
+                raise WorldForgeError(
+                    f"Structured goal references missing object id '{goal_spec.object_id}'."
+                )
+            if goal_spec.object_name and scene_object.name != goal_spec.object_name:
+                raise WorldForgeError(
+                    "Structured goal object_id/object_name selectors do not match the same object."
+                )
+            return scene_object.copy()
+
+        matches = [
+            scene_object.copy()
+            for scene_object in self.scene_objects.values()
+            if scene_object.name == goal_spec.object_name
+        ]
+        if not matches:
+            raise WorldForgeError(
+                f"Structured goal references unknown object name '{goal_spec.object_name}'."
+            )
+        if len(matches) > 1:
+            raise WorldForgeError(
+                f"Structured goal object name '{goal_spec.object_name}' is ambiguous; "
+                "use object_id instead."
+            )
+        return matches[0]
+
+    def _actions_for_goal_spec(self, goal_spec: StructuredGoal) -> list[Action]:
+        if goal_spec.kind == "spawn_object":
             return [
-                Action.move_to(
-                    float(position["x"]),
-                    float(position["y"]),
-                    float(position["z"]),
+                Action.spawn_object(
+                    goal_spec.object_name or "cube",
+                    position=goal_spec.position,
                 )
             ]
+
+        target_object = self._resolve_goal_object(goal_spec)
+        if goal_spec.position is None:  # pragma: no cover - guarded by StructuredGoal
+            raise WorldForgeError("Structured goal is missing a target position.")
+        return [
+            Action.move_to(
+                goal_spec.position.x,
+                goal_spec.position.y,
+                goal_spec.position.z,
+                object_id=target_object.id,
+            )
+        ]
+
+    def _goal_actions(self, goal: str, goal_json: str | None = None) -> list[Action]:
+        if goal_json:
+            return self._actions_for_goal_spec(StructuredGoal.from_json(goal_json))
 
         lowered = goal.lower()
         if "spawn" in lowered:
@@ -478,6 +523,7 @@ class World:
         self,
         goal: str | None = None,
         *,
+        goal_spec: StructuredGoal | None = None,
         goal_json: str | None = None,
         planner: str = "cem",
         max_steps: int = 20,
@@ -485,9 +531,27 @@ class World:
         **_: Any,
     ) -> Plan:
         _require_positive_int(max_steps, name="max_steps")
+        if goal is not None and not isinstance(goal, str):
+            raise WorldForgeError("goal must be a string when provided.")
+        if goal_json is not None and goal_spec is not None:
+            raise WorldForgeError("plan() accepts at most one of goal_json or goal_spec.")
+        if goal is not None and not goal.strip():
+            raise WorldForgeError("goal must not be empty when provided.")
         selected_provider = _normalize_provider_name(provider, self.provider)
-        resolved_goal = goal or "goal_json_plan"
-        actions = self._goal_actions(resolved_goal, goal_json=goal_json)
+        resolved_goal_spec = goal_spec
+        if goal_json is not None:
+            resolved_goal_spec = StructuredGoal.from_json(goal_json)
+
+        if resolved_goal_spec is not None:
+            resolved_goal = resolved_goal_spec.summary()
+            serialized_goal_spec = resolved_goal_spec.to_dict()
+            actions = self._actions_for_goal_spec(resolved_goal_spec)
+        else:
+            if goal is None:
+                raise WorldForgeError("plan() requires goal, goal_json, or goal_spec.")
+            resolved_goal = goal
+            serialized_goal_spec = None
+            actions = self._goal_actions(resolved_goal)
         actions = actions[: min(max_steps, len(actions))]
 
         simulated_state = self._snapshot()
@@ -501,6 +565,7 @@ class World:
 
         return Plan(
             goal=resolved_goal,
+            goal_spec=serialized_goal_spec,
             planner=planner,
             provider=selected_provider,
             actions=actions,

@@ -9,6 +9,8 @@ from .suites import (
     EvaluationResult,
     EvaluationScenario,
     EvaluationSuite,
+    GenerationEval,
+    GenerationEvaluationSuite,
     PhysicsEval,
     PhysicsEvaluationSuite,
     PlanningEval,
@@ -16,6 +18,8 @@ from .suites import (
     ProviderSummary,
     ReasoningEval,
     ReasoningEvaluationSuite,
+    TransferEval,
+    TransferEvaluationSuite,
 )
 
 __all__ = [
@@ -27,6 +31,8 @@ __all__ = [
     "EvaluationResult",
     "EvaluationScenario",
     "EvaluationSuite",
+    "GenerationEval",
+    "GenerationEvaluationSuite",
     "PhysicsEval",
     "PhysicsEvaluationSuite",
     "PlanningEval",
@@ -34,4 +40,6 @@ __all__ = [
     "ProviderSummary",
     "ReasoningEval",
     "ReasoningEvaluationSuite",
+    "TransferEval",
+    "TransferEvaluationSuite",
 ]

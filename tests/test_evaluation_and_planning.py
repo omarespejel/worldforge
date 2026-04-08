@@ -9,6 +9,7 @@ from worldforge import (
     BBox,
     Position,
     SceneObject,
+    StructuredGoal,
     WorldForge,
     WorldForgeError,
     list_eval_suites,
@@ -71,6 +72,12 @@ def test_planning_comparison_and_execution_flow(tmp_path) -> None:
         planner="sampling",
     )
     assert computed_plan.action_count > 0
+    assert computed_plan.goal_spec == {
+        "kind": "object_at",
+        "object": {"id": ball_id},
+        "position": {"x": 1.0, "y": 0.5, "z": 0.0},
+        "tolerance": 0.05,
+    }
 
     plan_json = json.loads(computed_plan.to_json())
     final_state = plan_json["predicted_states"][-1]
@@ -89,12 +96,75 @@ def test_planning_comparison_and_execution_flow(tmp_path) -> None:
     assert module_plan.action_count >= 1
 
 
+def test_structured_goal_targets_selected_object_and_validates_inputs(tmp_path) -> None:
+    forge = WorldForge(state_dir=tmp_path)
+    world = forge.create_world("structured-goal-world", "mock")
+    cube = world.add_object(
+        SceneObject(
+            "cube",
+            Position(0.0, 0.5, 0.0),
+            BBox(Position(-0.05, 0.45, -0.05), Position(0.05, 0.55, 0.05)),
+        )
+    )
+    mug = world.add_object(
+        SceneObject(
+            "mug",
+            Position(0.25, 0.8, 0.0),
+            BBox(Position(0.2, 0.75, -0.05), Position(0.3, 0.85, 0.05)),
+        )
+    )
+
+    goal_spec = StructuredGoal.object_at(
+        object_id=mug.id,
+        object_name="mug",
+        position=Position(0.8, 0.8, 0.0),
+    )
+    computed_plan = world.plan(goal_spec=goal_spec, provider="mock", max_steps=2)
+    execution = world.execute_plan(computed_plan, "mock")
+    final_world = execution.final_world()
+
+    final_cube = final_world.get_object_by_id(cube.id)
+    final_mug = final_world.get_object_by_id(mug.id)
+    assert final_cube is not None
+    assert final_mug is not None
+    assert final_cube.position == cube.position
+    assert final_mug.position.x == pytest.approx(0.8)
+    assert computed_plan.goal_spec == goal_spec.to_dict()
+
+    with pytest.raises(WorldForgeError, match="requires goal, goal_json, or goal_spec"):
+        world.plan()
+
+    ambiguous_world = forge.create_world("ambiguous-goal-world", "mock")
+    ambiguous_world.add_object(
+        SceneObject(
+            "mug",
+            Position(0.0, 0.8, 0.0),
+            BBox(Position(-0.05, 0.75, -0.05), Position(0.05, 0.85, 0.05)),
+        )
+    )
+    ambiguous_world.add_object(
+        SceneObject(
+            "mug",
+            Position(0.3, 0.8, 0.0),
+            BBox(Position(0.25, 0.75, -0.05), Position(0.35, 0.85, 0.05)),
+        )
+    )
+
+    with pytest.raises(WorldForgeError, match="ambiguous"):
+        ambiguous_world.plan(
+            goal_spec=StructuredGoal.object_at(
+                object_name="mug",
+                position=Position(0.6, 0.8, 0.0),
+            )
+        )
+
+
 def test_evaluation_reports_and_eval_helpers(tmp_path) -> None:
     forge = WorldForge(state_dir=tmp_path)
     forge.register_provider(MockProvider(name="manual-mock"))
     world, _, _ = _seed_world(forge)
 
-    assert list_eval_suites() == ["physics", "planning", "reasoning"]
+    assert list_eval_suites() == ["generation", "physics", "planning", "reasoning", "transfer"]
 
     suite = EvaluationSuite.from_builtin("physics")
     report = suite.run_report(["mock", "manual-mock"], world=world, forge=forge)
@@ -122,6 +192,14 @@ def test_evaluation_reports_and_eval_helpers(tmp_path) -> None:
     assert len(results) == 2
     assert results[0].provider == "mock"
     assert all(result.passed for result in results)
+
+    generation_results = run_eval("generation", "mock", forge=forge)
+    assert len(generation_results) == 2
+    assert all(result.passed for result in generation_results)
+
+    transfer_results = run_eval("transfer", "manual-mock", forge=forge)
+    assert len(transfer_results) == 2
+    assert all(result.passed for result in transfer_results)
 
 
 def test_planning_and_reasoning_suites_cover_core_workflows(tmp_path) -> None:
@@ -159,3 +237,6 @@ def test_evaluation_suite_validation_errors_are_explicit(tmp_path) -> None:
 
     with pytest.raises(WorldForgeError, match="missing required capabilities: reason"):
         EvaluationSuite.from_builtin("reasoning").run_report("cosmos", forge=forge)
+
+    with pytest.raises(WorldForgeError, match="missing required capabilities: transfer"):
+        EvaluationSuite.from_builtin("transfer").run_report("cosmos", forge=forge)

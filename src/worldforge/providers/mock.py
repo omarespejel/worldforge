@@ -88,8 +88,17 @@ class MockProvider(BaseProvider):
 
         if action.kind == "move_to" and scene_objects:
             target = action.parameters["target"]
-            first_object_id = next(iter(scene_objects))
-            scene_object = scene_objects[first_object_id]
+            object_id = action.parameters.get("object_id")
+            if object_id is not None:
+                try:
+                    scene_object = scene_objects[str(object_id)]
+                except KeyError as exc:
+                    raise ProviderError(
+                        f"Object '{object_id}' is not present in the world state."
+                    ) from exc
+            else:
+                first_object_id = next(iter(scene_objects))
+                scene_object = scene_objects[first_object_id]
             scene_object["pose"]["position"] = dict(target)
             scene_object.setdefault("metadata", {})["last_action"] = action_data
             scene_object["metadata"]["moved_by_provider"] = self.name
@@ -192,6 +201,7 @@ class MockProvider(BaseProvider):
                 "provider": self.name,
                 "transfer": True,
                 "prompt": prompt,
+                "reference_count": len(options.reference_images) if options else 0,
                 "options": options.to_dict() if options else {},
             },
         )

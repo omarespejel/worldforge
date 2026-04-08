@@ -6,6 +6,9 @@ All notable user-visible changes to this project will be documented in this file
 
 ### Added
 
+- Typed `StructuredGoal` planning inputs for `object_at` and `spawn_object` workflows, plus targeted `Action.move_to(..., object_id=...)` execution support in the mock provider.
+- Built-in `generation` and `transfer` evaluation suites so video-capable providers receive scored scenario coverage alongside physics, planning, and reasoning.
+- `ProviderBenchmarkHarness`, benchmark report exporters, and `worldforge benchmark` for provider latency, retry, and throughput measurements.
 - Explicit `WorldForgeError` and `WorldStateError` surfaces for invalid input and malformed persisted state.
 - Regression coverage for invalid runtime inputs, malformed imports, missing local provider assets, and invalid remote payloads.
 - `.env.example` and `AGENTS.md` so contributors and coding agents share the same live project contract.
@@ -22,6 +25,7 @@ All notable user-visible changes to this project will be documented in this file
 - Builtin providers, manually registered providers, and scaffold adapters now share one provider-event contract, so host applications can observe local and remote execution through the same callback surface.
 - Evaluation reports now include suite ids, provider pass/fail summaries, scenario metrics, and CLI export formats for Markdown, JSON, and CSV.
 - `worldforge eval` now accepts repeated `--provider` arguments so one report can compare multiple providers in a single run.
+- `list_eval_suites()` now returns `generation` and `transfer` in addition to the existing built-in suites.
 - Unknown evaluation suite names and missing suite capabilities now fail with explicit `WorldForgeError` messages.
 
 ### Fixed

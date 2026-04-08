@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 from worldforge import Action, GenerationOptions, VideoClip, WorldForge, WorldForgeError
+from worldforge.benchmark import ProviderBenchmarkHarness
 from worldforge.evaluation import EvaluationSuite
 from worldforge.providers import ProviderError
 
@@ -117,6 +118,30 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     evaluate.add_argument("--format", choices=("markdown", "json", "csv"), default="markdown")
     evaluate.add_argument("--state-dir", default=".worldforge/worlds")
+
+    benchmark = subparsers.add_parser(
+        "benchmark",
+        help="Run provider latency and retry benchmarks.",
+    )
+    benchmark.add_argument(
+        "--provider",
+        dest="providers",
+        action="append",
+        default=None,
+        help="Provider name to benchmark. Can be repeated.",
+    )
+    benchmark.add_argument(
+        "--operation",
+        dest="operations",
+        action="append",
+        default=None,
+        choices=ProviderBenchmarkHarness.benchmarkable_operations,
+        help="Operation to benchmark. Can be repeated.",
+    )
+    benchmark.add_argument("--iterations", type=int, default=5)
+    benchmark.add_argument("--concurrency", type=int, default=1)
+    benchmark.add_argument("--format", choices=("markdown", "json", "csv"), default="markdown")
+    benchmark.add_argument("--state-dir", default=".worldforge/worlds")
 
     return parser
 
@@ -235,6 +260,23 @@ def main() -> int:
             suite = EvaluationSuite.from_builtin(args.suite)
             providers = args.providers or ["mock"]
             report = suite.run_report(providers, forge=forge)
+            if args.format == "json":
+                print(report.to_json())
+            elif args.format == "csv":
+                print(report.to_csv())
+            else:
+                print(report.to_markdown())
+            return 0
+
+        if args.command == "benchmark":
+            harness = ProviderBenchmarkHarness(forge=forge)
+            providers = args.providers or ["mock"]
+            report = harness.run(
+                providers,
+                operations=args.operations,
+                iterations=args.iterations,
+                concurrency=args.concurrency,
+            )
             if args.format == "json":
                 print(report.to_json())
             elif args.format == "csv":

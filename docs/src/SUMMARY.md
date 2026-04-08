@@ -6,4 +6,5 @@
 - [Providers](./providers/README.md)
 - [Python API](./api/python.md)
 - [Evaluation](./evaluation.md)
+- [Benchmarking](./benchmarking.md)
 - [Contributing](./contributing.md)

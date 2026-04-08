@@ -4,6 +4,13 @@ from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError, version
 
+from worldforge.benchmark import (
+    BenchmarkInputs,
+    BenchmarkReport,
+    BenchmarkResult,
+    ProviderBenchmarkHarness,
+    run_benchmark,
+)
 from worldforge.evaluation import (
     EvalReport,
     EvalResult,
@@ -13,6 +20,8 @@ from worldforge.evaluation import (
     EvaluationResult,
     EvaluationScenario,
     EvaluationSuite,
+    GenerationEval,
+    GenerationEvaluationSuite,
     PhysicsEval,
     PhysicsEvaluationSuite,
     PlanningEval,
@@ -20,6 +29,8 @@ from worldforge.evaluation import (
     ProviderSummary,
     ReasoningEval,
     ReasoningEvaluationSuite,
+    TransferEval,
+    TransferEvaluationSuite,
 )
 from worldforge.framework import (
     Comparison,
@@ -53,6 +64,7 @@ from worldforge.models import (
     Rotation,
     SceneObject,
     SceneObjectPatch,
+    StructuredGoal,
     VideoClip,
     WorldForgeError,
     WorldStateError,
@@ -67,10 +79,15 @@ __all__ = [
     "__version__",
     "Action",
     "BBox",
+    "BenchmarkInputs",
+    "BenchmarkReport",
+    "BenchmarkResult",
     "Comparison",
     "DoctorReport",
     "EmbeddingResult",
     "GenerationOptions",
+    "GenerationEval",
+    "GenerationEvaluationSuite",
     "EvalReport",
     "EvalResult",
     "EvalScenario",
@@ -90,6 +107,7 @@ __all__ = [
     "Prediction",
     "ProviderCapabilities",
     "ProviderDoctorStatus",
+    "ProviderBenchmarkHarness",
     "ProviderEvent",
     "ProviderHealth",
     "ProviderInfo",
@@ -104,6 +122,9 @@ __all__ = [
     "Rotation",
     "SceneObject",
     "SceneObjectPatch",
+    "StructuredGoal",
+    "TransferEval",
+    "TransferEvaluationSuite",
     "VideoClip",
     "World",
     "WorldForge",
@@ -111,5 +132,6 @@ __all__ = [
     "WorldStateError",
     "list_eval_suites",
     "plan",
+    "run_benchmark",
     "run_eval",
 ]
