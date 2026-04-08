@@ -11,7 +11,11 @@ from .suites import (
     EvaluationSuite,
     PhysicsEval,
     PhysicsEvaluationSuite,
+    PlanningEval,
+    PlanningEvaluationSuite,
     ProviderSummary,
+    ReasoningEval,
+    ReasoningEvaluationSuite,
 )
 
 __all__ = [
@@ -25,5 +29,9 @@ __all__ = [
     "EvaluationSuite",
     "PhysicsEval",
     "PhysicsEvaluationSuite",
+    "PlanningEval",
+    "PlanningEvaluationSuite",
     "ProviderSummary",
+    "ReasoningEval",
+    "ReasoningEvaluationSuite",
 ]

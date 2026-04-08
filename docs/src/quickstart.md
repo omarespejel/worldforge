@@ -38,8 +38,11 @@ print(prediction.physics_score)
 plan = world.plan(goal="move the mug to the right")
 print(plan.action_count, plan.success_probability)
 
-report = world.evaluate("physics")
-print(report.to_markdown())
+planning_report = world.evaluate("planning")
+print(planning_report.to_markdown())
+
+reasoning_report = world.evaluate("reasoning")
+print(reasoning_report.to_json())
 ```
 
 ## CLI
@@ -51,4 +54,5 @@ uv run worldforge provider info mock
 uv run worldforge providers
 uv run worldforge predict kitchen --provider mock --x 0.3 --y 0.8 --z 0.0 --steps 2
 uv run worldforge eval --suite physics --provider mock
+uv run worldforge eval --suite planning --provider mock --format json
 ```

@@ -107,9 +107,11 @@ Prediction and evaluation:
 ```bash
 uv run worldforge predict kitchen --provider mock --x 0.3 --y 0.8 --z 0.0 --steps 2
 uv run worldforge eval --suite physics --provider mock
+uv run worldforge eval --suite planning --provider mock --format json
+uv run worldforge eval --suite reasoning --provider mock --format csv
 ```
 
-Remote provider configuration lives in [.env.example](./.env.example). WorldForge only auto-registers remote providers when their required environment variables are present.
+Built-in evaluation suites are `physics`, `planning`, and `reasoning`. Evaluation reports can be exported as Markdown, JSON, or CSV. Remote provider configuration lives in [.env.example](./.env.example). WorldForge only auto-registers remote providers when their required environment variables are present.
 
 ## Architecture
 
@@ -200,6 +202,7 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for contributor workflow details.
 ## Current Limitations
 
 - Planning is intentionally heuristic and deterministic. It is a framework placeholder, not a learned planner.
+- Evaluation remains a deterministic harness and currently covers physics, planning, and reasoning baselines only.
 - `jepa` and `genie` are scaffold adapters and should not be treated as production integrations.
 - Remote provider health checks depend on live credentials and network reachability even though they now use typed timeout and retry policy.
 - Provider observability is a typed callback contract, not a built-in logging or metrics backend.
@@ -212,7 +215,7 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for contributor workflow details.
 Exit criteria: remote adapters validate more upstream response schemas, expose richer operator-facing error context, and ship broader non-happy-path coverage beyond transport retries.
 
 2. Planner and evaluator maturity.
-Exit criteria: evaluation suites cover more than the single physics baseline, planning inputs have clearer contracts, and benchmark data exists for key workflows.
+Exit criteria: evaluation suites expand beyond the current physics/planning/reasoning baselines, planning inputs have clearer contracts, and benchmark data exists for key workflows.
 
 3. Release discipline.
 Exit criteria: changelog, docs, and agent context stay in lockstep with tags, and the first release-candidate criteria are documented.

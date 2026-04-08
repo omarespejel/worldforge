@@ -18,6 +18,8 @@ def test_top_level_exports_and_subpackages_import() -> None:
     assert worldforge.WorldStateError is not None
     assert worldforge.SceneObjectPatch is not None
     assert EvaluationSuite is not None
+    assert worldforge.PlanningEvaluationSuite is not None
+    assert worldforge.ReasoningEvaluationSuite is not None
     assert MockProvider is not None
     assert observability.JsonLoggerSink is not None
     assert observability.InMemoryRecorderSink is not None

@@ -822,7 +822,9 @@ class WorldForge:
 def list_eval_suites() -> list[str]:
     """Return built-in evaluation suite identifiers."""
 
-    return ["physics"]
+    from worldforge.evaluation import EvaluationSuite
+
+    return EvaluationSuite.builtin_names()
 
 
 def run_eval(suite: str, provider: str, *, forge: WorldForge | None = None):

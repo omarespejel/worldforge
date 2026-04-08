@@ -64,6 +64,7 @@ uv run pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
 - `worldforge.observability.compose_event_handlers(...)` is the supported way to attach multiple sinks without writing a custom dispatcher.
 - Remote adapters emit `ProviderEvent` records for retry, success, and failure. Mock-backed paths emit success events only.
 - `ProviderMetricsSink.request_count` counts emitted request attempts, so retries increment both `request_count` and `retry_count`.
+- Built-in evaluation suites are `physics`, `planning`, and `reasoning`; reports can be exported as Markdown, JSON, or CSV from the same run.
 
 ## Observability Example
 
@@ -89,7 +90,7 @@ print(metrics.get("mock", "generate").to_dict())
 
 As of 2026-04-08, the project is alpha.
 
-- Stable path: local `mock` provider, persistence, CLI, contract tests, built-in evaluation flow, and provider telemetry sinks.
+- Stable path: local `mock` provider, persistence, CLI, contract tests, built-in physics/planning/reasoning evaluation flows, and provider telemetry sinks.
 - Beta path: `cosmos` and `runway` HTTP adapters.
 - Scaffold path: `jepa` and `genie`.
-- Known gaps: heuristic planner, limited evaluation suite coverage, no benchmark/load-test harness yet, and no built-in exporter integration for OpenTelemetry or Prometheus yet.
+- Known gaps: heuristic planner, deterministic-only evaluation coverage, no benchmark/load-test harness yet, and no built-in exporter integration for OpenTelemetry or Prometheus yet.

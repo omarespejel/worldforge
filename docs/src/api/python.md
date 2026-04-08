@@ -64,8 +64,11 @@ Stateful runtime object responsible for:
 ```python
 from worldforge.evaluation import EvaluationSuite
 
-suite = EvaluationSuite.from_builtin("physics")
-report = suite.run_report("mock", forge=forge)
+print(EvaluationSuite.builtin_names())
+
+suite = EvaluationSuite.from_builtin("reasoning")
+report = suite.run_report(["mock"], forge=forge)
+print(report.results[0].passed)
 print(report.to_markdown())
 ```
 

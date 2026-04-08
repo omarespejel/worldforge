@@ -2,18 +2,40 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from worldforge import (
     Action,
     BBox,
     Position,
     SceneObject,
     WorldForge,
+    WorldForgeError,
     list_eval_suites,
     plan,
     run_eval,
 )
 from worldforge.evaluation import EvaluationSuite
 from worldforge.providers import MockProvider
+
+
+def _seed_world(forge: WorldForge):
+    world = forge.create_world("eval-world", "mock")
+    cube = world.add_object(
+        SceneObject(
+            "cube",
+            Position(0.0, 0.5, 0.0),
+            BBox(Position(-0.05, 0.45, -0.05), Position(0.05, 0.55, 0.05)),
+        )
+    )
+    mug = world.add_object(
+        SceneObject(
+            "mug",
+            Position(0.25, 0.8, 0.0),
+            BBox(Position(0.2, 0.75, -0.05), Position(0.3, 0.85, 0.05)),
+        )
+    )
+    return world, cube, mug
 
 
 def test_planning_comparison_and_execution_flow(tmp_path) -> None:
@@ -69,27 +91,71 @@ def test_planning_comparison_and_execution_flow(tmp_path) -> None:
 
 def test_evaluation_reports_and_eval_helpers(tmp_path) -> None:
     forge = WorldForge(state_dir=tmp_path)
-    world = forge.create_world("eval-world", "mock")
-    world.add_object(
-        SceneObject(
-            "cube",
-            Position(0.0, 0.5, 0.0),
-            BBox(Position(-0.05, 0.45, -0.05), Position(0.05, 0.55, 0.05)),
-        )
-    )
+    forge.register_provider(MockProvider(name="manual-mock"))
+    world, _, _ = _seed_world(forge)
 
-    assert "physics" in list_eval_suites()
+    assert list_eval_suites() == ["physics", "planning", "reasoning"]
 
     suite = EvaluationSuite.from_builtin("physics")
-    report = suite.run_report("mock", world=world, forge=forge)
+    report = suite.run_report(["mock", "manual-mock"], world=world, forge=forge)
+    assert report.suite_id == "physics"
     assert "Physics" in report.suite
-    assert len(report.provider_summaries) >= 1
-    assert report.provider_summaries[0].provider == "mock"
+    assert {summary.provider for summary in report.provider_summaries} == {"manual-mock", "mock"}
+    assert len(report.results) == 4
+    assert {result.scenario for result in report.results} == {
+        "object-stability",
+        "action-response",
+    }
+    assert all(result.passed for result in report.results)
 
-    artifacts = suite.run_report_artifacts(providers="mock", world=world, forge=forge)
+    artifacts = suite.run_report_artifacts(
+        providers=["mock", "manual-mock"],
+        world=world,
+        forge=forge,
+    )
     assert set(artifacts) == {"json", "markdown", "csv"}
+    assert json.loads(artifacts["json"])["suite_id"] == "physics"
     assert artifacts["markdown"].startswith("# Evaluation Report")
+    assert "metrics_json" in artifacts["csv"]
 
     results = run_eval("physics", "mock", forge=forge)
-    assert len(results) >= 1
+    assert len(results) == 2
     assert results[0].provider == "mock"
+    assert all(result.passed for result in results)
+
+
+def test_planning_and_reasoning_suites_cover_core_workflows(tmp_path) -> None:
+    forge = WorldForge(state_dir=tmp_path)
+    world, cube, mug = _seed_world(forge)
+
+    planning_report = world.evaluate("planning")
+    assert planning_report.suite_id == "planning"
+    assert {result.scenario for result in planning_report.results} == {
+        "object-relocation",
+        "object-spawn",
+    }
+    assert all(result.passed for result in planning_report.results)
+
+    reasoning_report = EvaluationSuite.from_builtin("reasoning").run_report(
+        "mock",
+        world=world,
+        forge=forge,
+    )
+    assert reasoning_report.suite_id == "reasoning"
+    assert len(reasoning_report.results) == 2
+    assert all(result.passed for result in reasoning_report.results)
+    identity_result = next(
+        result for result in reasoning_report.results if result.scenario == "scene-identity"
+    )
+    assert identity_result.metrics["tracked_object_count"] == 2
+    assert identity_result.metrics["matched_object_count"] == len({cube.id, mug.id})
+
+
+def test_evaluation_suite_validation_errors_are_explicit(tmp_path) -> None:
+    forge = WorldForge(state_dir=tmp_path, auto_register_remote=False)
+
+    with pytest.raises(WorldForgeError, match="Unknown evaluation suite"):
+        EvaluationSuite.from_builtin("unknown")
+
+    with pytest.raises(WorldForgeError, match="missing required capabilities: reason"):
+        EvaluationSuite.from_builtin("reasoning").run_report("cosmos", forge=forge)

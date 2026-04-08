@@ -170,3 +170,44 @@ def test_cli_supports_provider_listing_predict_transfer_and_eval(
     assert main() == 0
     eval_output = capsys.readouterr().out
     assert eval_output.startswith("# Evaluation Report")
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "worldforge",
+            "eval",
+            "--suite",
+            "planning",
+            "--provider",
+            "mock",
+            "--format",
+            "json",
+            "--state-dir",
+            str(tmp_path),
+        ],
+    )
+    assert main() == 0
+    eval_payload = json.loads(capsys.readouterr().out)
+    assert eval_payload["suite_id"] == "planning"
+    assert len(eval_payload["results"]) == 2
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "worldforge",
+            "eval",
+            "--suite",
+            "reasoning",
+            "--provider",
+            "mock",
+            "--format",
+            "csv",
+            "--state-dir",
+            str(tmp_path),
+        ],
+    )
+    assert main() == 0
+    eval_csv = capsys.readouterr().out
+    assert eval_csv.startswith("suite_id,suite,provider,scenario,score,passed,metrics_json")

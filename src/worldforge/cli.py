@@ -6,7 +6,7 @@ import argparse
 import json
 from pathlib import Path
 
-from worldforge import Action, GenerationOptions, VideoClip, WorldForge
+from worldforge import Action, GenerationOptions, VideoClip, WorldForge, WorldForgeError
 from worldforge.evaluation import EvaluationSuite
 from worldforge.providers import ProviderError
 
@@ -107,8 +107,15 @@ def _build_parser() -> argparse.ArgumentParser:
     predict.add_argument("--state-dir", default=".worldforge/worlds")
 
     evaluate = subparsers.add_parser("eval", help="Run a built-in evaluation suite.")
-    evaluate.add_argument("--suite", default="physics")
-    evaluate.add_argument("--provider", default="mock")
+    evaluate.add_argument("--suite", default="physics", choices=EvaluationSuite.builtin_names())
+    evaluate.add_argument(
+        "--provider",
+        dest="providers",
+        action="append",
+        default=None,
+        help="Provider name to evaluate. Can be repeated.",
+    )
+    evaluate.add_argument("--format", choices=("markdown", "json", "csv"), default="markdown")
     evaluate.add_argument("--state-dir", default=".worldforge/worlds")
 
     return parser
@@ -226,10 +233,16 @@ def main() -> int:
 
         if args.command == "eval":
             suite = EvaluationSuite.from_builtin(args.suite)
-            report = suite.run_report(args.provider, forge=forge)
-            print(report.to_markdown())
+            providers = args.providers or ["mock"]
+            report = suite.run_report(providers, forge=forge)
+            if args.format == "json":
+                print(report.to_json())
+            elif args.format == "csv":
+                print(report.to_csv())
+            else:
+                print(report.to_markdown())
             return 0
-    except (ProviderError, ValueError) as exc:
+    except (ProviderError, WorldForgeError, ValueError) as exc:
         parser.exit(2, f"{exc}\n")
 
     parser.error(f"Unknown command: {args.command}")

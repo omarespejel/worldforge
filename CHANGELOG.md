@@ -11,6 +11,7 @@ All notable user-visible changes to this project will be documented in this file
 - `.env.example` and `AGENTS.md` so contributors and coding agents share the same live project contract.
 - Typed `RetryPolicy`, `RequestOperationPolicy`, and `ProviderRequestPolicy` models exported through the public API.
 - Typed `ProviderEvent` records and `event_handler=` plumbing on `WorldForge` and provider constructors for host-side observability.
+- Capability-aware built-in evaluation suites for `physics`, `planning`, and `reasoning`, with scenario-level pass/fail results and provider summaries.
 
 ### Changed
 
@@ -19,6 +20,9 @@ All notable user-visible changes to this project will be documented in this file
 - README and provider documentation now reflect the real provider status split: `mock` stable, `cosmos` and `runway` beta, `jepa` and `genie` scaffold.
 - `cosmos` and `runway` now share one typed timeout and retry contract, with retried read operations and single-attempt mutation requests by default.
 - Builtin providers, manually registered providers, and scaffold adapters now share one provider-event contract, so host applications can observe local and remote execution through the same callback surface.
+- Evaluation reports now include suite ids, provider pass/fail summaries, scenario metrics, and CLI export formats for Markdown, JSON, and CSV.
+- `worldforge eval` now accepts repeated `--provider` arguments so one report can compare multiple providers in a single run.
+- Unknown evaluation suite names and missing suite capabilities now fail with explicit `WorldForgeError` messages.
 
 ### Fixed
 
