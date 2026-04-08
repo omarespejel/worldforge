@@ -1,0 +1,203 @@
+from __future__ import annotations
+
+import base64
+import json
+
+import httpx
+import pytest
+
+from worldforge import GenerationOptions, VideoClip
+from worldforge.providers import CosmosProvider, ProviderError, RunwayProvider
+
+
+def test_cosmos_provider_health_and_generate() -> None:
+    video_bytes = b"cosmos-video"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/v1/health/ready":
+            return httpx.Response(200, json={"status": "ready"})
+
+        if request.method == "POST" and request.url.path == "/v1/infer":
+            payload = json.loads(request.content.decode("utf-8"))
+            assert payload["prompt"] == "drive through the city"
+            assert payload["image"] == "https://example.com/seed.png"
+            assert payload["video_params"]["width"] == 1280
+            assert payload["video_params"]["height"] == 720
+            assert payload["video_params"]["frames_count"] == 48
+            return httpx.Response(
+                200,
+                json={
+                    "b64_video": base64.b64encode(video_bytes).decode("ascii"),
+                    "seed": 7,
+                },
+            )
+
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    provider = CosmosProvider(
+        base_url="http://cosmos.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    health = provider.health()
+    assert health.healthy is True
+
+    clip = provider.generate(
+        "drive through the city",
+        duration_seconds=2.0,
+        options=GenerationOptions(
+            image="https://example.com/seed.png",
+            fps=24.0,
+            seed=7,
+        ),
+    )
+    assert clip.blob() == video_bytes
+    assert clip.metadata["mode"] == "image2world"
+    assert clip.metadata["content_type"] == "video/mp4"
+
+
+def test_runway_provider_health_generate_and_transfer(monkeypatch) -> None:
+    monkeypatch.setenv("RUNWAYML_API_SECRET", "runway-test-key")
+
+    generated_bytes = b"runway-generated"
+    transferred_bytes = b"runway-transferred"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/v1/organization":
+            return httpx.Response(200, json={"id": "org_test"})
+
+        if request.method == "POST" and request.url.path == "/v1/image_to_video":
+            payload = json.loads(request.content.decode("utf-8"))
+            assert payload["model"] == "gen4.5"
+            assert payload["promptText"] == "a rainy alley at night"
+            assert payload["duration"] == 4
+            return httpx.Response(200, json={"id": "task_generate"})
+
+        if request.method == "POST" and request.url.path == "/v1/video_to_video":
+            payload = json.loads(request.content.decode("utf-8"))
+            assert payload["model"] == "gen4_aleph"
+            assert payload["promptText"] == "make it look cinematic"
+            assert payload["videoUri"].startswith("data:video/mp4;base64,")
+            assert payload["references"] == [{"uri": "https://example.com/style.png"}]
+            return httpx.Response(200, json={"id": "task_transfer"})
+
+        if request.method == "GET" and request.url.path == "/v1/tasks/task_generate":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "task_generate",
+                    "createdAt": "2026-04-07T00:00:00Z",
+                    "status": "SUCCEEDED",
+                    "output": ["https://downloads.example.com/generated.mp4"],
+                },
+            )
+
+        if request.method == "GET" and request.url.path == "/v1/tasks/task_transfer":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "task_transfer",
+                    "createdAt": "2026-04-07T00:00:00Z",
+                    "status": "SUCCEEDED",
+                    "output": ["https://downloads.example.com/transferred.mp4"],
+                },
+            )
+
+        if request.method == "GET" and request.url.host == "downloads.example.com":
+            if request.url.path.endswith("generated.mp4"):
+                return httpx.Response(200, content=generated_bytes)
+            if request.url.path.endswith("transferred.mp4"):
+                return httpx.Response(200, content=transferred_bytes)
+
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    provider = RunwayProvider(
+        transport=httpx.MockTransport(handler),
+        poll_interval_seconds=0.0,
+        max_polls=1,
+    )
+
+    assert provider.health().healthy is True
+
+    generated = provider.generate(
+        "a rainy alley at night",
+        duration_seconds=4.0,
+        options=GenerationOptions(fps=24.0),
+    )
+    assert generated.blob() == generated_bytes
+    assert generated.metadata["mode"] == "text_to_video"
+
+    transferred = provider.transfer(
+        generated,
+        width=1280,
+        height=720,
+        fps=24.0,
+        prompt="make it look cinematic",
+        options=GenerationOptions(reference_images=["https://example.com/style.png"]),
+    )
+    assert transferred.blob() == transferred_bytes
+    assert transferred.metadata["mode"] == "video_to_video"
+
+
+def test_cosmos_provider_rejects_invalid_asset_paths_and_payloads(tmp_path) -> None:
+    missing_image = tmp_path / "missing.png"
+
+    provider = CosmosProvider(base_url="http://cosmos.test")
+
+    with pytest.raises(ProviderError, match="does not exist"):
+        provider.generate(
+            "drive through the city",
+            duration_seconds=2.0,
+            options=GenerationOptions(image=str(missing_image)),
+        )
+
+    def invalid_payload_handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/v1/infer":
+            return httpx.Response(200, json={"b64_video": "not-base64!"})
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    provider = CosmosProvider(
+        base_url="http://cosmos.test",
+        transport=httpx.MockTransport(invalid_payload_handler),
+    )
+
+    with pytest.raises(ProviderError, match="invalid base64 video payload"):
+        provider.generate("drive through the city", duration_seconds=2.0)
+
+
+def test_runway_provider_rejects_invalid_runtime_inputs(monkeypatch) -> None:
+    monkeypatch.setenv("RUNWAYML_API_SECRET", "runway-test-key")
+    provider = RunwayProvider(
+        transport=httpx.MockTransport(lambda request: httpx.Response(500)),
+        poll_interval_seconds=0.0,
+        max_polls=1,
+    )
+
+    with pytest.raises(ProviderError, match="duration_seconds"):
+        provider.generate("a rainy alley at night", duration_seconds=0.0)
+
+    with pytest.raises(ProviderError, match="width and height"):
+        provider.transfer(
+            clip=_sample_clip(),
+            width=0,
+            height=720,
+            fps=24.0,
+        )
+
+    with pytest.raises(ProviderError, match="fps"):
+        provider.transfer(
+            clip=_sample_clip(),
+            width=1280,
+            height=720,
+            fps=0.0,
+        )
+
+
+def _sample_clip() -> VideoClip:
+    return VideoClip(
+        frames=[b"video"],
+        fps=24.0,
+        resolution=(1280, 720),
+        duration_seconds=1.0,
+        metadata={"content_type": "video/mp4"},
+    )

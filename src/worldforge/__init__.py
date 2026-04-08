@@ -33,6 +33,7 @@ from worldforge.models import (
     BBox,
     DoctorReport,
     EmbeddingResult,
+    GenerationOptions,
     Pose,
     Position,
     ProviderCapabilities,
@@ -45,6 +46,8 @@ from worldforge.models import (
     SceneObject,
     SceneObjectPatch,
     VideoClip,
+    WorldForgeError,
+    WorldStateError,
 )
 
 try:
@@ -59,6 +62,7 @@ __all__ = [
     "Comparison",
     "DoctorReport",
     "EmbeddingResult",
+    "GenerationOptions",
     "EvalReport",
     "EvalResult",
     "EvalScenario",
@@ -87,6 +91,8 @@ __all__ = [
     "VideoClip",
     "World",
     "WorldForge",
+    "WorldForgeError",
+    "WorldStateError",
     "list_eval_suites",
     "plan",
     "run_eval",

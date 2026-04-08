@@ -9,6 +9,7 @@ from time import perf_counter
 from worldforge.models import (
     Action,
     EmbeddingResult,
+    GenerationOptions,
     JSONDict,
     ProviderCapabilities,
     ProviderHealth,
@@ -53,6 +54,10 @@ class BaseProvider:
         supported_modalities: list[str] | None = None,
         artifact_types: list[str] | None = None,
         notes: list[str] | None = None,
+        default_model: str | None = None,
+        supported_models: list[str] | None = None,
+        required_env_vars: list[str] | None = None,
+        requires_credentials: bool | None = None,
     ) -> None:
         self.name = name
         self.capabilities = capabilities or ProviderCapabilities()
@@ -64,6 +69,12 @@ class BaseProvider:
         self.supported_modalities = list(supported_modalities or [])
         self.artifact_types = list(artifact_types or [])
         self.notes = list(notes or [])
+        self.default_model = default_model
+        self.supported_models = list(supported_models or [])
+        self.required_env_vars = list(required_env_vars or ([self.env_var] if self.env_var else []))
+        self.requires_credentials = (
+            requires_credentials if requires_credentials is not None else self.env_var is not None
+        )
 
     def info(self) -> ProviderInfo:
         return ProviderInfo(
@@ -82,11 +93,14 @@ class BaseProvider:
             package=self.package,
             implementation_status=self.implementation_status,
             deterministic=self.deterministic,
-            requires_credentials=self.env_var is not None,
+            requires_credentials=self.requires_credentials,
             credential_env_var=self.env_var,
+            required_env_vars=list(self.required_env_vars),
             supported_modalities=list(self.supported_modalities),
             artifact_types=list(self.artifact_types),
             notes=list(self.notes),
+            default_model=self.default_model,
+            supported_models=list(self.supported_models),
         )
 
     def configured(self) -> bool:
@@ -106,10 +120,25 @@ class BaseProvider:
     def predict(self, world_state: JSONDict, action: Action, steps: int) -> PredictionPayload:
         raise NotImplementedError
 
-    def generate(self, prompt: str, duration_seconds: float) -> VideoClip:
+    def generate(
+        self,
+        prompt: str,
+        duration_seconds: float,
+        *,
+        options: GenerationOptions | None = None,
+    ) -> VideoClip:
         raise ProviderError(f"Provider '{self.name}' does not implement generate().")
 
-    def transfer(self, clip: VideoClip, *, width: int, height: int, fps: float) -> VideoClip:
+    def transfer(
+        self,
+        clip: VideoClip,
+        *,
+        width: int,
+        height: int,
+        fps: float,
+        prompt: str = "",
+        options: GenerationOptions | None = None,
+    ) -> VideoClip:
         raise ProviderError(f"Provider '{self.name}' does not implement transfer().")
 
     def reason(self, query: str, *, world_state: JSONDict | None = None) -> ReasoningResult:

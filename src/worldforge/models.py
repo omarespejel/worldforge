@@ -7,11 +7,20 @@ import math
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from hashlib import sha256
+from mimetypes import guess_type
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 JSONDict = dict[str, Any]
+
+
+class WorldForgeError(ValueError):
+    """Raised when a caller supplies invalid input to the framework."""
+
+
+class WorldStateError(WorldForgeError):
+    """Raised when persisted or provider-supplied world state is malformed."""
 
 
 def generate_id(prefix: str) -> str:
@@ -294,6 +303,36 @@ class ProviderCapabilities:
 
 
 @dataclass(slots=True)
+class GenerationOptions:
+    """Typed generation options for remote video and world-model providers."""
+
+    image: str | None = None
+    video: str | None = None
+    model: str | None = None
+    ratio: str | None = None
+    size: str | None = None
+    fps: float | None = None
+    seed: int | None = None
+    negative_prompt: str | None = None
+    reference_images: list[str] = field(default_factory=list)
+    extras: JSONDict = field(default_factory=dict)
+
+    def to_dict(self) -> JSONDict:
+        return {
+            "image": self.image,
+            "video": self.video,
+            "model": self.model,
+            "ratio": self.ratio,
+            "size": self.size,
+            "fps": self.fps,
+            "seed": self.seed,
+            "negative_prompt": self.negative_prompt,
+            "reference_images": list(self.reference_images),
+            "extras": dict(self.extras),
+        }
+
+
+@dataclass(slots=True)
 class ProviderInfo:
     """Public provider metadata."""
 
@@ -324,9 +363,12 @@ class ProviderProfile:
     deterministic: bool = False
     requires_credentials: bool = False
     credential_env_var: str | None = None
+    required_env_vars: list[str] = field(default_factory=list)
     supported_modalities: list[str] = field(default_factory=list)
     artifact_types: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    default_model: str | None = None
+    supported_models: list[str] = field(default_factory=list)
 
     @property
     def supported_tasks(self) -> list[str]:
@@ -344,9 +386,12 @@ class ProviderProfile:
             "deterministic": self.deterministic,
             "requires_credentials": self.requires_credentials,
             "credential_env_var": self.credential_env_var,
+            "required_env_vars": list(self.required_env_vars),
             "supported_modalities": list(self.supported_modalities),
             "artifact_types": list(self.artifact_types),
             "notes": list(self.notes),
+            "default_model": self.default_model,
+            "supported_models": list(self.supported_models),
         }
 
 
@@ -431,9 +476,69 @@ class VideoClip:
     duration_seconds: float
     metadata: JSONDict = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        if not all(isinstance(frame, bytes) for frame in self.frames):
+            raise WorldForgeError("VideoClip frames must be bytes.")
+        if self.fps <= 0.0:
+            raise WorldForgeError("VideoClip fps must be greater than 0.")
+        width, height = self.resolution
+        if width <= 0 or height <= 0:
+            raise WorldForgeError("VideoClip resolution values must be greater than 0.")
+        if self.duration_seconds < 0.0:
+            raise WorldForgeError("VideoClip duration_seconds must be non-negative.")
+
     @property
     def frame_count(self) -> int:
         return len(self.frames)
+
+    def blob(self) -> bytes:
+        """Return the clip as a single binary blob when possible."""
+
+        if self.frame_count == 1:
+            return self.frames[0]
+        return b"".join(self.frames)
+
+    def content_type(self) -> str:
+        """Return the best-known content type for the clip."""
+
+        return str(self.metadata.get("content_type", "application/octet-stream"))
+
+    def save(self, path: str | Path) -> Path:
+        """Persist the clip bytes to disk and return the resolved path."""
+
+        target = Path(path).expanduser().resolve()
+        ensure_directory(target.parent)
+        target.write_bytes(self.blob())
+        return target
+
+    @classmethod
+    def from_file(
+        cls,
+        path: str | Path,
+        *,
+        fps: float = 24.0,
+        resolution: tuple[int, int] = (1280, 720),
+        duration_seconds: float = 0.0,
+        metadata: JSONDict | None = None,
+    ) -> VideoClip:
+        """Build a clip from a local file for transfer-style APIs."""
+
+        source = Path(path).expanduser().resolve()
+        if not source.exists():
+            raise WorldForgeError(f"Video clip source does not exist: {source}")
+        if not source.is_file():
+            raise WorldForgeError(f"Video clip source is not a file: {source}")
+        content_type = guess_type(source.name)[0] or "application/octet-stream"
+        merged_metadata = dict(metadata or {})
+        merged_metadata.setdefault("content_type", content_type)
+        merged_metadata.setdefault("source_path", str(source))
+        return cls(
+            frames=[source.read_bytes()],
+            fps=fps,
+            resolution=resolution,
+            duration_seconds=duration_seconds,
+            metadata=merged_metadata,
+        )
 
     def to_dict(self) -> JSONDict:
         return {
@@ -441,6 +546,7 @@ class VideoClip:
             "fps": self.fps,
             "resolution": list(self.resolution),
             "duration_seconds": self.duration_seconds,
+            "content_type": self.content_type(),
             "metadata": dict(self.metadata),
         }
 

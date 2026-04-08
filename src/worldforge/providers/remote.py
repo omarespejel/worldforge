@@ -1,15 +1,21 @@
-"""Credential-gated provider adapters."""
+"""Scaffold adapters for providers that are not yet fully implemented."""
 
 from __future__ import annotations
 
-from worldforge.models import EmbeddingResult, ProviderCapabilities, ReasoningResult, VideoClip
+from worldforge.models import (
+    EmbeddingResult,
+    GenerationOptions,
+    ProviderCapabilities,
+    ReasoningResult,
+    VideoClip,
+)
 
 from .base import RemoteProvider
 from .mock import MockProvider
 
 
 class StubRemoteProvider(RemoteProvider):
-    """Shared behavior for remote adapters that are present but not yet production-complete."""
+    """Shared behavior for credential-gated providers still backed by local surrogates."""
 
     def predict(self, world_state, action, steps):  # type: ignore[no-untyped-def]
         self._require_credentials()
@@ -18,17 +24,37 @@ class StubRemoteProvider(RemoteProvider):
         payload.metadata["credential_env"] = self.env_var
         return payload
 
-    def generate(self, prompt: str, duration_seconds: float) -> VideoClip:
+    def generate(
+        self,
+        prompt: str,
+        duration_seconds: float,
+        *,
+        options: GenerationOptions | None = None,
+    ) -> VideoClip:
         self._require_credentials()
-        clip = MockProvider(name=self.name).generate(prompt, duration_seconds)
+        clip = MockProvider(name=self.name).generate(prompt, duration_seconds, options=options)
         clip.metadata["mode"] = "stub-remote-adapter"
         clip.metadata["credential_env"] = self.env_var
         return clip
 
-    def transfer(self, clip: VideoClip, *, width: int, height: int, fps: float) -> VideoClip:
+    def transfer(
+        self,
+        clip: VideoClip,
+        *,
+        width: int,
+        height: int,
+        fps: float,
+        prompt: str = "",
+        options: GenerationOptions | None = None,
+    ) -> VideoClip:
         self._require_credentials()
         transferred = MockProvider(name=self.name).transfer(
-            clip, width=width, height=height, fps=fps
+            clip,
+            width=width,
+            height=height,
+            fps=fps,
+            prompt=prompt,
+            options=options,
         )
         transferred.metadata["mode"] = "stub-remote-adapter"
         transferred.metadata["credential_env"] = self.env_var
@@ -43,64 +69,6 @@ class StubRemoteProvider(RemoteProvider):
     def embed(self, *, text: str) -> EmbeddingResult:
         self._require_credentials()
         return MockProvider(name=self.name).embed(text=text)
-
-
-class CosmosProvider(StubRemoteProvider):
-    """Python adapter placeholder for NVIDIA Cosmos."""
-
-    env_var = "NVIDIA_API_KEY"
-
-    def __init__(self, name: str = "cosmos") -> None:
-        super().__init__(
-            name=name,
-            capabilities=ProviderCapabilities(
-                predict=True,
-                generate=True,
-                reason=True,
-                embed=True,
-                plan=True,
-                transfer=True,
-            ),
-            is_local=False,
-            description="Python adapter surface for NVIDIA Cosmos.",
-            package="worldforge",
-            implementation_status="scaffold",
-            deterministic=False,
-            supported_modalities=["world_state", "text", "video"],
-            artifact_types=["prediction", "video", "reasoning", "embedding", "transfer"],
-            notes=[
-                "Credential-gated scaffold adapter.",
-                "Current runtime path falls back to deterministic mock behavior after auth checks.",
-            ],
-        )
-
-
-class RunwayProvider(StubRemoteProvider):
-    """Python adapter placeholder for Runway."""
-
-    env_var = "RUNWAY_API_SECRET"
-
-    def __init__(self, name: str = "runway") -> None:
-        super().__init__(
-            name=name,
-            capabilities=ProviderCapabilities(
-                predict=True,
-                generate=True,
-                plan=True,
-                transfer=True,
-            ),
-            is_local=False,
-            description="Python adapter surface for Runway.",
-            package="worldforge",
-            implementation_status="scaffold",
-            deterministic=False,
-            supported_modalities=["world_state", "text", "video"],
-            artifact_types=["prediction", "video", "transfer"],
-            notes=[
-                "Credential-gated scaffold adapter.",
-                "Current runtime path falls back to deterministic mock behavior after auth checks.",
-            ],
-        )
 
 
 class JepaProvider(StubRemoteProvider):
@@ -128,6 +96,8 @@ class JepaProvider(StubRemoteProvider):
                 "Credential-gated scaffold adapter.",
                 "Current runtime path falls back to deterministic mock behavior after auth checks.",
             ],
+            default_model="jepa-scaffold-v1",
+            supported_models=["jepa-scaffold-v1"],
         )
 
 
@@ -156,4 +126,6 @@ class GenieProvider(StubRemoteProvider):
                 "Credential-gated scaffold adapter.",
                 "Current runtime path falls back to deterministic mock behavior after auth checks.",
             ],
+            default_model="genie-scaffold-v1",
+            supported_models=["genie-scaffold-v1"],
         )

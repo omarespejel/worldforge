@@ -11,6 +11,7 @@ uv sync --group dev
 ```bash
 make lint
 make test
+make test-cov
 make test-package
 make build
 ```
@@ -30,6 +31,8 @@ make build
 ## Standards
 
 - keep the public API typed and Pythonic
+- fail fast on invalid inputs instead of silently coercing them
+- use `ProviderError` for provider failures and `WorldForgeError` / `WorldStateError` for framework validation failures
 - use `src/` layout conventions consistently
 - do not advertise provider capabilities that are not implemented
 - prefer simple, inspectable JSON state over implicit persistence magic
@@ -43,3 +46,10 @@ make build
 4. Register the provider in `WorldForge` only when auto-detection is safe.
 5. Add tests covering registration, health reporting, and a successful runtime path.
 6. Run `worldforge.testing.assert_provider_contract()` in adapter tests to validate metadata and capability behavior.
+
+## Pull request checklist
+
+- run lint, `make test`, `make test-cov`, and `make test-package`
+- add or update docs for public contract changes
+- update `CHANGELOG.md` for user-visible changes
+- keep `AGENTS.md` aligned with the live repository state

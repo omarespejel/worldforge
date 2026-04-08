@@ -9,6 +9,7 @@ from worldforge.models import (
     Action,
     BBox,
     EmbeddingResult,
+    GenerationOptions,
     JSONDict,
     Position,
     ProviderCapabilities,
@@ -51,6 +52,8 @@ class MockProvider(BaseProvider):
             notes=[
                 "Reference implementation for local development and adapter contract tests.",
             ],
+            default_model="mock-deterministic-v1",
+            supported_models=["mock-deterministic-v1"],
         )
 
     def _updated_world_state(self, world_state: JSONDict, action: Action, steps: int) -> JSONDict:
@@ -101,23 +104,50 @@ class MockProvider(BaseProvider):
             latency_ms=max(0.1, (perf_counter() - started) * 1000),
         )
 
-    def generate(self, prompt: str, duration_seconds: float) -> VideoClip:
+    def generate(
+        self,
+        prompt: str,
+        duration_seconds: float,
+        *,
+        options: GenerationOptions | None = None,
+    ) -> VideoClip:
         frame_count = max(1, int(round(duration_seconds * 8)))
         return VideoClip(
             frames=[_frame_bytes(prompt, index) for index in range(frame_count)],
             fps=8.0,
             resolution=(640, 360),
             duration_seconds=duration_seconds,
-            metadata={"provider": self.name, "prompt": prompt},
+            metadata={
+                "provider": self.name,
+                "prompt": prompt,
+                "mode": "deterministic-mock-generate",
+                "options": options.to_dict() if options else {},
+                "content_type": "application/octet-stream",
+            },
         )
 
-    def transfer(self, clip: VideoClip, *, width: int, height: int, fps: float) -> VideoClip:
+    def transfer(
+        self,
+        clip: VideoClip,
+        *,
+        width: int,
+        height: int,
+        fps: float,
+        prompt: str = "",
+        options: GenerationOptions | None = None,
+    ) -> VideoClip:
         return VideoClip(
             frames=list(clip.frames),
             fps=fps,
             resolution=(width, height),
             duration_seconds=clip.duration_seconds,
-            metadata={**clip.metadata, "provider": self.name, "transfer": True},
+            metadata={
+                **clip.metadata,
+                "provider": self.name,
+                "transfer": True,
+                "prompt": prompt,
+                "options": options.to_dict() if options else {},
+            },
         )
 
     def reason(self, query: str, *, world_state: JSONDict | None = None) -> ReasoningResult:

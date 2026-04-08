@@ -144,7 +144,10 @@ def assert_provider_contract(
     assert info.is_local == profile.is_local
     assert sorted(info.capabilities.enabled_names()) == sorted(profile.supported_tasks)
     assert health.name == provider.name
-    assert health.healthy is configured
+    if health.healthy:
+        assert configured
+    if not configured and profile.requires_credentials:
+        assert health.healthy is False
     if profile.capabilities.plan:
         assert profile.capabilities.predict
 
@@ -156,9 +159,10 @@ def assert_provider_contract(
         profile=profile,
         health=health,
     )
+    can_invoke = configured
 
     if profile.capabilities.predict:
-        if configured or not profile.requires_credentials:
+        if can_invoke:
             prediction = provider.predict(sample_state, sample_action, 2)
             _validate_prediction(provider.name, prediction)
             report.exercised_operations.append("predict")
@@ -169,7 +173,7 @@ def assert_provider_contract(
             )
 
     if profile.capabilities.reason:
-        if configured or not profile.requires_credentials:
+        if can_invoke:
             reasoning = provider.reason(
                 "How many objects are in the scene?", world_state=sample_state
             )
@@ -185,7 +189,7 @@ def assert_provider_contract(
             )
 
     if profile.capabilities.embed:
-        if configured or not profile.requires_credentials:
+        if can_invoke:
             embedding = provider.embed(text="contract vector")
             _validate_embedding(provider.name, embedding)
             report.exercised_operations.append("embed")
@@ -194,7 +198,7 @@ def assert_provider_contract(
 
     generated_clip: VideoClip | None = None
     if profile.capabilities.generate:
-        if configured or not profile.requires_credentials:
+        if can_invoke:
             generated_clip = provider.generate("contract prompt", duration_seconds=1.0)
             _validate_clip(generated_clip)
             report.exercised_operations.append("generate")
@@ -212,7 +216,7 @@ def assert_provider_contract(
             duration_seconds=0.125,
             metadata={"provider": provider.name},
         )
-        if configured or not profile.requires_credentials:
+        if can_invoke:
             transferred = provider.transfer(transfer_input, width=48, height=48, fps=12.0)
             _validate_clip(transferred)
             report.exercised_operations.append("transfer")

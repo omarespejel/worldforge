@@ -14,6 +14,7 @@ from worldforge.models import (
     BBox,
     DoctorReport,
     EmbeddingResult,
+    GenerationOptions,
     HistoryEntry,
     JSONDict,
     Position,
@@ -25,6 +26,8 @@ from worldforge.models import (
     SceneObject,
     SceneObjectPatch,
     VideoClip,
+    WorldForgeError,
+    WorldStateError,
     average,
     dump_json,
     ensure_directory,
@@ -53,6 +56,45 @@ def _normalize_provider_name(provider: str | None, fallback: str) -> str:
 
 def _world_file(state_dir: Path, world_id: str) -> Path:
     return state_dir / f"{world_id}.json"
+
+
+def _require_positive_int(value: int, *, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise WorldForgeError(f"{name} must be an integer greater than 0.")
+    return value
+
+
+def _validate_world_state_payload(state: JSONDict, *, context: str) -> None:
+    if not isinstance(state, dict):
+        raise WorldStateError(f"{context} must be a JSON object.")
+
+    missing_keys = [key for key in ("id", "name", "provider") if key not in state]
+    if missing_keys:
+        joined = ", ".join(sorted(missing_keys))
+        raise WorldStateError(f"{context} is missing required keys: {joined}.")
+
+    scene = state.get("scene", {})
+    if not isinstance(scene, dict):
+        raise WorldStateError(f"{context} field 'scene' must be a JSON object.")
+
+    objects = scene.get("objects", {})
+    if not isinstance(objects, dict):
+        raise WorldStateError(f"{context} field 'scene.objects' must be a JSON object.")
+
+    metadata = state.get("metadata", {})
+    if not isinstance(metadata, dict):
+        raise WorldStateError(f"{context} field 'metadata' must be a JSON object.")
+
+    history = state.get("history", [])
+    if not isinstance(history, list):
+        raise WorldStateError(f"{context} field 'history' must be a JSON array.")
+
+    try:
+        step = int(state.get("step", 0))
+    except (TypeError, ValueError) as exc:
+        raise WorldStateError(f"{context} field 'step' must be an integer.") from exc
+    if step < 0:
+        raise WorldStateError(f"{context} field 'step' must be greater than or equal to 0.")
 
 
 @dataclass(slots=True)
@@ -211,24 +253,33 @@ class World:
 
     @classmethod
     def from_state(cls, forge: WorldForge, state: JSONDict) -> World:
-        world = cls(
-            name=str(state["name"]),
-            provider=str(state["provider"]),
-            forge=forge,
-            description=str(state.get("description", "")),
-            world_id=str(state["id"]),
-            metadata=dict(state.get("metadata", {})),
-        )
-        world.step = int(state.get("step", 0))
-        world.scene_objects = {
-            object_id: SceneObject.from_dict(object_state)
-            for object_id, object_state in state.get("scene", {}).get("objects", {}).items()
-        }
-        world._history = [HistoryEntry.from_dict(entry) for entry in state.get("history", [])] or [
-            HistoryEntry(
-                step=world.step, state=world._snapshot(), summary="world restored", action_json=None
+        _validate_world_state_payload(state, context="World state")
+        try:
+            world = cls(
+                name=str(state["name"]),
+                provider=str(state["provider"]),
+                forge=forge,
+                description=str(state.get("description", "")),
+                world_id=str(state["id"]),
+                metadata=dict(state.get("metadata", {})),
             )
-        ]
+            world.step = int(state.get("step", 0))
+            world.scene_objects = {
+                str(object_id): SceneObject.from_dict(object_state)
+                for object_id, object_state in state.get("scene", {}).get("objects", {}).items()
+            }
+            world._history = [
+                HistoryEntry.from_dict(entry) for entry in state.get("history", [])
+            ] or [
+                HistoryEntry(
+                    step=world.step,
+                    state=world._snapshot(),
+                    summary="world restored",
+                    action_json=None,
+                )
+            ]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise WorldStateError(f"World state could not be restored: {exc}") from exc
         return world
 
     @property
@@ -256,27 +307,31 @@ class World:
         }
 
     def _apply_state(self, state: JSONDict, *, preserve_history: bool = False) -> None:
-        self.id = str(state["id"])
-        self.name = str(state["name"])
-        self.provider = str(state["provider"])
-        self.description = str(state.get("description", ""))
-        self.step = int(state.get("step", 0))
-        self.metadata = dict(state.get("metadata", {}))
-        self.scene_objects = {
-            object_id: SceneObject.from_dict(object_state)
-            for object_id, object_state in state.get("scene", {}).get("objects", {}).items()
-        }
-        if not preserve_history:
-            self._history = [
-                HistoryEntry.from_dict(entry) for entry in state.get("history", [])
-            ] or [
-                HistoryEntry(
-                    step=self.step,
-                    state=self._snapshot(),
-                    summary="world restored",
-                    action_json=None,
-                )
-            ]
+        _validate_world_state_payload(state, context="World state")
+        try:
+            self.id = str(state["id"])
+            self.name = str(state["name"])
+            self.provider = str(state["provider"])
+            self.description = str(state.get("description", ""))
+            self.step = int(state.get("step", 0))
+            self.metadata = dict(state.get("metadata", {}))
+            self.scene_objects = {
+                str(object_id): SceneObject.from_dict(object_state)
+                for object_id, object_state in state.get("scene", {}).get("objects", {}).items()
+            }
+            if not preserve_history:
+                self._history = [
+                    HistoryEntry.from_dict(entry) for entry in state.get("history", [])
+                ] or [
+                    HistoryEntry(
+                        step=self.step,
+                        state=self._snapshot(),
+                        summary="world restored",
+                        action_json=None,
+                    )
+                ]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise WorldStateError(f"World state could not be applied: {exc}") from exc
 
     def _record_history(self, *, summary: str, action: Action | None) -> None:
         self._history.append(
@@ -312,7 +367,12 @@ class World:
         return scene_object.copy() if scene_object else None
 
     def update_object_patch(self, object_id: str, patch: SceneObjectPatch) -> SceneObject:
-        scene_object = self.scene_objects[object_id]
+        try:
+            scene_object = self.scene_objects[object_id]
+        except KeyError as exc:
+            raise WorldForgeError(
+                f"Object '{object_id}' is not present in world '{self.id}'."
+            ) from exc
         scene_object.apply_patch(patch)
         return scene_object.copy()
 
@@ -324,6 +384,8 @@ class World:
         return [HistoryEntry.from_dict(entry.to_dict()) for entry in self._history]
 
     def history_state(self, index: int) -> World:
+        if index < 0 or index >= len(self._history):
+            raise WorldForgeError(f"History index {index} is out of range for world '{self.id}'.")
         entry = self._history[index]
         state = _clone_state(entry.state)
         state["history"] = [item.to_dict() for item in self._history[: index + 1]]
@@ -337,6 +399,7 @@ class World:
         return self._forge._require_provider(_normalize_provider_name(provider_name, self.provider))
 
     def predict(self, action: Action, steps: int = 1, provider: str | None = None) -> Prediction:
+        _require_positive_int(steps, name="steps")
         selected_provider = _normalize_provider_name(provider, self.provider)
         payload = self._provider(selected_provider).predict(self._snapshot(), action, steps)
         next_state = _clone_state(payload.state)
@@ -356,6 +419,9 @@ class World:
         )
 
     def compare(self, action: Action, providers: Sequence[str], steps: int = 1) -> Comparison:
+        _require_positive_int(steps, name="steps")
+        if not providers:
+            raise WorldForgeError("compare() requires at least one provider.")
         state = self._snapshot()
         predictions: list[Prediction] = []
         for provider_name in providers:
@@ -417,10 +483,11 @@ class World:
         provider: str | None = None,
         **_: Any,
     ) -> Plan:
+        _require_positive_int(max_steps, name="max_steps")
         selected_provider = _normalize_provider_name(provider, self.provider)
         resolved_goal = goal or "goal_json_plan"
         actions = self._goal_actions(resolved_goal, goal_json=goal_json)
-        actions = actions[: max(1, min(max_steps, len(actions)))]
+        actions = actions[: min(max_steps, len(actions))]
 
         simulated_state = self._snapshot()
         predicted_states: list[JSONDict] = []
@@ -565,9 +632,10 @@ class WorldForge:
                 )
             )
             if not health.healthy:
-                if profile.requires_credentials and profile.credential_env_var:
+                if profile.required_env_vars:
+                    required = ", ".join(profile.required_env_vars)
                     issues.append(
-                        f"Provider '{name}' is unavailable: missing {profile.credential_env_var}."
+                        f"Provider '{name}' is unavailable: missing or invalid {required}."
                     )
                 else:
                     issues.append(f"Provider '{name}' is unhealthy: {health.details}.")
@@ -580,6 +648,8 @@ class WorldForge:
         )
 
     def create_world(self, name: str, provider: str = "mock", *, description: str = "") -> World:
+        if not name.strip():
+            raise WorldForgeError("World name must not be empty.")
         self._require_provider(provider)
         return World(name=name, provider=provider, forge=self, description=description)
 
@@ -623,19 +693,28 @@ class WorldForge:
 
     def save_world(self, world: World) -> str:
         path = _world_file(self.state_dir, world.id)
-        path.write_text(world.to_json(), encoding="utf-8")
+        try:
+            path.write_text(world.to_json(), encoding="utf-8")
+        except OSError as exc:
+            raise WorldStateError(f"Failed to save world '{world.id}' to {path}: {exc}") from exc
         return world.id
 
     def load_world(self, world_id: str) -> World:
         path = _world_file(self.state_dir, world_id)
-        return World.from_state(self, json.loads(path.read_text(encoding="utf-8")))
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            return World.from_state(self, payload)
+        except OSError as exc:
+            raise WorldStateError(f"Failed to load world '{world_id}' from {path}: {exc}") from exc
+        except ValueError as exc:
+            raise WorldStateError(f"World file '{path}' is invalid: {exc}") from exc
 
     def list_worlds(self) -> list[str]:
         return sorted(path.stem for path in self.state_dir.glob("*.json"))
 
     def export_world(self, world_id: str, *, format: str = "json") -> str:
         if format != "json":
-            raise ValueError("Only json export is currently supported.")
+            raise WorldForgeError("Only json export is currently supported.")
         world = self.load_world(world_id)
         return dump_json({"schema_version": SCHEMA_VERSION, "state": world.to_dict()})
 
@@ -648,8 +727,13 @@ class WorldForge:
         name: str | None = None,
     ) -> World:
         if format != "json":
-            raise ValueError("Only json import is currently supported.")
-        data = json.loads(payload)
+            raise WorldForgeError("Only json import is currently supported.")
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise WorldStateError(f"Import payload is not valid JSON: {exc}") from exc
+        if not isinstance(data, dict):
+            raise WorldStateError("Import payload must decode to a JSON object.")
         state = dict(data["state"]) if "state" in data else dict(data)
         if new_id:
             state["id"] = generate_id("world")
@@ -675,8 +759,19 @@ class WorldForge:
     def compare(self, predictions: Iterable[Prediction]) -> Comparison:
         return Comparison(list(predictions))
 
-    def generate(self, prompt: str, provider: str, *, duration_seconds: float = 1.0) -> VideoClip:
-        return self._require_provider(provider).generate(prompt, duration_seconds)
+    def generate(
+        self,
+        prompt: str,
+        provider: str,
+        *,
+        duration_seconds: float = 1.0,
+        options: GenerationOptions | None = None,
+    ) -> VideoClip:
+        return self._require_provider(provider).generate(
+            prompt,
+            duration_seconds,
+            options=options,
+        )
 
     def transfer(
         self,
@@ -686,8 +781,20 @@ class WorldForge:
         width: int,
         height: int,
         fps: float,
+        prompt: str = "",
+        options: GenerationOptions | None = None,
     ) -> VideoClip:
-        return self._require_provider(provider).transfer(clip, width=width, height=height, fps=fps)
+        return self._require_provider(provider).transfer(
+            clip,
+            width=width,
+            height=height,
+            fps=fps,
+            prompt=prompt,
+            options=options,
+        )
+
+    def save_clip(self, clip: VideoClip, path: str | Path) -> Path:
+        return clip.save(path)
 
     def reason(
         self,

@@ -2,7 +2,18 @@ from __future__ import annotations
 
 import json
 
-from worldforge import Action, BBox, Position, SceneObject, SceneObjectPatch, WorldForge
+import pytest
+
+from worldforge import (
+    Action,
+    BBox,
+    Position,
+    SceneObject,
+    SceneObjectPatch,
+    WorldForge,
+    WorldForgeError,
+    WorldStateError,
+)
 
 
 def test_world_prediction_compare_and_persistence_flow(tmp_path) -> None:
@@ -93,3 +104,39 @@ def test_prompt_seeded_world_history_and_forking(tmp_path) -> None:
     assert forked.id != saved_id
     assert forked.name == "seeded-kitchen-branch"
     assert forked.history_length == 1
+
+
+def test_world_rejects_invalid_runtime_inputs(tmp_path) -> None:
+    forge = WorldForge(state_dir=tmp_path)
+    world = forge.create_world("validation-world", "mock")
+
+    with pytest.raises(WorldForgeError, match="steps"):
+        world.predict(Action.move_to(0.1, 0.2, 0.3), steps=0)
+
+    with pytest.raises(WorldForgeError, match="compare\\(\\) requires at least one provider"):
+        world.compare(Action.move_to(0.1, 0.2, 0.3), [], steps=1)
+
+    with pytest.raises(WorldForgeError, match="max_steps"):
+        world.plan(goal="spawn cube", max_steps=0)
+
+    with pytest.raises(WorldForgeError, match="History index"):
+        world.history_state(1)
+
+    with pytest.raises(WorldForgeError, match="not present in world"):
+        world.update_object_patch("missing-object", SceneObjectPatch(name="ghost"))
+
+
+def test_world_import_and_load_reject_malformed_state(tmp_path) -> None:
+    forge = WorldForge(state_dir=tmp_path)
+
+    with pytest.raises(WorldStateError, match="not valid JSON"):
+        forge.import_world("{broken json")
+
+    with pytest.raises(WorldStateError, match="missing required keys"):
+        forge.import_world(json.dumps({"state": {"name": "invalid"}}))
+
+    broken_world_path = tmp_path / "broken.json"
+    broken_world_path.write_text('{"state": "not-a-world"}', encoding="utf-8")
+
+    with pytest.raises(WorldStateError, match="World file"):
+        forge.load_world("broken")

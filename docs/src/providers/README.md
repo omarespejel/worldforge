@@ -1,28 +1,23 @@
 # Providers
 
-## Implemented in-repo
+## In-repo providers
 
-| Provider | Status | Notes |
-| --- | --- | --- |
-| `mock` | stable | deterministic local provider used by tests, examples, framework development, and adapter contract checks |
-
-## Scaffold adapters
-
-| Provider | Env var | Status |
-| --- | --- | --- |
-| `cosmos` | `NVIDIA_API_KEY` | scaffold adapter |
-| `runway` | `RUNWAY_API_SECRET` | scaffold adapter |
-| `jepa` | `JEPA_MODEL_PATH` | scaffold adapter |
-| `genie` | `GENIE_API_KEY` | scaffold adapter |
+| Provider | Status | Auto-registration rule | Notes |
+| --- | --- | --- | --- |
+| `mock` | stable | always registered | deterministic local provider used by tests, examples, framework development, and adapter contract checks |
+| `cosmos` | beta | register when `COSMOS_BASE_URL` is set | real HTTP adapter for Cosmos NIM; `NVIDIA_API_KEY` is optional and sent as bearer auth when present |
+| `runway` | beta | register when `RUNWAYML_API_SECRET` or `RUNWAY_API_SECRET` is set | real HTTP adapter for Runway image-to-video and video-to-video APIs |
+| `jepa` | scaffold | register when `JEPA_MODEL_PATH` is set | credential-gated stub backed by deterministic mock behavior |
+| `genie` | scaffold | register when `GENIE_API_KEY` is set | credential-gated stub backed by deterministic mock behavior |
 
 ## Provider profiles
 
-Every provider now exposes a profile describing:
+Every provider exposes a profile describing:
 
 - supported task surface derived from capabilities
 - deterministic vs stochastic behavior
 - local vs remote runtime
-- implementation status such as `stable` or `scaffold`
+- implementation status such as `stable`, `beta`, or `scaffold`
 - credential requirements and environment variables
 - supported modalities and artifact types
 - maintainer notes for caveats
@@ -55,3 +50,9 @@ Providers can declare support for:
 - `embed`
 - `plan`
 - `transfer`
+
+## Operational notes
+
+- `doctor()` includes known providers by default so missing configuration shows up in diagnostics.
+- Missing local asset paths now fail before the outbound request instead of being treated as opaque remote strings.
+- `cosmos` and `runway` are the only in-repo adapters that currently perform real HTTP requests.

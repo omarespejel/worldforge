@@ -1,29 +1,38 @@
 # WorldForge
 
-WorldForge is an open-source Python framework for building world-model workflows.
+WorldForge is a Python library for building, persisting, evaluating, and routing world-model workflows behind a typed local-first API.
 
-It gives you a clean framework surface for prediction, planning, provider orchestration, state persistence, and lightweight evaluation without forcing you into a bespoke runtime stack.
+## Why It Exists
 
-## Why WorldForge
+World-model experiments usually start as notebooks and one-off provider scripts. That makes it hard to compare providers, persist state, add tests, or expose a stable interface to downstream code. WorldForge packages those concerns into a small Python framework with:
 
-- Python-native architecture aligned with the ML and provider ecosystem
-- Clean `src/` layout and typed public API
-- Deterministic `MockProvider` for local development, tests, and examples
-- Provider registry that can host real adapters and local surrogates behind one interface
-- Built-in world persistence and evaluation helpers
+- deterministic local execution via `MockProvider`
+- provider metadata, health checks, and environment diagnostics
+- JSON world persistence and history for reproducible workflows
+- built-in planning, comparison, and evaluation helpers
+- adapter contract tests for in-repo and external providers
+
+## Who It Is For
+
+WorldForge is for Python developers building world-model tooling, provider adapters, local evaluation flows, and testable prototypes. It is not an end-user application and it does not ship a hosted control plane.
+
+## Status
+
+As of 2026-04-07, WorldForge is **alpha**. It is suitable for local development, contract testing, provider adapter prototyping, and deterministic evaluation flows. It is not yet suitable for claiming real-world physics fidelity, running unattended production workloads against third-party providers without extra operational safeguards, or presenting scaffold adapters as fully implemented integrations. Known limitations are listed in [Current limitations](#current-limitations).
 
 ## Installation
 
-For application projects:
+Application projects:
 
 ```bash
 uv add worldforge
 ```
 
-For framework development:
+Repository development:
 
 ```bash
 uv sync --group dev
+cp .env.example .env
 ```
 
 ## Quick Start
@@ -52,7 +61,9 @@ doctor = forge.doctor()
 print(doctor.healthy_provider_count, doctor.provider_count)
 ```
 
-## Provider DX
+## Core Workflows
+
+Provider diagnostics:
 
 ```bash
 uv run worldforge doctor
@@ -61,7 +72,18 @@ uv run worldforge provider info mock
 uv run worldforge provider health
 ```
 
-## Repository Layout
+Prediction and evaluation:
+
+```bash
+uv run worldforge predict kitchen --provider mock --x 0.3 --y 0.8 --z 0.0 --steps 2
+uv run worldforge eval --suite physics --provider mock
+```
+
+Remote provider configuration lives in [.env.example](./.env.example). WorldForge only auto-registers remote providers when their required environment variables are present.
+
+## Architecture
+
+Repository layout:
 
 ```text
 worldforge/
@@ -71,7 +93,8 @@ worldforge/
 │   ├── framework.py
 │   ├── models.py
 │   ├── evaluation/
-│   └── providers/
+│   ├── providers/
+│   └── testing/
 ├── tests/
 ├── examples/
 ├── docs/
@@ -80,30 +103,87 @@ worldforge/
 └── uv.lock
 ```
 
+Module responsibilities:
+
+| Module | Responsibility |
+| --- | --- |
+| `src/worldforge/models.py` | Typed domain models, serialization helpers, and framework-level validation errors |
+| `src/worldforge/framework.py` | `WorldForge`, `World`, persistence, planning, prediction, comparison, and diagnostics |
+| `src/worldforge/providers/` | Provider primitives plus `mock`, `cosmos`, `runway`, `jepa`, and `genie` adapters |
+| `src/worldforge/evaluation/` | Built-in evaluation suites and report rendering |
+| `src/worldforge/testing/` | Reusable provider contract assertions for adapter packages |
+| `tests/` | Framework, CLI, packaging, and adapter regression coverage |
+
+Operational invariants:
+
+- invalid public inputs fail explicitly instead of being silently coerced
+- malformed persisted state raises `WorldStateError` with context
+- provider adapters must report only capabilities they actually implement
+- missing local assets for remote providers fail before the outbound request
+- the deterministic mock path remains available for local tests and examples
+
+More detail lives in [docs/src/architecture.md](./docs/src/architecture.md) and [docs/src/providers/README.md](./docs/src/providers/README.md).
+
+## Provider Matrix
+
+| Provider | Status | Registration rule | Notes |
+| --- | --- | --- | --- |
+| `mock` | stable | always registered | deterministic local provider used by tests, examples, and contract checks |
+| `cosmos` | beta | auto-registers when `COSMOS_BASE_URL` is set | real HTTP adapter for Cosmos NIM; optionally sends `NVIDIA_API_KEY` |
+| `runway` | beta | auto-registers when `RUNWAYML_API_SECRET` or `RUNWAY_API_SECRET` is set | real HTTP adapter for Runway image-to-video and video-to-video APIs |
+| `jepa` | scaffold | auto-registers when `JEPA_MODEL_PATH` is set | credential-gated stub backed by deterministic mock behavior |
+| `genie` | scaffold | auto-registers when `GENIE_API_KEY` is set | credential-gated stub backed by deterministic mock behavior |
+
 ## Development
 
+Primary commands:
+
 ```bash
-make sync
-make lint
-make test
-make test-package
-make build
+uv sync --group dev
+uv run ruff check src tests examples
+uv run ruff format --check src tests examples
+uv run pytest
+uv run pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
+bash scripts/test_package.sh
 ```
 
-Publishing is `uv build` and `uv publish`.
+Package validation builds a wheel in an isolated virtual environment and reruns the root test suite against the installed artifact.
 
-## Current Scope
+Contribution guidance:
 
-Implemented in-repo:
+- keep the public API typed and Pythonic
+- use `ProviderError` for provider failures and `WorldForgeError` / `WorldStateError` for invalid caller input or malformed state
+- do not advertise provider capabilities that are not implemented end to end
+- add a regression test for every bug fix and every documented failure mode
+- update docs, changelog, and agent context when the public contract changes
 
-- framework runtime and state model
-- mock provider
-- provider registry and scaffold adapters
-- planning and comparison flows
-- built-in physics evaluation helpers
-- CLI entry point
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for contributor workflow details.
 
-Not in scope right now:
+## Current Limitations
 
-- a bundled service layer
-- claims that scaffold adapters are production-complete integrations
+- Planning is intentionally heuristic and deterministic. It is a framework placeholder, not a learned planner.
+- `jepa` and `genie` are scaffold adapters and should not be treated as production integrations.
+- Remote provider health checks depend on live credentials and network reachability.
+- World persistence is local JSON state, not a concurrent multi-writer store or service.
+- There is no benchmark suite or load-test harness yet for remote adapter paths.
+
+## Roadmap
+
+1. Provider hardening.
+Exit criteria: remote adapters expose typed retry and timeout policy, validate response schemas more deeply, and ship broader error-path coverage.
+
+2. Planner and evaluator maturity.
+Exit criteria: evaluation suites cover more than the single physics baseline, planning inputs have clearer contracts, and benchmark data exists for key workflows.
+
+3. Release discipline.
+Exit criteria: changelog, docs, and agent context stay in lockstep with tags, and the first release-candidate criteria are documented.
+
+## Changelog
+
+User-visible changes are tracked in [CHANGELOG.md](./CHANGELOG.md).
+
+## Help
+
+- Issues: <https://github.com/AbdelStark/worldforge/issues>
+- Repository: <https://github.com/AbdelStark/worldforge>
+- Documentation: <https://docs.worldforge.ai>

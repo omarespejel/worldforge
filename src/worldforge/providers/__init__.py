@@ -1,8 +1,10 @@
 """Provider exports for WorldForge."""
 
 from .base import BaseProvider, PredictionPayload, ProviderError, RemoteProvider
+from .cosmos import CosmosProvider
 from .mock import MockProvider
-from .remote import CosmosProvider, GenieProvider, JepaProvider, RunwayProvider, StubRemoteProvider
+from .remote import GenieProvider, JepaProvider, StubRemoteProvider
+from .runway import RunwayProvider
 
 __all__ = [
     "BaseProvider",

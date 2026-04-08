@@ -1,4 +1,4 @@
-.PHONY: sync format lint test test-package build publish check clean
+.PHONY: sync format lint test test-cov test-package build publish check clean
 
 UV ?= uv
 
@@ -14,6 +14,9 @@ lint:
 
 test:
 	$(UV) run pytest
+
+test-cov:
+	$(UV) run pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
 
 test-package:
 	bash scripts/test_package.sh
