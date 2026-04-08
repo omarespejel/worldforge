@@ -1,5 +1,7 @@
 """Provider exports for WorldForge."""
 
+from worldforge.models import ProviderRequestPolicy, RequestOperationPolicy, RetryPolicy
+
 from .base import BaseProvider, PredictionPayload, ProviderError, RemoteProvider
 from .cosmos import CosmosProvider
 from .mock import MockProvider
@@ -14,7 +16,10 @@ __all__ = [
     "MockProvider",
     "PredictionPayload",
     "ProviderError",
+    "ProviderRequestPolicy",
+    "RequestOperationPolicy",
     "RemoteProvider",
+    "RetryPolicy",
     "RunwayProvider",
     "StubRemoteProvider",
 ]

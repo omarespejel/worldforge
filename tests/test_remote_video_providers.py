@@ -6,7 +6,7 @@ import json
 import httpx
 import pytest
 
-from worldforge import GenerationOptions, VideoClip
+from worldforge import GenerationOptions, ProviderRequestPolicy, VideoClip
 from worldforge.providers import CosmosProvider, ProviderError, RunwayProvider
 
 
@@ -165,6 +165,32 @@ def test_cosmos_provider_rejects_invalid_asset_paths_and_payloads(tmp_path) -> N
         provider.generate("drive through the city", duration_seconds=2.0)
 
 
+def test_cosmos_provider_retries_transient_health_failure() -> None:
+    attempts = {"health": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/v1/health/ready":
+            attempts["health"] += 1
+            if attempts["health"] == 1:
+                return httpx.Response(503, text="warming up")
+            return httpx.Response(200, json={"status": "ready"})
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    provider = CosmosProvider(
+        base_url="http://cosmos.test",
+        request_policy=ProviderRequestPolicy.remote_defaults(
+            request_timeout_seconds=30.0,
+            read_retry_attempts=2,
+            read_backoff_seconds=0.0,
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+    health = provider.health()
+    assert health.healthy is True
+    assert attempts["health"] == 2
+
+
 def test_runway_provider_rejects_invalid_runtime_inputs(monkeypatch) -> None:
     monkeypatch.setenv("RUNWAYML_API_SECRET", "runway-test-key")
     provider = RunwayProvider(
@@ -191,6 +217,87 @@ def test_runway_provider_rejects_invalid_runtime_inputs(monkeypatch) -> None:
             height=720,
             fps=0.0,
         )
+
+
+def test_runway_provider_retries_polling_and_download_reads(monkeypatch) -> None:
+    monkeypatch.setenv("RUNWAYML_API_SECRET", "runway-test-key")
+    attempts = {"poll": 0, "download": 0}
+    generated_bytes = b"retry-generated"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/v1/image_to_video":
+            return httpx.Response(200, json={"id": "task_generate"})
+
+        if request.method == "GET" and request.url.path == "/v1/tasks/task_generate":
+            attempts["poll"] += 1
+            if attempts["poll"] == 1:
+                return httpx.Response(503, text="retry poll")
+            return httpx.Response(
+                200,
+                json={
+                    "id": "task_generate",
+                    "status": "SUCCEEDED",
+                    "output": ["https://downloads.example.com/generated.mp4"],
+                },
+            )
+
+        if request.method == "GET" and request.url.host == "downloads.example.com":
+            attempts["download"] += 1
+            if attempts["download"] == 1:
+                return httpx.Response(503, text="retry download")
+            return httpx.Response(200, content=generated_bytes)
+
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    provider = RunwayProvider(
+        request_policy=ProviderRequestPolicy.remote_defaults(
+            request_timeout_seconds=30.0,
+            read_retry_attempts=2,
+            read_backoff_seconds=0.0,
+        ),
+        transport=httpx.MockTransport(handler),
+        poll_interval_seconds=0.0,
+        max_polls=1,
+    )
+
+    generated = provider.generate(
+        "a rainy alley at night",
+        duration_seconds=4.0,
+        options=GenerationOptions(fps=24.0),
+    )
+    assert generated.blob() == generated_bytes
+    assert attempts["poll"] == 2
+    assert attempts["download"] == 2
+
+
+def test_runway_provider_does_not_retry_generation_post(monkeypatch) -> None:
+    monkeypatch.setenv("RUNWAYML_API_SECRET", "runway-test-key")
+    attempts = {"post": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/v1/image_to_video":
+            attempts["post"] += 1
+            return httpx.Response(503, text="busy")
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    provider = RunwayProvider(
+        request_policy=ProviderRequestPolicy.remote_defaults(
+            request_timeout_seconds=30.0,
+            read_retry_attempts=3,
+            read_backoff_seconds=0.0,
+        ),
+        transport=httpx.MockTransport(handler),
+        poll_interval_seconds=0.0,
+        max_polls=1,
+    )
+
+    with pytest.raises(ProviderError, match="generation request failed with status 503"):
+        provider.generate(
+            "a rainy alley at night",
+            duration_seconds=4.0,
+            options=GenerationOptions(fps=24.0),
+        )
+    assert attempts["post"] == 1
 
 
 def _sample_clip() -> VideoClip:

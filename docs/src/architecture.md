@@ -53,6 +53,7 @@ Evaluation suites, scenario runners, and report rendering.
 - invalid public inputs fail explicitly instead of being silently coerced
 - provider capability metadata must match the implemented surface
 - missing local asset files fail before network I/O
+- remote provider reads use typed retry/backoff policy; mutation requests default to single-attempt behavior
 
 ## Failure model
 
@@ -60,6 +61,7 @@ Evaluation suites, scenario runners, and report rendering.
 - malformed persisted state raises `WorldStateError`
 - provider/runtime integration failures raise `ProviderError`
 - remote health checks may fail due to missing credentials, invalid endpoints, or upstream errors
+- remote HTTP adapters share one typed request policy contract for timeout, polling, download, and retry behavior
 
 ## Design principles
 

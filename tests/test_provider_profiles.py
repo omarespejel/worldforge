@@ -20,15 +20,21 @@ def test_provider_profiles_and_doctor_report_include_known_scaffolds(tmp_path, m
     assert registered_profiles["mock"].implementation_status == "stable"
     assert registered_profiles["mock"].deterministic is True
     assert registered_profiles["mock"].requires_credentials is False
+    assert registered_profiles["mock"].request_policy is None
 
     builtin_profiles = {profile.name: profile for profile in forge.builtin_provider_profiles()}
     assert {"mock", "cosmos", "runway", "jepa", "genie"} <= set(builtin_profiles)
     assert builtin_profiles["cosmos"].implementation_status == "beta"
     assert builtin_profiles["cosmos"].required_env_vars == ["COSMOS_BASE_URL"]
+    assert builtin_profiles["cosmos"].request_policy is not None
+    assert builtin_profiles["cosmos"].request_policy.request.retry.max_attempts == 1
+    assert builtin_profiles["cosmos"].request_policy.health.retry.max_attempts == 3
     assert builtin_profiles["runway"].required_env_vars == [
         "RUNWAYML_API_SECRET",
         "RUNWAY_API_SECRET",
     ]
+    assert builtin_profiles["runway"].request_policy is not None
+    assert builtin_profiles["runway"].request_policy.download.retry.max_attempts == 3
 
     report = forge.doctor()
     assert isinstance(report, DoctorReport)

@@ -55,4 +55,6 @@ Providers can declare support for:
 
 - `doctor()` includes known providers by default so missing configuration shows up in diagnostics.
 - Missing local asset paths now fail before the outbound request instead of being treated as opaque remote strings.
+- `cosmos` and `runway` expose a typed `ProviderRequestPolicy` through `provider_profile()` and CLI JSON output.
+- Health checks, polling, and downloads retry with backoff by default. Create-style POST requests remain single-attempt unless a caller passes a custom policy.
 - `cosmos` and `runway` are the only in-repo adapters that currently perform real HTTP requests.

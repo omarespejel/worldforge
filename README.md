@@ -120,6 +120,8 @@ Operational invariants:
 - malformed persisted state raises `WorldStateError` with context
 - provider adapters must report only capabilities they actually implement
 - missing local assets for remote providers fail before the outbound request
+- remote adapters expose a typed `ProviderRequestPolicy` for health, request, polling, and download operations
+- retryable read operations are retried with backoff; mutation requests stay single-attempt by default
 - the deterministic mock path remains available for local tests and examples
 
 More detail lives in [docs/src/architecture.md](./docs/src/architecture.md) and [docs/src/providers/README.md](./docs/src/providers/README.md).
@@ -163,14 +165,14 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for contributor workflow details.
 
 - Planning is intentionally heuristic and deterministic. It is a framework placeholder, not a learned planner.
 - `jepa` and `genie` are scaffold adapters and should not be treated as production integrations.
-- Remote provider health checks depend on live credentials and network reachability.
+- Remote provider health checks depend on live credentials and network reachability even though they now use typed timeout and retry policy.
 - World persistence is local JSON state, not a concurrent multi-writer store or service.
 - There is no benchmark suite or load-test harness yet for remote adapter paths.
 
 ## Roadmap
 
 1. Provider hardening.
-Exit criteria: remote adapters expose typed retry and timeout policy, validate response schemas more deeply, and ship broader error-path coverage.
+Exit criteria: remote adapters validate more upstream response schemas, expose richer operator-facing error context, and ship broader non-happy-path coverage beyond transport retries.
 
 2. Planner and evaluator maturity.
 Exit criteria: evaluation suites cover more than the single physics baseline, planning inputs have clearer contracts, and benchmark data exists for key workflows.

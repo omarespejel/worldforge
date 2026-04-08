@@ -8,10 +8,16 @@ from time import perf_counter
 
 import httpx
 
-from worldforge.models import GenerationOptions, ProviderCapabilities, ProviderHealth, VideoClip
+from worldforge.models import (
+    GenerationOptions,
+    ProviderCapabilities,
+    ProviderHealth,
+    ProviderRequestPolicy,
+    VideoClip,
+)
 
 from .base import ProviderError, RemoteProvider
-from .http_utils import asset_to_uri, parse_size
+from .http_utils import asset_to_uri, parse_size, request_json_with_policy
 
 
 class CosmosProvider(RemoteProvider):
@@ -25,8 +31,12 @@ class CosmosProvider(RemoteProvider):
         *,
         base_url: str | None = None,
         timeout_seconds: float = 300.0,
+        request_policy: ProviderRequestPolicy | None = None,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
+        resolved_request_policy = request_policy or ProviderRequestPolicy.remote_defaults(
+            request_timeout_seconds=timeout_seconds
+        )
         super().__init__(
             name=name,
             capabilities=ProviderCapabilities(
@@ -56,9 +66,9 @@ class CosmosProvider(RemoteProvider):
             ],
             required_env_vars=["COSMOS_BASE_URL"],
             requires_credentials=False,
+            request_policy=resolved_request_policy,
         )
         self._base_url = base_url
-        self._timeout_seconds = timeout_seconds
         self._transport = transport
 
     def configured(self) -> bool:
@@ -84,7 +94,6 @@ class CosmosProvider(RemoteProvider):
         return httpx.Client(
             base_url=base_url.rstrip("/"),
             headers=self._headers(),
-            timeout=self._timeout_seconds,
             transport=self._transport,
         )
 
@@ -100,14 +109,20 @@ class CosmosProvider(RemoteProvider):
             )
 
         try:
+            request_policy = self._require_request_policy()
             with self._client() as client:
-                response = client.get("/v1/health/ready")
-                response.raise_for_status()
-                payload = response.json()
+                payload = request_json_with_policy(
+                    client,
+                    method="GET",
+                    url="/v1/health/ready",
+                    provider_name=self.name,
+                    operation_name="healthcheck",
+                    policy=request_policy.health,
+                )
             status = str(payload.get("status", "unknown"))
             healthy = status.lower() == "ready"
             details = status
-        except (httpx.HTTPError, ValueError) as exc:
+        except ProviderError as exc:
             healthy = False
             details = str(exc)
 
@@ -160,10 +175,17 @@ class CosmosProvider(RemoteProvider):
         if options:
             body.update(options.extras)
 
+        request_policy = self._require_request_policy()
         with self._client() as client:
-            response = client.post("/v1/infer", json=body)
-            response.raise_for_status()
-            payload = response.json()
+            payload = request_json_with_policy(
+                client,
+                method="POST",
+                url="/v1/infer",
+                provider_name=self.name,
+                operation_name="generation request",
+                policy=request_policy.request,
+                json=body,
+            )
 
         b64_video = payload.get("b64_video")
         if not isinstance(b64_video, str) or not b64_video:

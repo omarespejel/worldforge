@@ -3,7 +3,14 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from worldforge import Action, GenerationOptions, WorldForge, WorldForgeError
+from worldforge import (
+    Action,
+    GenerationOptions,
+    ProviderRequestPolicy,
+    RetryPolicy,
+    WorldForge,
+    WorldForgeError,
+)
 from worldforge.providers import ProviderError
 from worldforge.providers.http_utils import asset_to_uri, parse_size, poll_json_task
 
@@ -41,6 +48,10 @@ def test_http_utils_validate_assets_size_and_polling(tmp_path) -> None:
                 poll_interval_seconds=0.0,
                 max_polls=1,
                 provider_name="mock",
+                operation_policy=ProviderRequestPolicy.remote_defaults(
+                    request_timeout_seconds=10.0,
+                    read_backoff_seconds=0.0,
+                ).polling,
             )
 
     failed_client = httpx.Client(
@@ -59,7 +70,19 @@ def test_http_utils_validate_assets_size_and_polling(tmp_path) -> None:
                 poll_interval_seconds=0.0,
                 max_polls=1,
                 provider_name="mock",
+                operation_policy=ProviderRequestPolicy.remote_defaults(
+                    request_timeout_seconds=10.0,
+                    read_backoff_seconds=0.0,
+                ).polling,
             )
+
+    with pytest.raises(WorldForgeError, match="max_attempts"):
+        RetryPolicy(max_attempts=0)
+
+    default_request_policy = ProviderRequestPolicy.remote_defaults(request_timeout_seconds=12.0)
+    assert default_request_policy.request.retry.max_attempts == 1
+    assert default_request_policy.download.retry.max_attempts == 3
+    assert default_request_policy.to_dict()["health"]["timeout_seconds"] == 10.0
 
 
 def test_framework_helpers_and_error_paths(tmp_path) -> None:

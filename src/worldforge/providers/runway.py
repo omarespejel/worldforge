@@ -7,10 +7,22 @@ from time import perf_counter
 
 import httpx
 
-from worldforge.models import GenerationOptions, ProviderCapabilities, ProviderHealth, VideoClip
+from worldforge.models import (
+    GenerationOptions,
+    ProviderCapabilities,
+    ProviderHealth,
+    ProviderRequestPolicy,
+    VideoClip,
+)
 
 from .base import ProviderError, RemoteProvider
-from .http_utils import asset_to_uri, clip_to_data_uri, poll_json_task
+from .http_utils import (
+    asset_to_uri,
+    clip_to_data_uri,
+    poll_json_task,
+    request_bytes_with_policy,
+    request_json_with_policy,
+)
 
 _RUNWAY_API_VERSION = "2024-11-06"
 _RUNWAY_DEFAULT_RATIO = "1280:720"
@@ -30,8 +42,12 @@ class RunwayProvider(RemoteProvider):
         timeout_seconds: float = 120.0,
         poll_interval_seconds: float = 6.0,
         max_polls: int = 60,
+        request_policy: ProviderRequestPolicy | None = None,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
+        resolved_request_policy = request_policy or ProviderRequestPolicy.remote_defaults(
+            request_timeout_seconds=timeout_seconds
+        )
         super().__init__(
             name=name,
             capabilities=ProviderCapabilities(
@@ -57,11 +73,11 @@ class RunwayProvider(RemoteProvider):
             default_model="gen4.5",
             supported_models=["gen4.5", "gen4_turbo", "veo3.1", "veo3.1_fast", "gen4_aleph"],
             required_env_vars=["RUNWAYML_API_SECRET", "RUNWAY_API_SECRET"],
+            request_policy=resolved_request_policy,
         )
         self._base_url = (
             base_url or os.environ.get("RUNWAYML_BASE_URL") or "https://api.dev.runwayml.com"
         )
-        self._timeout_seconds = timeout_seconds
         self._poll_interval_seconds = poll_interval_seconds
         self._max_polls = max_polls
         self._transport = transport
@@ -86,7 +102,6 @@ class RunwayProvider(RemoteProvider):
         return httpx.Client(
             base_url=self._base_url.rstrip("/"),
             headers=self._headers(),
-            timeout=self._timeout_seconds,
             transport=self._transport,
         )
 
@@ -101,13 +116,19 @@ class RunwayProvider(RemoteProvider):
             )
 
         try:
+            request_policy = self._require_request_policy()
             with self._client() as client:
-                response = client.get("/v1/organization")
-                response.raise_for_status()
-                payload = response.json()
+                payload = request_json_with_policy(
+                    client,
+                    method="GET",
+                    url="/v1/organization",
+                    provider_name=self.name,
+                    operation_name="healthcheck",
+                    policy=request_policy.health,
+                )
             details = str(payload.get("name") or payload.get("id") or "organization ok")
             healthy = True
-        except (httpx.HTTPError, ValueError) as exc:
+        except ProviderError as exc:
             healthy = False
             details = str(exc)
 
@@ -131,6 +152,7 @@ class RunwayProvider(RemoteProvider):
         return _RUNWAY_DEFAULT_RATIO
 
     def _poll_task(self, client: httpx.Client, task_id: str) -> dict[str, object]:
+        request_policy = self._require_request_policy()
         payload = poll_json_task(
             client,
             path=f"/v1/tasks/{task_id}",
@@ -139,6 +161,7 @@ class RunwayProvider(RemoteProvider):
             poll_interval_seconds=self._poll_interval_seconds,
             max_polls=self._max_polls,
             provider_name=self.name,
+            operation_policy=request_policy.polling,
         )
         outputs = payload.get("output")
         if (
@@ -150,10 +173,24 @@ class RunwayProvider(RemoteProvider):
         return payload
 
     def _download_output(self, output_url: str) -> bytes:
-        with httpx.Client(timeout=self._timeout_seconds, transport=self._transport) as client:
-            response = client.get(output_url)
-            response.raise_for_status()
-            return response.content
+        request_policy = self._require_request_policy()
+        with httpx.Client(transport=self._transport) as client:
+            return request_bytes_with_policy(
+                client,
+                method="GET",
+                url=output_url,
+                provider_name=self.name,
+                operation_name="artifact download",
+                policy=request_policy.download,
+            )
+
+    def _task_id(self, payload: dict[str, object], *, operation_name: str) -> str:
+        task_id = payload.get("id")
+        if not isinstance(task_id, str) or not task_id:
+            raise ProviderError(
+                f"Provider '{self.name}' {operation_name} did not return a task id."
+            )
+        return task_id
 
     def generate(
         self,
@@ -191,10 +228,18 @@ class RunwayProvider(RemoteProvider):
         if options and options.extras:
             body.update(options.extras)
 
+        request_policy = self._require_request_policy()
         with self._client() as client:
-            response = client.post("/v1/image_to_video", json=body)
-            response.raise_for_status()
-            task_id = str(response.json()["id"])
+            payload = request_json_with_policy(
+                client,
+                method="POST",
+                url="/v1/image_to_video",
+                provider_name=self.name,
+                operation_name="generation request",
+                policy=request_policy.request,
+                json=body,
+            )
+            task_id = self._task_id(payload, operation_name="generation request")
             task = self._poll_task(client, task_id)
 
         output_url = str(task["output"][0])
@@ -253,10 +298,18 @@ class RunwayProvider(RemoteProvider):
         if options and options.extras:
             body.update(options.extras)
 
+        request_policy = self._require_request_policy()
         with self._client() as client:
-            response = client.post("/v1/video_to_video", json=body)
-            response.raise_for_status()
-            task_id = str(response.json()["id"])
+            payload = request_json_with_policy(
+                client,
+                method="POST",
+                url="/v1/video_to_video",
+                provider_name=self.name,
+                operation_name="transfer request",
+                policy=request_policy.request,
+                json=body,
+            )
+            task_id = self._task_id(payload, operation_name="transfer request")
             task = self._poll_task(client, task_id)
 
         output_url = str(task["output"][0])

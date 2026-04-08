@@ -15,6 +15,7 @@ from worldforge.models import (
     ProviderHealth,
     ProviderInfo,
     ProviderProfile,
+    ProviderRequestPolicy,
     ReasoningResult,
     VideoClip,
 )
@@ -58,6 +59,7 @@ class BaseProvider:
         supported_models: list[str] | None = None,
         required_env_vars: list[str] | None = None,
         requires_credentials: bool | None = None,
+        request_policy: ProviderRequestPolicy | None = None,
     ) -> None:
         self.name = name
         self.capabilities = capabilities or ProviderCapabilities()
@@ -75,6 +77,7 @@ class BaseProvider:
         self.requires_credentials = (
             requires_credentials if requires_credentials is not None else self.env_var is not None
         )
+        self.request_policy = request_policy
 
     def info(self) -> ProviderInfo:
         return ProviderInfo(
@@ -101,6 +104,7 @@ class BaseProvider:
             notes=list(self.notes),
             default_model=self.default_model,
             supported_models=list(self.supported_models),
+            request_policy=self.request_policy,
         )
 
     def configured(self) -> bool:
@@ -154,3 +158,8 @@ class RemoteProvider(BaseProvider):
     def _require_credentials(self) -> None:
         if not self.configured():
             raise ProviderError(f"Provider '{self.name}' is unavailable: missing {self.env_var}.")
+
+    def _require_request_policy(self) -> ProviderRequestPolicy:
+        if self.request_policy is None:
+            raise ProviderError(f"Provider '{self.name}' does not define a request policy.")
+        return self.request_policy

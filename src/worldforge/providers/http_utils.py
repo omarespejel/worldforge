@@ -6,12 +6,15 @@ import base64
 import mimetypes
 from pathlib import Path
 from time import sleep
+from typing import Any
 
 import httpx
 
-from worldforge.models import GenerationOptions, VideoClip
+from worldforge.models import GenerationOptions, RequestOperationPolicy, VideoClip
 
 from .base import ProviderError
+
+_RETRYABLE_EXCEPTIONS = (httpx.TransportError,)
 
 
 def asset_to_uri(value: str | None, *, default_content_type: str) -> str | None:
@@ -70,6 +73,145 @@ def parse_size(options: GenerationOptions | None, *, fallback: tuple[int, int]) 
     return _validate_dimensions(*fallback)
 
 
+def _response_summary(response: httpx.Response) -> str:
+    text = response.text.strip()
+    if not text:
+        return "empty response body"
+    if len(text) > 200:
+        return f"{text[:197]}..."
+    return text
+
+
+def _raise_status_error(
+    *,
+    provider_name: str,
+    operation_name: str,
+    response: httpx.Response,
+) -> None:
+    raise ProviderError(
+        f"Provider '{provider_name}' {operation_name} failed with "
+        f"status {response.status_code}: {_response_summary(response)}"
+    )
+
+
+def request_with_policy(
+    client: httpx.Client,
+    *,
+    method: str,
+    url: str,
+    provider_name: str,
+    operation_name: str,
+    policy: RequestOperationPolicy,
+    **kwargs: Any,
+) -> httpx.Response:
+    """Send an HTTP request using the configured timeout and retry policy."""
+
+    for attempt_number in range(1, policy.retry.max_attempts + 1):
+        try:
+            response = client.request(
+                method,
+                url,
+                timeout=policy.timeout_seconds,
+                **kwargs,
+            )
+        except _RETRYABLE_EXCEPTIONS as exc:
+            if attempt_number >= policy.retry.max_attempts:
+                raise ProviderError(
+                    f"Provider '{provider_name}' {operation_name} failed after "
+                    f"{attempt_number} attempt(s): {exc}"
+                ) from exc
+            delay = policy.retry.delay_for_attempt(attempt_number + 1)
+            if delay > 0.0:
+                sleep(delay)
+            continue
+        except httpx.HTTPError as exc:
+            raise ProviderError(
+                f"Provider '{provider_name}' {operation_name} failed: {exc}"
+            ) from exc
+
+        if response.status_code in policy.retry.retryable_status_codes:
+            if attempt_number >= policy.retry.max_attempts:
+                _raise_status_error(
+                    provider_name=provider_name,
+                    operation_name=operation_name,
+                    response=response,
+                )
+            delay = policy.retry.delay_for_attempt(attempt_number + 1)
+            response.close()
+            if delay > 0.0:
+                sleep(delay)
+            continue
+
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise ProviderError(
+                f"Provider '{provider_name}' {operation_name} failed with "
+                f"status {response.status_code}: {_response_summary(response)}"
+            ) from exc
+        return response
+
+    raise AssertionError("request_with_policy exhausted retries without returning or raising")
+
+
+def request_json_with_policy(
+    client: httpx.Client,
+    *,
+    method: str,
+    url: str,
+    provider_name: str,
+    operation_name: str,
+    policy: RequestOperationPolicy,
+    **kwargs: Any,
+) -> dict[str, object]:
+    """Send an HTTP request and decode a JSON object response."""
+
+    response = request_with_policy(
+        client,
+        method=method,
+        url=url,
+        provider_name=provider_name,
+        operation_name=operation_name,
+        policy=policy,
+        **kwargs,
+    )
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise ProviderError(
+            f"Provider '{provider_name}' {operation_name} returned invalid JSON."
+        ) from exc
+    if not isinstance(payload, dict):
+        raise ProviderError(
+            f"Provider '{provider_name}' {operation_name} returned a non-object JSON payload."
+        )
+    return dict(payload)
+
+
+def request_bytes_with_policy(
+    client: httpx.Client,
+    *,
+    method: str,
+    url: str,
+    provider_name: str,
+    operation_name: str,
+    policy: RequestOperationPolicy,
+    **kwargs: Any,
+) -> bytes:
+    """Send an HTTP request and return the raw response bytes."""
+
+    response = request_with_policy(
+        client,
+        method=method,
+        url=url,
+        provider_name=provider_name,
+        operation_name=operation_name,
+        policy=policy,
+        **kwargs,
+    )
+    return response.content
+
+
 def poll_json_task(
     client: httpx.Client,
     *,
@@ -80,13 +222,19 @@ def poll_json_task(
     poll_interval_seconds: float,
     max_polls: int,
     provider_name: str,
+    operation_policy: RequestOperationPolicy,
 ) -> dict[str, object]:
     """Poll an HTTP task endpoint until it completes or fails."""
 
     for _ in range(max_polls):
-        response = client.get(path)
-        response.raise_for_status()
-        payload = response.json()
+        payload = request_json_with_policy(
+            client,
+            method="GET",
+            url=path,
+            provider_name=provider_name,
+            operation_name="task poll",
+            policy=operation_policy,
+        )
         status = str(payload.get(status_key, "")).upper()
         if status in success_values:
             return dict(payload)

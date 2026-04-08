@@ -302,6 +302,135 @@ class ProviderCapabilities:
         return [name for name, enabled in self.to_dict().items() if enabled]
 
 
+@dataclass(slots=True, frozen=True)
+class RetryPolicy:
+    """Retry and backoff policy for one class of remote operations."""
+
+    max_attempts: int = 1
+    backoff_seconds: float = 0.0
+    backoff_multiplier: float = 1.0
+    retryable_status_codes: tuple[int, ...] = (408, 429, 500, 502, 503, 504)
+
+    def __post_init__(self) -> None:
+        if self.max_attempts < 1:
+            raise WorldForgeError("RetryPolicy max_attempts must be greater than or equal to 1.")
+        if self.backoff_seconds < 0.0:
+            raise WorldForgeError("RetryPolicy backoff_seconds must be non-negative.")
+        if self.backoff_multiplier < 1.0:
+            raise WorldForgeError(
+                "RetryPolicy backoff_multiplier must be greater than or equal to 1."
+            )
+        for status_code in self.retryable_status_codes:
+            if status_code < 100 or status_code > 599:
+                raise WorldForgeError(
+                    "RetryPolicy retryable_status_codes must contain valid HTTP status codes."
+                )
+
+    def delay_for_attempt(self, attempt_number: int) -> float:
+        """Return the sleep delay before the given attempt number."""
+
+        if attempt_number <= 1 or self.backoff_seconds == 0.0:
+            return 0.0
+        return self.backoff_seconds * (self.backoff_multiplier ** (attempt_number - 2))
+
+    def to_dict(self) -> JSONDict:
+        return {
+            "max_attempts": self.max_attempts,
+            "backoff_seconds": self.backoff_seconds,
+            "backoff_multiplier": self.backoff_multiplier,
+            "retryable_status_codes": list(self.retryable_status_codes),
+        }
+
+
+@dataclass(slots=True, frozen=True)
+class RequestOperationPolicy:
+    """Timeout and retry policy for a single remote operation type."""
+
+    timeout_seconds: float
+    retry: RetryPolicy = field(default_factory=RetryPolicy)
+
+    def __post_init__(self) -> None:
+        if self.timeout_seconds <= 0.0:
+            raise WorldForgeError("RequestOperationPolicy timeout_seconds must be greater than 0.")
+
+    def to_dict(self) -> JSONDict:
+        return {
+            "timeout_seconds": self.timeout_seconds,
+            "retry": self.retry.to_dict(),
+        }
+
+
+@dataclass(slots=True, frozen=True)
+class ProviderRequestPolicy:
+    """Typed network policy for HTTP-backed provider operations."""
+
+    health: RequestOperationPolicy
+    request: RequestOperationPolicy
+    polling: RequestOperationPolicy
+    download: RequestOperationPolicy
+
+    @classmethod
+    def remote_defaults(
+        cls,
+        *,
+        request_timeout_seconds: float,
+        health_timeout_seconds: float | None = None,
+        polling_timeout_seconds: float | None = None,
+        download_timeout_seconds: float | None = None,
+        read_retry_attempts: int = 3,
+        read_backoff_seconds: float = 0.25,
+        read_backoff_multiplier: float = 2.0,
+    ) -> ProviderRequestPolicy:
+        read_retry = RetryPolicy(
+            max_attempts=read_retry_attempts,
+            backoff_seconds=read_backoff_seconds,
+            backoff_multiplier=read_backoff_multiplier,
+        )
+        no_retry = RetryPolicy(max_attempts=1)
+        resolved_request_timeout = float(request_timeout_seconds)
+        resolved_health_timeout = float(
+            health_timeout_seconds
+            if health_timeout_seconds is not None
+            else min(resolved_request_timeout, 10.0)
+        )
+        resolved_polling_timeout = float(
+            polling_timeout_seconds
+            if polling_timeout_seconds is not None
+            else min(resolved_request_timeout, 30.0)
+        )
+        resolved_download_timeout = float(
+            download_timeout_seconds
+            if download_timeout_seconds is not None
+            else resolved_request_timeout
+        )
+        return cls(
+            health=RequestOperationPolicy(
+                timeout_seconds=resolved_health_timeout,
+                retry=read_retry,
+            ),
+            request=RequestOperationPolicy(
+                timeout_seconds=resolved_request_timeout,
+                retry=no_retry,
+            ),
+            polling=RequestOperationPolicy(
+                timeout_seconds=resolved_polling_timeout,
+                retry=read_retry,
+            ),
+            download=RequestOperationPolicy(
+                timeout_seconds=resolved_download_timeout,
+                retry=read_retry,
+            ),
+        )
+
+    def to_dict(self) -> JSONDict:
+        return {
+            "health": self.health.to_dict(),
+            "request": self.request.to_dict(),
+            "polling": self.polling.to_dict(),
+            "download": self.download.to_dict(),
+        }
+
+
 @dataclass(slots=True)
 class GenerationOptions:
     """Typed generation options for remote video and world-model providers."""
@@ -369,6 +498,7 @@ class ProviderProfile:
     notes: list[str] = field(default_factory=list)
     default_model: str | None = None
     supported_models: list[str] = field(default_factory=list)
+    request_policy: ProviderRequestPolicy | None = None
 
     @property
     def supported_tasks(self) -> list[str]:
@@ -392,6 +522,7 @@ class ProviderProfile:
             "notes": list(self.notes),
             "default_model": self.default_model,
             "supported_models": list(self.supported_models),
+            "request_policy": self.request_policy.to_dict() if self.request_policy else None,
         }
 
 
