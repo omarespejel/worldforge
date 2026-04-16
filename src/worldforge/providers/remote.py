@@ -20,13 +20,20 @@ from .mock import MockProvider
 class StubRemoteProvider(RemoteProvider):
     """Shared behavior for credential-gated providers still backed by local surrogates."""
 
+    _mock_surrogate: MockProvider | None = None
+
+    @property
+    def _surrogate(self) -> MockProvider:
+        if self._mock_surrogate is None:
+            self._mock_surrogate = MockProvider(
+                name=self.name,
+                event_handler=self.event_handler,
+            )
+        return self._mock_surrogate
+
     def predict(self, world_state, action, steps):  # type: ignore[no-untyped-def]
         self._require_credentials()
-        payload = MockProvider(name=self.name, event_handler=self.event_handler).predict(
-            world_state,
-            action,
-            steps,
-        )
+        payload = self._surrogate.predict(world_state, action, steps)
         payload.metadata["mode"] = "stub-remote-adapter"
         payload.metadata["credential_env"] = self.env_var
         return payload
@@ -39,11 +46,7 @@ class StubRemoteProvider(RemoteProvider):
         options: GenerationOptions | None = None,
     ) -> VideoClip:
         self._require_credentials()
-        clip = MockProvider(name=self.name, event_handler=self.event_handler).generate(
-            prompt,
-            duration_seconds,
-            options=options,
-        )
+        clip = self._surrogate.generate(prompt, duration_seconds, options=options)
         clip.metadata["mode"] = "stub-remote-adapter"
         clip.metadata["credential_env"] = self.env_var
         return clip
@@ -59,7 +62,7 @@ class StubRemoteProvider(RemoteProvider):
         options: GenerationOptions | None = None,
     ) -> VideoClip:
         self._require_credentials()
-        transferred = MockProvider(name=self.name, event_handler=self.event_handler).transfer(
+        transferred = self._surrogate.transfer(
             clip,
             width=width,
             height=height,
@@ -73,16 +76,13 @@ class StubRemoteProvider(RemoteProvider):
 
     def reason(self, query: str, *, world_state=None) -> ReasoningResult:  # type: ignore[no-untyped-def]
         self._require_credentials()
-        result = MockProvider(name=self.name, event_handler=self.event_handler).reason(
-            query,
-            world_state=world_state,
-        )
+        result = self._surrogate.reason(query, world_state=world_state)
         result.evidence.append(f"Executed via stub adapter gated by {self.env_var}")
         return result
 
     def embed(self, *, text: str) -> EmbeddingResult:
         self._require_credentials()
-        return MockProvider(name=self.name, event_handler=self.event_handler).embed(text=text)
+        return self._surrogate.embed(text=text)
 
 
 class JepaProvider(StubRemoteProvider):

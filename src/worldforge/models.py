@@ -50,6 +50,14 @@ def average(values: Iterable[float]) -> float:
     return sum(numbers) / len(numbers)
 
 
+def require_positive_int(value: int, *, name: str) -> int:
+    """Raise WorldForgeError unless ``value`` is a non-bool positive int."""
+
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise WorldForgeError(f"{name} must be an integer greater than 0.")
+    return value
+
+
 def deterministic_floats(seed: str, size: int) -> list[float]:
     """Generate deterministic floats in the range [0, 1)."""
 
@@ -574,8 +582,7 @@ class StructuredGoal:
                 self.reference_object_name,
                 fallback="reference object",
             )
-            if self.offset is None:  # pragma: no cover - guarded by __post_init__
-                raise WorldForgeError("StructuredGoal object_near summary requires an offset.")
+            assert self.offset is not None
             return (
                 f"move {target} near {reference} "
                 f"with offset ({self.offset.x:.2f}, {self.offset.y:.2f}, {self.offset.z:.2f})"
@@ -587,8 +594,7 @@ class StructuredGoal:
                 fallback="reference object",
             )
             return f"swap {target} with {reference}"
-        if self.position is None:  # pragma: no cover - guarded by __post_init__
-            raise WorldForgeError("StructuredGoal object_at summary requires a position.")
+        assert self.position is not None
         return (
             f"move {target} to "
             f"({self.position.x:.2f}, {self.position.y:.2f}, {self.position.z:.2f})"

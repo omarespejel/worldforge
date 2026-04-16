@@ -32,13 +32,17 @@ def asset_to_uri(value: str | None, *, default_content_type: str) -> str | None:
         return value
 
     path = Path(value).expanduser().resolve()
-    if not path.exists():
-        raise ProviderError(f"Local asset path does not exist: {path}")
-    if not path.is_file():
-        raise ProviderError(f"Local asset path is not a file: {path}")
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError as exc:
+        raise ProviderError(f"Local asset path does not exist: {path}") from exc
+    except IsADirectoryError as exc:
+        raise ProviderError(f"Local asset path is not a file: {path}") from exc
+    except OSError as exc:
+        raise ProviderError(f"Could not read local asset {path}: {exc}") from exc
 
     content_type = mimetypes.guess_type(path.name)[0] or default_content_type
-    payload = base64.b64encode(path.read_bytes()).decode("ascii")
+    payload = base64.b64encode(data).decode("ascii")
     return f"data:{content_type};base64,{payload}"
 
 

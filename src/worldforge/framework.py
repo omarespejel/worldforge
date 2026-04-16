@@ -34,6 +34,7 @@ from worldforge.models import (
     dump_json,
     ensure_directory,
     generate_id,
+    require_positive_int,
 )
 from worldforge.providers import (
     BaseProvider,
@@ -58,12 +59,6 @@ def _normalize_provider_name(provider: str | None, fallback: str) -> str:
 
 def _world_file(state_dir: Path, world_id: str) -> Path:
     return state_dir / f"{world_id}.json"
-
-
-def _require_positive_int(value: int, *, name: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise WorldForgeError(f"{name} must be an integer greater than 0.")
-    return value
 
 
 def _offset_position(base: Position, offset: Position) -> Position:
@@ -408,7 +403,7 @@ class World:
         return self._forge._require_provider(_normalize_provider_name(provider_name, self.provider))
 
     def predict(self, action: Action, steps: int = 1, provider: str | None = None) -> Prediction:
-        _require_positive_int(steps, name="steps")
+        require_positive_int(steps, name="steps")
         selected_provider = _normalize_provider_name(provider, self.provider)
         payload = self._provider(selected_provider).predict(self._snapshot(), action, steps)
         next_state = _clone_state(payload.state)
@@ -428,7 +423,7 @@ class World:
         )
 
     def compare(self, action: Action, providers: Sequence[str], steps: int = 1) -> Comparison:
-        _require_positive_int(steps, name="steps")
+        require_positive_int(steps, name="steps")
         if not providers:
             raise WorldForgeError("compare() requires at least one provider.")
         state = self._snapshot()
@@ -507,8 +502,7 @@ class World:
                 raise WorldForgeError(
                     "Structured goal object_near requires distinct primary and reference objects."
                 )
-            if goal_spec.offset is None:  # pragma: no cover - guarded by StructuredGoal
-                raise WorldForgeError("Structured goal object_near is missing an offset.")
+            assert goal_spec.offset is not None
             target_position = _offset_position(reference_object.position, goal_spec.offset)
             return [
                 Action.move_to(
@@ -544,8 +538,7 @@ class World:
                 ),
             ]
 
-        if goal_spec.position is None:  # pragma: no cover - guarded by StructuredGoal
-            raise WorldForgeError("Structured goal is missing a target position.")
+        assert goal_spec.position is not None
         return [
             Action.move_to(
                 goal_spec.position.x,
@@ -590,7 +583,7 @@ class World:
         provider: str | None = None,
         **_: Any,
     ) -> Plan:
-        _require_positive_int(max_steps, name="max_steps")
+        require_positive_int(max_steps, name="max_steps")
         if goal is not None and not isinstance(goal, str):
             raise WorldForgeError("goal must be a string when provided.")
         if goal_json is not None and goal_spec is not None:

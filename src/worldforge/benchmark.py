@@ -20,14 +20,9 @@ from worldforge.models import (
     VideoClip,
     WorldForgeError,
     dump_json,
+    require_positive_int,
 )
 from worldforge.observability import ProviderMetricsSink, compose_event_handlers
-
-
-def _require_positive_int(value: int, *, name: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise WorldForgeError(f"{name} must be an integer greater than 0.")
-    return value
 
 
 def _sample_transfer_clip() -> VideoClip:
@@ -73,7 +68,7 @@ class BenchmarkInputs:
     transfer_clip: VideoClip = field(default_factory=_sample_transfer_clip)
 
     def __post_init__(self) -> None:
-        _require_positive_int(self.prediction_steps, name="prediction_steps")
+        require_positive_int(self.prediction_steps, name="prediction_steps")
         if self.generation_duration_seconds <= 0.0:
             raise WorldForgeError("generation_duration_seconds must be greater than 0.")
         if self.transfer_width <= 0 or self.transfer_height <= 0:
@@ -422,8 +417,8 @@ class ProviderBenchmarkHarness:
         provider_names = [providers] if isinstance(providers, str) else list(providers)
         if not provider_names:
             raise WorldForgeError("Benchmark run requires at least one provider.")
-        _require_positive_int(iterations, name="iterations")
-        _require_positive_int(concurrency, name="concurrency")
+        require_positive_int(iterations, name="iterations")
+        require_positive_int(concurrency, name="concurrency")
         benchmark_inputs = inputs or BenchmarkInputs()
 
         requested_operations = list(dict.fromkeys(operations or self.benchmarkable_operations))
