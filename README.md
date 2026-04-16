@@ -234,11 +234,7 @@ Exit criteria: remote adapters validate more upstream response schemas, expose r
 Exit criteria: structured planning grows beyond the current `object_at` / `object_near` / `spawn_object` / `swap_objects` goal set, evaluation scoring gets less heuristic, and benchmark fixtures expand beyond the synthetic seed clip.
 
 3. Release discipline.
-Exit criteria: changelog, docs, and agent context stay in lockstep with tags, and the first release-candidate criteria are documented.
-
-## Changelog
-
-User-visible changes are tracked in [CHANGELOG.md](./CHANGELOG.md).
+Exit criteria: docs stay in lockstep with tags, and the first release-candidate criteria are documented.
 
 ## Help
 

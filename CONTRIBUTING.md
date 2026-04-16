@@ -51,5 +51,3 @@ make build
 
 - run lint, `make test`, `make test-cov`, and `make test-package`
 - add or update docs for public contract changes
-- update `CHANGELOG.md` for user-visible changes
-- keep `AGENTS.md` aligned with the live repository state
