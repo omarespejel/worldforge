@@ -1,5 +1,12 @@
-#!/usr/bin/env python
-"""Run a LeWorldModel provider smoke test with a real checkpoint."""
+#!/usr/bin/env python3
+"""Run a LeWorldModel provider smoke test with a real checkpoint.
+
+Invoke this file with Python, for example:
+
+    uv run python scripts/smoke_leworldmodel.py --stablewm-home ~/.stable-wm
+
+Do not run it with ``sh`` or ``bash``; it is not a shell script.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +16,8 @@ import os
 from pathlib import Path
 
 from worldforge.providers import LeWorldModelProvider
+
+DEFAULT_STABLEWM_HOME = "~/.stable-wm"
 
 
 def _checkpoint_path(cache_dir: Path, policy: str) -> Path:
@@ -71,7 +80,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--stablewm-home",
         type=Path,
-        default=Path(os.environ.get("STABLEWM_HOME", "~/.stable_worldmodel")).expanduser(),
+        default=Path(os.environ.get("STABLEWM_HOME", DEFAULT_STABLEWM_HOME)).expanduser(),
     )
     parser.add_argument(
         "--cache-dir",

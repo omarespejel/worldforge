@@ -25,6 +25,12 @@ releases may still include breaking changes when the public API needs to tighten
   including policy-only and policy+score planning support.
 - Added `scripts/smoke_gr00t_policy.py` for host-owned GR00T PolicyClient live smoke testing
   against an existing server or an Isaac-GR00T checkout.
+- Added `examples/leworldmodel_e2e_demo.py`, a checkout-safe end-to-end provider-surface demo that
+  uses the real `LeWorldModelProvider` with an injected deterministic cost runtime to show
+  scoring, planning, execution, persistence, and reload without running upstream checkpoint
+  inference.
+- Documented the real-checkpoint LeWorldModel smoke setup and made
+  `scripts/smoke_leworldmodel.py` executable with the upstream `~/.stable-wm` default.
 
 ### Security
 

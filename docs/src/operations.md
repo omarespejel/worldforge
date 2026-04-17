@@ -102,6 +102,17 @@ include those IDs in surrounding application logs.
 - To smoke-test a real LeWorldModel checkpoint, install the upstream
   `stable-worldmodel[train,env]` runtime in an isolated environment and run
   `python scripts/smoke_leworldmodel.py --stablewm-home /path/to/stablewm-home`.
+  Do not run this Python file with `sh` or `bash`. A minimal setup is:
+  `uv venv --python=3.10 .venv-lewm`, `source .venv-lewm/bin/activate`,
+  `uv pip install -e .`, `uv pip install "stable-worldmodel[train,env]"`, then
+  `python scripts/smoke_leworldmodel.py --stablewm-home ~/.stable-wm --policy pusht/lewm`.
+- To demonstrate the LeWorldModel planning flow without optional dependencies, run
+  `python examples/leworldmodel_e2e_demo.py`. It uses the real `LeWorldModelProvider` interface
+  with an injected deterministic cost runtime and exercises score planning, execution,
+  persistence, and reload. It is not a real upstream-checkpoint inference run; use
+  `scripts/smoke_leworldmodel.py` for that path. The demo should report
+  `uses_leworldmodel_provider: true`, `uses_worldforge_score_planning: true`, and
+  `uses_real_upstream_checkpoint: false`.
 - To smoke-test a real GR00T policy server, install or check out NVIDIA Isaac-GR00T, prepare a
   host-specific observation factory and action translator, then run
   `python scripts/smoke_gr00t_policy.py --gr00t-root /path/to/Isaac-GR00T --start-server ...`.

@@ -227,6 +227,49 @@ Use `scripts/smoke_leworldmodel.py` from an isolated environment with the upstre
 `stable-worldmodel[train,env]` runtime to download the public `quentinll/lewm-pusht` weights,
 prepare the object checkpoint, and run a real `score_actions(...)` smoke.
 
+Run the smoke script with Python, not `sh` or `bash`:
+
+```bash
+uv venv --python=3.10 .venv-lewm
+source .venv-lewm/bin/activate
+uv pip install -e .
+uv pip install "stable-worldmodel[train,env]"
+
+python scripts/smoke_leworldmodel.py \
+  --stablewm-home ~/.stable-wm \
+  --policy pusht/lewm \
+  --device cpu
+```
+
+The upstream LeWorldModel README uses Python 3.10, installs `stable-worldmodel[train,env]`, and
+expects `$STABLEWM_HOME` to default to `~/.stable-wm`. If you already have checkpoints elsewhere,
+pass `--cache-dir /path/to/checkpoint-root` or set `LEWORLDMODEL_CACHE_DIR`.
+
+For a checkout-safe end-to-end walkthrough that does not need torch or checkpoints, run
+`uv run python examples/leworldmodel_e2e_demo.py`. It injects a tiny deterministic
+LeWorldModel-compatible cost runtime, then demonstrates provider registration, candidate scoring,
+score-based planning, mock execution, JSON persistence, and reload through the real WorldForge API.
+This demo uses the real `LeWorldModelProvider` and `World.plan(... planning_mode="score")`
+pipeline, but it does **not** load Lucas Maes' upstream LeWorldModel checkpoint or run neural
+inference. Use `scripts/smoke_leworldmodel.py` for the real-checkpoint path.
+
+Concretely, the demo:
+
+1. Registers the real `LeWorldModelProvider` next to the local `mock` execution provider.
+2. Creates a small world with one `blue_cube` and an `object_at` goal.
+3. Builds three two-step candidate action plans and matching LeWorldModel-shaped
+   `(batch, samples, horizon, action_dim)` action tensors.
+4. Calls `WorldForge.score_actions("leworldmodel", ...)`, which validates and tensorizes the
+   payload before calling the injected runtime's `get_cost(...)` method under eval/no-grad mode.
+5. Calls `World.plan(..., provider="leworldmodel", planning_mode="score")`, which selects the
+   candidate with the lowest LeWorldModel cost.
+6. Executes the selected WorldForge actions through `execution_provider="mock"`, saves the final
+   world, reloads it from disk, and reports the final cube position.
+
+The demo's `predicted_states` list is empty by design: a score provider ranks candidate futures;
+it does not mutate the world or emit generated video/world-state rollouts. Execution remains a
+separate provider step.
+
 GR00T is a host-owned live policy integration. Run `scripts/smoke_gr00t_policy.py` from an
 environment that can import Isaac-GR00T and reach a policy server. The script can launch
 `gr00t/eval/run_gr00t_server.py` from a local Isaac-GR00T checkout with `--start-server`, but the

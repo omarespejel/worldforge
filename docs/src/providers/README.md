@@ -163,8 +163,17 @@ LeWorldModel:
   `(batch, samples, horizon, action_dim)`.
 - Model output must flatten to at least one finite numeric score.
 - `scripts/smoke_leworldmodel.py` can run a local end-to-end smoke against
-  `quentinll/lewm-pusht`; it requires the upstream GitHub version of `stable-worldmodel[train,env]`
-  because the PyPI package may lag the LeWM module.
+  `quentinll/lewm-pusht`; it requires the upstream `stable-worldmodel[train,env]` runtime.
+  Invoke it with Python, for example
+  `python scripts/smoke_leworldmodel.py --stablewm-home ~/.stable-wm --policy pusht/lewm`;
+  running it with `sh` or `bash` will make the shell parse Python code.
+- `examples/leworldmodel_e2e_demo.py` is the checkout-safe walkthrough for the same public
+  provider surface. It injects a deterministic LeWorldModel-compatible runtime, scores candidate
+  action tensors, selects a plan, executes it through `mock`, persists the result, and reloads it.
+  It uses the real `LeWorldModelProvider` and score-planning pipeline, but it does not load an
+  upstream LeWorldModel checkpoint or run neural inference.
+  `predicted_states` is empty in that demo because the provider returns costs for candidate action
+  sequences; the selected WorldForge actions are applied later by the execution provider.
 
 GR00T:
 

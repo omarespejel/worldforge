@@ -36,6 +36,9 @@ evaluation harnesses, and testable prototypes.
 - `src/worldforge/observability.py`: composable `ProviderEvent` sinks for JSON logging, in-memory
   recording, and metrics aggregation.
 - `src/worldforge/testing/`: reusable adapter contract helpers.
+- `examples/leworldmodel_e2e_demo.py`: checkout-safe end-to-end LeWorldModel provider-surface
+  score-planning demo using an injected deterministic cost runtime; it does not run upstream
+  checkpoint inference.
 - `scripts/scaffold_provider.py`: safe scaffold generator for new provider adapter files,
   fixture placeholders, tests, and docs stubs.
 - `scripts/smoke_leworldmodel.py`: optional real-checkpoint LeWorldModel smoke for host
@@ -138,13 +141,18 @@ rm -f "$tmp_req"
 - LeWorldModel expects preprocessed pixel/action/goal tensors or rectangular nested numeric
   arrays shaped for the configured checkpoint. WorldForge validates the adapter boundary but does
   not infer task-specific image transforms.
+- Use `examples/leworldmodel_e2e_demo.py` when you need a working LeWorldModel story in a clean
+  checkout. It deliberately injects a tiny cost runtime instead of requiring optional
+  `stable_worldmodel` or `torch` dependencies, so it proves the WorldForge adapter/planner path
+  rather than real LeWorldModel neural inference.
 - GR00T returns embodiment-specific raw action arrays. WorldForge preserves those raw actions but
   requires a host-supplied `action_translator` before it can return executable `Action` objects.
 - Policy+score planning uses `policy_provider="gr00t"` plus `score_provider="leworldmodel"` or
   another score provider; score tensors remain host-preprocessed and provider-native.
-- `scripts/smoke_leworldmodel.py` is an optional real-checkpoint smoke. Run it from an isolated
-  Python 3.10 environment with the upstream GitHub `stable-worldmodel[train,env]` runtime; do not
-  add those dependencies to WorldForge's base package.
+- `scripts/smoke_leworldmodel.py` is an optional real-checkpoint smoke. Run it with Python, not
+  `sh` or `bash`, from an isolated Python 3.10 environment with
+  `stable-worldmodel[train,env]`; do not add those dependencies to WorldForge's base package.
+  The upstream default storage root is `~/.stable-wm`.
 - `scripts/smoke_gr00t_policy.py` is an optional live PolicyClient smoke. It may launch
   `gr00t/eval/run_gr00t_server.py` from a host-owned Isaac-GR00T checkout, but it still requires
   the host to provide real observations and an embodiment-specific action translator.
