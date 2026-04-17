@@ -44,6 +44,13 @@ GR00T proposes candidate action chunks
 The adapter does not add Isaac GR00T, PyTorch, CUDA, TensorRT, checkpoints, or robot runtime
 dependencies to WorldForge's base install. Those dependencies remain host-owned.
 
+Current smoke status: the 2026-04-17 live-smoke attempt could clone Isaac-GR00T and reach upstream
+dependency resolution, but it could not launch the policy server on the local macOS arm64 host.
+The upstream runtime attempted to install CUDA/TensorRT packages, including
+`tensorrt-cu13-libs`, and no compatible Darwin arm64 NVIDIA runtime was available. Use a Linux
+NVIDIA GPU host or connect to an already running remote GR00T policy server for real live
+validation.
+
 ## Policy Runtime Contract
 
 Direct construction with a fake or host-owned client:
@@ -211,6 +218,8 @@ cannot represent cleanly.
 - Malformed observations fail before invoking the policy client.
 - Non-JSON-compatible raw actions or provider info fail before returning `ActionPolicyResult`.
 - Failed policy inference is wrapped in `ProviderError`.
+- Launching the upstream server on an unsupported host can fail during CUDA/TensorRT dependency
+  resolution before WorldForge can connect.
 - Policy+score planning fails if the score provider selects an index outside the policy candidate
   list.
 
@@ -218,3 +227,5 @@ cannot represent cleanly.
 
 - `tests/test_gr00t_provider.py` covers fake-client contract checks, event emission, malformed
   inputs, missing translator, health failures, policy-only planning, and policy+score planning.
+- `tests/test_gr00t_smoke_script.py` covers smoke-script input loading and server preflight
+  validation. It does not require Isaac-GR00T or a GPU.

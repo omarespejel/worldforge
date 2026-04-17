@@ -17,6 +17,11 @@ Configuration comes from constructor arguments and environment variables documen
 - `LEWORLDMODEL_POLICY` or `LEWM_POLICY` enables the optional LeWorldModel adapter.
 - `LEWORLDMODEL_CACHE_DIR` overrides the LeWorldModel checkpoint root.
 - `LEWORLDMODEL_DEVICE` selects the optional torch device for LeWorldModel scoring.
+- `GROOT_POLICY_HOST` enables the optional GR00T embodied-policy adapter.
+- `GROOT_POLICY_PORT` defaults to `5555`.
+- `GROOT_POLICY_TIMEOUT_MS` defaults to `15000`.
+- `GROOT_POLICY_API_TOKEN`, `GROOT_POLICY_STRICT`, and `GROOT_EMBODIMENT_TAG` are optional GR00T
+  PolicyClient settings.
 - `JEPA_MODEL_PATH` and `GENIE_API_KEY` enable scaffold adapters only.
 
 Validate configuration at startup with:
@@ -78,6 +83,9 @@ include those IDs in surrounding application logs.
 - LeWorldModel scoring fails explicitly when optional dependencies are unavailable, the checkpoint
   cannot load, required `pixels` / `goal` / `action` fields are missing, action candidates are not
   four-dimensional, or returned scores are not finite.
+- GR00T policy selection fails explicitly when the PolicyClient dependency is unavailable, the
+  policy server is unreachable, observations are malformed, raw actions are not JSON-compatible,
+  or no host-owned action translator is provided.
 
 ## Recovery
 
@@ -99,6 +107,10 @@ include those IDs in surrounding application logs.
   `python scripts/smoke_gr00t_policy.py --gr00t-root /path/to/Isaac-GR00T --start-server ...`.
   The script can also connect to an existing server with `GROOT_POLICY_HOST` and
   `--policy-info-json` or `--observation-module`.
+- The 2026-04-17 local GR00T live-smoke attempt failed on macOS arm64 because upstream
+  Isaac-GR00T depends on CUDA/TensorRT packages such as `tensorrt-cu13-libs`; no compatible wheel
+  or NVIDIA driver runtime was available. Use a Linux NVIDIA GPU host, or point WorldForge at an
+  already running remote GR00T policy server.
 
 ## Release Checklist
 
@@ -106,8 +118,8 @@ Before publishing a release:
 
 ```bash
 uv lock --check
-uv run ruff check src tests examples
-uv run ruff format --check src tests examples
+uv run ruff check src tests examples scripts
+uv run ruff format --check src tests examples scripts
 uv run pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
 bash scripts/test_package.sh
 ```

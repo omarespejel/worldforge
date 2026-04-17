@@ -177,7 +177,7 @@ Module responsibilities:
 | `src/worldforge/models.py` | Typed domain models, serialization helpers, and framework-level validation errors |
 | `src/worldforge/framework.py` | `WorldForge`, `World`, persistence, planning, prediction, comparison, and diagnostics |
 | `src/worldforge/observability.py` | Composable `ProviderEvent` sinks for JSON logging, in-memory recording, and metrics aggregation |
-| `src/worldforge/providers/` | Provider primitives plus `mock`, `cosmos`, `runway`, `leworldmodel`, `jepa`, and `genie` adapters |
+| `src/worldforge/providers/` | Provider primitives plus `mock`, `cosmos`, `runway`, `leworldmodel`, `gr00t`, `jepa`, and `genie` adapters |
 | `src/worldforge/evaluation/` | Built-in evaluation suites and report rendering |
 | `src/worldforge/testing/` | Reusable provider contract assertions for adapter packages |
 | `tests/` | Framework, CLI, packaging, and adapter regression coverage |
@@ -209,6 +209,7 @@ More detail lives in [docs/src/world-model-taxonomy.md](./docs/src/world-model-t
 | `cosmos` | beta | auto-registers when `COSMOS_BASE_URL` is set | real HTTP adapter for Cosmos NIM; optionally sends `NVIDIA_API_KEY` |
 | `runway` | beta | auto-registers when `RUNWAYML_API_SECRET` or `RUNWAY_API_SECRET` is set | real HTTP adapter for Runway image-to-video and video-to-video APIs |
 | `leworldmodel` | beta | auto-registers when `LEWORLDMODEL_POLICY` or `LEWM_POLICY` is set | real optional adapter for LeWorldModel JEPA cost models via `stable_worldmodel.policy.AutoCostModel`; scores action candidates with lower cost as better |
+| `gr00t` | experimental | auto-registers when `GROOT_POLICY_HOST` is set | host-owned NVIDIA Isaac GR00T PolicyClient adapter for embodied action selection; exposes `policy`, not predictive world-model capabilities |
 | `jepa` | scaffold | auto-registers when `JEPA_MODEL_PATH` is set | credential-gated stub backed by deterministic mock behavior |
 | `genie` | scaffold | auto-registers when `GENIE_API_KEY` is set | credential-gated stub backed by deterministic mock behavior |
 
@@ -230,6 +231,9 @@ GR00T is a host-owned live policy integration. Run `scripts/smoke_gr00t_policy.p
 environment that can import Isaac-GR00T and reach a policy server. The script can launch
 `gr00t/eval/run_gr00t_server.py` from a local Isaac-GR00T checkout with `--start-server`, but the
 host must supply real policy observations and an embodiment-specific action translator.
+The latest local smoke attempt on macOS arm64 could not run the upstream server because
+Isaac-GR00T's dependency resolver pulled CUDA/TensorRT packages, including `tensorrt-cu13-libs`,
+that require an NVIDIA/Linux-style runtime.
 
 ## Development
 
@@ -276,6 +280,9 @@ See [AGENTS.md](./AGENTS.md) for repository context used by AI-assisted and firs
 - `leworldmodel` is a real optional cost-model adapter, but callers must install
   `stable-worldmodel[env]`, provide compatible checkpoints, and pass task-shaped pixel/action/goal
   tensors; it does not generate videos or reason over text.
+- `gr00t` is a real optional policy-client adapter, but live execution requires a host-owned
+  Isaac-GR00T runtime, reachable policy server, compatible NVIDIA CUDA/TensorRT environment when
+  launching the upstream server, real observations, and an embodiment-specific action translator.
 - Remote provider health checks depend on live credentials and network reachability even though they now use typed timeout and retry policy.
 - Provider observability includes local JSON logging and in-memory metrics sinks, but host applications still own production logging, metrics export, trace IDs, dashboards, and alerts.
 - World persistence is local JSON state, not a concurrent multi-writer store or service.

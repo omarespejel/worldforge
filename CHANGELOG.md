@@ -23,6 +23,8 @@ releases may still include breaking changes when the public API needs to tighten
 - Added a `policy` capability, `ActionPolicyResult`, `WorldForge.select_actions(...)`, and an
   experimental host-owned `gr00t` provider for NVIDIA Isaac GR00T PolicyClient action selection,
   including policy-only and policy+score planning support.
+- Added `scripts/smoke_gr00t_policy.py` for host-owned GR00T PolicyClient live smoke testing
+  against an existing server or an Isaac-GR00T checkout.
 
 ### Security
 
@@ -54,6 +56,9 @@ releases may still include breaking changes when the public API needs to tighten
   and the LeWorldModel-shaped runtime pipeline.
 - Added a provider authoring guide that turns the taxonomy into capability, validation, testing,
   observability, and documentation checklists for new adapters.
+- Documented the current GR00T live-smoke status: local macOS arm64 validation reaches upstream
+  dependency resolution but cannot run Isaac-GR00T's CUDA/TensorRT runtime without a compatible
+  NVIDIA/Linux host or remote policy server.
 
 ## 0.3.0 - 2026-04-08
 

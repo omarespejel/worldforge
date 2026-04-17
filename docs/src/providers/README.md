@@ -180,3 +180,5 @@ GR00T:
 - `scripts/smoke_gr00t_policy.py` can connect to an existing policy server or launch
   `gr00t/eval/run_gr00t_server.py` from a local Isaac-GR00T checkout for a live PolicyClient
   smoke.
+- The latest local live-smoke attempt could not run upstream Isaac-GR00T on macOS arm64 because
+  CUDA/TensorRT packages such as `tensorrt-cu13-libs` require a compatible NVIDIA/Linux runtime.

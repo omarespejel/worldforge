@@ -38,6 +38,10 @@ evaluation harnesses, and testable prototypes.
 - `src/worldforge/testing/`: reusable adapter contract helpers.
 - `scripts/scaffold_provider.py`: safe scaffold generator for new provider adapter files,
   fixture placeholders, tests, and docs stubs.
+- `scripts/smoke_leworldmodel.py`: optional real-checkpoint LeWorldModel smoke for host
+  environments with upstream `stable-worldmodel[train,env]`.
+- `scripts/smoke_gr00t_policy.py`: optional live GR00T PolicyClient smoke for host environments
+  with Isaac-GR00T and a policy server.
 
 ## Tech Stack
 
@@ -48,6 +52,8 @@ evaluation harnesses, and testable prototypes.
   environment only when using `leworldmodel`.
 - Optional GR00T runtime: `gr00t.policy.server_client.PolicyClient`, CUDA/TensorRT/checkpoints,
   and robot-specific dependencies supplied by the host environment only when using `gr00t`.
+  Current live smoke status: macOS arm64 without NVIDIA drivers cannot run the upstream
+  Isaac-GR00T server because its dependency resolver pulls CUDA/TensorRT packages.
 - Development tools: `pytest`, `pytest-cov`, `ruff`, `pip-audit` in CI.
 - License: MIT.
 
@@ -142,6 +148,13 @@ rm -f "$tmp_req"
 - `scripts/smoke_gr00t_policy.py` is an optional live PolicyClient smoke. It may launch
   `gr00t/eval/run_gr00t_server.py` from a host-owned Isaac-GR00T checkout, but it still requires
   the host to provide real observations and an embodiment-specific action translator.
+- The most recent GR00T live smoke attempt on 2026-04-17 reached upstream dependency resolution
+  but could not run on this machine: `tensorrt-cu13-libs` has no compatible Darwin arm64 wheel and
+  `nvidia-smi` is unavailable. Use a Linux NVIDIA GPU host or an already running remote GR00T
+  policy server for true live validation.
+- GitHub Actions checks currently fail before execution because repository/account billing or
+  spending-limit settings prevent jobs from starting. Treat local `uv`/package validation as the
+  available gate until GitHub billing is fixed.
 - `JEPA_WMS_MODEL_PATH`, `JEPA_WMS_MODEL_NAME`, and `JEPA_WMS_DEVICE` are documented by the
   `jepa-wms` candidate only. They do not make `JEPAWMSProvider` available through `WorldForge`;
   direct tests must inject `runtime=` or use `JEPAWMSProvider.from_torch_hub(...)`.
@@ -149,7 +162,10 @@ rm -f "$tmp_req"
 
 ## Current State
 
-As of 2026-04-17, WorldForge is alpha. It is suitable for local development, adapter contract
+As of 2026-04-17, WorldForge is alpha. It includes typed provider contracts for prediction,
+generation, transfer, scoring, and embodied policy selection; first-class optional LeWorldModel
+and GR00T adapters; a direct-construction JEPA-WMS candidate; and live smoke scripts for
+host-owned LeWorldModel/GR00T runtimes. It is suitable for local development, adapter contract
 testing, deterministic evaluation, and provider-prototype workflows. It is not suitable for
 unattended production operation against third-party providers without host-level monitoring,
 credential management, persistence strategy, and operational safeguards.
