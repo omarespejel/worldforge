@@ -8,10 +8,12 @@ added.
 
 from __future__ import annotations
 
+import importlib
 import os
 from collections.abc import Callable
+from contextlib import nullcontext
 from time import perf_counter
-from typing import Protocol
+from typing import Any, Protocol
 
 from worldforge.models import (
     ActionScoreResult,
@@ -26,8 +28,13 @@ from worldforge.models import (
 from .base import BaseProvider, ProviderError
 
 JEPA_WMS_ENV_VAR = "JEPA_WMS_MODEL_PATH"
+JEPA_WMS_MODEL_NAME_ENV_VAR = "JEPA_WMS_MODEL_NAME"
+JEPA_WMS_DEVICE_ENV_VAR = "JEPA_WMS_DEVICE"
+DEFAULT_JEPA_WMS_HUB_REPO = "facebookresearch/jepa-wms"
 REQUIRED_INFO_FIELDS = ("observation", "goal")
 OPTIONAL_NUMERIC_INFO_FIELDS = ("action_history",)
+
+HubLoader = Callable[..., object]
 
 
 class JEPAWMSRuntime(Protocol):
@@ -147,6 +154,309 @@ def _flatten_numeric(value: object, *, name: str) -> list[float]:
         raise ProviderError(f"{name} must contain only finite numbers.") from exc
 
 
+def _tensor_shape(value: object) -> tuple[int, ...] | None:
+    shape = getattr(value, "shape", None)
+    if shape is None:
+        return None
+    try:
+        return tuple(int(dimension) for dimension in shape)
+    except (TypeError, ValueError):
+        return None
+
+
+class TorchHubJEPAWMSRuntime:
+    """Host-owned runtime shim for upstream JEPA-WMS torch-hub models.
+
+    The shim lazily imports ``torch`` and lazily calls ``torch.hub.load``. It is deliberately not
+    used by auto-registration; hosts must instantiate it explicitly or use
+    ``JEPAWMSProvider.from_torch_hub(...)``.
+    """
+
+    def __init__(
+        self,
+        *,
+        model_name: str,
+        hub_repo: str = DEFAULT_JEPA_WMS_HUB_REPO,
+        device: str | None = None,
+        pretrained: bool = True,
+        trust_repo: bool | None = None,
+        hub_loader: HubLoader | None = None,
+        torch_module: Any | None = None,
+    ) -> None:
+        self.model_name = _optional_non_empty(model_name, name="JEPA-WMS model_name")
+        if self.model_name is None:
+            raise WorldForgeError("JEPA-WMS model_name must be provided.")
+        self.hub_repo = _optional_non_empty(hub_repo, name="JEPA-WMS hub_repo")
+        if self.hub_repo is None:
+            raise WorldForgeError("JEPA-WMS hub_repo must be provided.")
+        self.device = _optional_non_empty(device, name="JEPA-WMS device")
+        if not isinstance(pretrained, bool):
+            raise WorldForgeError("JEPA-WMS pretrained must be a boolean.")
+        if trust_repo is not None and not isinstance(trust_repo, bool):
+            raise WorldForgeError("JEPA-WMS trust_repo must be a boolean when provided.")
+        self.pretrained = pretrained
+        self.trust_repo = trust_repo
+        self._hub_loader = hub_loader
+        self._torch_module = torch_module
+        self._model: Any | None = None
+        self._preprocessor: Any | None = None
+
+    def _torch(self) -> Any:
+        if self._torch_module is not None:
+            return self._torch_module
+        try:
+            return importlib.import_module("torch")
+        except ImportError as exc:
+            raise ProviderError(
+                "JEPA-WMS torch-hub runtime requires optional dependency torch in the host "
+                "environment."
+            ) from exc
+
+    def _load_model(self, torch: Any) -> tuple[Any, Any | None]:
+        if self._model is not None:
+            return self._model, self._preprocessor
+
+        loader = self._hub_loader
+        if loader is None:
+            hub = getattr(torch, "hub", None)
+            loader = getattr(hub, "load", None)
+        if not callable(loader):
+            raise ProviderError("JEPA-WMS torch module does not expose torch.hub.load().")
+
+        kwargs: dict[str, object] = {
+            "pretrained": self.pretrained,
+        }
+        if self.device is not None:
+            kwargs["device"] = self.device
+        if self.trust_repo is not None:
+            kwargs["trust_repo"] = self.trust_repo
+
+        try:
+            loaded = loader(self.hub_repo, self.model_name, **kwargs)
+        except Exception as exc:
+            raise ProviderError(
+                f"Failed to load JEPA-WMS torch-hub model '{self.model_name}' "
+                f"from '{self.hub_repo}': {exc}"
+            ) from exc
+
+        if isinstance(loaded, tuple):
+            if not loaded:
+                raise ProviderError("JEPA-WMS torch-hub loader returned an empty tuple.")
+            model = loaded[0]
+            preprocessor = loaded[1] if len(loaded) > 1 else None
+        else:
+            model = loaded
+            preprocessor = getattr(model, "preprocessor", None)
+
+        if self.device is not None and hasattr(model, "to"):
+            model = model.to(self.device)
+        if hasattr(model, "eval"):
+            model = model.eval()
+
+        self._model = model
+        self._preprocessor = preprocessor
+        return model, preprocessor
+
+    def _as_tensor(self, torch: Any, value: object, *, name: str) -> Any:
+        if hasattr(value, "to") and _tensor_shape(value) is not None:
+            tensor = value
+        else:
+            as_tensor = getattr(torch, "as_tensor", None)
+            if not callable(as_tensor):
+                raise ProviderError("JEPA-WMS torch module does not expose as_tensor().")
+            try:
+                tensor = as_tensor(value)
+            except Exception as exc:
+                raise ProviderError(f"{name} could not be converted to a tensor: {exc}") from exc
+        if self.device is not None and hasattr(tensor, "to"):
+            tensor = tensor.to(self.device)
+        return tensor
+
+    def _normalize_actions_if_requested(
+        self,
+        *,
+        action_tensor: Any,
+        preprocessor: Any | None,
+        actions_are_normalized: bool,
+    ) -> Any:
+        if actions_are_normalized:
+            return action_tensor
+        normalize = getattr(preprocessor, "normalize_actions", None)
+        if not callable(normalize):
+            raise ProviderError(
+                "JEPA-WMS runtime received unnormalized actions but the loaded preprocessor does "
+                "not expose normalize_actions()."
+            )
+        try:
+            return normalize(action_tensor)
+        except Exception as exc:
+            raise ProviderError(f"JEPA-WMS action normalization failed: {exc}") from exc
+
+    def _no_grad_context(self, torch: Any) -> Any:
+        no_grad = getattr(torch, "no_grad", None)
+        if callable(no_grad):
+            return no_grad()
+        return nullcontext()
+
+    def _score_via_model_method(
+        self,
+        *,
+        model: Any,
+        model_path: str,
+        info: JSONDict,
+        action_candidates: object,
+    ) -> object | None:
+        for method_name in ("score_actions", "score_action_candidates", "compute_scores"):
+            method = getattr(model, method_name, None)
+            if callable(method):
+                return method(
+                    model_path=model_path,
+                    info=info,
+                    action_candidates=action_candidates,
+                )
+        return None
+
+    def _select_last_timestep(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: self._select_last_timestep(child) for key, child in value.items()}
+        try:
+            return value[-1]
+        except Exception:
+            return value
+
+    def _distance_scores(
+        self, torch: Any, predicted: Any, target: Any, *, objective: str
+    ) -> list[float]:
+        if isinstance(predicted, dict) and isinstance(target, dict):
+            total: Any | None = None
+            for key in sorted(predicted):
+                if key not in target:
+                    continue
+                component = self._distance_scores_tensor(
+                    torch,
+                    predicted[key],
+                    target[key],
+                    objective=objective,
+                )
+                total = component if total is None else total + component
+            if total is None:
+                raise ProviderError("JEPA-WMS encoded dictionaries had no shared keys to score.")
+            return _flatten_numeric(total, name="JEPA-WMS scores")
+        return _flatten_numeric(
+            self._distance_scores_tensor(torch, predicted, target, objective=objective),
+            name="JEPA-WMS scores",
+        )
+
+    def _distance_scores_tensor(
+        self, torch: Any, predicted: Any, target: Any, *, objective: str
+    ) -> Any:
+        if objective not in {"l1", "l2"}:
+            raise ProviderError("JEPA-WMS objective must be 'l1' or 'l2'.")
+        diff = predicted - target
+        if objective == "l1":
+            abs_fn = getattr(torch, "abs", None)
+            diff = abs_fn(diff) if callable(abs_fn) else abs(diff)
+        else:
+            pow_method = getattr(diff, "pow", None)
+            diff = pow_method(2) if callable(pow_method) else diff * diff
+
+        ndim = getattr(diff, "ndim", None)
+        if ndim is None:
+            shape = _tensor_shape(diff)
+            ndim = len(shape) if shape is not None else None
+        if ndim is None or int(ndim) <= 1:
+            return diff
+        mean = getattr(diff, "mean", None)
+        if not callable(mean):
+            raise ProviderError("JEPA-WMS distance tensor does not expose mean().")
+        return mean(dim=tuple(range(1, int(ndim))))
+
+    def _encode(self, model: Any, value: Any, *, act: bool) -> Any:
+        encode = getattr(model, "encode", None)
+        if not callable(encode):
+            raise ProviderError("JEPA-WMS loaded model does not expose encode().")
+        try:
+            return encode(value, act=act)
+        except TypeError:
+            return encode(value)
+        except Exception as exc:
+            raise ProviderError(f"JEPA-WMS model encoding failed: {exc}") from exc
+
+    def _unroll(self, model: Any, z_init: Any, action_suffix: Any) -> Any:
+        unroll = getattr(model, "unroll", None)
+        if not callable(unroll):
+            raise ProviderError("JEPA-WMS loaded model does not expose unroll().")
+        try:
+            return unroll(z_init, act_suffix=action_suffix)
+        except Exception as exc:
+            raise ProviderError(f"JEPA-WMS model unroll failed: {exc}") from exc
+
+    def score_actions(
+        self,
+        *,
+        model_path: str,
+        info: JSONDict,
+        action_candidates: object,
+    ) -> object:
+        torch = self._torch()
+        model, preprocessor = self._load_model(torch)
+
+        direct_result = self._score_via_model_method(
+            model=model,
+            model_path=model_path,
+            info=info,
+            action_candidates=action_candidates,
+        )
+        if direct_result is not None:
+            return direct_result
+
+        objective = str(info.get("objective", "l2")).lower()
+        actions_are_normalized = bool(info.get("actions_are_normalized", True))
+
+        observation = self._as_tensor(torch, info["observation"], name="JEPA-WMS observation")
+        goal = self._as_tensor(torch, info["goal"], name="JEPA-WMS goal")
+        action_tensor = self._as_tensor(
+            torch,
+            action_candidates,
+            name="JEPA-WMS action_candidates",
+        )
+        try:
+            model_actions = action_tensor[0]
+            model_actions = self._normalize_actions_if_requested(
+                action_tensor=model_actions,
+                preprocessor=preprocessor,
+                actions_are_normalized=actions_are_normalized,
+            )
+            model_actions = model_actions.permute(1, 0, 2)
+        except ProviderError:
+            raise
+        except Exception as exc:
+            raise ProviderError(f"JEPA-WMS action tensor preparation failed: {exc}") from exc
+
+        with self._no_grad_context(torch):
+            z_init = self._encode(model, observation, act=True)
+            target = self._encode(model, goal, act=False)
+            predicted = self._unroll(model, z_init, model_actions)
+
+        scores = self._distance_scores(
+            torch,
+            self._select_last_timestep(predicted),
+            self._select_last_timestep(target),
+            objective=objective,
+        )
+        return {
+            "scores": scores,
+            "lower_is_better": True,
+            "metadata": {
+                "runtime": "torchhub",
+                "hub_repo": self.hub_repo,
+                "model_name": self.model_name,
+                "objective": objective,
+                "actions_are_normalized": actions_are_normalized,
+            },
+        }
+
+
 class JEPAWMSProvider(BaseProvider):
     """Candidate adapter for JEPA-WMS action-candidate scoring.
 
@@ -188,12 +498,55 @@ class JEPAWMSProvider(BaseProvider):
             artifact_types=["action_scores"] if runtime else [],
             notes=[
                 "Candidate contract only; not exported or auto-registered.",
-                "No upstream facebookresearch/jepa-wms import is performed by WorldForge.",
-                "Inject runtime= in tests or host experiments before implementing a real adapter.",
+                "The optional torch-hub runtime is host-owned and lazily imported only when used.",
+                "Inject runtime= in tests or use from_torch_hub(...) for host experiments.",
                 "Runtime scores default to costs: lower values are better.",
             ],
             default_model=self.model_path,
             supported_models=[self.model_path] if self.model_path else [],
+            event_handler=event_handler,
+        )
+
+    @classmethod
+    def from_torch_hub(
+        cls,
+        *,
+        model_name: str | None = None,
+        model_path: str | None = None,
+        hub_repo: str = DEFAULT_JEPA_WMS_HUB_REPO,
+        device: str | None = None,
+        pretrained: bool = True,
+        trust_repo: bool | None = None,
+        hub_loader: HubLoader | None = None,
+        torch_module: Any | None = None,
+        event_handler: Callable[[ProviderEvent], None] | None = None,
+    ) -> JEPAWMSProvider:
+        """Create a direct JEPA-WMS provider backed by an explicit torch-hub runtime."""
+
+        resolved_model_name = _optional_non_empty(
+            model_name if model_name is not None else _env_value(JEPA_WMS_MODEL_NAME_ENV_VAR),
+            name="JEPA-WMS model_name",
+        )
+        if resolved_model_name is None:
+            raise WorldForgeError(
+                f"JEPA-WMS torch-hub runtime requires model_name or {JEPA_WMS_MODEL_NAME_ENV_VAR}."
+            )
+        resolved_device = _optional_non_empty(
+            device if device is not None else _env_value(JEPA_WMS_DEVICE_ENV_VAR),
+            name="JEPA-WMS device",
+        )
+        runtime = TorchHubJEPAWMSRuntime(
+            model_name=resolved_model_name,
+            hub_repo=hub_repo,
+            device=resolved_device,
+            pretrained=pretrained,
+            trust_repo=trust_repo,
+            hub_loader=hub_loader,
+            torch_module=torch_module,
+        )
+        return cls(
+            model_path=model_path or resolved_model_name,
+            runtime=runtime,
             event_handler=event_handler,
         )
 
@@ -248,6 +601,11 @@ class JEPAWMSProvider(BaseProvider):
             raise ProviderError(
                 "JEPA-WMS action_candidates must be four-dimensional: "
                 "(batch, samples, horizon, action_dim)."
+            )
+        if shape[0] != 1:
+            raise ProviderError(
+                "JEPA-WMS action_candidates currently supports exactly one batch for "
+                "WorldForge score planning."
             )
         candidate_count = shape[1]
         if candidate_count <= 0:

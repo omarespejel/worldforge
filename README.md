@@ -32,7 +32,7 @@ adapter.
 
 ## Status
 
-As of 2026-04-16, WorldForge is **alpha**. It is suitable for local development, contract testing, provider adapter prototyping, deterministic evaluation flows, and single-writer JSON persistence. It is not yet suitable for claiming real-world physics fidelity, running unattended production workloads against third-party providers without host-level operational safeguards, or presenting scaffold adapters as fully implemented integrations. Known limitations are listed in [Current limitations](#current-limitations). User-visible changes are tracked in [CHANGELOG.md](./CHANGELOG.md).
+As of 2026-04-17, WorldForge is **alpha**. It is suitable for local development, contract testing, provider adapter prototyping, deterministic evaluation flows, and single-writer JSON persistence. It is not yet suitable for claiming real-world physics fidelity, running unattended production workloads against third-party providers without host-level operational safeguards, or presenting scaffold adapters as fully implemented integrations. Known limitations are listed in [Current limitations](#current-limitations). User-visible changes are tracked in [CHANGELOG.md](./CHANGELOG.md).
 
 ## Installation
 
@@ -210,7 +210,8 @@ More detail lives in [docs/src/world-model-taxonomy.md](./docs/src/world-model-t
 
 Provider candidate scaffolds are kept outside package exports and auto-registration until they have
 a real runtime adapter. The current candidate is [`jepa-wms`](./docs/src/providers/jepa-wms.md), a
-local fake-runtime contract scaffold for future `facebookresearch/jepa-wms` score-provider work.
+local fake-runtime and host-owned torch-hub contract scaffold for future `facebookresearch/jepa-wms`
+score-provider work.
 
 LeWorldModel is a local optional integration. Install the upstream runtime in the host
 environment, place checkpoints under `$STABLEWM_HOME` or set `LEWORLDMODEL_CACHE_DIR`, then set

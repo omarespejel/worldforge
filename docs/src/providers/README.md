@@ -24,7 +24,7 @@ exist to make future integrations explicit without claiming runtime support.
 
 | Provider | Status | Registration rule | Notes |
 | --- | --- | --- | --- |
-| [`jepa-wms`](./jepa-wms.md) | scaffold candidate | none; not exported or registered | local candidate with fake-runtime `score` contract tests for future `facebookresearch/jepa-wms` integration |
+| [`jepa-wms`](./jepa-wms.md) | scaffold candidate | none; not exported or registered | local candidate with fake-runtime and host-owned torch-hub `score` contract tests for future `facebookresearch/jepa-wms` integration |
 
 ## Provider profiles
 
