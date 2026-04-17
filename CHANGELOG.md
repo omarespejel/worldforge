@@ -16,9 +16,10 @@ releases may still include breaking changes when the public API needs to tighten
   `ActionScoreResult.best_index`, plus a real-checkpoint LeWorldModel smoke script.
 - Added `scripts/scaffold_provider.py` to generate safe provider adapter scaffolds, fixture
   placeholders, generated scaffold tests, and provider docs stubs from planned capabilities.
-- Added a `jepa-wms` provider candidate scaffold with fake-runtime score contract tests, parser
-  fixtures, event assertions, and docs for future `facebookresearch/jepa-wms` integration without
-  exporting or auto-registering it as a working provider.
+- Added a `jepa-wms` provider candidate scaffold with fake-runtime and host-owned torch-hub score
+  contract tests, parser fixtures, `World.plan(...)` coverage, event assertions, and docs for
+  future `facebookresearch/jepa-wms` integration without exporting or auto-registering it as a
+  working provider.
 
 ### Security
 

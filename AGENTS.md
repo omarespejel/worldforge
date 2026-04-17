@@ -23,9 +23,9 @@ evaluation harnesses, and testable prototypes.
   retry, polling, download policies, and response parsers.
 - `src/worldforge/providers/leworldmodel.py`: real optional LeWorldModel JEPA cost-model adapter
   for scoring action candidates through `stable_worldmodel.policy.AutoCostModel`.
-- `src/worldforge/providers/jepa_wms.py`: candidate contract scaffold for future
-  `facebookresearch/jepa-wms` score-provider work; it supports injected fake/runtime scoring but
-  is intentionally not exported or registered.
+- `src/worldforge/providers/jepa_wms.py`: candidate contract scaffold for
+  `facebookresearch/jepa-wms` score-provider work; it supports injected fake/runtime scoring and a
+  host-owned torch-hub runtime but is intentionally not exported or registered.
 - `src/worldforge/providers/remote.py`: credential-gated scaffold providers for `jepa` and
   `genie`; these intentionally use deterministic mock behavior after credential checks.
 - `src/worldforge/evaluation/`: built-in generation, physics, planning, reasoning, and transfer
@@ -98,9 +98,9 @@ rm -f "$tmp_req"
 
 - Do not replace scaffold providers with claims of real JEPA/Genie integration; they are
   credential-gated mock-backed adapters until real provider behavior is implemented.
-- Do not export or auto-register `JEPAWMSProvider` until it calls the real `facebookresearch/jepa-wms`
-  runtime and documents provider-specific limits. The current fake-runtime path is only a contract
-  harness for validation, result parsing, and event behavior.
+- Do not export or auto-register `JEPAWMSProvider` until provider-specific limits are validated
+  against real upstream weights. The current torch-hub path is direct-construction only and keeps
+  PyTorch plus JEPA-WMS dependencies host-owned.
 - Do not add `stable_worldmodel`, `torch`, checkpoint archives, or downloaded datasets to the base
   dependency set or repository. Keep LeWorldModel optional and host-owned.
 - Do not auto-register optional providers unless their required environment variables are present.
@@ -127,13 +127,14 @@ rm -f "$tmp_req"
 - `scripts/smoke_leworldmodel.py` is an optional real-checkpoint smoke. Run it from an isolated
   Python 3.10 environment with the upstream GitHub `stable-worldmodel[train,env]` runtime; do not
   add those dependencies to WorldForge's base package.
-- `JEPA_WMS_MODEL_PATH` is documented by the `jepa-wms` candidate only. It does not make
-  `JEPAWMSProvider` available through `WorldForge`; direct tests must inject `runtime=`.
+- `JEPA_WMS_MODEL_PATH`, `JEPA_WMS_MODEL_NAME`, and `JEPA_WMS_DEVICE` are documented by the
+  `jepa-wms` candidate only. They do not make `JEPAWMSProvider` available through `WorldForge`;
+  direct tests must inject `runtime=` or use `JEPAWMSProvider.from_torch_hub(...)`.
 - `RUNWAYML_API_SECRET` is preferred, but `RUNWAY_API_SECRET` remains supported as a legacy alias.
 
 ## Current State
 
-As of 2026-04-16, WorldForge is alpha. It is suitable for local development, adapter contract
+As of 2026-04-17, WorldForge is alpha. It is suitable for local development, adapter contract
 testing, deterministic evaluation, and provider-prototype workflows. It is not suitable for
 unattended production operation against third-party providers without host-level monitoring,
 credential management, persistence strategy, and operational safeguards.
