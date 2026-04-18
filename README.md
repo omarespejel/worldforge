@@ -219,40 +219,24 @@ a real runtime adapter. The current candidate is [`jepa-wms`](./docs/src/provide
 local fake-runtime and host-owned torch-hub contract scaffold for future `facebookresearch/jepa-wms`
 score-provider work.
 
-LeWorldModel is a local optional integration. Install the upstream runtime in the host
-environment, place checkpoints under `$STABLEWM_HOME` or set `LEWORLDMODEL_CACHE_DIR`, then set
-`LEWORLDMODEL_POLICY` to the checkpoint run name without the `_object.ckpt` suffix, for example
-`pusht/lewm`. The adapter expects tensors or nested numeric arrays that already match the
-checkpoint's task preprocessing contract; WorldForge does not infer raw-image transforms.
-Use `scripts/smoke_leworldmodel.py` from an isolated environment with the upstream
-`stable-worldmodel[train,env]` runtime to download the public `quentinll/lewm-pusht` weights,
-prepare the object checkpoint, and run a real `score_actions(...)` smoke.
+### LeWorldModel Tasks
 
-Run the smoke script with Python, not `sh` or `bash`:
+WorldForge exposes two LeWorldModel `uv run` commands:
+
+| Command | Purpose | Runs upstream LeWorldModel checkpoint inference? | Dependencies |
+| --- | --- | --- | --- |
+| `uv run worldforge-demo-leworldmodel` | Checkout-safe end-to-end provider/planner walkthrough | No | WorldForge only |
+| `uv run --python 3.10 --with "stable-worldmodel[train,env]" worldforge-smoke-leworldmodel` | Real checkpoint smoke through `LeWorldModelProvider.score_actions(...)` | Yes | Host LeWorldModel runtime, torch, checkpoint |
+
+The demo command injects a tiny deterministic LeWorldModel-compatible cost runtime. It proves
+provider registration, candidate scoring, score-based planning, mock execution, JSON persistence,
+and reload through the real WorldForge API, but it does **not** load Lucas Maes' upstream
+LeWorldModel checkpoint or run neural inference.
 
 ```bash
-uv venv --python=3.10 .venv-lewm
-source .venv-lewm/bin/activate
-uv pip install -e .
-uv pip install "stable-worldmodel[train,env]"
-
-python scripts/smoke_leworldmodel.py \
-  --stablewm-home ~/.stable-wm \
-  --policy pusht/lewm \
-  --device cpu
+uv run worldforge-demo-leworldmodel
+uv run worldforge-demo-leworldmodel --json-only
 ```
-
-The upstream LeWorldModel README uses Python 3.10, installs `stable-worldmodel[train,env]`, and
-expects `$STABLEWM_HOME` to default to `~/.stable-wm`. If you already have checkpoints elsewhere,
-pass `--cache-dir /path/to/checkpoint-root` or set `LEWORLDMODEL_CACHE_DIR`.
-
-For a checkout-safe end-to-end walkthrough that does not need torch or checkpoints, run
-`uv run python examples/leworldmodel_e2e_demo.py`. It injects a tiny deterministic
-LeWorldModel-compatible cost runtime, then demonstrates provider registration, candidate scoring,
-score-based planning, mock execution, JSON persistence, and reload through the real WorldForge API.
-This demo uses the real `LeWorldModelProvider` and `World.plan(... planning_mode="score")`
-pipeline, but it does **not** load Lucas Maes' upstream LeWorldModel checkpoint or run neural
-inference. Use `scripts/smoke_leworldmodel.py` for the real-checkpoint path.
 
 Concretely, the demo:
 
@@ -270,6 +254,30 @@ Concretely, the demo:
 The demo's `predicted_states` list is empty by design: a score provider ranks candidate futures;
 it does not mutate the world or emit generated video/world-state rollouts. Execution remains a
 separate provider step.
+
+The smoke command is the real-checkpoint path. It downloads or reuses the public
+`quentinll/lewm-pusht` weights, prepares the object checkpoint, constructs synthetic
+task-shaped tensors, and calls the real `stable_worldmodel.policy.AutoCostModel` path through
+`LeWorldModelProvider`.
+
+Run the smoke command through `uv`, not `sh` or `bash`:
+
+```bash
+uv run --python 3.10 \
+  --with "stable-worldmodel[train,env]" \
+  worldforge-smoke-leworldmodel \
+  --stablewm-home ~/.stable-wm \
+  --policy pusht/lewm \
+  --device cpu
+```
+
+For repeated smoke runs, create a dedicated environment once, install `stable-worldmodel[train,env]`
+there, then run `uv run --active worldforge-smoke-leworldmodel ...` while that environment is
+activated.
+
+The upstream LeWorldModel README uses Python 3.10, installs `stable-worldmodel[train,env]`, and
+expects `$STABLEWM_HOME` to default to `~/.stable-wm`. If you already have checkpoints elsewhere,
+pass `--cache-dir /path/to/checkpoint-root` or set `LEWORLDMODEL_CACHE_DIR`.
 
 LeRobot is a host-owned live policy integration. Install
 [`lerobot`](https://github.com/huggingface/lerobot) in the host environment and set

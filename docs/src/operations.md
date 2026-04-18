@@ -99,18 +99,18 @@ include those IDs in surrounding application logs.
 - For LeWorldModel failures, run `worldforge provider health leworldmodel`, verify
   `stable-worldmodel[env]` and `torch` are installed in the host environment, then confirm the
   configured policy exists under `$STABLEWM_HOME` or `LEWORLDMODEL_CACHE_DIR`.
-- To smoke-test a real LeWorldModel checkpoint, install the upstream
-  `stable-worldmodel[train,env]` runtime in an isolated environment and run
-  `python scripts/smoke_leworldmodel.py --stablewm-home /path/to/stablewm-home`.
-  Do not run this Python file with `sh` or `bash`. A minimal setup is:
-  `uv venv --python=3.10 .venv-lewm`, `source .venv-lewm/bin/activate`,
-  `uv pip install -e .`, `uv pip install "stable-worldmodel[train,env]"`, then
-  `python scripts/smoke_leworldmodel.py --stablewm-home ~/.stable-wm --policy pusht/lewm`.
+- To smoke-test a real LeWorldModel checkpoint, run the packaged uv command with upstream
+  dependencies:
+  `uv run --python 3.10 --with "stable-worldmodel[train,env]" worldforge-smoke-leworldmodel
+  --stablewm-home ~/.stable-wm --policy pusht/lewm`.
+  This is the real inference smoke: it prepares or reuses a checkpoint, builds task-shaped tensors,
+  and calls the upstream `stable_worldmodel.policy.AutoCostModel` path through
+  `LeWorldModelProvider`.
 - To demonstrate the LeWorldModel planning flow without optional dependencies, run
-  `python examples/leworldmodel_e2e_demo.py`. It uses the real `LeWorldModelProvider` interface
+  `uv run worldforge-demo-leworldmodel`. It uses the real `LeWorldModelProvider` interface
   with an injected deterministic cost runtime and exercises score planning, execution,
   persistence, and reload. It is not a real upstream-checkpoint inference run; use
-  `scripts/smoke_leworldmodel.py` for that path. The demo should report
+  `worldforge-smoke-leworldmodel` for that path. The demo should report
   `uses_leworldmodel_provider: true`, `uses_worldforge_score_planning: true`, and
   `uses_real_upstream_checkpoint: false`.
 - To smoke-test a real GR00T policy server, install or check out NVIDIA Isaac-GR00T, prepare a

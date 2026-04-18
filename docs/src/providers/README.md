@@ -166,12 +166,11 @@ LeWorldModel:
 - `action_candidates` must be a tensor or rectangular nested numeric sequence shaped as
   `(batch, samples, horizon, action_dim)`.
 - Model output must flatten to at least one finite numeric score.
-- `scripts/smoke_leworldmodel.py` can run a local end-to-end smoke against
-  `quentinll/lewm-pusht`; it requires the upstream `stable-worldmodel[train,env]` runtime.
-  Invoke it with Python, for example
-  `python scripts/smoke_leworldmodel.py --stablewm-home ~/.stable-wm --policy pusht/lewm`;
-  running it with `sh` or `bash` will make the shell parse Python code.
-- `examples/leworldmodel_e2e_demo.py` is the checkout-safe walkthrough for the same public
+- `uv run --python 3.10 --with "stable-worldmodel[train,env]" worldforge-smoke-leworldmodel`
+  can run a local end-to-end smoke against `quentinll/lewm-pusht`. This is the real checkpoint
+  path: it prepares or reuses an object checkpoint, builds synthetic task-shaped tensors, and runs
+  upstream LeWorldModel scoring through `LeWorldModelProvider`.
+- `uv run worldforge-demo-leworldmodel` is the checkout-safe walkthrough for the same public
   provider surface. It injects a deterministic LeWorldModel-compatible runtime, scores candidate
   action tensors, selects a plan, executes it through `mock`, persists the result, and reloads it.
   It uses the real `LeWorldModelProvider` and score-planning pipeline, but it does not load an

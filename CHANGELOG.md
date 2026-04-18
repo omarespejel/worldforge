@@ -57,8 +57,11 @@ releases may still include breaking changes when the public API needs to tighten
   uses the real `LeWorldModelProvider` with an injected deterministic cost runtime to show
   scoring, planning, execution, persistence, and reload without running upstream checkpoint
   inference.
-- Documented the real-checkpoint LeWorldModel smoke setup and made
-  `scripts/smoke_leworldmodel.py` executable with the upstream `~/.stable-wm` default.
+- Added `worldforge-demo-leworldmodel` and `worldforge-smoke-leworldmodel` console commands so the
+  checkout-safe LeWorldModel demo and real-checkpoint smoke can be run through `uv run`.
+- Documented the real-checkpoint LeWorldModel smoke setup and kept
+  `scripts/smoke_leworldmodel.py` as an executable compatibility wrapper with the upstream
+  `~/.stable-wm` default.
 
 ### Security
 
