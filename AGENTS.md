@@ -44,7 +44,7 @@ evaluation harnesses, and testable prototypes.
 - `scripts/scaffold_provider.py`: safe scaffold generator for new provider adapter files,
   fixture placeholders, tests, and docs stubs.
 - `scripts/smoke_leworldmodel.py`: compatibility wrapper for
-  `uv run --python 3.10 --with "stable-worldmodel[train,env]" worldforge-smoke-leworldmodel`.
+  `uv run --python 3.10 --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" worldforge-smoke-leworldmodel`.
 - `scripts/smoke_gr00t_policy.py`: optional live GR00T PolicyClient smoke for host environments
   with Isaac-GR00T and a policy server.
 
@@ -152,9 +152,10 @@ rm -f "$tmp_req"
 - Policy+score planning uses `policy_provider="gr00t"` plus `score_provider="leworldmodel"` or
   another score provider; score tensors remain host-preprocessed and provider-native.
 - `worldforge-smoke-leworldmodel` is an optional real-checkpoint smoke. Run it through
-  `uv run --python 3.10 --with "stable-worldmodel[train,env]" ...`; do not add those dependencies
-  to WorldForge's base package. The upstream default storage root is `~/.stable-wm`; object
-  checkpoints must already be extracted there or supplied through `--cache-dir`.
+  `uv run --python 3.10 --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" ...`;
+  do not add those dependencies to WorldForge's base package. The upstream default storage root is
+  `~/.stable-wm`; object checkpoints must already be extracted there or supplied through
+  `--cache-dir`.
 - `scripts/smoke_gr00t_policy.py` is an optional live PolicyClient smoke. It may launch
   `gr00t/eval/run_gr00t_server.py` from a host-owned Isaac-GR00T checkout, but it still requires
   the host to provide real observations and an embodiment-specific action translator.

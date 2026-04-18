@@ -166,7 +166,7 @@ LeWorldModel:
 - `action_candidates` must be a tensor or rectangular nested numeric sequence shaped as
   `(batch, samples, horizon, action_dim)`.
 - Model output must flatten to at least one finite numeric score.
-- `uv run --python 3.10 --with "stable-worldmodel[train,env]" worldforge-smoke-leworldmodel`
+- `uv run --python 3.10 --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" worldforge-smoke-leworldmodel`
   can run a local end-to-end smoke against `quentinll/lewm-pusht`. This is the real checkpoint
   path: it requires an extracted object checkpoint such as `~/.stable-wm/pusht/lewm_object.ckpt`,
   builds synthetic task-shaped tensors, and runs upstream LeWorldModel scoring through

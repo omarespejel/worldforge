@@ -226,7 +226,7 @@ WorldForge exposes two LeWorldModel `uv run` commands:
 | Command | Purpose | Runs upstream LeWorldModel checkpoint inference? | Dependencies |
 | --- | --- | --- | --- |
 | `uv run worldforge-demo-leworldmodel` | Checkout-safe end-to-end provider/planner walkthrough | No | WorldForge only |
-| `uv run --python 3.10 --with "stable-worldmodel[train,env]" worldforge-smoke-leworldmodel` | Real checkpoint smoke through `LeWorldModelProvider.score_actions(...)` | Yes | Host LeWorldModel runtime, torch, local object checkpoint |
+| `uv run --python 3.10 --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" worldforge-smoke-leworldmodel` | Real checkpoint smoke through `LeWorldModelProvider.score_actions(...)` | Yes | Host LeWorldModel runtime, torch, local object checkpoint |
 
 The demo command injects a tiny deterministic LeWorldModel-compatible cost runtime. It proves
 provider registration, candidate scoring, score-based planning, mock execution, JSON persistence,
@@ -264,7 +264,8 @@ Download the checkpoint archive from the upstream LeWorldModel README and extrac
 
 ```bash
 uv run --python 3.10 \
-  --with "stable-worldmodel[train,env]" \
+  --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
+  --with "datasets>=2.21" \
   worldforge-smoke-leworldmodel \
   --stablewm-home ~/.stable-wm \
   --policy pusht/lewm \
@@ -275,9 +276,11 @@ For repeated smoke runs, create a dedicated environment once, install `stable-wo
 there, then run `uv run --active worldforge-smoke-leworldmodel ...` while that environment is
 activated.
 
-The upstream LeWorldModel README uses Python 3.10, installs `stable-worldmodel[train,env]`, and
-expects `$STABLEWM_HOME` to default to `~/.stable-wm`. If you already have checkpoints elsewhere,
-pass `--cache-dir /path/to/checkpoint-root` or set `LEWORLDMODEL_CACHE_DIR`.
+The upstream LeWorldModel README uses Python 3.10 and expects `$STABLEWM_HOME` to default to
+`~/.stable-wm`. As of this smoke validation, the PyPI `stable-worldmodel` release does not include
+`stable_worldmodel.wm.lewm`, so the command uses the upstream GitHub source package plus
+`datasets>=2.21`. If you already have checkpoints elsewhere, pass
+`--cache-dir /path/to/checkpoint-root` or set `LEWORLDMODEL_CACHE_DIR`.
 
 LeRobot is a host-owned live policy integration. Install
 [`lerobot`](https://github.com/huggingface/lerobot) in the host environment and set

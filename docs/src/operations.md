@@ -101,7 +101,7 @@ include those IDs in surrounding application logs.
   configured policy exists under `$STABLEWM_HOME` or `LEWORLDMODEL_CACHE_DIR`.
 - To smoke-test a real LeWorldModel checkpoint, run the packaged uv command with upstream
   dependencies:
-  `uv run --python 3.10 --with "stable-worldmodel[train,env]" worldforge-smoke-leworldmodel
+  `uv run --python 3.10 --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" worldforge-smoke-leworldmodel
   --stablewm-home ~/.stable-wm --policy pusht/lewm`.
   This is the real inference smoke: it requires an extracted object checkpoint such as
   `~/.stable-wm/pusht/lewm_object.ckpt`, builds task-shaped tensors, and calls the upstream

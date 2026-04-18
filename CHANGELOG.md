@@ -64,6 +64,8 @@ releases may still include breaking changes when the public API needs to tighten
   `~/.stable-wm` default.
 - Corrected the LeWorldModel smoke task to require an existing upstream object checkpoint instead
   of relying on a nonexistent PyPI checkpoint-preparation helper.
+- Updated the real LeWorldModel smoke instructions to use the GitHub `stable-worldmodel` source
+  package and `datasets>=2.21`, matching the runtime that can load current LeWM checkpoints.
 
 ### Security
 

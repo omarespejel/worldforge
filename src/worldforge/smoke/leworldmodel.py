@@ -2,11 +2,13 @@
 
 Invoke this command through uv, for example:
 
-    uv run --python 3.10 --with "stable-worldmodel[train,env]" worldforge-smoke-leworldmodel
+    uv run --python 3.10 --with "<git stable-worldmodel>" --with "datasets>=2.21"
+      worldforge-smoke-leworldmodel
 
 This smoke requires the upstream LeWorldModel runtime dependencies and an
 extracted ``<policy>_object.ckpt`` under ``--stablewm-home`` or ``--cache-dir``.
-It is not part of WorldForge's base dependency set.
+Use the exact dependency command from the README. It is not part of
+WorldForge's base dependency set.
 """
 
 from __future__ import annotations
