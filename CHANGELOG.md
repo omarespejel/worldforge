@@ -62,6 +62,8 @@ releases may still include breaking changes when the public API needs to tighten
 - Documented the real-checkpoint LeWorldModel smoke setup and kept
   `scripts/smoke_leworldmodel.py` as an executable compatibility wrapper with the upstream
   `~/.stable-wm` default.
+- Corrected the LeWorldModel smoke task to require an existing upstream object checkpoint instead
+  of relying on a nonexistent PyPI checkpoint-preparation helper.
 
 ### Security
 

@@ -103,8 +103,9 @@ include those IDs in surrounding application logs.
   dependencies:
   `uv run --python 3.10 --with "stable-worldmodel[train,env]" worldforge-smoke-leworldmodel
   --stablewm-home ~/.stable-wm --policy pusht/lewm`.
-  This is the real inference smoke: it prepares or reuses a checkpoint, builds task-shaped tensors,
-  and calls the upstream `stable_worldmodel.policy.AutoCostModel` path through
+  This is the real inference smoke: it requires an extracted object checkpoint such as
+  `~/.stable-wm/pusht/lewm_object.ckpt`, builds task-shaped tensors, and calls the upstream
+  `stable_worldmodel.policy.AutoCostModel` path through
   `LeWorldModelProvider`.
 - To demonstrate the LeWorldModel planning flow without optional dependencies, run
   `uv run worldforge-demo-leworldmodel`. It uses the real `LeWorldModelProvider` interface

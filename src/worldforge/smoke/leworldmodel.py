@@ -4,8 +4,9 @@ Invoke this command through uv, for example:
 
     uv run --python 3.10 --with "stable-worldmodel[train,env]" worldforge-smoke-leworldmodel
 
-This smoke requires the upstream LeWorldModel runtime dependencies. It is not
-part of WorldForge's base dependency set.
+This smoke requires the upstream LeWorldModel runtime dependencies and an
+extracted ``<policy>_object.ckpt`` under ``--stablewm-home`` or ``--cache-dir``.
+It is not part of WorldForge's base dependency set.
 """
 
 from __future__ import annotations
@@ -24,31 +25,17 @@ def _checkpoint_path(cache_dir: Path, policy: str) -> Path:
     return cache_dir / f"{policy}_object.ckpt"
 
 
-def _prepare_object_checkpoint(
-    *,
-    policy: str,
-    hf_repo: str,
-    stablewm_home: Path,
-    cache_dir: Path,
-) -> Path:
+def _require_object_checkpoint(*, policy: str, cache_dir: Path) -> Path:
     object_path = _checkpoint_path(cache_dir, policy)
     if object_path.exists():
         return object_path
 
-    try:
-        import torch
-        from stable_worldmodel.wm.utils import load_pretrained
-    except ImportError as exc:  # pragma: no cover - exercised by host smoke usage
-        raise SystemExit(
-            "Preparing a LeWorldModel object checkpoint requires torch and the upstream "
-            "stable_worldmodel.wm.utils.load_pretrained helper. Install the upstream "
-            "stable-worldmodel[train,env] runtime before running this script."
-        ) from exc
-
-    model = load_pretrained(hf_repo, cache_dir=str(stablewm_home))
-    object_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(model, object_path)
-    return object_path
+    raise SystemExit(
+        f"LeWorldModel object checkpoint not found: {object_path}. "
+        "Download the checkpoint archive from the upstream LeWorldModel README and extract it "
+        "under STABLEWM_HOME so the policy resolves to <policy>_object.ckpt, or pass "
+        "--cache-dir to the directory that contains the policy subdirectory."
+    )
 
 
 def _build_inputs(
@@ -79,7 +66,6 @@ def _parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--policy", default=os.environ.get("LEWORLDMODEL_POLICY", "pusht/lewm"))
-    parser.add_argument("--hf-repo", default="quentinll/lewm-pusht")
     parser.add_argument(
         "--stablewm-home",
         type=Path,
@@ -89,9 +75,7 @@ def _parser() -> argparse.ArgumentParser:
         "--cache-dir",
         type=Path,
         default=None,
-        help=(
-            "Checkpoint root passed to LeWorldModelProvider. Defaults to STABLEWM_HOME/checkpoints."
-        ),
+        help=("Checkpoint root passed to LeWorldModelProvider. Defaults to STABLEWM_HOME."),
     )
     parser.add_argument("--device", default=os.environ.get("LEWORLDMODEL_DEVICE", "cpu"))
     parser.add_argument("--batch", type=int, default=1)
@@ -105,13 +89,8 @@ def _parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = _parser().parse_args()
-    cache_dir = args.cache_dir or (args.stablewm_home / "checkpoints")
-    object_path = _prepare_object_checkpoint(
-        policy=args.policy,
-        hf_repo=args.hf_repo,
-        stablewm_home=args.stablewm_home,
-        cache_dir=cache_dir,
-    )
+    cache_dir = args.cache_dir or args.stablewm_home
+    object_path = _require_object_checkpoint(policy=args.policy, cache_dir=cache_dir)
     info, action_candidates = _build_inputs(
         batch=args.batch,
         samples=args.samples,

@@ -168,8 +168,9 @@ LeWorldModel:
 - Model output must flatten to at least one finite numeric score.
 - `uv run --python 3.10 --with "stable-worldmodel[train,env]" worldforge-smoke-leworldmodel`
   can run a local end-to-end smoke against `quentinll/lewm-pusht`. This is the real checkpoint
-  path: it prepares or reuses an object checkpoint, builds synthetic task-shaped tensors, and runs
-  upstream LeWorldModel scoring through `LeWorldModelProvider`.
+  path: it requires an extracted object checkpoint such as `~/.stable-wm/pusht/lewm_object.ckpt`,
+  builds synthetic task-shaped tensors, and runs upstream LeWorldModel scoring through
+  `LeWorldModelProvider`.
 - `uv run worldforge-demo-leworldmodel` is the checkout-safe walkthrough for the same public
   provider surface. It injects a deterministic LeWorldModel-compatible runtime, scores candidate
   action tensors, selects a plan, executes it through `mock`, persists the result, and reloads it.

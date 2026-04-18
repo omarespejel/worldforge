@@ -226,7 +226,7 @@ WorldForge exposes two LeWorldModel `uv run` commands:
 | Command | Purpose | Runs upstream LeWorldModel checkpoint inference? | Dependencies |
 | --- | --- | --- | --- |
 | `uv run worldforge-demo-leworldmodel` | Checkout-safe end-to-end provider/planner walkthrough | No | WorldForge only |
-| `uv run --python 3.10 --with "stable-worldmodel[train,env]" worldforge-smoke-leworldmodel` | Real checkpoint smoke through `LeWorldModelProvider.score_actions(...)` | Yes | Host LeWorldModel runtime, torch, checkpoint |
+| `uv run --python 3.10 --with "stable-worldmodel[train,env]" worldforge-smoke-leworldmodel` | Real checkpoint smoke through `LeWorldModelProvider.score_actions(...)` | Yes | Host LeWorldModel runtime, torch, local object checkpoint |
 
 The demo command injects a tiny deterministic LeWorldModel-compatible cost runtime. It proves
 provider registration, candidate scoring, score-based planning, mock execution, JSON persistence,
@@ -255,12 +255,12 @@ The demo's `predicted_states` list is empty by design: a score provider ranks ca
 it does not mutate the world or emit generated video/world-state rollouts. Execution remains a
 separate provider step.
 
-The smoke command is the real-checkpoint path. It downloads or reuses the public
-`quentinll/lewm-pusht` weights, prepares the object checkpoint, constructs synthetic
-task-shaped tensors, and calls the real `stable_worldmodel.policy.AutoCostModel` path through
-`LeWorldModelProvider`.
+The smoke command is the real-checkpoint path. It requires a LeWorldModel object checkpoint such
+as `~/.stable-wm/pusht/lewm_object.ckpt`, constructs synthetic task-shaped tensors, and calls the
+real `stable_worldmodel.policy.AutoCostModel` path through `LeWorldModelProvider`.
 
-Run the smoke command through `uv`, not `sh` or `bash`:
+Download the checkpoint archive from the upstream LeWorldModel README and extract it under
+`$STABLEWM_HOME` first. Then run the smoke command through `uv`, not `sh` or `bash`:
 
 ```bash
 uv run --python 3.10 \

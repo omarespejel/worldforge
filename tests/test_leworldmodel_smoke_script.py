@@ -45,65 +45,23 @@ def test_checkpoint_path_uses_policy_object_checkpoint_name(tmp_path: Path) -> N
     )
 
 
-def test_prepare_object_checkpoint_reuses_existing_checkpoint(tmp_path: Path) -> None:
-    checkpoint = tmp_path / "checkpoints/pusht/lewm_object.ckpt"
+def test_require_object_checkpoint_reuses_existing_checkpoint(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "pusht/lewm_object.ckpt"
     checkpoint.parent.mkdir(parents=True)
     checkpoint.write_text("existing")
 
-    result = leworldmodel._prepare_object_checkpoint(
+    result = leworldmodel._require_object_checkpoint(
         policy="pusht/lewm",
-        hf_repo="quentinll/lewm-pusht",
-        stablewm_home=tmp_path / "stable-wm",
-        cache_dir=tmp_path / "checkpoints",
+        cache_dir=tmp_path,
     )
 
     assert result == checkpoint
     assert checkpoint.read_text() == "existing"
 
 
-def test_prepare_object_checkpoint_downloads_and_serializes_model(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    saved: dict[str, object] = {}
-    torch = ModuleType("torch")
-
-    def save(model: object, path: Path) -> None:
-        saved["model"] = model
-        saved["path"] = path
-        path.write_text("serialized")
-
-    torch.save = save  # type: ignore[attr-defined]
-    utils = ModuleType("stable_worldmodel.wm.utils")
-    utils.load_pretrained = lambda repo, cache_dir: {  # type: ignore[attr-defined]
-        "repo": repo,
-        "cache_dir": cache_dir,
-    }
-    wm = ModuleType("stable_worldmodel.wm")
-    wm.utils = utils  # type: ignore[attr-defined]
-    stable_worldmodel = ModuleType("stable_worldmodel")
-    stable_worldmodel.wm = wm  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "torch", torch)
-    monkeypatch.setitem(sys.modules, "stable_worldmodel", stable_worldmodel)
-    monkeypatch.setitem(sys.modules, "stable_worldmodel.wm", wm)
-    monkeypatch.setitem(sys.modules, "stable_worldmodel.wm.utils", utils)
-
-    checkpoint = leworldmodel._prepare_object_checkpoint(
-        policy="pusht/lewm",
-        hf_repo="quentinll/lewm-pusht",
-        stablewm_home=tmp_path / "stable-wm",
-        cache_dir=tmp_path / "checkpoints",
-    )
-
-    assert checkpoint == tmp_path / "checkpoints/pusht/lewm_object.ckpt"
-    assert checkpoint.read_text() == "serialized"
-    assert saved == {
-        "model": {
-            "repo": "quentinll/lewm-pusht",
-            "cache_dir": str(tmp_path / "stable-wm"),
-        },
-        "path": checkpoint,
-    }
+def test_require_object_checkpoint_explains_missing_checkpoint(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit, match="LeWorldModel object checkpoint not found"):
+        leworldmodel._require_object_checkpoint(policy="pusht/lewm", cache_dir=tmp_path)
 
 
 def test_build_inputs_uses_expected_tensor_shapes(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -159,8 +117,8 @@ def test_smoke_main_prints_provider_result(
 
     monkeypatch.setattr(
         leworldmodel,
-        "_prepare_object_checkpoint",
-        lambda **_kwargs: tmp_path / "checkpoints/pusht/lewm_object.ckpt",
+        "_require_object_checkpoint",
+        lambda **_kwargs: tmp_path / "pusht/lewm_object.ckpt",
     )
     monkeypatch.setattr(
         leworldmodel,
@@ -174,7 +132,7 @@ def test_smoke_main_prints_provider_result(
         [
             "worldforge-smoke-leworldmodel",
             "--cache-dir",
-            str(tmp_path / "checkpoints"),
+            str(tmp_path),
             "--device",
             "cpu",
         ],
@@ -184,7 +142,7 @@ def test_smoke_main_prints_provider_result(
 
     output = json.loads(capsys.readouterr().out)
     assert output == {
-        "checkpoint": str(tmp_path / "checkpoints/pusht/lewm_object.ckpt"),
+        "checkpoint": str(tmp_path / "pusht/lewm_object.ckpt"),
         "health": {"healthy": True, "name": "leworldmodel"},
         "result": {"best_index": 0, "scores": [0.1]},
     }

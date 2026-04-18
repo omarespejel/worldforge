@@ -153,7 +153,8 @@ rm -f "$tmp_req"
   another score provider; score tensors remain host-preprocessed and provider-native.
 - `worldforge-smoke-leworldmodel` is an optional real-checkpoint smoke. Run it through
   `uv run --python 3.10 --with "stable-worldmodel[train,env]" ...`; do not add those dependencies
-  to WorldForge's base package. The upstream default storage root is `~/.stable-wm`.
+  to WorldForge's base package. The upstream default storage root is `~/.stable-wm`; object
+  checkpoints must already be extracted there or supplied through `--cache-dir`.
 - `scripts/smoke_gr00t_policy.py` is an optional live PolicyClient smoke. It may launch
   `gr00t/eval/run_gr00t_server.py` from a host-owned Isaac-GR00T checkout, but it still requires
   the host to provide real observations and an embodiment-specific action translator.
