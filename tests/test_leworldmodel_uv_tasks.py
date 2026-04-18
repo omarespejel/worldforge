@@ -9,12 +9,16 @@ def test_leworldmodel_uv_commands_are_packaged_console_scripts() -> None:
     pyproject = pyproject_path.read_text()
 
     assert 'worldforge-demo-leworldmodel = "worldforge.demos.leworldmodel_e2e:main"' in pyproject
+    assert (
+        'worldforge-build-leworldmodel-checkpoint = "worldforge.smoke.leworldmodel_checkpoint:main"'
+    ) in pyproject
     assert 'worldforge-smoke-leworldmodel = "worldforge.smoke.leworldmodel:main"' in pyproject
 
 
 def test_leworldmodel_console_script_targets_are_importable() -> None:
     targets = [
         "worldforge.demos.leworldmodel_e2e:main",
+        "worldforge.smoke.leworldmodel_checkpoint:main",
         "worldforge.smoke.leworldmodel:main",
     ]
 

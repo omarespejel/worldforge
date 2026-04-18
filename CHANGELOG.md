@@ -59,6 +59,8 @@ releases may still include breaking changes when the public API needs to tighten
   inference.
 - Added `worldforge-demo-leworldmodel` and `worldforge-smoke-leworldmodel` console commands so the
   checkout-safe LeWorldModel demo and real-checkpoint smoke can be run through `uv run`.
+- Added `worldforge-build-leworldmodel-checkpoint`, a host-owned helper that builds the
+  LeWorldModel `*_object.ckpt` file expected by `AutoCostModel` from Hugging Face LeWM assets.
 - Documented the real-checkpoint LeWorldModel smoke setup and kept
   `scripts/smoke_leworldmodel.py` as an executable compatibility wrapper with the upstream
   `~/.stable-wm` default.

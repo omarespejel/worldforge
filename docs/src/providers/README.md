@@ -171,6 +171,9 @@ LeWorldModel:
   path: it requires an extracted object checkpoint such as `~/.stable-wm/pusht/lewm_object.ckpt`,
   builds synthetic task-shaped tensors, and runs upstream LeWorldModel scoring through
   `LeWorldModelProvider`.
+- `uv run --python 3.10 --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" --with huggingface_hub worldforge-build-leworldmodel-checkpoint`
+  can build the `*_object.ckpt` file expected by `AutoCostModel` from Hugging Face LeWM
+  `config.json` and `weights.pt` assets before you run the real checkpoint smoke.
 - `uv run worldforge-demo-leworldmodel` is the checkout-safe walkthrough for the same public
   provider surface. It injects a deterministic LeWorldModel-compatible runtime, scores candidate
   action tensors, selects a plan, executes it through `mock`, persists the result, and reloads it.

@@ -47,6 +47,7 @@ Issues = "https://github.com/AbdelStark/worldforge/issues"
 [project.scripts]
 worldforge = "worldforge.cli:main"
 worldforge-demo-leworldmodel = "worldforge.demos.leworldmodel_e2e:main"
+worldforge-build-leworldmodel-checkpoint = "worldforge.smoke.leworldmodel_checkpoint:main"
 worldforge-smoke-leworldmodel = "worldforge.smoke.leworldmodel:main"
 
 [dependency-groups]

@@ -107,6 +107,12 @@ include those IDs in surrounding application logs.
   `~/.stable-wm/pusht/lewm_object.ckpt`, builds task-shaped tensors, and calls the upstream
   `stable_worldmodel.policy.AutoCostModel` path through
   `LeWorldModelProvider`.
+- If you have Hugging Face LeWM `config.json` and `weights.pt` assets rather than an extracted
+  `*_object.ckpt` archive, build the object checkpoint first with
+  `uv run --python 3.10 --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" --with huggingface_hub
+  worldforge-build-leworldmodel-checkpoint --stablewm-home ~/.stable-wm --policy pusht/lewm`.
+  The builder downloads assets to `~/.cache/worldforge/leworldmodel` by default and writes the
+  object checkpoint under `$STABLEWM_HOME`.
 - To demonstrate the LeWorldModel planning flow without optional dependencies, run
   `uv run worldforge-demo-leworldmodel`. It uses the real `LeWorldModelProvider` interface
   with an injected deterministic cost runtime and exercises score planning, execution,

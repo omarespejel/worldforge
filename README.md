@@ -221,11 +221,12 @@ score-provider work.
 
 ### LeWorldModel Tasks
 
-WorldForge exposes two LeWorldModel `uv run` commands:
+WorldForge exposes three LeWorldModel `uv run` commands:
 
 | Command | Purpose | Runs upstream LeWorldModel checkpoint inference? | Dependencies |
 | --- | --- | --- | --- |
 | `uv run worldforge-demo-leworldmodel` | Checkout-safe end-to-end provider/planner walkthrough | No | WorldForge only |
+| `uv run --python 3.10 --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" --with huggingface_hub worldforge-build-leworldmodel-checkpoint` | Build the `*_object.ckpt` file expected by `AutoCostModel` from Hugging Face LeWM assets | No; prepares the checkpoint object | Host LeWorldModel runtime, torch, Hugging Face Hub access |
 | `uv run --python 3.10 --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" worldforge-smoke-leworldmodel` | Real checkpoint smoke through `LeWorldModelProvider.score_actions(...)` | Yes | Host LeWorldModel runtime, torch, local object checkpoint |
 
 The demo command injects a tiny deterministic LeWorldModel-compatible cost runtime. It proves
@@ -260,7 +261,20 @@ as `~/.stable-wm/pusht/lewm_object.ckpt`, constructs synthetic task-shaped tenso
 real `stable_worldmodel.policy.AutoCostModel` path through `LeWorldModelProvider`.
 
 Download the checkpoint archive from the upstream LeWorldModel README and extract it under
-`$STABLEWM_HOME` first. Then run the smoke command through `uv`, not `sh` or `bash`:
+`$STABLEWM_HOME` first. If you are using the Hugging Face LeWM assets instead of a prebuilt
+object checkpoint archive, build the object checkpoint first:
+
+```bash
+uv run --python 3.10 \
+  --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
+  --with "datasets>=2.21" \
+  --with huggingface_hub \
+  worldforge-build-leworldmodel-checkpoint \
+  --stablewm-home ~/.stable-wm \
+  --policy pusht/lewm
+```
+
+Then run the smoke command through `uv`, not `sh` or `bash`:
 
 ```bash
 uv run --python 3.10 \

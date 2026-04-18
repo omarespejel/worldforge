@@ -8,7 +8,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from worldforge.smoke import leworldmodel
+from worldforge.smoke import leworldmodel, leworldmodel_checkpoint
 
 
 def _load_script() -> ModuleType:
@@ -62,6 +62,230 @@ def test_require_object_checkpoint_reuses_existing_checkpoint(tmp_path: Path) ->
 def test_require_object_checkpoint_explains_missing_checkpoint(tmp_path: Path) -> None:
     with pytest.raises(SystemExit, match="LeWorldModel object checkpoint not found"):
         leworldmodel._require_object_checkpoint(policy="pusht/lewm", cache_dir=tmp_path)
+
+
+def test_build_checkpoint_reuses_existing_checkpoint_without_optional_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    checkpoint = tmp_path / "pusht/lewm_object.ckpt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("existing")
+    monkeypatch.setattr(
+        leworldmodel_checkpoint,
+        "_load_optional_build_dependencies",
+        lambda: pytest.fail("optional dependencies should not load when checkpoint exists"),
+    )
+
+    summary = leworldmodel_checkpoint.build_checkpoint(
+        repo_id="quentinll/lewm-pusht",
+        policy="pusht/lewm",
+        stablewm_home=tmp_path,
+    )
+
+    assert summary == {
+        "created": False,
+        "output": str(checkpoint),
+        "policy": "pusht/lewm",
+        "repo_id": "quentinll/lewm-pusht",
+        "reason": "checkpoint already exists",
+    }
+    assert checkpoint.read_text() == "existing"
+
+
+def test_checkpoint_builder_reports_missing_optional_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        leworldmodel_checkpoint,
+        "_load_optional_build_dependencies",
+        lambda: (_ for _ in ()).throw(SystemExit("missing optional runtime")),
+    )
+
+    with pytest.raises(SystemExit, match="missing optional runtime"):
+        leworldmodel_checkpoint.build_checkpoint(
+            repo_id="quentinll/lewm-pusht",
+            policy="pusht/lewm",
+            stablewm_home=tmp_path,
+        )
+
+
+def test_build_checkpoint_saves_object_checkpoint_with_injected_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class FakeParameter:
+        def __init__(self) -> None:
+            self.requires_grad = True
+
+        def requires_grad_(self, value: bool) -> None:
+            self.requires_grad = value
+
+    class FakeModel:
+        def __init__(self) -> None:
+            self.evaluated = False
+            self.parameter = FakeParameter()
+
+        def load_state_dict(self, weights: object, *, strict: bool) -> object:
+            assert weights == {"weights": True}
+            assert strict is False
+            return SimpleNamespace(missing_keys=(), unexpected_keys=())
+
+        def eval(self) -> None:
+            self.evaluated = True
+
+        def parameters(self) -> list[FakeParameter]:
+            return [self.parameter]
+
+    class FakeTorch:
+        def __init__(self) -> None:
+            self.saved_model: FakeModel | None = None
+
+        def load(self, path: Path, *, map_location: str) -> dict[str, bool]:
+            assert path.name == "weights.pt"
+            assert map_location == "cpu"
+            return {"weights": True}
+
+        def save(self, model: FakeModel, path: Path) -> None:
+            self.saved_model = model
+            path.write_text("saved")
+
+    class FakeOmegaConf:
+        @staticmethod
+        def load(path: Path) -> dict[str, str]:
+            assert path.name == "config.json"
+            return {"_target_": "fake"}
+
+    model = FakeModel()
+    torch = FakeTorch()
+
+    def hf_hub_download(*, repo_id: str, filename: str, local_dir: str) -> str:
+        assert repo_id == "quentinll/lewm-pusht"
+        path = Path(local_dir) / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(filename)
+        return str(path)
+
+    monkeypatch.setattr(
+        leworldmodel_checkpoint,
+        "_load_optional_build_dependencies",
+        lambda: (torch, hf_hub_download, lambda config: model, FakeOmegaConf),
+    )
+
+    summary = leworldmodel_checkpoint.build_checkpoint(
+        repo_id="quentinll/lewm-pusht",
+        policy="pusht/lewm",
+        stablewm_home=tmp_path / "stablewm",
+        cache_dir=tmp_path / "assets",
+    )
+
+    assert summary == {
+        "config": str(tmp_path / "assets/config.json"),
+        "created": True,
+        "output": str(tmp_path / "stablewm/pusht/lewm_object.ckpt"),
+        "policy": "pusht/lewm",
+        "repo_id": "quentinll/lewm-pusht",
+        "weights": str(tmp_path / "assets/weights.pt"),
+    }
+    assert torch.saved_model is model
+    assert model.evaluated is True
+    assert model.parameter.requires_grad is False
+    assert (tmp_path / "stablewm/pusht/lewm_object.ckpt").read_text() == "saved"
+
+
+def test_build_checkpoint_rejects_incompatible_weights(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class FakeModel:
+        def load_state_dict(self, weights: object, *, strict: bool) -> object:
+            return SimpleNamespace(missing_keys=("encoder.weight",), unexpected_keys=())
+
+    class FakeTorch:
+        @staticmethod
+        def load(path: Path, *, map_location: str) -> dict[str, bool]:
+            return {"weights": True}
+
+    class FakeOmegaConf:
+        @staticmethod
+        def load(path: Path) -> dict[str, str]:
+            return {"_target_": "fake"}
+
+    def hf_hub_download(*, repo_id: str, filename: str, local_dir: str) -> str:
+        path = Path(local_dir) / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(filename)
+        return str(path)
+
+    monkeypatch.setattr(
+        leworldmodel_checkpoint,
+        "_load_optional_build_dependencies",
+        lambda: (FakeTorch, hf_hub_download, lambda config: FakeModel(), FakeOmegaConf),
+    )
+
+    with pytest.raises(SystemExit, match="weights did not match"):
+        leworldmodel_checkpoint.build_checkpoint(
+            repo_id="quentinll/lewm-pusht",
+            policy="pusht/lewm",
+            stablewm_home=tmp_path / "stablewm",
+            cache_dir=tmp_path / "assets",
+        )
+
+
+def test_incompatible_keys_supports_torch_return_object() -> None:
+    keys = SimpleNamespace(missing_keys=("encoder.weight",), unexpected_keys=("head.bias",))
+
+    assert leworldmodel_checkpoint._incompatible_keys(keys) == (
+        ["encoder.weight"],
+        ["head.bias"],
+    )
+    assert leworldmodel_checkpoint._incompatible_keys((["missing"], ["unexpected"])) == (
+        ["missing"],
+        ["unexpected"],
+    )
+    assert leworldmodel_checkpoint._incompatible_keys(None) == ([], [])
+
+
+def test_checkpoint_builder_main_prints_summary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: dict[str, object] = {}
+
+    def fake_build_checkpoint(**kwargs: object) -> dict[str, object]:
+        calls.update(kwargs)
+        return {"created": False, "output": "checkpoint"}
+
+    monkeypatch.setattr(leworldmodel_checkpoint, "build_checkpoint", fake_build_checkpoint)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "worldforge-build-leworldmodel-checkpoint",
+            "--repo-id",
+            "repo/id",
+            "--policy",
+            "task/lewm",
+            "--stablewm-home",
+            str(tmp_path / "stablewm"),
+            "--asset-cache-dir",
+            str(tmp_path / "assets"),
+            "--force",
+        ],
+    )
+
+    assert leworldmodel_checkpoint.main() == 0
+
+    assert calls == {
+        "cache_dir": tmp_path / "assets",
+        "force": True,
+        "policy": "task/lewm",
+        "repo_id": "repo/id",
+        "stablewm_home": tmp_path / "stablewm",
+    }
+    assert json.loads(capsys.readouterr().out) == {"created": False, "output": "checkpoint"}
 
 
 def test_build_inputs_uses_expected_tensor_shapes(monkeypatch: pytest.MonkeyPatch) -> None:

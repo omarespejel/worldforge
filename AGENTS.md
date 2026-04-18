@@ -39,6 +39,8 @@ evaluation harnesses, and testable prototypes.
 - `src/worldforge/demos/`: packaged demo entry points exposed through `uv run` console scripts.
 - `src/worldforge/smoke/`: packaged optional-runtime smoke entry points exposed through `uv run`
   console scripts.
+- `src/worldforge/smoke/leworldmodel_checkpoint.py`: optional host-owned builder for creating the
+  LeWorldModel `*_object.ckpt` file expected by `AutoCostModel` from Hugging Face LeWM assets.
 - `examples/leworldmodel_e2e_demo.py`: checkout-safe end-to-end LeWorldModel provider-surface
   score-planning compatibility wrapper for `uv run worldforge-demo-leworldmodel`.
 - `scripts/scaffold_provider.py`: safe scaffold generator for new provider adapter files,
@@ -156,6 +158,10 @@ rm -f "$tmp_req"
   do not add those dependencies to WorldForge's base package. The upstream default storage root is
   `~/.stable-wm`; object checkpoints must already be extracted there or supplied through
   `--cache-dir`.
+- `worldforge-build-leworldmodel-checkpoint` is an optional host-owned object-checkpoint builder
+  for Hugging Face LeWM `config.json` and `weights.pt` assets. Run it with the same upstream
+  LeWorldModel runtime plus `huggingface_hub`; do not add those dependencies to WorldForge's base
+  package or commit downloaded assets/checkpoints.
 - `scripts/smoke_gr00t_policy.py` is an optional live PolicyClient smoke. It may launch
   `gr00t/eval/run_gr00t_server.py` from a host-owned Isaac-GR00T checkout, but it still requires
   the host to provide real observations and an embodiment-specific action translator.
