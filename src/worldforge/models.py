@@ -63,6 +63,14 @@ def require_positive_int(value: int, *, name: str) -> int:
     return value
 
 
+def require_non_negative_int(value: int, *, name: str) -> int:
+    """Raise WorldForgeError unless ``value`` is a non-bool integer >= 0."""
+
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise WorldForgeError(f"{name} must be an integer greater than or equal to 0.")
+    return value
+
+
 def require_finite_number(value: float | int, *, name: str) -> float:
     """Raise WorldForgeError unless ``value`` is a finite real number."""
 
@@ -1558,6 +1566,25 @@ class HistoryEntry:
     summary: str
     action_json: str | None = None
 
+    def __post_init__(self) -> None:
+        self.step = require_non_negative_int(self.step, name="HistoryEntry step")
+        if not isinstance(self.state, dict):
+            raise WorldForgeError("HistoryEntry state must be a JSON object.")
+        if not isinstance(self.summary, str) or not self.summary.strip():
+            raise WorldForgeError("HistoryEntry summary must be a non-empty string.")
+        if self.action_json is not None:
+            if not isinstance(self.action_json, str) or not self.action_json.strip():
+                raise WorldForgeError(
+                    "HistoryEntry action_json must be a non-empty string when provided."
+                )
+            try:
+                action_payload = json.loads(self.action_json)
+            except json.JSONDecodeError as exc:
+                raise WorldForgeError("HistoryEntry action_json must be valid JSON.") from exc
+            Action.from_dict(action_payload)
+        self.state = dict(self.state)
+        self.summary = self.summary.strip()
+
     def to_dict(self) -> JSONDict:
         return {
             "step": self.step,
@@ -1568,9 +1595,11 @@ class HistoryEntry:
 
     @classmethod
     def from_dict(cls, payload: JSONDict) -> HistoryEntry:
+        if not isinstance(payload, dict):
+            raise WorldForgeError("HistoryEntry payload must be a JSON object.")
         return cls(
-            step=int(payload["step"]),
-            state=dict(payload["state"]),
-            summary=str(payload.get("summary", "")),
+            step=payload["step"],
+            state=payload["state"],
+            summary=payload.get("summary", ""),
             action_json=payload.get("action_json"),
         )

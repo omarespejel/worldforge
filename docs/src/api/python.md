@@ -251,7 +251,7 @@ WorldForge uses three public exception families for runtime workflows:
 - `WorldForgeError`: invalid caller input, invalid model values, unsupported formats, and invalid
   local configuration values, including non-file-safe world IDs used for persistence lookup.
 - `WorldStateError`: malformed persisted state or provider-supplied world state that cannot be
-  safely restored or applied.
+  safely restored or applied, including invalid scene-object maps and invalid history entries.
 - `ProviderError`: provider credentials, transport failures, unsupported provider operations,
   malformed upstream responses, provider-specific input limits, expired artifacts, invalid
   downloaded media, optional dependency failures, and malformed model score outputs.

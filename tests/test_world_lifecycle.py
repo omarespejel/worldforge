@@ -38,6 +38,8 @@ def test_world_prediction_compare_and_persistence_flow(tmp_path) -> None:
 
     world_id = forge.save_world(world)
     assert world_id in forge.list_worlds()
+    assert list(tmp_path.glob("*.tmp")) == []
+    assert list(tmp_path.glob(".*.tmp")) == []
 
     snapshot_json = forge.export_world(world_id, format="json")
     payload = json.loads(snapshot_json)
@@ -157,3 +159,81 @@ def test_world_import_and_load_reject_malformed_state(tmp_path) -> None:
 
     with pytest.raises(WorldStateError, match="World file"):
         forge.load_world("broken")
+
+
+def test_world_import_rejects_malformed_history_entries(tmp_path) -> None:
+    forge = WorldForge(state_dir=tmp_path)
+    valid_history_state = {
+        "id": "world_history",
+        "name": "history",
+        "provider": "mock",
+        "scene": {"objects": {}},
+        "metadata": {},
+        "step": 0,
+    }
+    base_state = {
+        **valid_history_state,
+        "step": 1,
+        "history": [
+            {
+                "step": 0,
+                "state": valid_history_state,
+                "summary": "world initialized",
+                "action_json": None,
+            }
+        ],
+    }
+
+    restored = forge.import_world(json.dumps(base_state))
+    assert restored.history_length == 1
+
+    malformed_cases = [
+        (
+            {**base_state, "history": ["not-an-entry"]},
+            "history\\[0\\] must be a JSON object",
+        ),
+        (
+            {
+                **base_state,
+                "history": [{**base_state["history"][0], "step": -1}],
+            },
+            "HistoryEntry step",
+        ),
+        (
+            {
+                **base_state,
+                "history": [{**base_state["history"][0], "step": 2}],
+            },
+            "step must not be greater than current step",
+        ),
+        (
+            {
+                **base_state,
+                "history": [{**base_state["history"][0], "summary": ""}],
+            },
+            "summary",
+        ),
+        (
+            {
+                **base_state,
+                "history": [{**base_state["history"][0], "action_json": "{broken"}],
+            },
+            "action_json",
+        ),
+        (
+            {
+                **base_state,
+                "history": [
+                    {
+                        **base_state["history"][0],
+                        "state": {**valid_history_state, "id": "../bad"},
+                    }
+                ],
+            },
+            "invalid state",
+        ),
+    ]
+
+    for payload, message in malformed_cases:
+        with pytest.raises(WorldStateError, match=message):
+            forge.import_world(json.dumps(payload))

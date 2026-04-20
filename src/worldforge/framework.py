@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Iterable, Sequence
+from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +38,7 @@ from worldforge.models import (
     dump_json,
     ensure_directory,
     generate_id,
+    require_non_negative_int,
     require_positive_int,
 )
 from worldforge.providers import (
@@ -161,11 +163,28 @@ def _validate_world_state_payload(state: JSONDict, *, context: str) -> None:
         raise WorldStateError(f"{context} field 'history' must be a JSON array.")
 
     try:
-        step = int(state.get("step", 0))
-    except (TypeError, ValueError) as exc:
-        raise WorldStateError(f"{context} field 'step' must be an integer.") from exc
-    if step < 0:
-        raise WorldStateError(f"{context} field 'step' must be greater than or equal to 0.")
+        step = require_non_negative_int(state.get("step", 0), name=f"{context} field 'step'")
+    except WorldForgeError as exc:
+        raise WorldStateError(str(exc)) from exc
+
+    for index, entry in enumerate(history):
+        if not isinstance(entry, dict):
+            raise WorldStateError(f"{context} history[{index}] must be a JSON object.")
+        try:
+            history_entry = HistoryEntry.from_dict(entry)
+        except (KeyError, TypeError, ValueError, WorldForgeError) as exc:
+            raise WorldStateError(f"{context} history[{index}] is invalid: {exc}") from exc
+        if history_entry.step > step:
+            raise WorldStateError(
+                f"{context} history[{index}] step must not be greater than current step."
+            )
+        try:
+            _validate_world_state_payload(
+                history_entry.state,
+                context=f"{context} history[{index}].state",
+            )
+        except WorldStateError as exc:
+            raise WorldStateError(f"{context} history[{index}] has invalid state: {exc}") from exc
 
 
 def _restore_scene_objects(state: JSONDict, *, context: str) -> dict[str, SceneObject]:
@@ -181,6 +200,24 @@ def _restore_scene_objects(state: JSONDict, *, context: str) -> dict[str, SceneO
                 f"{context} scene object '{object_id}' could not be restored: {exc}"
             ) from exc
     return restored
+
+
+def _restore_history_entries(
+    state: JSONDict,
+    *,
+    context: str,
+    fallback: HistoryEntry,
+) -> list[HistoryEntry]:
+    entries = state.get("history", [])
+    restored: list[HistoryEntry] = []
+    for index, entry in enumerate(entries):
+        try:
+            restored.append(HistoryEntry.from_dict(entry))
+        except (KeyError, TypeError, ValueError, WorldForgeError) as exc:
+            raise WorldStateError(
+                f"{context} history[{index}] could not be restored: {exc}"
+            ) from exc
+    return restored or [fallback]
 
 
 @dataclass(slots=True)
@@ -361,16 +398,16 @@ class World:
             )
             world.step = int(state.get("step", 0))
             world.scene_objects = _restore_scene_objects(state, context="World state")
-            world._history = [
-                HistoryEntry.from_dict(entry) for entry in state.get("history", [])
-            ] or [
-                HistoryEntry(
+            world._history = _restore_history_entries(
+                state,
+                context="World state",
+                fallback=HistoryEntry(
                     step=world.step,
                     state=world._snapshot(),
                     summary="world restored",
                     action_json=None,
-                )
-            ]
+                ),
+            )
         except (KeyError, TypeError, ValueError) as exc:
             raise WorldStateError(f"World state could not be restored: {exc}") from exc
         return world
@@ -410,16 +447,16 @@ class World:
             self.metadata = dict(state.get("metadata", {}))
             self.scene_objects = _restore_scene_objects(state, context="World state")
             if not preserve_history:
-                self._history = [
-                    HistoryEntry.from_dict(entry) for entry in state.get("history", [])
-                ] or [
-                    HistoryEntry(
+                self._history = _restore_history_entries(
+                    state,
+                    context="World state",
+                    fallback=HistoryEntry(
                         step=self.step,
                         state=self._snapshot(),
                         summary="world restored",
                         action_json=None,
-                    )
-                ]
+                    ),
+                )
         except (KeyError, TypeError, ValueError) as exc:
             raise WorldStateError(f"World state could not be applied: {exc}") from exc
 
@@ -1081,10 +1118,22 @@ class WorldForge:
 
     def save_world(self, world: World) -> str:
         path = _world_file(self.state_dir, world.id)
+        tmp_path = path.with_name(f".{path.name}.{generate_id('tmp')}.tmp")
         try:
-            path.write_text(world.to_json(), encoding="utf-8")
+            payload = world.to_json()
+            World.from_state(self, json.loads(payload))
+            tmp_path.write_text(payload, encoding="utf-8")
+            tmp_path.replace(path)
         except OSError as exc:
             raise WorldStateError(f"Failed to save world '{world.id}' to {path}: {exc}") from exc
+        except (json.JSONDecodeError, WorldStateError) as exc:
+            raise WorldStateError(
+                f"World '{world.id}' is not valid for persistence: {exc}"
+            ) from exc
+        finally:
+            if tmp_path.exists():
+                with suppress(OSError):
+                    tmp_path.unlink()
         return world.id
 
     def load_world(self, world_id: str) -> World:

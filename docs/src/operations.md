@@ -53,7 +53,10 @@ Supported persistence invariants:
 - World IDs are validated as file-safe local storage identifiers before any read or write. Path
   separators, traversal-shaped IDs, empty strings, and non-string IDs are rejected.
 - Local JSON imports reject malformed scene object IDs, non-object state payloads, invalid
-  metadata, invalid history, and negative steps.
+  metadata, invalid history, negative steps, history entries from future steps, empty history
+  summaries, malformed serialized actions, and invalid historical snapshot states.
+- `save_world(...)` validates the serialized world before writing and replaces the destination file
+  atomically through a temporary file in the same directory.
 - README and operations docs state that multi-writer persistence is host-owned.
 - Any future built-in persistence backend must be introduced as an explicit adapter with its own
   locking, migration, and recovery documentation.

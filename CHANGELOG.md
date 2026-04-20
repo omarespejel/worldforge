@@ -77,6 +77,11 @@ releases may still include breaking changes when the public API needs to tighten
 
 - Rejected non-file-safe world IDs before local persistence reads and writes, preventing traversal
   through imported or caller-supplied world identifiers.
+- Validated persisted world history entries end to end, including non-negative entry steps,
+  historical snapshot states, non-empty summaries, serialized action payloads, and the invariant
+  that history entry steps cannot exceed the current world step.
+- Wrote saved worlds through validated same-directory temporary files before atomically replacing
+  the destination JSON file.
 - Rejected stringly-typed booleans for scene object graspability, provider capabilities, and the
   JEPA-WMS `actions_are_normalized` option instead of silently coercing values such as `"false"`
   to `True`.

@@ -536,7 +536,10 @@ State invariants:
 - world `step` is always a non-negative integer
 - `scene.objects` is a JSON object keyed by object ID
 - embedded scene object IDs must match their map keys
-- metadata and history are JSON containers
+- metadata is a JSON object
+- history entries have non-negative steps, validated snapshot states, non-empty summaries, and
+  valid serialized action payloads when actions are present
+- history entry steps cannot exceed the current world step
 - invalid public inputs fail explicitly instead of being silently coerced
 - score providers return finite scores and an in-range `best_index`
 - policy providers return executable actions and preserve raw provider actions

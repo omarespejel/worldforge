@@ -297,7 +297,8 @@ Known limitations:
 - JEPA and Genie are credential-gated scaffold adapters backed by deterministic mock behavior.
 - `jepa-wms` remains a direct-construction candidate and is not exported or auto-registered.
 - Local JSON persistence is single-writer only and has no locking, migrations, backup, or recovery
-  policy beyond host-owned export/import.
+  policy beyond host-owned export/import. WorldForge validates world snapshots and writes saved
+  worlds atomically, but it does not provide database-grade durability.
 - Built-in evaluation scores are deterministic contract signals, not physical-fidelity,
   media-quality, or real-world safety claims.
 - Optional model runtimes, checkpoints, robot dependencies, trace export, dashboards, and

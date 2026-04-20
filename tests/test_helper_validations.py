@@ -27,7 +27,7 @@ from worldforge import (
     WorldForgeError,
     WorldStateError,
 )
-from worldforge.models import average, dump_json
+from worldforge.models import HistoryEntry, average, dump_json
 from worldforge.providers import PredictionPayload, ProviderError
 from worldforge.providers.http_utils import asset_to_uri, parse_size, poll_json_task
 
@@ -323,6 +323,16 @@ def test_public_validation_guards_cover_boundary_failure_modes() -> None:
     assert ProviderCapabilities().enabled_names() == []
     with pytest.raises(WorldForgeError, match="ProviderCapabilities predict"):
         ProviderCapabilities(predict="true")  # type: ignore[arg-type]
+    with pytest.raises(WorldForgeError, match="HistoryEntry step"):
+        HistoryEntry(step=-1, state={}, summary="bad")
+    with pytest.raises(WorldForgeError, match="HistoryEntry state"):
+        HistoryEntry(step=0, state=[], summary="bad")  # type: ignore[arg-type]
+    with pytest.raises(WorldForgeError, match="summary"):
+        HistoryEntry(step=0, state={}, summary="")
+    with pytest.raises(WorldForgeError, match="action_json"):
+        HistoryEntry(step=0, state={}, summary="bad", action_json="{broken")
+    with pytest.raises(WorldForgeError, match="Action.from_dict"):
+        HistoryEntry(step=0, state={}, summary="bad", action_json="[]")
     with pytest.raises(WorldForgeError):
         SceneObject(
             "cube",
