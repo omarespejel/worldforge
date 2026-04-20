@@ -9,12 +9,104 @@ import pytest
 from worldforge import GenerationOptions, ProviderEvent, ProviderRequestPolicy, VideoClip
 from worldforge.models import WorldForgeError
 from worldforge.providers import CosmosProvider, ProviderError, RunwayProvider
+from worldforge.testing import assert_provider_contract
 
 _FIXTURE_DIR = Path(__file__).parent / "fixtures" / "providers"
 
 
 def _fixture(name: str) -> dict[str, object]:
     return json.loads((_FIXTURE_DIR / name).read_text(encoding="utf-8"))
+
+
+def test_cosmos_provider_contract() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/v1/health/ready":
+            return httpx.Response(200, json=_fixture("cosmos_health_ready.json"))
+        if request.method == "POST" and request.url.path == "/v1/infer":
+            return httpx.Response(200, json=_fixture("cosmos_generate_success.json"))
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    provider = CosmosProvider(
+        base_url="http://cosmos.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    report = assert_provider_contract(provider)
+
+    assert report.configured is True
+    assert report.exercised_operations == ["generate"]
+    assert set(provider.profile().capabilities.enabled_names()) == {"generate"}
+
+
+def test_cosmos_provider_contract_unconfigured(monkeypatch) -> None:
+    monkeypatch.delenv("COSMOS_BASE_URL", raising=False)
+
+    report = assert_provider_contract(CosmosProvider())
+
+    assert report.configured is False
+    assert report.exercised_operations == []
+
+
+def test_runway_provider_contract(monkeypatch) -> None:
+    monkeypatch.setenv("RUNWAYML_API_SECRET", "runway-test-key")
+    generated_bytes = b"runway-generated"
+    transferred_bytes = b"runway-transferred"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/v1/organization":
+            return httpx.Response(200, json={"id": "org_test"})
+        if request.method == "POST" and request.url.path == "/v1/image_to_video":
+            return httpx.Response(200, json={"id": "task_generate"})
+        if request.method == "POST" and request.url.path == "/v1/video_to_video":
+            return httpx.Response(200, json={"id": "task_transfer"})
+        if request.method == "GET" and request.url.path == "/v1/tasks/task_generate":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "task_generate",
+                    "createdAt": "2026-04-07T00:00:00Z",
+                    "status": "SUCCEEDED",
+                    "output": ["https://downloads.example.com/generated.mp4"],
+                },
+            )
+        if request.method == "GET" and request.url.path == "/v1/tasks/task_transfer":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "task_transfer",
+                    "createdAt": "2026-04-07T00:00:00Z",
+                    "status": "SUCCEEDED",
+                    "output": ["https://downloads.example.com/transferred.mp4"],
+                },
+            )
+        if request.method == "GET" and request.url.host == "downloads.example.com":
+            if request.url.path.endswith("generated.mp4"):
+                return httpx.Response(200, content=generated_bytes)
+            if request.url.path.endswith("transferred.mp4"):
+                return httpx.Response(200, content=transferred_bytes)
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    provider = RunwayProvider(
+        transport=httpx.MockTransport(handler),
+        poll_interval_seconds=0.0,
+        max_polls=1,
+    )
+
+    report = assert_provider_contract(provider)
+
+    assert report.configured is True
+    assert set(report.exercised_operations) == {"generate", "transfer"}
+    assert set(provider.profile().capabilities.enabled_names()) == {"generate", "transfer"}
+
+
+def test_runway_provider_contract_unconfigured(monkeypatch) -> None:
+    monkeypatch.delenv("RUNWAYML_API_SECRET", raising=False)
+    monkeypatch.delenv("RUNWAY_API_SECRET", raising=False)
+
+    report = assert_provider_contract(RunwayProvider())
+
+    assert report.configured is False
+    assert report.exercised_operations == []
 
 
 def test_cosmos_provider_health_and_generate() -> None:

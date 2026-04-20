@@ -8,6 +8,7 @@ import pytest
 
 from worldforge import Action, ActionScoreResult, WorldForge, WorldForgeError
 from worldforge.providers import LeWorldModelProvider, ProviderError
+from worldforge.testing import assert_provider_contract
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "providers"
 
@@ -295,6 +296,35 @@ def test_leworldmodel_provider_rejects_malformed_payload_fixtures(
             info=payload["info"],
             action_candidates=payload["action_candidates"],
         )
+
+
+def test_leworldmodel_provider_contract() -> None:
+    payload = _fixture("leworldmodel_score_request.json")
+    provider = LeWorldModelProvider(
+        policy="pusht/lewm",
+        model_loader=lambda _policy, _cache_dir: FakeLeWorldModel([0.7, 0.15, 0.4]),
+        tensor_module=FakeTorch(),
+    )
+
+    report = assert_provider_contract(
+        provider,
+        score_info=payload["info"],
+        score_action_candidates=payload["action_candidates"],
+    )
+
+    assert report.configured is True
+    assert report.exercised_operations == ["score"]
+    assert set(provider.profile().capabilities.enabled_names()) == {"score"}
+
+
+def test_leworldmodel_provider_contract_unconfigured(monkeypatch) -> None:
+    monkeypatch.delenv("LEWORLDMODEL_POLICY", raising=False)
+    monkeypatch.delenv("LEWM_POLICY", raising=False)
+
+    report = assert_provider_contract(LeWorldModelProvider(tensor_module=FakeTorch()))
+
+    assert report.configured is False
+    assert report.exercised_operations == []
 
 
 def test_leworldmodel_provider_rejects_malformed_score_output_fixture() -> None:

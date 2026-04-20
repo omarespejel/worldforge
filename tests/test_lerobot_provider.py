@@ -109,6 +109,30 @@ class FakeScoreProvider(BaseProvider):
         return self._result
 
 
+def test_lerobot_provider_contract() -> None:
+    provider = LeRobotPolicyProvider(
+        policy=FakeLeRobotPolicy(response=FakeTensor([[0.1, 0.5, 0.0]])),
+        embodiment_tag="aloha",
+        action_translator=lambda *_args: [Action.move_to(0.1, 0.5, 0.0)],
+    )
+
+    report = assert_provider_contract(provider, policy_info=_policy_info())
+
+    assert report.configured is True
+    assert report.exercised_operations == ["policy"]
+    assert set(provider.profile().capabilities.enabled_names()) == {"policy"}
+
+
+def test_lerobot_provider_contract_unconfigured(monkeypatch) -> None:
+    monkeypatch.delenv("LEROBOT_POLICY_PATH", raising=False)
+    monkeypatch.delenv("LEROBOT_POLICY", raising=False)
+
+    report = assert_provider_contract(LeRobotPolicyProvider())
+
+    assert report.configured is False
+    assert report.exercised_operations == []
+
+
 def test_lerobot_policy_provider_passes_contract_and_emits_events() -> None:
     response = FakeTensor([[0.1, 0.5, 0.0]])
     policy = FakeLeRobotPolicy(response)
