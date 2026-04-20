@@ -974,6 +974,46 @@ class World:
         )
 
 
+def _seed_kitchen(world: World) -> None:
+    world.add_object(
+        SceneObject(
+            "countertop",
+            Position(0.0, 0.9, 0.0),
+            BBox(Position(-1.0, 0.85, -0.5), Position(1.0, 0.95, 0.5)),
+        )
+    )
+
+
+def _seed_mug(world: World) -> None:
+    world.add_object(
+        SceneObject(
+            "mug",
+            Position(0.0, 0.8, 0.0),
+            BBox(Position(-0.05, 0.75, -0.05), Position(0.05, 0.85, 0.05)),
+            is_graspable=True,
+        )
+    )
+
+
+def _seed_default_cube(world: World) -> None:
+    world.add_object(
+        SceneObject(
+            "cube",
+            Position(0.0, 0.5, 0.0),
+            BBox(Position(-0.05, 0.45, -0.05), Position(0.05, 0.55, 0.05)),
+        )
+    )
+
+
+# Order matters: prompts may match multiple templates and every match seeds its objects.
+# The fallback only runs when no template matched.
+_PROMPT_SEED_TEMPLATES: tuple[tuple[Callable[[str], bool], Callable[[World], None]], ...] = (
+    (lambda prompt: "kitchen" in prompt, _seed_kitchen),
+    (lambda prompt: "mug" in prompt, _seed_mug),
+)
+_DEFAULT_PROMPT_SEED: Callable[[World], None] = _seed_default_cube
+
+
 class WorldForge:
     """Top-level entry point for provider orchestration and local JSON persistence.
 
@@ -1133,31 +1173,11 @@ class WorldForge:
         prompt = _require_non_empty_text(prompt, name="Prompt")
         world = self.create_world(name or "prompt-world", provider, description=prompt)
         prompt_lower = prompt.lower()
-        if "kitchen" in prompt_lower:
-            world.add_object(
-                SceneObject(
-                    "countertop",
-                    Position(0.0, 0.9, 0.0),
-                    BBox(Position(-1.0, 0.85, -0.5), Position(1.0, 0.95, 0.5)),
-                )
-            )
-        if "mug" in prompt_lower:
-            world.add_object(
-                SceneObject(
-                    "mug",
-                    Position(0.0, 0.8, 0.0),
-                    BBox(Position(-0.05, 0.75, -0.05), Position(0.05, 0.85, 0.05)),
-                    is_graspable=True,
-                )
-            )
+        for matches, seed in _PROMPT_SEED_TEMPLATES:
+            if matches(prompt_lower):
+                seed(world)
         if not world.scene_objects:
-            world.add_object(
-                SceneObject(
-                    "cube",
-                    Position(0.0, 0.5, 0.0),
-                    BBox(Position(-0.05, 0.45, -0.05), Position(0.05, 0.55, 0.05)),
-                )
-            )
+            _DEFAULT_PROMPT_SEED(world)
         world._history = []
         world._record_history(summary="world seeded from prompt", action=None)
         return world
