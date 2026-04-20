@@ -1,8 +1,8 @@
 # Introduction
 
-WorldForge is a typed Python framework for physical-AI world-model workflows. It provides a
-local-first API for world state, provider adapters, planning, evaluation, benchmarking, and
-diagnostics.
+WorldForge is a Python integration layer for physical-AI world-model systems. It provides provider
+capability contracts, world state, planning, evaluation, benchmarking, and diagnostics for local
+experiments and adapter development.
 
 The project is built around a strict provider boundary:
 

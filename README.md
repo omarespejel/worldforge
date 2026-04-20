@@ -1,45 +1,56 @@
 # WorldForge
 
-Typed local-first framework for physical-AI world-model workflows.
+Build physical-AI workflows from world models, not one-off scripts.
 
-WorldForge gives Python developers a strict boundary between host application code, model/provider
-runtimes, world state, planning loops, evaluation, and diagnostics. It is built for ML engineers
-working with predictive world models, action scorers, embodied policies, video generation
-adapters, and local evaluation harnesses.
+WorldForge is a Python integration layer for predictive world models, action scorers, embodied
+policies, video generators, and evaluation harnesses. It gives each model a clear capability
+contract, then adds the missing engineering layer around it: world state, planning loops, provider
+diagnostics, evaluation suites, benchmarks, persistence, and a CLI.
 
-It is a library and CLI, not a hosted service. Optional model runtimes, robot stacks, credentials,
-checkpoints, production telemetry, and durable persistence stay owned by the host environment.
+Use it when you want to wire physical-AI systems together without pretending every model is the
+same thing.
 
-## What It Provides
+It is deliberately not a hosted service or a lowest-common-denominator model API. Optional model
+runtimes, robot stacks, credentials, checkpoints, production telemetry, and durable storage stay
+owned by the host application.
 
-- Typed world state, actions, poses, scene objects, media artifacts, provider profiles, and result
-  objects.
-- Capability-specific provider contracts for prediction, generation, transfer, reasoning,
-  embedding, action scoring, and embodied policy selection.
-- Planning paths for predictive rollouts, score-based candidate selection, policy action
-  selection, and policy-plus-score composition.
-- Deterministic local `mock` provider for tests, examples, and adapter contract checks.
-- Provider diagnostics through Python and CLI surfaces, including missing environment variables
-  and health checks for optional adapters.
-- Built-in evaluation suites and a provider benchmark harness for adapter behavior, latency,
-  retries, throughput, and report export.
-- Optional Textual TUI harness for visually running E2E provider demos, diagnostics, and benchmark comparisons.
-- Provider event hooks for JSON logging, in-memory recording, and metrics aggregation.
+## Why It Exists
 
-## Design Center
+Physical-AI tooling is fragmented. A JEPA cost model, a robot policy server, a video simulator,
+and a remote media API all have different inputs, runtimes, failure modes, and claims. That
+fragmentation is fine. Hiding it is where projects get brittle.
 
-WorldForge treats "world model" as an operational interface, not a loose label.
+WorldForge keeps those differences visible while making the workflow composable:
 
-```text
-observe state
-  -> propose candidate actions
-  -> score or roll out possible futures
-  -> select an action sequence
-  -> execute through a provider
-  -> persist, evaluate, and observe the result
-```
+- adapters declare exactly what a provider can do.
+- planning code can combine policy providers, score providers, and predictive providers.
+- evaluation and benchmark runs exercise the same surfaces users call.
+- optional heavy runtimes stay out of the base package.
+- diagnostics make missing credentials, missing dependencies, and capability mismatches obvious.
 
-The core architecture is shaped around explicit capabilities:
+## What You Can Build
+
+- provider adapters for new world-model runtimes and APIs.
+- score-based planners that rank candidate action sequences.
+- policy-plus-score workflows where an embodied policy proposes actions and a world model ranks
+  them.
+- local evaluation harnesses for planning, reasoning, generation, transfer, and provider behavior.
+- benchmark runs for latency, retries, throughput, and report export.
+- checkout-safe demos that validate integration paths without downloading large models.
+- optional live smokes for host environments with checkpoints, robot stacks, or remote servers.
+
+## Who It's For
+
+- ML researchers comparing model surfaces without rewriting the harness each time.
+- robotics and physical-AI engineers wiring policies, scorers, simulators, and media providers
+  around host-owned systems.
+- Python developers building adapter packages, CLI workflows, and reproducible demos.
+- builders and enthusiasts who want something that runs from a clean checkout before they install
+  CUDA stacks or download checkpoints.
+
+## Capability Model
+
+WorldForge treats "world model" as an operational interface, not a marketing label.
 
 - `predict`: state + action -> predicted state
 - `score`: observations + goal + action candidates -> ranked candidates
@@ -51,6 +62,17 @@ The core architecture is shaped around explicit capabilities:
 This separation is deliberate. LeWorldModel is a score provider, not a video generator. GR00T and
 LeRobot are policy providers, not predictive world models. Cosmos and Runway are media generation
 adapters, not proof of controllable physical planning semantics.
+
+The typical loop looks like this:
+
+```text
+observe state
+  -> propose candidate actions
+  -> score or roll out possible futures
+  -> select an action sequence
+  -> execute through a provider
+  -> persist, evaluate, and observe again
+```
 
 ## Install
 
@@ -287,47 +309,38 @@ uv run python scripts/scaffold_provider.py "Acme WM" \
 The scaffold creates adapter, fixture, test, and docs-stub files without advertising public
 capabilities until a real implementation is complete.
 
-## Technical Scope
+## Scope
 
-WorldForge has a narrow role in the physical-AI stack:
+WorldForge owns the software layer around world-model workflows:
 
-1. Make provider capability boundaries explicit enough that ML engineers can compare predictive
-   models, action scorers, policy actors, and media generators without collapsing them into one
-   vague interface.
-2. Support planning loops where policy providers propose candidate actions, score providers rank
-   candidate futures, and execution providers apply selected actions through a typed world state.
-3. Keep optional heavy runtimes host-owned while still providing deterministic demos, smoke
-   commands, and contract tests for adapter development.
-4. Expand world, observation, scene, and evaluation contracts only when the library can validate
-   them clearly.
+1. provider capability contracts.
+2. world state, actions, scene objects, media artifacts, and result models.
+3. planning loops that compose predictive, score, policy, and execution surfaces.
+4. diagnostics, evaluation, benchmarks, and provider events.
+5. deterministic demos, smoke commands, and adapter contract tests.
 
-## Status And Roadmap
+WorldForge does not own model training, robot safety, checkpoint hosting, credential storage,
+production telemetry, dashboards, or durable multi-writer persistence.
 
-As of April 20, 2026, WorldForge is a pre-1.0 beta library. It is suitable for local provider
-adapter development, deterministic planning/evaluation experiments, checkout-safe demos, and
-contract testing. It is not yet suitable as a production robot controller, safety case, hosted
-service backend, or durable multi-writer state store.
+## Current State
 
-Known limitations:
+WorldForge is pre-1.0 beta. It is useful today for:
+
+- local provider adapter development.
+- deterministic planning and evaluation experiments.
+- checkout-safe demos and optional-runtime smoke tests.
+- contract testing for provider packages.
+- CLI diagnostics around provider registration, health, and capabilities.
+
+Known limits:
 
 - JEPA and Genie are credential-gated scaffold adapters backed by deterministic mock behavior.
-- `jepa-wms` remains a direct-construction candidate and is not exported or auto-registered.
-- Local JSON persistence is single-writer only and has no locking, migrations, backup, or recovery
-  policy beyond host-owned export/import. WorldForge validates world snapshots and writes saved
-  worlds atomically, but it does not provide database-grade durability.
-- Built-in evaluation scores are deterministic contract signals, not physical-fidelity,
-  media-quality, or real-world safety claims.
-- Optional model runtimes, checkpoints, robot dependencies, trace export, dashboards, and
+- `jepa-wms` is a direct-construction candidate and is not exported or auto-registered.
+- local JSON persistence is single-writer only.
+- built-in evaluation scores are contract signals, not physical-fidelity, media-quality, or
+  real-world safety claims.
+- optional model runtimes, checkpoints, robot dependencies, trace export, dashboards, and
   production telemetry remain host-owned.
-
-Next milestones:
-
-1. **Provider contract hardening**: raise parser/error coverage for every remote adapter failure
-   mode, keep provider docs generated from the catalog, and preserve truthful capability metadata.
-2. **Evaluation credibility**: separate contract tests from empirical benchmarks, record benchmark
-   inputs/outputs as reproducible artifacts, and document what each score can and cannot prove.
-3. **Persistence adapter decision**: either keep local JSON explicitly development-only or design a
-   separate host-owned persistence adapter contract with locking, migrations, and recovery docs.
 
 ## Links
 

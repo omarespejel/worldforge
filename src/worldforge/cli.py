@@ -1,4 +1,4 @@
-"""Typed local-first CLI for WorldForge provider and evaluation workflows."""
+"""CLI for WorldForge provider and evaluation workflows."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from worldforge.providers import ProviderError
 from worldforge.providers.catalog import provider_docs_index
 
 CLI_DESCRIPTION = (
-    "Typed local-first CLI for provider diagnostics, prediction, generation, evaluation, "
+    "CLI for WorldForge provider diagnostics, prediction, generation, evaluation, "
     "benchmarking, and runnable demos."
 )
 

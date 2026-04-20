@@ -133,7 +133,7 @@ def test_top_level_help_lists_command_surface(monkeypatch, capsys) -> None:
     output = _help_output(("--help",), monkeypatch, capsys)
 
     assert output.startswith("usage: worldforge [-h] command ...")
-    assert "Typed local-first CLI for provider diagnostics" in output
+    assert "CLI for WorldForge provider diagnostics" in output
     for command in (
         "examples",
         "providers",

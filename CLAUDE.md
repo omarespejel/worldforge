@@ -1,5 +1,5 @@
 <identity>
-WorldForge is a typed local-first Python library and CLI for physical-AI world-model provider adapters, world state, planning, evaluation, benchmarking, diagnostics, and host-owned optional runtimes.
+WorldForge is a Python integration layer and CLI for physical-AI world-model provider adapters, world state, planning, evaluation, benchmarking, diagnostics, and host-owned optional runtimes.
 </identity>
 
 <priority_rules>
