@@ -39,6 +39,24 @@ options:
   --format {markdown,json}
                         Output format for provider docs metadata.
 """,
+    ("harness", "--help"): """\
+usage: worldforge harness [-h] [--flow {leworldmodel,lerobot}]
+                          [--state-dir STATE_DIR] [--list]
+                          [--format {markdown,json}] [--no-animation]
+
+options:
+  -h, --help            show this help message and exit
+  --flow {leworldmodel,lerobot}
+                        Harness flow to open.
+  --state-dir STATE_DIR
+                        Directory for persisted demo worlds. Defaults to a
+                        temporary directory.
+  --list                List available harness flows without launching the
+                        TUI.
+  --format {markdown,json}
+                        Output format for --list.
+  --no-animation        Disable step reveal delays.
+""",
     ("predict", "--help"): """\
 usage: worldforge predict [-h] [--provider PROVIDER] --x X --y Y --z Z
                           [--steps STEPS] [--state-dir STATE_DIR]
@@ -124,6 +142,7 @@ def test_top_level_help_lists_command_surface(monkeypatch, capsys) -> None:
         "predict",
         "eval",
         "benchmark",
+        "harness",
     ):
         assert command in output
     for common_command in (
@@ -131,6 +150,7 @@ def test_top_level_help_lists_command_surface(monkeypatch, capsys) -> None:
         "worldforge provider list",
         "worldforge provider docs",
         "worldforge provider info mock",
+        "worldforge harness --list",
         "worldforge eval --suite planning --provider mock --format json",
     ):
         assert common_command in output

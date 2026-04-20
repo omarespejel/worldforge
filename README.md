@@ -23,6 +23,7 @@ checkpoints, production telemetry, and durable persistence stay owned by the hos
   and health checks for optional adapters.
 - Built-in evaluation suites and a provider benchmark harness for adapter behavior, latency,
   retries, throughput, and report export.
+- Optional Textual TUI harness for visually running and inspecting E2E provider demos.
 - Provider event hooks for JSON logging, in-memory recording, and metrics aggregation.
 
 ## Design Center
@@ -193,6 +194,17 @@ List runnable examples:
 uv run worldforge examples
 uv run worldforge examples --format json
 ```
+
+Visual harness:
+
+```bash
+uv run --extra harness worldforge-harness
+uv run --extra harness worldforge-harness --flow lerobot
+uv run worldforge harness --list
+```
+
+`TheWorldHarness` is a Textual-based optional TUI. It animates the packaged E2E demos as staged
+provider workflows with timeline, metrics, persisted-state, and event inspection panels.
 
 Checkout-safe packaged demos:
 

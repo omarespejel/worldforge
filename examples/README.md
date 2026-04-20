@@ -9,6 +9,19 @@ uv run worldforge examples
 uv run worldforge examples --format json
 ```
 
+## Visual Harness
+
+| Example | Surface | Command |
+| --- | --- | --- |
+| `theworldharness` | E2E flow orchestration, provider events, persistence trace | `uv run --extra harness worldforge-harness` |
+
+```bash
+uv run --extra harness worldforge-harness
+uv run --extra harness worldforge-harness --flow lerobot
+```
+
+TheWorldHarness is optional and depends on Textual through the `harness` extra.
+
 ## Prediction And Evaluation
 
 | Example | Surface | Command |

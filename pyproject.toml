@@ -45,10 +45,16 @@ Issues = "https://github.com/AbdelStark/worldforge/issues"
 
 [project.scripts]
 worldforge = "worldforge.cli:main"
+worldforge-harness = "worldforge.harness.cli:main"
 worldforge-demo-leworldmodel = "worldforge.demos.leworldmodel_e2e:main"
 worldforge-demo-lerobot = "worldforge.demos.lerobot_e2e:main"
 worldforge-build-leworldmodel-checkpoint = "worldforge.smoke.leworldmodel_checkpoint:main"
 worldforge-smoke-leworldmodel = "worldforge.smoke.leworldmodel:main"
+
+[project.optional-dependencies]
+harness = [
+    "textual>=8.2,<9",
+]
 
 [dependency-groups]
 dev = [

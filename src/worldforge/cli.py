@@ -23,6 +23,7 @@ CLI_EPILOG = """Common commands:
   worldforge provider list
   worldforge provider docs
   worldforge provider info mock
+  worldforge harness --list
   worldforge predict kitchen --provider mock --x 0.3 --y 0.8 --z 0.0 --steps 2
   worldforge eval --suite planning --provider mock --format json
   worldforge benchmark --provider mock --iterations 5 --format json
@@ -71,6 +72,17 @@ EXAMPLE_COMMANDS: tuple[dict[str, str], ...] = (
         "description": (
             "Run the packaged LeRobot policy-plus-score planning demo without installing "
             "LeRobot or torch."
+        ),
+    },
+    {
+        "task": "Visual harness",
+        "name": "theworldharness",
+        "surface": "E2E flow orchestration, provider events, persistence trace",
+        "requires": "Textual through the harness extra",
+        "command": "uv run --extra harness worldforge-harness",
+        "description": (
+            "Open the optional Textual harness for running packaged E2E demos as visible "
+            "provider workflows."
         ),
     },
     {
@@ -335,6 +347,32 @@ def _build_parser() -> argparse.ArgumentParser:
         "--state-dir", default=".worldforge/worlds", help="World state directory."
     )
 
+    harness = subparsers.add_parser("harness", help="Launch TheWorldHarness TUI.")
+    harness.add_argument(
+        "--flow",
+        choices=("leworldmodel", "lerobot"),
+        default="leworldmodel",
+        help="Harness flow to open.",
+    )
+    harness.add_argument(
+        "--state-dir",
+        type=Path,
+        default=None,
+        help="Directory for persisted demo worlds. Defaults to a temporary directory.",
+    )
+    harness.add_argument(
+        "--list",
+        action="store_true",
+        help="List available harness flows without launching the TUI.",
+    )
+    harness.add_argument(
+        "--format",
+        choices=("markdown", "json"),
+        default="markdown",
+        help="Output format for --list.",
+    )
+    harness.add_argument("--no-animation", action="store_true", help="Disable step reveal delays.")
+
     return parser
 
 
@@ -358,6 +396,17 @@ def main() -> int:
         else:
             _print_provider_docs_markdown(entries)
         return 0
+
+    if args.command == "harness":
+        from worldforge.harness.cli import run_from_args
+
+        return run_from_args(
+            flow_id=args.flow,
+            state_dir=args.state_dir,
+            list_only=args.list,
+            output_format=args.format,
+            animate=not args.no_animation,
+        )
 
     forge = WorldForge(state_dir=args.state_dir)
 

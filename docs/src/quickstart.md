@@ -84,6 +84,13 @@ uv run worldforge eval --suite planning --provider mock --format json
 uv run worldforge benchmark --provider mock --iterations 5 --format json
 ```
 
+Optional visual E2E harness:
+
+```bash
+uv run --extra harness worldforge-harness
+uv run --extra harness worldforge-harness --flow lerobot
+```
+
 Packaged checkout-safe demos:
 
 ```bash

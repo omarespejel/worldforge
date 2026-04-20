@@ -8,6 +8,7 @@ def test_leworldmodel_uv_commands_are_packaged_console_scripts() -> None:
     pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
     pyproject = pyproject_path.read_text()
 
+    assert 'worldforge-harness = "worldforge.harness.cli:main"' in pyproject
     assert 'worldforge-demo-leworldmodel = "worldforge.demos.leworldmodel_e2e:main"' in pyproject
     assert (
         'worldforge-build-leworldmodel-checkpoint = "worldforge.smoke.leworldmodel_checkpoint:main"'
@@ -17,6 +18,7 @@ def test_leworldmodel_uv_commands_are_packaged_console_scripts() -> None:
 
 def test_leworldmodel_console_script_targets_are_importable() -> None:
     targets = [
+        "worldforge.harness.cli:main",
         "worldforge.demos.leworldmodel_e2e:main",
         "worldforge.smoke.leworldmodel_checkpoint:main",
         "worldforge.smoke.leworldmodel:main",

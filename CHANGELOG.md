@@ -19,6 +19,8 @@ releases may still include breaking changes when the public API needs to tighten
 - Added `scripts/generate_provider_docs.py` so the provider catalog table can be refreshed and
   checked from `src/worldforge/providers/catalog.py`.
 - Added `worldforge provider docs` so users can discover provider documentation paths from the CLI.
+- Added TheWorldHarness as an optional Textual TUI (`worldforge-harness` and `worldforge harness`)
+  for visually running and inspecting packaged E2E demos.
 - Added `.env.example` documenting every provider environment variable recognized by
   WorldForge (`COSMOS_BASE_URL`, `NVIDIA_API_KEY`, `RUNWAYML_API_SECRET` and the legacy
   `RUNWAY_API_SECRET` alias, `RUNWAYML_BASE_URL`, `LEWORLDMODEL_POLICY` and the legacy

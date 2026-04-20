@@ -44,6 +44,8 @@ evaluation harnesses, and testable prototypes.
 - `src/worldforge/demos/`: packaged demo entry points exposed through `uv run` console scripts.
 - `src/worldforge/demos/lerobot_e2e.py`: packaged LeRobot policy-plus-score planning demo exposed
   through `uv run worldforge-demo-lerobot`.
+- `src/worldforge/harness/`: optional TheWorldHarness TUI package. Keep flow metadata and runners
+  independent from Textual; `tui.py` is the only Textual-dependent module.
 - `src/worldforge/smoke/`: packaged optional-runtime smoke entry points exposed through `uv run`
   console scripts.
 - `src/worldforge/smoke/leworldmodel_checkpoint.py`: optional host-owned builder for creating the
@@ -67,6 +69,7 @@ evaluation harnesses, and testable prototypes.
 - Python `>=3.10`, tested in CI on Python 3.10, 3.11, 3.12, and 3.13.
 - Packaging/build: `hatchling`, `uv`, `uv.lock`.
 - Runtime dependency: `httpx`.
+- Optional TheWorldHarness runtime: `textual`, supplied only by the `harness` extra.
 - Optional LeWorldModel runtime: `stable-worldmodel[env]` and `torch`, supplied by the host
   environment only when using `leworldmodel`.
 - Optional GR00T runtime: `gr00t.policy.server_client.PolicyClient`, CUDA/TensorRT/checkpoints,
@@ -96,6 +99,7 @@ Discover and run examples:
 ```bash
 uv run worldforge examples
 uv run worldforge provider docs
+uv run --extra harness worldforge-harness
 uv run worldforge-demo-leworldmodel
 uv run worldforge-demo-lerobot
 ```
@@ -128,6 +132,8 @@ rm -f "$tmp_req"
   a predictive world model.
 - `lerobot` exposes `policy`, not `predict`, `score`, or `generate`; keep embodiment-specific
   action translation host-owned.
+- TheWorldHarness must keep Textual optional. Do not import Textual from `worldforge.__init__`,
+  `worldforge.cli`, or non-TUI harness modules.
 - Remote create/mutation requests are single-attempt by default; health, polling, and downloads
   use retry/backoff policy.
 - Keep public API models typed and serializable. Validate boundary values before persistence or
