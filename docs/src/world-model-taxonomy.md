@@ -11,7 +11,7 @@ A world model is an action-conditioned predictive model that helps a caller eval
 roll out possible futures from observations, state, actions, and goals.
 ```
 
-That definition is closer to Yann LeCun's JEPA-oriented planning view than to the broad marketing
+That definition is closer to Yann LeCun's JEPA-oriented planning view than to the broad colloquial
 usage of "any model that emits a world-like artifact." WorldForge can still integrate video
 generators and simulation APIs, but the architecture is centered on planning surfaces: candidate
 actions, predicted or latent future states, costs, scores, uncertainty, and explicit provider
@@ -52,7 +52,7 @@ flowchart TD
     Video --> Sora[Sora-style video simulators]
     Video --> Genie[Genie-style interactive worlds]
     Spatial --> Marble[World Labs Marble]
-    Infra --> Cosmos[NVIDIA Cosmos platform]
+    Infra --> Cosmos[NVIDIA Cosmos]
     Policy --> Groot[NVIDIA Isaac GR00T]
 ```
 
@@ -109,7 +109,7 @@ provider architecture more than generic video-generation providers do.
 | JEPA latent predictive world models | Which action makes the latent future match a goal or low cost? | Learned embeddings | Scores, costs, latent rollouts | Architectural center |
 | Generative video simulators | Can a model synthesize plausible future pixels or interactive frames? | Pixels, latents, video tokens | Video clips, interactive frames | Fits `generate`, `transfer`, maybe future `predict` |
 | Spatial / 3D world models | What persistent 3D world can be reconstructed or generated? | Geometry, depth, radiance, assets | 3D scenes, meshes, camera paths | Future provider family |
-| Physical AI infrastructure | How do teams produce data, tokenizers, fine-tunes, and evaluation at scale? | Platform stack | Models, synthetic data, APIs | Provider/platform adapters |
+| Physical AI infrastructure | How are data, tokenizers, fine-tunes, and evaluation produced at scale? | Runtime/tooling stack | Models, synthetic data, APIs | Provider adapters |
 | Embodied policy / VLA action models | What action chunk should a robot execute from this observation and instruction? | Vision-language-action policy state | Robot action chunks | First-class actor provider family |
 | Active inference / structured generative models | How should beliefs, objects, uncertainty, and action be updated online? | Probabilistic structured state | Beliefs, policies, expected free energy | Conceptual influence, future adapter target |
 
@@ -217,11 +217,11 @@ A future WorldForge spatial provider might expose:
 
 ### Physical AI Infrastructure
 
-NVIDIA Cosmos is best understood as a physical-AI platform: world foundation models, tokenizers,
+NVIDIA Cosmos is best understood as physical-AI infrastructure: world foundation models, tokenizers,
 guardrails, video processing, synthetic data generation, fine-tuning, and deployment routes. It can
 feed world-model workflows, but it is not a single narrow model contract.
 
-WorldForge should integrate platform pieces through explicit provider capabilities:
+WorldForge should integrate upstream pieces through explicit provider capabilities:
 
 - `generate` for video synthesis
 - `transfer` for video-to-video transformation
@@ -313,7 +313,7 @@ flowchart TD
     WF[WorldForge provider registry]
     WF --> Mock[mock\nreference runtime]
     WF --> LeWM[leworldmodel\nJEPA score provider]
-    WF --> Cosmos[cosmos\nvideo generation platform adapter]
+    WF --> Cosmos[cosmos\nvideo generation adapter]
     WF --> Groot[gr00t\nembodied policy adapter]
     WF --> Runway[runway\nvideo generation/transfer adapter]
     WF --> JEPA[jepa\nscaffold]
@@ -358,6 +358,5 @@ Primary sources used to shape this taxonomy:
 - [DreamerV3 paper](https://arxiv.org/abs/2301.04104)
 - [OpenAI, Video generation models as world simulators](https://openai.com/index/video-generation-models-as-world-simulators/)
 - [Google DeepMind Genie 3](https://deepmind.google/models/genie/)
-- [NVIDIA Cosmos announcement](https://nvidianews.nvidia.com/news/nvidia-launches-cosmos-world-foundation-model-platform-to-accelerate-physical-ai-development)
 - [NVIDIA Isaac GR00T](https://github.com/NVIDIA/Isaac-GR00T)
 - [World Labs Marble documentation](https://docs.worldlabs.ai/)

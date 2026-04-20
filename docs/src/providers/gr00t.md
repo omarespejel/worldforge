@@ -163,7 +163,7 @@ uv run python scripts/smoke_gr00t_policy.py \
   --translator /path/to/translator.py:translate_actions
 ```
 
-Launch the upstream server from a host-owned Isaac-GR00T checkout:
+Start the upstream server from a host-owned Isaac-GR00T checkout:
 
 ```bash
 uv run python scripts/smoke_gr00t_policy.py \
@@ -175,7 +175,7 @@ uv run python scripts/smoke_gr00t_policy.py \
   --translator /path/to/translator.py:translate_actions
 ```
 
-Launching upstream Isaac GR00T requires a compatible NVIDIA/Linux runtime for CUDA and TensorRT
+Starting upstream Isaac GR00T requires a compatible NVIDIA/Linux runtime for CUDA and TensorRT
 dependencies. On unsupported hosts, connect WorldForge to an already running remote policy server.
 
 ## Failure Modes
@@ -186,7 +186,7 @@ dependencies. On unsupported hosts, connect WorldForge to an already running rem
 - Malformed observations fail before invoking the policy client.
 - Non-JSON-compatible raw actions or provider info fail before returning `ActionPolicyResult`.
 - Failed policy inference is wrapped in `ProviderError`.
-- Launching the upstream server on an unsupported host can fail before WorldForge can connect.
+- Starting the upstream server on an unsupported host can fail before WorldForge can connect.
 - Policy-plus-score planning fails if the score provider selects an index outside the policy
   candidate list.
 

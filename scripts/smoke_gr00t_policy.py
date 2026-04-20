@@ -266,7 +266,7 @@ def _parser() -> argparse.ArgumentParser:
         "--gr00t-root",
         type=Path,
         default=Path(os.environ["GROOT_REPO"]) if os.environ.get("GROOT_REPO") else None,
-        help="Isaac-GR00T checkout used to launch gr00t/eval/run_gr00t_server.py.",
+        help="Isaac-GR00T checkout used to start gr00t/eval/run_gr00t_server.py.",
     )
     parser.add_argument("--model-path", default=os.environ.get("GROOT_MODEL_PATH"))
     parser.add_argument("--dataset-path", default=os.environ.get("GROOT_DATASET_PATH"))

@@ -57,7 +57,7 @@ evaluation harnesses, and testable prototypes.
 - `scripts/smoke_leworldmodel.py`: compatibility wrapper for
   `uv run --python 3.10 --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" worldforge-smoke-leworldmodel`.
 - `scripts/smoke_gr00t_policy.py`: optional live GR00T PolicyClient smoke for host environments
-  with Isaac-GR00T and a policy server.
+  with Isaac-GR00T or a reachable policy server.
 - `scripts/smoke_lerobot_policy.py`: optional live LeRobot `PreTrainedPolicy` smoke for host
   environments with LeRobot and robot-specific dependencies.
 
@@ -190,10 +190,10 @@ rm -f "$tmp_req"
   for Hugging Face LeWM `config.json` and `weights.pt` assets. Run it with the same upstream
   LeWorldModel runtime plus `huggingface_hub`; do not add those dependencies to WorldForge's base
   package or commit downloaded assets/checkpoints.
-- `scripts/smoke_gr00t_policy.py` is an optional live PolicyClient smoke. It may launch
+- `scripts/smoke_gr00t_policy.py` is an optional live PolicyClient smoke. It can start
   `gr00t/eval/run_gr00t_server.py` from a host-owned Isaac-GR00T checkout, but it still requires
   the host to provide real observations and an embodiment-specific action translator.
-- Launching the upstream GR00T server requires a compatible NVIDIA/Linux runtime for CUDA and
+- Starting the upstream GR00T server requires a compatible NVIDIA/Linux runtime for CUDA and
   TensorRT dependencies. On unsupported hosts, connect to an already running remote GR00T policy
   server.
 - `scripts/smoke_lerobot_policy.py` is an optional live LeRobot policy smoke. It requires the host
@@ -210,9 +210,9 @@ rm -f "$tmp_req"
 - `make lint` and `make format` run against `src tests examples scripts` to match CI and the
   commands documented in `README.md`. Do not drop `scripts` from either target.
 
-## Direction
+## Technical Scope
 
-WorldForge aims to be the typed Python framework layer for local physical-AI world-model work:
+WorldForge is scoped as a typed Python framework layer for local physical-AI world-model work:
 truthful provider capabilities, score/policy planning composition, deterministic adapter
 contracts, host-owned optional runtimes, strict validation, and clear operational boundaries.
 Keep the front face serious and precise. Do not present scaffold adapters as real integrations,

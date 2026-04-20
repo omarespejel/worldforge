@@ -29,7 +29,7 @@ The host owns:
 - optional NVIDIA bearer token
 - model availability behind the endpoint
 - generated artifact persistence
-- production telemetry and alerting around the service
+- operational telemetry and alerting around the endpoint
 
 ## Configuration
 

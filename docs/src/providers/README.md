@@ -27,7 +27,7 @@ Keep this page and the provider pages aligned with that catalog.
 | [`jepa-wms`](./jepa-wms.md) | direct-construction `score` candidate | none | host-owned torch-hub/runtime experiment; not exported or auto-registered |
 
 Candidate scaffolds stay outside package exports and auto-registration until the runtime adapter,
-limits, parser coverage, docs, and smoke path are credible enough for users to depend on.
+limits, parser coverage, docs, and smoke path are credible enough for callers to depend on.
 
 ## Capability Model
 
@@ -89,7 +89,7 @@ uv run worldforge doctor --capability score
 ```
 
 `doctor()` includes known but unregistered optional providers by default. That makes missing
-configuration visible before a workflow fails. Use `--registered-only` when a service wants to
+configuration visible before a workflow fails. Use `--registered-only` when a process needs to
 check only the providers enabled for that process.
 
 ## Runtime Ownership
@@ -110,7 +110,7 @@ The host owns:
   runtimes
 - observation preprocessing into model-native tensors
 - embodiment-specific action translation
-- production telemetry, trace IDs, dashboards, and alerts
+- operational telemetry, trace IDs, dashboards, and alerts
 - durable persistence and artifact retention
 
 ## Observability

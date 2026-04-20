@@ -3,7 +3,7 @@
 This guide turns the WorldForge world-model taxonomy into an implementation checklist for new
 provider adapters. Use it before writing code. The goal is to keep adapters honest: every provider
 must say what kind of "world model" it is, expose only capabilities it implements, validate every
-boundary, and document failure modes clearly enough that users can operate it without reading the
+boundary, and document failure modes clearly enough that callers can operate it without reading the
 adapter source.
 
 Related docs:
@@ -43,7 +43,7 @@ and has fixture-driven tests for every documented failure mode.
 
 ## Adapter Decision Tree
 
-Start with the provider's real contract, not its marketing category.
+Start with the provider's real contract, not its label or category.
 
 ```text
 New upstream provider

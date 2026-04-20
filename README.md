@@ -2,7 +2,7 @@
 
 Typed local-first framework for physical-AI world-model workflows.
 
-WorldForge gives Python teams a strict boundary between host application code, model/provider
+WorldForge gives Python developers a strict boundary between host application code, model/provider
 runtimes, world state, planning loops, evaluation, and diagnostics. It is built for ML engineers
 working with predictive world models, action scorers, embodied policies, video generation
 adapters, and local evaluation harnesses.
@@ -27,7 +27,7 @@ checkpoints, production telemetry, and durable persistence stay owned by the hos
 
 ## Design Center
 
-WorldForge treats "world model" as an operational interface, not a marketing label.
+WorldForge treats "world model" as an operational interface, not a loose label.
 
 ```text
 observe state
@@ -244,11 +244,11 @@ uv run python scripts/scaffold_provider.py "Acme WM" \
 The scaffold creates adapter, fixture, test, and docs-stub files without advertising public
 capabilities until a real implementation is complete.
 
-## Direction
+## Technical Scope
 
-WorldForge is aimed at a narrow, serious role in the physical-AI stack:
+WorldForge has a narrow role in the physical-AI stack:
 
-1. Make provider capability boundaries explicit enough that ML teams can compare predictive
+1. Make provider capability boundaries explicit enough that ML engineers can compare predictive
    models, action scorers, policy actors, and media generators without collapsing them into one
    vague interface.
 2. Support planning loops where policy providers propose candidate actions, score providers rank
@@ -260,6 +260,6 @@ WorldForge is aimed at a narrow, serious role in the physical-AI stack:
 
 ## Links
 
-- Documentation: <https://docs.worldforge.ai>
+- Documentation: [docs/src](./docs/src)
 - Repository: <https://github.com/AbdelStark/worldforge>
 - Issues: <https://github.com/AbdelStark/worldforge/issues>

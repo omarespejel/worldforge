@@ -28,10 +28,10 @@ download validation, and provider events.
 The host owns:
 
 - Runway credentials
-- endpoint policy and account limits
+- endpoint policy and API limits
 - prompt/media inputs
 - artifact retention after URLs expire
-- production telemetry and cost controls
+- operational telemetry and usage limits
 
 ## Configuration
 

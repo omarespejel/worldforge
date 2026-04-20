@@ -1,7 +1,7 @@
 # Operations
 
 WorldForge is a Python library plus CLI. Operational responsibility lives in the host application
-that imports it. This page documents the runtime assumptions and minimum runbook for teams using
+that imports it. This page documents the runtime assumptions and minimum runbook for developers using
 WorldForge in services, jobs, or provider-evaluation pipelines.
 
 ## Configuration
@@ -27,7 +27,7 @@ Configuration comes from constructor arguments and environment variables documen
   optional LeRobot settings.
 - `JEPA_MODEL_PATH` and `GENIE_API_KEY` enable scaffold adapters only.
 
-Validate configuration at startup with:
+Validate configuration when the host process starts:
 
 ```bash
 uv run worldforge doctor --registered-only
@@ -133,7 +133,7 @@ include those IDs in surrounding application logs.
   `python scripts/smoke_gr00t_policy.py --gr00t-root /path/to/Isaac-GR00T --start-server ...`.
   The script can also connect to an existing server with `GROOT_POLICY_HOST` and
   `--policy-info-json` or `--observation-module`.
-- Launching the upstream GR00T server requires a compatible NVIDIA/Linux runtime for its CUDA and
+- Starting the upstream GR00T server requires a compatible NVIDIA/Linux runtime for its CUDA and
   TensorRT dependencies. On unsupported hosts, point WorldForge at an already running remote GR00T
   policy server.
 

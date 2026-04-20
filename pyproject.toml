@@ -39,9 +39,8 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://worldforge.ai"
 Repository = "https://github.com/AbdelStark/worldforge"
-Documentation = "https://docs.worldforge.ai"
+Documentation = "https://github.com/AbdelStark/worldforge/tree/main/docs"
 Issues = "https://github.com/AbdelStark/worldforge/issues"
 
 [project.scripts]
