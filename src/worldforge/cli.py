@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 from worldforge import Action, GenerationOptions, VideoClip, WorldForge, WorldForgeError
@@ -389,174 +390,227 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _cmd_examples(args: argparse.Namespace) -> int:
+    if args.format == "json":
+        _print_json(EXAMPLE_COMMANDS)
+    else:
+        _print_examples_markdown()
+    return 0
+
+
+def _cmd_provider_docs(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    entries = _provider_docs_entries(args.name)
+    if not entries:
+        parser.exit(2, f"Unknown provider: {args.name}\n")
+    if args.format == "json":
+        _print_json(entries)
+    else:
+        _print_provider_docs_markdown(entries)
+    return 0
+
+
+def _cmd_harness(args: argparse.Namespace) -> int:
+    from worldforge.harness.cli import run_from_args
+
+    return run_from_args(
+        flow_id=args.flow,
+        state_dir=args.state_dir,
+        list_only=args.list,
+        output_format=args.format,
+        animate=not args.no_animation,
+    )
+
+
+def _cmd_providers(args: argparse.Namespace, forge: WorldForge) -> int:
+    _print_json([info.to_dict() for info in forge.list_providers()])
+    return 0
+
+
+def _cmd_provider_list(args: argparse.Namespace, forge: WorldForge) -> int:
+    report = forge.doctor(
+        capability=args.capability,
+        registered_only=args.registered_only,
+    )
+    _print_json([provider.to_dict() for provider in report.providers])
+    return 0
+
+
+def _cmd_provider_info(args: argparse.Namespace, forge: WorldForge) -> int:
+    name = args.name
+    payload = {
+        "registered": name in forge.providers(),
+        "profile": forge.provider_profile(name).to_dict(),
+        "health": forge.provider_health(name).to_dict(),
+    }
+    if name in forge.providers():
+        payload["info"] = forge.provider_info(name).to_dict()
+    _print_json(payload)
+    return 0
+
+
+def _cmd_provider_health(args: argparse.Namespace, forge: WorldForge) -> int:
+    if args.name:
+        _print_json(forge.provider_health(args.name).to_dict())
+        return 0
+    report = forge.doctor(
+        capability=args.capability,
+        registered_only=args.registered_only,
+    )
+    _print_json(
+        [
+            {
+                **provider.health.to_dict(),
+                "registered": provider.registered,
+            }
+            for provider in report.providers
+        ]
+    )
+    return 0
+
+
+def _cmd_provider(args: argparse.Namespace, forge: WorldForge) -> int | None:
+    provider_dispatch = {
+        "list": _cmd_provider_list,
+        "info": _cmd_provider_info,
+        "health": _cmd_provider_health,
+    }
+    handler = provider_dispatch.get(args.provider_command)
+    if handler is None:
+        return None
+    return handler(args, forge)
+
+
+def _cmd_doctor(args: argparse.Namespace, forge: WorldForge) -> int:
+    _print_json(
+        forge.doctor(
+            capability=args.capability,
+            registered_only=args.registered_only,
+        ).to_dict()
+    )
+    return 0
+
+
+def _cmd_generate(args: argparse.Namespace, forge: WorldForge) -> int:
+    options = _build_generation_options(args)
+    clip = forge.generate(
+        args.prompt,
+        args.provider,
+        duration_seconds=args.duration,
+        options=options,
+    )
+    payload = clip.to_dict()
+    if args.output:
+        payload["output_path"] = str(clip.save(Path(args.output)))
+    _print_json(payload)
+    return 0
+
+
+def _cmd_transfer(args: argparse.Namespace, forge: WorldForge) -> int:
+    options = _build_generation_options(args)
+    input_clip = VideoClip.from_file(
+        args.input,
+        fps=args.fps,
+        resolution=(args.width, args.height),
+        duration_seconds=args.duration,
+    )
+    clip = forge.transfer(
+        input_clip,
+        args.provider,
+        width=args.width,
+        height=args.height,
+        fps=args.fps,
+        prompt=args.prompt,
+        options=options,
+    )
+    payload = clip.to_dict()
+    if args.output:
+        payload["output_path"] = str(clip.save(Path(args.output)))
+    _print_json(payload)
+    return 0
+
+
+def _cmd_predict(args: argparse.Namespace, forge: WorldForge) -> int:
+    world = forge.create_world(args.world_name, args.provider)
+    prediction = world.predict(Action.move_to(args.x, args.y, args.z), steps=args.steps)
+    _print_json(
+        {
+            "provider": prediction.provider,
+            "physics_score": prediction.physics_score,
+            "confidence": prediction.confidence,
+            "world_state": prediction.world_state,
+        }
+    )
+    return 0
+
+
+def _cmd_eval(args: argparse.Namespace, forge: WorldForge) -> int:
+    suite = EvaluationSuite.from_builtin(args.suite)
+    providers = args.providers or ["mock"]
+    report = suite.run_report(providers, forge=forge)
+    if args.format == "json":
+        print(report.to_json())
+    elif args.format == "csv":
+        print(report.to_csv())
+    else:
+        print(report.to_markdown())
+    return 0
+
+
+def _cmd_benchmark(args: argparse.Namespace, forge: WorldForge) -> int:
+    harness = ProviderBenchmarkHarness(forge=forge)
+    providers = args.providers or ["mock"]
+    report = harness.run(
+        providers,
+        operations=args.operations,
+        iterations=args.iterations,
+        concurrency=args.concurrency,
+    )
+    if args.format == "json":
+        print(report.to_json())
+    elif args.format == "csv":
+        print(report.to_csv())
+    else:
+        print(report.to_markdown())
+    return 0
+
+
+_ForgeHandler = Callable[[argparse.Namespace, WorldForge], "int | None"]
+
+_FORGE_COMMANDS: dict[str, _ForgeHandler] = {
+    "providers": _cmd_providers,
+    "provider": _cmd_provider,
+    "doctor": _cmd_doctor,
+    "generate": _cmd_generate,
+    "transfer": _cmd_transfer,
+    "predict": _cmd_predict,
+    "eval": _cmd_eval,
+    "benchmark": _cmd_benchmark,
+}
+
+
 def main() -> int:
     parser = _build_parser()
     args = parser.parse_args()
 
     if args.command == "examples":
-        if args.format == "json":
-            _print_json(EXAMPLE_COMMANDS)
-        else:
-            _print_examples_markdown()
-        return 0
+        return _cmd_examples(args)
 
     if args.command == "provider" and args.provider_command == "docs":
-        entries = _provider_docs_entries(args.name)
-        if not entries:
-            parser.exit(2, f"Unknown provider: {args.name}\n")
-        if args.format == "json":
-            _print_json(entries)
-        else:
-            _print_provider_docs_markdown(entries)
-        return 0
+        return _cmd_provider_docs(args, parser)
 
     if args.command == "harness":
-        from worldforge.harness.cli import run_from_args
-
-        return run_from_args(
-            flow_id=args.flow,
-            state_dir=args.state_dir,
-            list_only=args.list,
-            output_format=args.format,
-            animate=not args.no_animation,
-        )
+        return _cmd_harness(args)
 
     forge = WorldForge(state_dir=args.state_dir)
 
-    try:
-        if args.command == "providers":
-            _print_json([info.to_dict() for info in forge.list_providers()])
-            return 0
-
-        if args.command == "provider":
-            if args.provider_command == "list":
-                report = forge.doctor(
-                    capability=args.capability,
-                    registered_only=args.registered_only,
-                )
-                _print_json([provider.to_dict() for provider in report.providers])
-                return 0
-
-            if args.provider_command == "info":
-                name = args.name
-                payload = {
-                    "registered": name in forge.providers(),
-                    "profile": forge.provider_profile(name).to_dict(),
-                    "health": forge.provider_health(name).to_dict(),
-                }
-                if name in forge.providers():
-                    payload["info"] = forge.provider_info(name).to_dict()
-                _print_json(payload)
-                return 0
-
-            if args.provider_command == "health":
-                if args.name:
-                    _print_json(forge.provider_health(args.name).to_dict())
-                    return 0
-                report = forge.doctor(
-                    capability=args.capability,
-                    registered_only=args.registered_only,
-                )
-                _print_json(
-                    [
-                        {
-                            **provider.health.to_dict(),
-                            "registered": provider.registered,
-                        }
-                        for provider in report.providers
-                    ]
-                )
-                return 0
-
-        if args.command == "doctor":
-            _print_json(
-                forge.doctor(
-                    capability=args.capability,
-                    registered_only=args.registered_only,
-                ).to_dict()
-            )
-            return 0
-
-        if args.command == "generate":
-            options = _build_generation_options(args)
-            clip = forge.generate(
-                args.prompt,
-                args.provider,
-                duration_seconds=args.duration,
-                options=options,
-            )
-            payload = clip.to_dict()
-            if args.output:
-                payload["output_path"] = str(clip.save(Path(args.output)))
-            _print_json(payload)
-            return 0
-
-        if args.command == "transfer":
-            options = _build_generation_options(args)
-            input_clip = VideoClip.from_file(
-                args.input,
-                fps=args.fps,
-                resolution=(args.width, args.height),
-                duration_seconds=args.duration,
-            )
-            clip = forge.transfer(
-                input_clip,
-                args.provider,
-                width=args.width,
-                height=args.height,
-                fps=args.fps,
-                prompt=args.prompt,
-                options=options,
-            )
-            payload = clip.to_dict()
-            if args.output:
-                payload["output_path"] = str(clip.save(Path(args.output)))
-            _print_json(payload)
-            return 0
-
-        if args.command == "predict":
-            world = forge.create_world(args.world_name, args.provider)
-            prediction = world.predict(Action.move_to(args.x, args.y, args.z), steps=args.steps)
-            _print_json(
-                {
-                    "provider": prediction.provider,
-                    "physics_score": prediction.physics_score,
-                    "confidence": prediction.confidence,
-                    "world_state": prediction.world_state,
-                }
-            )
-            return 0
-
-        if args.command == "eval":
-            suite = EvaluationSuite.from_builtin(args.suite)
-            providers = args.providers or ["mock"]
-            report = suite.run_report(providers, forge=forge)
-            if args.format == "json":
-                print(report.to_json())
-            elif args.format == "csv":
-                print(report.to_csv())
-            else:
-                print(report.to_markdown())
-            return 0
-
-        if args.command == "benchmark":
-            harness = ProviderBenchmarkHarness(forge=forge)
-            providers = args.providers or ["mock"]
-            report = harness.run(
-                providers,
-                operations=args.operations,
-                iterations=args.iterations,
-                concurrency=args.concurrency,
-            )
-            if args.format == "json":
-                print(report.to_json())
-            elif args.format == "csv":
-                print(report.to_csv())
-            else:
-                print(report.to_markdown())
-            return 0
-    except (ProviderError, WorldForgeError, ValueError) as exc:
-        parser.exit(2, f"{exc}\n")
+    handler = _FORGE_COMMANDS.get(args.command)
+    if handler is not None:
+        try:
+            result = handler(args, forge)
+        except (ProviderError, WorldForgeError, ValueError) as exc:
+            parser.exit(2, f"{exc}\n")
+        if result is not None:
+            return result
 
     parser.error(f"Unknown command: {args.command}")
     return 2
