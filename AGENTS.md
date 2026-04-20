@@ -123,6 +123,27 @@ uvx --from pip-audit pip-audit -r "$tmp_req" --no-deps --disable-pip --progress-
 rm -f "$tmp_req"
 ```
 
+## Documentation Map
+
+- `README.md`: front-door identity, quickstart, provider matrix, common commands, operating
+  boundaries, status, and roadmap.
+- `docs/src/architecture.md`: system map, module responsibilities, planning pipelines,
+  operational ownership, data contracts, failure boundaries, observability, persistence, and design
+  rationale.
+- `docs/src/playbooks.md`: checkout validation, provider capability selection, adapter promotion,
+  provider diagnostics, local persistence recovery, remote artifacts, optional runtime smokes,
+  benchmarks, incident triage, and release gates.
+- `docs/src/operations.md`: configuration, operational modes, persistence, observability, failure
+  modes, recovery, release checklist, and provider hardening criteria.
+- `docs/src/provider-authoring-guide.md`: provider taxonomy, capability, validation,
+  observability, testing, documentation, and review checklist.
+- `docs/src/api/python.md`: public Python entry points, capability workflows, examples, and
+  exception families.
+- `docs/src/providers/`: generated provider catalog plus provider-specific config, contracts,
+  limits, failure modes, and validation notes.
+- `CONTRIBUTING.md` and `docs/src/contributing.md`: contributor setup, validation gates,
+  repository map, provider rules, and documentation routing.
+
 ## Conventions
 
 - Public inputs fail explicitly with `WorldForgeError`; malformed persisted/provider state fails
@@ -147,7 +168,9 @@ rm -f "$tmp_req"
 - Add regression tests for every bug fix and every documented failure mode.
 - Put remote provider payload fixtures under `tests/fixtures/providers/` and assert both parser
   errors and public provider errors.
-- Update README, docs, changelog, and this file when public behavior changes.
+- Update README, docs, changelog, playbooks, and this file when public behavior changes.
+- Keep operator docs concrete: every new runtime, provider, persistence, or release workflow
+  should state the command to run, the expected success signal, and the first triage step.
 
 ## Critical Constraints
 

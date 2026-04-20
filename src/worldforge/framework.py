@@ -1,4 +1,9 @@
-"""Framework runtime objects for WorldForge."""
+"""Framework runtime objects for WorldForge.
+
+This module owns the in-process orchestration boundary: provider registration, world state,
+planning, local JSON persistence, and diagnostics. It deliberately does not own deployment,
+multi-writer storage, optional model runtimes, robot controllers, or production telemetry export.
+"""
 
 from __future__ import annotations
 
@@ -69,6 +74,12 @@ def _require_non_empty_text(value: object, *, name: str, message: str | None = N
 
 
 def _validate_storage_id(value: object, *, name: str) -> str:
+    """Return a file-safe local storage identifier or raise ``WorldForgeError``.
+
+    World IDs become local JSON file stems. Rejecting separators and traversal-shaped values here
+    keeps every persistence read and write inside ``WorldForge.state_dir``.
+    """
+
     identifier = _require_non_empty_text(value, name=name)
     if (
         identifier in {".", ".."}
@@ -123,6 +134,13 @@ def _offset_position(base: Position, offset: Position) -> Position:
 
 
 def _validate_world_state_payload(state: JSONDict, *, context: str) -> None:
+    """Validate a serialized world before it is restored, saved, or applied.
+
+    The validator is recursive because persisted history contains historical world snapshots. A
+    malformed snapshot is still part of the state contract and must fail before it can be written
+    back to disk or returned through public APIs.
+    """
+
     if not isinstance(state, dict):
         raise WorldStateError(f"{context} must be a JSON object.")
 
@@ -715,6 +733,14 @@ class World:
         execution_provider: str | None = None,
         **_: Any,
     ) -> Plan:
+        """Plan actions through a predictive, score, policy, or policy-plus-score path.
+
+        The selected path is determined by the capability-specific inputs:
+        ``candidate_actions`` or score arguments choose score planning, ``policy_info`` chooses
+        policy planning, and both together compose policy proposals with score-provider ranking.
+        Without those inputs, the world uses a predictive provider and records predicted states.
+        """
+
         require_positive_int(max_steps, name="max_steps")
         if goal is not None and not isinstance(goal, str):
             raise WorldForgeError("goal must be a string when provided.")
@@ -949,7 +975,12 @@ class World:
 
 
 class WorldForge:
-    """Top-level entry point for provider orchestration and JSON persistence."""
+    """Top-level entry point for provider orchestration and local JSON persistence.
+
+    ``WorldForge`` owns provider registration, diagnostics, world construction, and the local
+    single-writer JSON store. Host applications remain responsible for credentials, optional model
+    dependencies, durable storage, telemetry export, and deployment policy.
+    """
 
     def __init__(
         self,
@@ -977,6 +1008,12 @@ class WorldForge:
             raise ProviderError(f"Provider '{name}' is not registered.") from exc
 
     def register_provider(self, provider: BaseProvider) -> None:
+        """Register a provider instance by name.
+
+        If the forge has a global event handler and the provider does not, the provider inherits
+        that handler so later provider calls emit through the same observability path.
+        """
+
         if self._event_handler is not None and provider.event_handler is None:
             provider.event_handler = self._event_handler
         self._providers[provider.name] = provider
@@ -1039,6 +1076,13 @@ class WorldForge:
         *,
         registered_only: bool = False,
     ) -> DoctorReport:
+        """Return provider, state-directory, and configuration diagnostics.
+
+        By default diagnostics include known optional providers even when they are not registered,
+        so missing environment variables or optional runtimes are visible before a workflow fails.
+        Pass ``registered_only=True`` to inspect only the providers active in this process.
+        """
+
         catalog = self._provider_catalog(include_known=not registered_only)
         statuses: list[ProviderDoctorStatus] = []
         issues: list[str] = []
@@ -1073,6 +1117,8 @@ class WorldForge:
         )
 
     def create_world(self, name: str, provider: str = "mock", *, description: str = "") -> World:
+        """Create an empty world bound to a registered default provider."""
+
         selected_provider = _require_non_empty_text(provider, name="Provider name")
         self._require_provider(selected_provider)
         return World(name=name, provider=selected_provider, forge=self, description=description)
@@ -1117,6 +1163,8 @@ class WorldForge:
         return world
 
     def save_world(self, world: World) -> str:
+        """Validate and atomically write a world to the local JSON state directory."""
+
         path = _world_file(self.state_dir, world.id)
         tmp_path = path.with_name(f".{path.name}.{generate_id('tmp')}.tmp")
         try:
@@ -1137,6 +1185,8 @@ class WorldForge:
         return world.id
 
     def load_world(self, world_id: str) -> World:
+        """Load a world from local JSON after validating its storage identifier and payload."""
+
         path = _world_file(self.state_dir, world_id)
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
@@ -1163,6 +1213,8 @@ class WorldForge:
         new_id: bool = False,
         name: str | None = None,
     ) -> World:
+        """Restore a world from exported JSON without saving it automatically."""
+
         if format != "json":
             raise WorldForgeError("Only json import is supported.")
         try:

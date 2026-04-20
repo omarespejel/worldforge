@@ -72,7 +72,12 @@ class PredictionPayload:
 
 
 class BaseProvider:
-    """Base class for WorldForge providers."""
+    """Base class for WorldForge providers.
+
+    Subclasses declare identity, profile metadata, and the exact capabilities they implement.
+    Capability methods are intentionally fail-closed: if an adapter advertises no implementation,
+    calling that surface raises ``ProviderError`` with provider context.
+    """
 
     env_var: str | None = None
 

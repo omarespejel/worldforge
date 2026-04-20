@@ -4,6 +4,26 @@ WorldForge is a Python library plus CLI. Operational responsibility lives in the
 that imports it. This page documents the runtime assumptions and minimum runbook for developers using
 WorldForge in services, jobs, or provider-evaluation pipelines.
 
+For task-specific runbooks, use [User And Operator Playbooks](./playbooks.md). That page covers
+clean checkout validation, provider availability, adapter promotion, persistence recovery, remote
+artifact handling, optional runtime smokes, benchmarks, and release gates.
+
+## Operational Modes
+
+| Mode | Suitable use | Boundary |
+| --- | --- | --- |
+| local development | examples, unit tests, adapter prototyping, deterministic demos | `mock` provider and local JSON state |
+| provider evaluation job | fixture-backed provider checks, benchmarks, optional runtime smokes | host owns credentials, checkpoints, outputs, and run artifacts |
+| embedded service/library use | application calls WorldForge APIs inside a larger system | host owns request IDs, telemetry export, persistence, retries around jobs, and alerts |
+| real robot or simulator loop | host supplies policy observations and action translators | host owns safety interlocks, controller semantics, and embodiment-specific execution |
+
+Minimum startup preflight for a host process:
+
+```bash
+uv run worldforge doctor --registered-only
+uv run worldforge provider health
+```
+
 ## Configuration
 
 Configuration comes from constructor arguments and environment variables documented in

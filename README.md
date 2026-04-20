@@ -189,6 +189,21 @@ adapter.
 - World IDs are local storage identifiers. They may contain letters, numbers, `.`, `_`, and `-`;
   path separators and traversal-shaped IDs are rejected before any persistence read or write.
 
+## User And Operator Playbooks
+
+The [playbooks](./docs/src/playbooks.md) collect concrete runbooks for common work:
+
+- bootstrap a clean checkout and verify provider docs.
+- choose the right provider capability for a workflow.
+- add or promote a provider adapter without overstating capabilities.
+- diagnose provider registration, health, and capability mismatches.
+- operate and recover local JSON persistence.
+- run evaluation, benchmarks, optional runtime smokes, and release gates.
+
+Use the playbooks with [operations](./docs/src/operations.md) when embedding WorldForge in a job
+or service. Production credentials, telemetry export, dashboards, artifact retention, robot safety,
+and durable storage are still host-owned.
+
 ## Demos And Optional Smokes
 
 List runnable examples:
@@ -317,5 +332,6 @@ Next milestones:
 ## Links
 
 - Documentation: [docs/src](./docs/src)
+- Playbooks: [docs/src/playbooks.md](./docs/src/playbooks.md)
 - Repository: <https://github.com/AbdelStark/worldforge>
 - Issues: <https://github.com/AbdelStark/worldforge/issues>

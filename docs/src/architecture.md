@@ -102,6 +102,22 @@ flowchart TD
     Forge --> Store
 ```
 
+## Operational Ownership Map
+
+WorldForge owns the framework boundary. The host owns production operation around that boundary.
+
+| Layer | WorldForge responsibility | Host responsibility |
+| --- | --- | --- |
+| provider catalog | factory metadata, auto-registration rules, provider profiles | deciding which optional providers are configured in each environment |
+| provider call | typed inputs, explicit capabilities, result validation, provider events | credentials, endpoints, model packages, checkpoints, robot stacks, and upstream SLAs |
+| planning | composition across `predict`, `score`, and `policy` surfaces | task preprocessing, action-space mapping, execution policy, and safety checks |
+| local state | validated single-writer JSON import/export | backups, retention, locking, migrations, object storage, and multi-writer durability |
+| evaluation and benchmarks | deterministic contract suites and capability-aware reports | preserving run artifacts and making empirical claims only from appropriate data |
+| observability | `ProviderEvent` hook, JSON logger, recorder, and in-memory metrics | trace IDs, dashboards, alerting, distributed tracing, and on-call runbooks |
+
+See [User And Operator Playbooks](./playbooks.md) for concrete commands that exercise these
+boundaries.
+
 ## Module Responsibilities
 
 `framework.py`

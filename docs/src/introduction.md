@@ -26,4 +26,6 @@ Start with:
 - [Quick Start](./quickstart.md) for the Python and CLI path.
 - [World Model Taxonomy](./world-model-taxonomy.md) for terminology and capability boundaries.
 - [Architecture](./architecture.md) for the provider pipeline and planning modes.
+- [User And Operator Playbooks](./playbooks.md) for checkout validation, provider diagnostics,
+  persistence recovery, optional runtime smokes, benchmarks, and release gates.
 - [Provider Authoring Guide](./provider-authoring-guide.md) before adding an adapter.

@@ -115,6 +115,9 @@ releases may still include breaking changes when the public API needs to tighten
 
 - Added `AGENTS.md` with repository identity, architecture, commands, conventions, constraints,
   and gotchas for contributors.
+- Added user and operator playbooks for checkout validation, provider capability selection,
+  provider diagnostics, adapter promotion, local persistence recovery, remote artifacts, optional
+  runtime smokes, benchmarks, incident triage, and release gates.
 - Added this changelog and linked it from the README.
 - Documented host-owned persistence, provider limits, and provider workflow failure modes.
 - Added a world-model taxonomy document, plus expanded architecture docs with text and

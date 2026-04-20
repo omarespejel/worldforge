@@ -814,7 +814,12 @@ class SceneObject:
 
 @dataclass(slots=True)
 class ProviderCapabilities:
-    """Boolean capability matrix for a provider."""
+    """Boolean capability matrix for a provider.
+
+    All flags default to ``False``. Provider adapters must opt into each callable surface
+    explicitly so unsupported workflows fail at capability resolution instead of falling through to
+    mock behavior or ad hoc string checks.
+    """
 
     predict: bool = False
     generate: bool = False
@@ -840,6 +845,12 @@ class ProviderCapabilities:
         return {name: getattr(self, name) for name in CAPABILITY_NAMES}
 
     def supports(self, capability: str) -> bool:
+        """Return whether a known capability is enabled.
+
+        Unknown names raise ``WorldForgeError`` because a typo in routing or diagnostics should not
+        silently behave like an unsupported provider.
+        """
+
         if not isinstance(capability, str) or capability not in CAPABILITY_NAMES:
             known = ", ".join(CAPABILITY_NAMES)
             raise WorldForgeError(

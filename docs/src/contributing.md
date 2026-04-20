@@ -1,21 +1,32 @@
 # Contributing
 
+WorldForge contributions should keep code, tests, docs, and agent context in sync.
+
 ```bash
 uv sync --group dev
 make lint
 make docs-check
 make test
+make test-cov
 make test-package
 ```
 
 Key directories:
 
-- `src/worldforge/`
-- `src/worldforge/testing/`
-- `tests/`
-- `examples/`
+- `src/worldforge/models.py`: public data contracts and validation.
+- `src/worldforge/framework.py`: runtime facade, worlds, planning, persistence, and diagnostics.
+- `src/worldforge/providers/`: provider interfaces, catalog, adapters, and scaffolds.
+- `src/worldforge/testing/`: reusable provider contract helpers.
+- `src/worldforge/evaluation/`: deterministic evaluation suites.
+- `src/worldforge/benchmark.py`: provider benchmark harness.
+- `src/worldforge/observability.py`: provider event sinks.
+- `docs/src/`: user docs, architecture, playbooks, provider pages, and API notes.
+- `tests/`: behavior and regression tests.
+- `examples/`: runnable examples and compatibility wrappers.
+- `scripts/`: docs generation, scaffolding, package validation, and optional smokes.
 
-Provider work belongs in `src/worldforge/providers/`. Keep adapter capabilities honest and add tests for every new supported path.
+Provider work belongs in `src/worldforge/providers/`. Keep adapter capabilities honest and add
+tests for every new supported path.
 
 For adapter packages and in-repo providers, use the reusable contract helper:
 
@@ -35,3 +46,13 @@ report = assert_provider_contract(
     score_action_candidates=score_fixture["action_candidates"],
 )
 ```
+
+Before publishing a branch:
+
+- run the full release gate from [User And Operator Playbooks](./playbooks.md).
+- update provider docs and generated catalog tables for provider behavior changes.
+- update [Python API](./api/python.md) for public API or exception changes.
+- update [Architecture](./architecture.md) for new flows or ownership boundaries.
+- update [Operations](./operations.md) and [Playbooks](./playbooks.md) for new operator work.
+- update `CHANGELOG.md` for user-visible changes.
+- update `AGENTS.md` for new commands, constraints, gotchas, or architecture facts.

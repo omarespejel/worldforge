@@ -6,6 +6,7 @@
 - [TheWorldHarness](./theworldharness.md)
 - [World Model Taxonomy](./world-model-taxonomy.md)
 - [Architecture](./architecture.md)
+- [User And Operator Playbooks](./playbooks.md)
 - [Providers](./providers/README.md)
   - [Cosmos](./providers/cosmos.md)
   - [GR00T](./providers/gr00t.md)
