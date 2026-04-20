@@ -174,7 +174,8 @@ adapter.
 ## Operating Boundaries
 
 - Provider capabilities are contracts. Do not advertise an operation unless the adapter implements
-  it end to end and returns the typed WorldForge result.
+  it end to end and returns the typed WorldForge result. Capability names are strict; unknown
+  names fail instead of behaving like empty filters.
 - Optional runtimes remain host-owned. WorldForge does not install torch, LeWorldModel, LeRobot,
   Isaac GR00T, CUDA, TensorRT, robot controllers, checkpoints, or datasets as base dependencies.
 - Embodiment-specific translation remains host-owned. Policy providers preserve raw actions, but a

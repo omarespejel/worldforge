@@ -44,6 +44,7 @@ from worldforge.framework import (
     run_eval,
 )
 from worldforge.models import (
+    CAPABILITY_NAMES,
     Action,
     ActionPolicyResult,
     ActionScoreResult,
@@ -86,6 +87,7 @@ __all__ = [
     "BenchmarkInputs",
     "BenchmarkReport",
     "BenchmarkResult",
+    "CAPABILITY_NAMES",
     "Comparison",
     "DoctorReport",
     "EmbeddingResult",

@@ -3,7 +3,7 @@
 ## Entry points
 
 ```python
-from worldforge import Action, ActionPolicyResult, ActionScoreResult, World, WorldForge
+from worldforge import Action, ActionPolicyResult, ActionScoreResult, CAPABILITY_NAMES, WorldForge
 ```
 
 ## `WorldForge`
@@ -28,6 +28,10 @@ doctor = forge.doctor()
 print(profiles[0].supported_tasks)
 print(doctor.issues)
 ```
+
+Provider capability filters are strict. Valid capability names are `predict`, `generate`,
+`reason`, `embed`, `plan`, `transfer`, `score`, and `policy`; unknown names raise
+`WorldForgeError` instead of producing an empty result by typo.
 
 ## Observability
 

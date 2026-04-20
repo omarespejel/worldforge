@@ -540,6 +540,8 @@ State invariants:
 - history entries have non-negative steps, validated snapshot states, non-empty summaries, and
   valid serialized action payloads when actions are present
 - history entry steps cannot exceed the current world step
+- provider capability names are a closed set; unknown capability filters fail explicitly instead
+  of silently excluding every provider
 - invalid public inputs fail explicitly instead of being silently coerced
 - score providers return finite scores and an in-range `best_index`
 - policy providers return executable actions and preserve raw provider actions

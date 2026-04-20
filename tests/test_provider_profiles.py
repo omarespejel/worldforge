@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from worldforge import DoctorReport, WorldForge
+import pytest
+
+from worldforge import DoctorReport, WorldForge, WorldForgeError
 
 
 def test_provider_profiles_and_doctor_report_include_known_scaffolds(tmp_path, monkeypatch) -> None:
@@ -88,3 +90,8 @@ def test_provider_profiles_and_doctor_report_include_known_scaffolds(tmp_path, m
     assert provider_statuses["cosmos"].registered is False
     assert provider_statuses["cosmos"].health.healthy is False
     assert any("COSMOS_BASE_URL" in issue for issue in report.issues)
+
+    with pytest.raises(WorldForgeError, match="Unknown provider capability"):
+        forge.provider_healths(capability="generation")
+    with pytest.raises(WorldForgeError, match="Unknown provider capability"):
+        forge.doctor(capability="generation")

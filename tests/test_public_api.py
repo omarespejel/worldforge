@@ -13,6 +13,16 @@ def test_top_level_exports_and_subpackages_import() -> None:
     assert worldforge.BenchmarkInputs is not None
     assert worldforge.BenchmarkReport is not None
     assert worldforge.BenchmarkResult is not None
+    assert worldforge.CAPABILITY_NAMES == (
+        "predict",
+        "generate",
+        "reason",
+        "embed",
+        "plan",
+        "transfer",
+        "score",
+        "policy",
+    )
     assert worldforge.GenerationOptions is not None
     assert worldforge.GenerationEvaluationSuite is not None
     assert worldforge.ProviderEvent is not None

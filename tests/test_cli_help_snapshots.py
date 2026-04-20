@@ -16,18 +16,20 @@ options:
   --format {markdown,json}
                         Output format for the examples index.
 """,
-    ("provider", "list", "--help"): """\
-usage: worldforge provider list [-h] [--state-dir STATE_DIR]
-                                [--registered-only] [--capability CAPABILITY]
-
-options:
-  -h, --help            show this help message and exit
-  --state-dir STATE_DIR
-                        World state directory.
-  --registered-only     Show only providers registered for this process.
-  --capability CAPABILITY
-                        Filter providers by capability name.
-""",
+    ("provider", "list", "--help"): (
+        "usage: worldforge provider list [-h] [--state-dir STATE_DIR]\n"
+        "                                [--registered-only]\n"
+        "                                [--capability "
+        "{predict,generate,reason,embed,plan,transfer,score,policy}]\n"
+        "\n"
+        "options:\n"
+        "  -h, --help            show this help message and exit\n"
+        "  --state-dir STATE_DIR\n"
+        "                        World state directory.\n"
+        "  --registered-only     Show only providers registered for this process.\n"
+        "  --capability {predict,generate,reason,embed,plan,transfer,score,policy}\n"
+        "                        Filter providers by capability name.\n"
+    ),
     ("provider", "docs", "--help"): """\
 usage: worldforge provider docs [-h] [--format {markdown,json}] [name]
 

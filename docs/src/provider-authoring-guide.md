@@ -123,7 +123,8 @@ Checklist:
 
 WorldForge capabilities are not badges. They are callable contracts.
 `ProviderCapabilities()` starts with every flag set to `False`; adapters must opt into each
-supported operation explicitly.
+supported operation explicitly. Capability names are validated; typos should fail loudly during
+filtering, diagnostics, and tests.
 
 ```text
 capabilities.predict  -> predict(world_state, action, steps)

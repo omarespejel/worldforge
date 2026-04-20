@@ -9,6 +9,7 @@ from pathlib import Path
 from worldforge import Action, GenerationOptions, VideoClip, WorldForge, WorldForgeError
 from worldforge.benchmark import ProviderBenchmarkHarness
 from worldforge.evaluation import EvaluationSuite
+from worldforge.models import CAPABILITY_NAMES
 from worldforge.providers import ProviderError
 from worldforge.providers.catalog import provider_docs_index
 
@@ -218,7 +219,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Show only providers registered for this process.",
     )
-    provider_list.add_argument("--capability", help="Filter providers by capability name.")
+    provider_list.add_argument(
+        "--capability",
+        choices=CAPABILITY_NAMES,
+        help="Filter providers by capability name.",
+    )
 
     provider_info = provider_subparsers.add_parser("info", help="Show provider details.")
     provider_info.add_argument("name", help="Provider name.")
@@ -236,7 +241,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Show only providers registered for this process.",
     )
-    provider_health.add_argument("--capability", help="Filter providers by capability name.")
+    provider_health.add_argument(
+        "--capability",
+        choices=CAPABILITY_NAMES,
+        help="Filter providers by capability name.",
+    )
 
     provider_docs = provider_subparsers.add_parser(
         "docs",
@@ -257,7 +266,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Show only providers registered for this process.",
     )
-    doctor.add_argument("--capability", help="Filter providers by capability name.")
+    doctor.add_argument(
+        "--capability",
+        choices=CAPABILITY_NAMES,
+        help="Filter providers by capability name.",
+    )
 
     generate = subparsers.add_parser("generate", help="Generate a clip with a provider.")
     generate.add_argument("prompt", help="Generation prompt.")

@@ -321,8 +321,12 @@ def test_public_validation_guards_cover_boundary_failure_modes() -> None:
         )
 
     assert ProviderCapabilities().enabled_names() == []
+    assert ProviderCapabilities(generate=True).supports("generate") is True
+    assert ProviderCapabilities(generate=True).supports("predict") is False
     with pytest.raises(WorldForgeError, match="ProviderCapabilities predict"):
         ProviderCapabilities(predict="true")  # type: ignore[arg-type]
+    with pytest.raises(WorldForgeError, match="Unknown provider capability"):
+        ProviderCapabilities().supports("generation")
     with pytest.raises(WorldForgeError, match="HistoryEntry step"):
         HistoryEntry(step=-1, state={}, summary="bad")
     with pytest.raises(WorldForgeError, match="HistoryEntry state"):

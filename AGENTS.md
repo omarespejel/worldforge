@@ -129,7 +129,9 @@ rm -f "$tmp_req"
   with `WorldStateError`; provider/runtime integration failures fail with `ProviderError`.
 - Provider capabilities must only advertise operations that are implemented end to end.
   `ProviderCapabilities()` intentionally advertises no operations by default; opt into each
-  supported capability explicitly.
+  supported capability explicitly. Valid capability names are `predict`, `generate`, `reason`,
+  `embed`, `plan`, `transfer`, `score`, and `policy`; reject unknown names instead of treating
+  them as unsupported.
 - `leworldmodel` exposes `score`, not `predict`, `generate`, or `reason`; do not fake those
   capabilities around a cost model.
 - `gr00t` exposes `policy`, not `predict`, `score`, or `generate`; do not call an embodied policy

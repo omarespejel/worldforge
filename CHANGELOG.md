@@ -48,6 +48,8 @@ releases may still include breaking changes when the public API needs to tighten
 
 ### Changed
 
+- Validated provider capability names across public capability checks and CLI provider filters,
+  so typos such as `generation` fail explicitly instead of being treated as unsupported.
 - Changed `ProviderCapabilities()` to advertise no operations by default. Providers must opt into
   every capability explicitly, and unsupported `predict()` calls now fail with `ProviderError`
   instead of `NotImplementedError`.

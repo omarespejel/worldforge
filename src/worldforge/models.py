@@ -13,6 +13,16 @@ from typing import Any
 from uuid import uuid4
 
 JSONDict = dict[str, Any]
+CAPABILITY_NAMES = (
+    "predict",
+    "generate",
+    "reason",
+    "embed",
+    "plan",
+    "transfer",
+    "score",
+    "policy",
+)
 
 
 class WorldForgeError(ValueError):
@@ -816,7 +826,7 @@ class ProviderCapabilities:
     policy: bool = False
 
     def __post_init__(self) -> None:
-        for capability in self.to_dict():
+        for capability in CAPABILITY_NAMES:
             setattr(
                 self,
                 capability,
@@ -827,22 +837,18 @@ class ProviderCapabilities:
             )
 
     def to_dict(self) -> JSONDict:
-        return {
-            "predict": self.predict,
-            "generate": self.generate,
-            "reason": self.reason,
-            "embed": self.embed,
-            "plan": self.plan,
-            "transfer": self.transfer,
-            "score": self.score,
-            "policy": self.policy,
-        }
+        return {name: getattr(self, name) for name in CAPABILITY_NAMES}
 
     def supports(self, capability: str) -> bool:
-        return bool(getattr(self, capability, False))
+        if not isinstance(capability, str) or capability not in CAPABILITY_NAMES:
+            known = ", ".join(CAPABILITY_NAMES)
+            raise WorldForgeError(
+                f"Unknown provider capability '{capability}'. Known capabilities: {known}."
+            )
+        return bool(getattr(self, capability))
 
     def enabled_names(self) -> list[str]:
-        return [name for name, enabled in self.to_dict().items() if enabled]
+        return [name for name in CAPABILITY_NAMES if getattr(self, name)]
 
 
 @dataclass(slots=True, frozen=True)
