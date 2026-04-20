@@ -11,7 +11,7 @@ uv run worldforge examples --format json
 
 | Example | Surface | Command |
 | --- | --- | --- |
-| `theworldharness` | E2E flow orchestration, provider events, persistence trace | `uv run --extra harness worldforge-harness` |
+| `theworldharness` | E2E flows, provider diagnostics, benchmark comparison | `uv run --extra harness worldforge-harness` |
 
 `TheWorldHarness` is an optional Textual TUI for running the packaged E2E demos as visible
 provider workflows.
@@ -19,11 +19,20 @@ provider workflows.
 ```bash
 uv run --extra harness worldforge-harness
 uv run --extra harness worldforge-harness --flow lerobot
+uv run --extra harness worldforge-harness --flow diagnostics
 uv run worldforge harness --list
 ```
 
 The harness keeps Textual out of the base dependency set. Install or run with the `harness` extra
 when you want the visual interface.
+
+Available flows:
+
+| Flow | Purpose |
+| --- | --- |
+| `leworldmodel` | Visual score-planning path through the LeWorldModel provider surface. |
+| `lerobot` | Visual policy-plus-score path through the LeRobot provider surface. |
+| `diagnostics` | Visual provider diagnostics and benchmark comparison path. |
 
 ## Prediction And Evaluation
 

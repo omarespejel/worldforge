@@ -40,13 +40,13 @@ options:
                         Output format for provider docs metadata.
 """,
     ("harness", "--help"): """\
-usage: worldforge harness [-h] [--flow {leworldmodel,lerobot}]
+usage: worldforge harness [-h] [--flow {leworldmodel,lerobot,diagnostics}]
                           [--state-dir STATE_DIR] [--list]
                           [--format {markdown,json}] [--no-animation]
 
 options:
   -h, --help            show this help message and exit
-  --flow {leworldmodel,lerobot}
+  --flow {leworldmodel,lerobot,diagnostics}
                         Harness flow to open.
   --state-dir STATE_DIR
                         Directory for persisted demo worlds. Defaults to a

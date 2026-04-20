@@ -148,6 +148,7 @@ class TheWorldHarnessApp(App[None]):
         ("r", "run_selected", "Run"),
         ("1", "select_flow('leworldmodel')", "LeWorldModel"),
         ("2", "select_flow('lerobot')", "LeRobot"),
+        ("3", "select_flow('diagnostics')", "Diagnostics"),
         ("q", "quit", "Quit"),
     ]
     CSS = """
@@ -195,7 +196,7 @@ class TheWorldHarnessApp(App[None]):
     }
 
     FlowCard {
-        height: 8;
+        height: 6;
         margin-bottom: 1;
     }
 

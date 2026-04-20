@@ -13,14 +13,17 @@ uv run worldforge examples --format json
 
 | Example | Surface | Command |
 | --- | --- | --- |
-| `theworldharness` | E2E flow orchestration, provider events, persistence trace | `uv run --extra harness worldforge-harness` |
+| `theworldharness` | E2E flows, provider diagnostics, benchmark comparison | `uv run --extra harness worldforge-harness` |
 
 ```bash
 uv run --extra harness worldforge-harness
 uv run --extra harness worldforge-harness --flow lerobot
+uv run --extra harness worldforge-harness --flow diagnostics
 ```
 
-TheWorldHarness is optional and depends on Textual through the `harness` extra.
+TheWorldHarness is optional and depends on Textual through the `harness` extra. It currently
+includes score-planning, policy-plus-score planning, and provider diagnostics plus benchmark
+comparison flows.
 
 ## Prediction And Evaluation
 

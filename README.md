@@ -23,7 +23,7 @@ checkpoints, production telemetry, and durable persistence stay owned by the hos
   and health checks for optional adapters.
 - Built-in evaluation suites and a provider benchmark harness for adapter behavior, latency,
   retries, throughput, and report export.
-- Optional Textual TUI harness for visually running and inspecting E2E provider demos.
+- Optional Textual TUI harness for visually running E2E provider demos, diagnostics, and benchmark comparisons.
 - Provider event hooks for JSON logging, in-memory recording, and metrics aggregation.
 
 ## Design Center
@@ -200,11 +200,20 @@ Visual harness:
 ```bash
 uv run --extra harness worldforge-harness
 uv run --extra harness worldforge-harness --flow lerobot
+uv run --extra harness worldforge-harness --flow diagnostics
 uv run worldforge harness --list
+uv run worldforge harness --list --format json
 ```
 
-`TheWorldHarness` is a Textual-based optional TUI. It animates the packaged E2E demos as staged
-provider workflows with timeline, metrics, persisted-state, and event inspection panels.
+`TheWorldHarness` is a Textual-based optional TUI for running integration flows as visible,
+inspectable traces. It keeps Textual outside the base dependency set and presents each run through
+a timeline, metrics inspector, persisted-state summary, and structured transcript.
+
+| Flow | What it exercises |
+| --- | --- |
+| `leworldmodel` | Score-provider planning with deterministic LeWorldModel-shaped costs, selected action path, execution, persistence, reload, and provider events. |
+| `lerobot` | Policy-plus-score planning with deterministic LeRobot-shaped action chunks, translation, ranking, execution, persistence, reload, and provider events. |
+| `diagnostics` | Provider catalog diagnostics plus a mock-provider benchmark comparison across predict, reason, generate, and transfer. |
 
 Checkout-safe packaged demos:
 

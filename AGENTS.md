@@ -45,7 +45,9 @@ evaluation harnesses, and testable prototypes.
 - `src/worldforge/demos/lerobot_e2e.py`: packaged LeRobot policy-plus-score planning demo exposed
   through `uv run worldforge-demo-lerobot`.
 - `src/worldforge/harness/`: optional TheWorldHarness TUI package. Keep flow metadata and runners
-  independent from Textual; `tui.py` is the only Textual-dependent module.
+  independent from Textual; `tui.py` is the only Textual-dependent module. Current flows cover
+  LeWorldModel score planning, LeRobot policy-plus-score planning, and provider diagnostics plus
+  benchmark comparison.
 - `src/worldforge/smoke/`: packaged optional-runtime smoke entry points exposed through `uv run`
   console scripts.
 - `src/worldforge/smoke/leworldmodel_checkpoint.py`: optional host-owned builder for creating the

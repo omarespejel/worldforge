@@ -21,6 +21,8 @@ releases may still include breaking changes when the public API needs to tighten
 - Added `worldforge provider docs` so users can discover provider documentation paths from the CLI.
 - Added TheWorldHarness as an optional Textual TUI (`worldforge-harness` and `worldforge harness`)
   for visually running and inspecting packaged E2E demos.
+- Added a TheWorldHarness diagnostics flow for provider catalog inspection and mock benchmark
+  comparison across predict, reason, generate, and transfer.
 - Added `.env.example` documenting every provider environment variable recognized by
   WorldForge (`COSMOS_BASE_URL`, `NVIDIA_API_KEY`, `RUNWAYML_API_SECRET` and the legacy
   `RUNWAY_API_SECRET` alias, `RUNWAYML_BASE_URL`, `LEWORLDMODEL_POLICY` and the legacy

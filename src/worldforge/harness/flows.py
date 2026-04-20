@@ -6,7 +6,9 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
+from worldforge.benchmark import ProviderBenchmarkHarness
 from worldforge.demos import lerobot_e2e, leworldmodel_e2e
+from worldforge.framework import WorldForge
 from worldforge.harness.models import HarnessFlow, HarnessMetric, HarnessRun, HarnessStep
 from worldforge.models import JSONDict
 
@@ -41,11 +43,83 @@ FLOWS: tuple[HarnessFlow, ...] = (
             "them with a score provider, execute, persist, and reload the resulting world."
         ),
     ),
+    HarnessFlow(
+        id="diagnostics",
+        title="Provider Diagnostics + Benchmark",
+        short_title="Diagnostics",
+        focus="provider diagnostics and benchmark comparison",
+        provider="WorldForge + ProviderBenchmarkHarness",
+        capability="diagnostics",
+        command="uv run worldforge harness --flow diagnostics",
+        accent="#91b7ff",
+        summary=(
+            "Inspect the provider catalog, surface registered and unavailable adapters, run the "
+            "mock provider benchmark matrix, and compare latency, throughput, and emitted events."
+        ),
+    ),
 )
+
+
+def _run_diagnostics_demo(*, state_dir: Path, emit: bool = False) -> JSONDict:
+    forge = WorldForge(state_dir=state_dir, auto_register_remote=False)
+    doctor = forge.doctor(registered_only=False)
+    registered_doctor = forge.doctor(registered_only=True)
+    benchmark = ProviderBenchmarkHarness(forge=forge)
+    operations = benchmark.supported_operations("mock")
+    report = benchmark.run(
+        "mock",
+        operations=operations,
+        iterations=2,
+        concurrency=1,
+    )
+    benchmark_results = report.to_dict()["results"]
+    fastest = min(
+        benchmark_results,
+        key=lambda result: float(result.get("average_latency_ms") or 0.0),
+    )
+    highest_throughput = max(
+        benchmark_results,
+        key=lambda result: float(result.get("throughput_per_second") or 0.0),
+    )
+    event_count = sum(
+        int(event["request_count"])
+        for result in benchmark_results
+        for event in result["operation_metrics"]["events"]
+    )
+    summary = {
+        "demo_kind": "provider_diagnostics_benchmark",
+        "state_dir": str(state_dir),
+        "registered_providers": forge.providers(),
+        "known_provider_count": doctor.provider_count,
+        "healthy_provider_count": doctor.healthy_provider_count,
+        "registered_provider_count": registered_doctor.registered_provider_count,
+        "issue_count": len(doctor.issues),
+        "issues": list(doctor.issues),
+        "mock_supported_operations": operations,
+        "benchmark_iterations": 2,
+        "benchmark_concurrency": 1,
+        "benchmark_results": benchmark_results,
+        "benchmark_operation_count": len(benchmark_results),
+        "fastest_operation": str(fastest["operation"]),
+        "fastest_average_latency_ms": float(fastest["average_latency_ms"] or 0.0),
+        "highest_throughput_operation": str(highest_throughput["operation"]),
+        "highest_throughput_per_second": float(highest_throughput["throughput_per_second"]),
+        "benchmark_event_count": event_count,
+        "commands": [
+            "uv run worldforge doctor",
+            "uv run worldforge provider list",
+            "uv run worldforge benchmark --provider mock --iterations 2 --format json",
+        ],
+    }
+    if emit:
+        print(report.to_markdown())
+    return summary
+
 
 _RUNNERS: dict[str, FlowRunner] = {
     "leworldmodel": leworldmodel_e2e.run_demo,
     "lerobot": lerobot_e2e.run_demo,
+    "diagnostics": _run_diagnostics_demo,
 }
 
 
@@ -178,10 +252,94 @@ def _steps_for(flow_id: str, summary: JSONDict) -> tuple[HarnessStep, ...]:
                 f"reset_calls={summary['policy_reset_calls']}",
             ),
         )
+    if flow_id == "diagnostics":
+        return (
+            HarnessStep(
+                "Create isolated forge",
+                "Start WorldForge with remote auto-registration disabled for a stable scan.",
+                (
+                    f"{summary['registered_provider_count']} registered provider, "
+                    f"{summary['known_provider_count']} known provider profiles inspected."
+                ),
+                f"state_dir={Path(str(summary['state_dir'])).name}",
+            ),
+            HarnessStep(
+                "Run provider diagnostics",
+                "Call doctor() over registered and known provider profiles.",
+                (
+                    f"{summary['healthy_provider_count']} healthy providers, "
+                    f"{summary['issue_count']} configuration issues reported."
+                ),
+                "command=uv run worldforge doctor",
+            ),
+            HarnessStep(
+                "Inspect benchmark surface",
+                "Resolve supported benchmark operations from ProviderBenchmarkHarness.",
+                ", ".join(summary["mock_supported_operations"]),
+                "provider=mock",
+            ),
+            HarnessStep(
+                "Run benchmark matrix",
+                "Execute mock benchmark samples across predict, reason, generate, and transfer.",
+                (
+                    f"{summary['benchmark_operation_count']} operations, "
+                    f"{summary['benchmark_iterations']} iterations each."
+                ),
+                "concurrency=1",
+            ),
+            HarnessStep(
+                "Compare operations",
+                "Compare average latency and throughput for the benchmark report.",
+                (
+                    f"Fastest average latency: {summary['fastest_operation']} "
+                    f"({_format_ms(summary['fastest_average_latency_ms'])})."
+                ),
+                (
+                    f"highest_throughput={summary['highest_throughput_operation']} "
+                    f"{summary['highest_throughput_per_second']:.2f}/s"
+                ),
+            ),
+            HarnessStep(
+                "Inspect provider events",
+                "Read emitted provider benchmark events captured by operation metrics.",
+                f"{summary['benchmark_event_count']} provider events captured.",
+                "artifact=benchmark report json/markdown/csv",
+            ),
+        )
     raise ValueError(f"unknown harness flow '{flow_id}'")
 
 
 def _metrics_for(flow_id: str, summary: JSONDict) -> tuple[HarnessMetric, ...]:
+    if flow_id == "diagnostics":
+        return (
+            HarnessMetric(
+                "Known profiles",
+                str(summary["known_provider_count"]),
+                "registered plus unregistered catalog entries",
+            ),
+            HarnessMetric(
+                "Registered",
+                str(summary["registered_provider_count"]),
+                ", ".join(summary["registered_providers"]),
+            ),
+            HarnessMetric("Issues", str(summary["issue_count"]), "doctor() configuration findings"),
+            HarnessMetric(
+                "Benchmarks",
+                str(summary["benchmark_operation_count"]),
+                ", ".join(summary["mock_supported_operations"]),
+            ),
+            HarnessMetric(
+                "Fastest avg",
+                str(summary["fastest_operation"]),
+                _format_ms(summary["fastest_average_latency_ms"]),
+            ),
+            HarnessMetric(
+                "Events",
+                str(summary["benchmark_event_count"]),
+                "provider events captured during benchmark samples",
+            ),
+        )
+
     flow_label = "score" if flow_id == "leworldmodel" else "policy+score"
     return (
         HarnessMetric("Flow", flow_label, "WorldForge planning mode"),
@@ -198,6 +356,21 @@ def _metrics_for(flow_id: str, summary: JSONDict) -> tuple[HarnessMetric, ...]:
 
 
 def _transcript_for(flow_id: str, summary: JSONDict) -> tuple[str, ...]:
+    if flow_id == "diagnostics":
+        return (
+            "flow: diagnostics",
+            f"registered_providers: {', '.join(summary['registered_providers'])}",
+            f"known_provider_count: {summary['known_provider_count']}",
+            f"healthy_provider_count: {summary['healthy_provider_count']}",
+            f"issue_count: {summary['issue_count']}",
+            f"benchmark_operations: {', '.join(summary['mock_supported_operations'])}",
+            f"benchmark_iterations: {summary['benchmark_iterations']}",
+            f"fastest_operation: {summary['fastest_operation']}",
+            f"highest_throughput_operation: {summary['highest_throughput_operation']}",
+            f"benchmark_event_count: {summary['benchmark_event_count']}",
+            f"commands: {' | '.join(summary['commands'])}",
+        )
+
     lines = [
         f"flow: {flow_id}",
         f"providers: {', '.join(summary['providers'])}",
@@ -244,3 +417,7 @@ def _event_result(summary: JSONDict) -> str:
 def _position(summary: JSONDict) -> str:
     final = summary["final_cube_position"]
     return f"({final['x']:.2f}, {final['y']:.2f}, {final['z']:.2f})"
+
+
+def _format_ms(value: object) -> str:
+    return f"{float(value):.2f} ms"

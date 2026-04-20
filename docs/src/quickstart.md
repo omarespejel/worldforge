@@ -89,6 +89,8 @@ Optional visual E2E harness:
 ```bash
 uv run --extra harness worldforge-harness
 uv run --extra harness worldforge-harness --flow lerobot
+uv run --extra harness worldforge-harness --flow diagnostics
+uv run worldforge harness --list
 ```
 
 Packaged checkout-safe demos:

@@ -6,12 +6,13 @@ from worldforge.harness.flows import flow_to_dicts
 
 def test_harness_flow_metadata_is_available_without_textual() -> None:
     flows = available_flows()
-    assert [flow.id for flow in flows] == ["leworldmodel", "lerobot"]
+    assert [flow.id for flow in flows] == ["leworldmodel", "lerobot", "diagnostics"]
     assert flow_index()["leworldmodel"].provider == "LeWorldModelProvider"
 
     payload = flow_to_dicts()
     assert payload[0]["command"] == "uv run worldforge-demo-leworldmodel"
     assert payload[1]["focus"] == "policy plus score planning"
+    assert payload[2]["command"] == "uv run worldforge harness --flow diagnostics"
 
 
 def test_harness_runs_leworldmodel_flow(tmp_path) -> None:
@@ -35,3 +36,21 @@ def test_harness_runs_lerobot_flow(tmp_path) -> None:
     assert run.summary["selected_candidate_index"] == 1
     assert run.summary["policy_select_calls"] == 2
     assert "policy_select_calls: 2" in run.transcript
+
+
+def test_harness_runs_diagnostics_flow(tmp_path) -> None:
+    run = run_flow("diagnostics", state_dir=tmp_path)
+
+    assert run.flow.id == "diagnostics"
+    assert len(run.steps) == 6
+    assert len(run.metrics) == 6
+    assert run.summary["registered_providers"] == ["mock"]
+    assert run.summary["benchmark_operation_count"] == 4
+    assert run.summary["mock_supported_operations"] == [
+        "predict",
+        "reason",
+        "generate",
+        "transfer",
+    ]
+    assert run.summary["benchmark_event_count"] >= 8
+    assert "benchmark_operations: predict, reason, generate, transfer" in run.transcript

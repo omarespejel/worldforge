@@ -77,12 +77,12 @@ EXAMPLE_COMMANDS: tuple[dict[str, str], ...] = (
     {
         "task": "Visual harness",
         "name": "theworldharness",
-        "surface": "E2E flow orchestration, provider events, persistence trace",
+        "surface": "E2E flows, provider diagnostics, benchmark comparison",
         "requires": "Textual through the harness extra",
         "command": "uv run --extra harness worldforge-harness",
         "description": (
-            "Open the optional Textual harness for running packaged E2E demos as visible "
-            "provider workflows."
+            "Open the optional Textual harness for running packaged E2E demos, diagnostics, "
+            "and benchmark comparisons as visible provider workflows."
         ),
     },
     {
@@ -350,7 +350,7 @@ def _build_parser() -> argparse.ArgumentParser:
     harness = subparsers.add_parser("harness", help="Launch TheWorldHarness TUI.")
     harness.add_argument(
         "--flow",
-        choices=("leworldmodel", "lerobot"),
+        choices=("leworldmodel", "lerobot", "diagnostics"),
         default="leworldmodel",
         help="Harness flow to open.",
     )
