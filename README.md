@@ -8,22 +8,21 @@ Python library for wiring world-model providers, action scorers, embodied polici
 generators behind a typed capability interface. Includes planning, evaluation, benchmarks,
 diagnostics, and a CLI.
 
-[![CI](https://img.shields.io/github/actions/workflow/status/AbdelStark/worldforge/ci.yml?branch=main&label=CI&style=plastic)](https://github.com/AbdelStark/worldforge/actions/workflows/ci.yml)
-[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-3776AB?style=plastic&logo=python&logoColor=white)](https://github.com/AbdelStark/worldforge/blob/main/pyproject.toml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=plastic)](./LICENSE)
-[![Coverage](https://img.shields.io/badge/coverage-%E2%89%A590%25-brightgreen?style=plastic)](./.github/workflows/ci.yml)
-[![Typed](https://img.shields.io/badge/typed-py.typed-3f7cac?style=plastic)](./src/worldforge/py.typed)
-[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json&style=plastic)](https://github.com/astral-sh/ruff)
-[![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json&style=plastic)](https://github.com/astral-sh/uv)
-[![Status: pre-1.0](https://img.shields.io/badge/status-pre--1.0%20beta-orange?style=plastic)](#project-status)
+[![CI](https://img.shields.io/github/actions/workflow/status/AbdelStark/worldforge/ci.yml?branch=main&label=CI&style=for-the-badge)](https://github.com/AbdelStark/worldforge/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://github.com/AbdelStark/worldforge/blob/main/pyproject.toml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge)](./LICENSE)
+[![Coverage](https://img.shields.io/badge/coverage-%E2%89%A590%25-brightgreen?style=for-the-badge)](./.github/workflows/ci.yml)
+[![Typed](https://img.shields.io/badge/typed-py.typed-3f7cac?style=for-the-badge)](./src/worldforge/py.typed)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json&style=for-the-badge)](https://github.com/astral-sh/ruff)
+[![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json&style=for-the-badge)](https://github.com/astral-sh/uv)
+[![Status: pre-1.0](https://img.shields.io/badge/status-pre--1.0%20beta-orange?style=for-the-badge)](#project-status)
 
 [**Quickstart**](#quickstart) ·
 [**Providers**](#provider-surfaces) ·
 [**Capability Model**](#capability-model) ·
 [**Architecture**](#architecture) ·
 [**Docs**](./docs/src) ·
-[**Playbooks**](./docs/src/playbooks.md) ·
-[**Changelog**](./CHANGELOG.md)
+[**Playbooks**](./docs/src/playbooks.md)
 
 </div>
 
@@ -343,7 +342,7 @@ If you use WorldForge in academic work, a BibTeX entry is:
 ```bibtex
 @software{worldforge,
   title   = {WorldForge: An integration layer for physical-AI world models},
-  author  = {{WorldForge contributors}},
+  author  = {AbdelStark and {WorldForge contributors}},
   year    = {2026},
   url     = {https://github.com/AbdelStark/worldforge},
   version = {0.3.0}
