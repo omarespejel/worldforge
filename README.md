@@ -26,6 +26,10 @@ diagnostics, and a CLI.
 
 </div>
 
+<p align="center">
+  <img src="./docs/assets/img/theworldharness-tui-screenshot-1.png" alt="TheWorldHarness TUI inspecting provider traces" width="860" />
+</p>
+
 ---
 
 ## Overview
