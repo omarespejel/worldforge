@@ -9,6 +9,7 @@ Keep this page and the provider pages aligned with that catalog.
 
 ## Provider Catalog
 
+<!-- provider-catalog:start -->
 | Provider | Capability surface | Registration | Runtime ownership |
 | --- | --- | --- | --- |
 | `mock` | `predict`, `generate`, `transfer`, `reason`, `embed`, `plan` | always registered | in-repo deterministic local provider |
@@ -19,6 +20,7 @@ Keep this page and the provider pages aligned with that catalog.
 | [`lerobot`](./lerobot.md) | `policy` | `LEROBOT_POLICY_PATH` or `LEROBOT_POLICY` | host installs LeRobot and compatible policy checkpoints |
 | `jepa` | scaffold | `JEPA_MODEL_PATH` | credential-gated mock-backed reservation, not a real JEPA runtime |
 | `genie` | scaffold | `GENIE_API_KEY` | credential-gated mock-backed reservation, not a real Genie runtime |
+<!-- provider-catalog:end -->
 
 ## Candidate Scaffolds
 
@@ -151,5 +153,6 @@ Before adding or promoting a provider, document:
 - failure modes
 - fixture coverage and smoke path
 - primary upstream technical references: papers, repositories, or official API docs only
+- generated catalog table checked with `uv run python scripts/generate_provider_docs.py --check`
 
 See [Provider Authoring Guide](../provider-authoring-guide.md) for the implementation checklist.

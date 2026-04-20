@@ -18,6 +18,16 @@ from .runway import RunwayProvider
 
 ProviderEventHandler = Callable[[ProviderEvent], None] | None
 ProviderFactory = Callable[[ProviderEventHandler], BaseProvider]
+DOC_CAPABILITY_ORDER = (
+    "predict",
+    "generate",
+    "transfer",
+    "score",
+    "policy",
+    "reason",
+    "embed",
+    "plan",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,9 +37,17 @@ class ProviderCatalogEntry:
     name: str
     factory: ProviderFactory
     always_register: bool = False
+    docs_page: str | None = None
+    runtime_ownership: str = "host-owned runtime"
 
     def create(self, *, event_handler: ProviderEventHandler = None) -> BaseProvider:
         return self.factory(event_handler)
+
+    @property
+    def display_name(self) -> str:
+        if self.docs_page:
+            return f"[`{self.name}`](./{self.docs_page})"
+        return f"`{self.name}`"
 
 
 def _mock(event_handler: ProviderEventHandler = None) -> BaseProvider:
@@ -65,14 +83,54 @@ def _genie(event_handler: ProviderEventHandler = None) -> BaseProvider:
 
 
 PROVIDER_CATALOG: tuple[ProviderCatalogEntry, ...] = (
-    ProviderCatalogEntry("mock", _mock, always_register=True),
-    ProviderCatalogEntry("cosmos", _cosmos),
-    ProviderCatalogEntry("runway", _runway),
-    ProviderCatalogEntry("leworldmodel", _leworldmodel),
-    ProviderCatalogEntry("gr00t", _gr00t),
-    ProviderCatalogEntry("lerobot", _lerobot),
-    ProviderCatalogEntry("jepa", _jepa),
-    ProviderCatalogEntry("genie", _genie),
+    ProviderCatalogEntry(
+        "mock",
+        _mock,
+        always_register=True,
+        runtime_ownership="in-repo deterministic local provider",
+    ),
+    ProviderCatalogEntry(
+        "cosmos",
+        _cosmos,
+        docs_page="cosmos.md",
+        runtime_ownership=(
+            "host supplies a reachable Cosmos deployment and optional `NVIDIA_API_KEY`"
+        ),
+    ),
+    ProviderCatalogEntry(
+        "runway",
+        _runway,
+        docs_page="runway.md",
+        runtime_ownership="host supplies Runway credentials and persists returned artifacts",
+    ),
+    ProviderCatalogEntry(
+        "leworldmodel",
+        _leworldmodel,
+        docs_page="leworldmodel.md",
+        runtime_ownership="host installs `stable_worldmodel`, torch, and compatible checkpoints",
+    ),
+    ProviderCatalogEntry(
+        "gr00t",
+        _gr00t,
+        docs_page="gr00t.md",
+        runtime_ownership="host runs or reaches an Isaac GR00T policy server",
+    ),
+    ProviderCatalogEntry(
+        "lerobot",
+        _lerobot,
+        docs_page="lerobot.md",
+        runtime_ownership="host installs LeRobot and compatible policy checkpoints",
+    ),
+    ProviderCatalogEntry(
+        "jepa",
+        _jepa,
+        runtime_ownership="credential-gated mock-backed reservation, not a real JEPA runtime",
+    ),
+    ProviderCatalogEntry(
+        "genie",
+        _genie,
+        runtime_ownership="credential-gated mock-backed reservation, not a real Genie runtime",
+    ),
 )
 
 
@@ -82,3 +140,34 @@ def create_known_providers(
     """Instantiate every in-repo provider adapter without registering it."""
 
     return tuple(entry.create(event_handler=event_handler) for entry in PROVIDER_CATALOG)
+
+
+def render_provider_catalog_markdown() -> str:
+    """Render the provider catalog table used by the provider documentation index."""
+
+    lines = [
+        "| Provider | Capability surface | Registration | Runtime ownership |",
+        "| --- | --- | --- | --- |",
+    ]
+    for entry in PROVIDER_CATALOG:
+        profile = entry.create().profile()
+        if profile.implementation_status == "scaffold":
+            capability_surface = "scaffold"
+        else:
+            capability_surface = ", ".join(
+                f"`{task}`" for task in DOC_CAPABILITY_ORDER if profile.capabilities.supports(task)
+            )
+        if entry.always_register:
+            registration = "always registered"
+        elif profile.required_env_vars:
+            registration = " or ".join(f"`{env_var}`" for env_var in profile.required_env_vars)
+        else:
+            registration = "direct construction"
+        lines.append(
+            "| "
+            f"{entry.display_name} | "
+            f"{capability_surface} | "
+            f"{registration} | "
+            f"{entry.runtime_ownership} |"
+        )
+    return "\n".join(lines)

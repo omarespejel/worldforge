@@ -52,6 +52,7 @@ evaluation harnesses, and testable prototypes.
   score-planning compatibility wrapper for `uv run worldforge-demo-leworldmodel`.
 - `examples/lerobot_e2e_demo.py`: checkout-safe end-to-end LeRobot policy-plus-score planning
   compatibility wrapper with an injected deterministic policy.
+- `scripts/generate_provider_docs.py`: provider catalog documentation generator and drift check.
 - `scripts/scaffold_provider.py`: safe scaffold generator for new provider adapter files,
   fixture placeholders, tests, and docs stubs.
 - `scripts/smoke_leworldmodel.py`: compatibility wrapper for
@@ -84,6 +85,7 @@ uv sync --group dev
 uv lock --check
 uv run ruff check src tests examples scripts
 uv run ruff format --check src tests examples scripts
+uv run python scripts/generate_provider_docs.py --check
 uv run pytest
 uv run pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
 bash scripts/test_package.sh

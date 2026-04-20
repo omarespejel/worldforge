@@ -3,6 +3,7 @@
 ```bash
 uv sync --group dev
 make lint
+make docs-check
 make test
 make test-package
 ```

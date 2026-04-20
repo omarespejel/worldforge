@@ -500,6 +500,7 @@ Tests
 
 Docs
   [ ] provider docs updated
+  [ ] generated provider catalog docs checked
   [ ] API docs updated
   [ ] changelog updated
   [ ] agent context updated when needed

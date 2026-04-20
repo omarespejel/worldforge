@@ -1,4 +1,4 @@
-.PHONY: sync format lint test test-cov test-package build publish check clean
+.PHONY: sync format lint docs-check test test-cov test-package build publish check clean
 
 UV ?= uv
 
@@ -11,6 +11,9 @@ format:
 lint:
 	$(UV) run ruff check src tests examples scripts
 	$(UV) run ruff format --check src tests examples scripts
+
+docs-check:
+	$(UV) run python scripts/generate_provider_docs.py --check
 
 test:
 	$(UV) run pytest
@@ -27,7 +30,7 @@ build:
 publish:
 	$(UV) publish
 
-check: lint test test-package
+check: lint docs-check test test-package
 
 clean:
 	rm -rf build dist .pytest_cache .ruff_cache .worldforge .coverage

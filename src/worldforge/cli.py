@@ -28,6 +28,7 @@ CLI_EPILOG = """Common commands:
 
 EXAMPLE_COMMANDS: tuple[dict[str, str], ...] = (
     {
+        "task": "Prediction and evaluation",
         "name": "basic-prediction",
         "surface": "predict, planning, evaluation",
         "requires": "base WorldForge package",
@@ -38,6 +39,7 @@ EXAMPLE_COMMANDS: tuple[dict[str, str], ...] = (
         ),
     },
     {
+        "task": "Provider comparison",
         "name": "cross-provider-compare",
         "surface": "provider registry, comparison",
         "requires": "base WorldForge package",
@@ -48,6 +50,7 @@ EXAMPLE_COMMANDS: tuple[dict[str, str], ...] = (
         ),
     },
     {
+        "task": "Score planning",
         "name": "leworldmodel-score-planning",
         "surface": "score provider, planning, persistence",
         "requires": "base WorldForge package; injected deterministic score runtime",
@@ -58,6 +61,7 @@ EXAMPLE_COMMANDS: tuple[dict[str, str], ...] = (
         ),
     },
     {
+        "task": "Policy plus score planning",
         "name": "lerobot-policy-score-planning",
         "surface": "policy provider, score provider, planning, persistence",
         "requires": "base WorldForge package; injected deterministic policy runtime",
@@ -68,6 +72,7 @@ EXAMPLE_COMMANDS: tuple[dict[str, str], ...] = (
         ),
     },
     {
+        "task": "Optional runtime smoke",
         "name": "leworldmodel-real-checkpoint-smoke",
         "surface": "optional runtime smoke",
         "requires": "host-owned stable-worldmodel, torch, datasets, and LeWM checkpoint assets",
@@ -90,10 +95,15 @@ def _print_json(payload: object) -> None:
 
 def _print_examples_markdown() -> None:
     print("# WorldForge Examples")
-    print()
-    print("| Example | Surface | Requirements | Command |")
-    print("| --- | --- | --- | --- |")
+    current_task = ""
     for example in EXAMPLE_COMMANDS:
+        if example["task"] != current_task:
+            current_task = example["task"]
+            print()
+            print(f"## {current_task}")
+            print()
+            print("| Example | Surface | Requirements | Command |")
+            print("| --- | --- | --- | --- |")
         print(
             "| "
             f"`{example['name']}` | "
@@ -104,15 +114,15 @@ def _print_examples_markdown() -> None:
 
 
 def _add_generation_arguments(parser: argparse.ArgumentParser, *, include_fps: bool = True) -> None:
-    parser.add_argument("--image")
-    parser.add_argument("--video")
-    parser.add_argument("--model")
-    parser.add_argument("--ratio")
-    parser.add_argument("--size")
+    parser.add_argument("--image", help="Input image path, URL, or provider-native reference.")
+    parser.add_argument("--video", help="Input video path, URL, or provider-native reference.")
+    parser.add_argument("--model", help="Provider model identifier.")
+    parser.add_argument("--ratio", help="Provider aspect-ratio option.")
+    parser.add_argument("--size", help="Provider resolution or size option.")
     if include_fps:
-        parser.add_argument("--fps", type=float)
-    parser.add_argument("--seed", type=int)
-    parser.add_argument("--negative-prompt")
+        parser.add_argument("--fps", type=float, help="Requested frames per second.")
+    parser.add_argument("--seed", type=int, help="Provider seed when supported.")
+    parser.add_argument("--negative-prompt", help="Negative prompt when supported.")
     parser.add_argument(
         "--reference-image",
         action="append",
@@ -142,71 +152,105 @@ def _build_parser() -> argparse.ArgumentParser:
         epilog=CLI_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command", required=True, metavar="command")
 
     examples = subparsers.add_parser(
         "examples",
-        help="List runnable examples and demo entry points.",
+        help="List runnable examples grouped by task.",
     )
-    examples.add_argument("--format", choices=("markdown", "json"), default="markdown")
+    examples.add_argument(
+        "--format",
+        choices=("markdown", "json"),
+        default="markdown",
+        help="Output format for the examples index.",
+    )
 
     providers = subparsers.add_parser("providers", help="List registered providers.")
-    providers.add_argument("--state-dir", default=".worldforge/worlds")
+    providers.add_argument(
+        "--state-dir", default=".worldforge/worlds", help="World state directory."
+    )
 
     provider = subparsers.add_parser("provider", help="Inspect provider profiles and health.")
     provider_subparsers = provider.add_subparsers(dest="provider_command", required=True)
 
     provider_list = provider_subparsers.add_parser("list", help="List provider profiles.")
-    provider_list.add_argument("--state-dir", default=".worldforge/worlds")
-    provider_list.add_argument("--registered-only", action="store_true")
-    provider_list.add_argument("--capability")
+    provider_list.add_argument(
+        "--state-dir", default=".worldforge/worlds", help="World state directory."
+    )
+    provider_list.add_argument(
+        "--registered-only",
+        action="store_true",
+        help="Show only providers registered for this process.",
+    )
+    provider_list.add_argument("--capability", help="Filter providers by capability name.")
 
     provider_info = provider_subparsers.add_parser("info", help="Show provider details.")
-    provider_info.add_argument("name")
-    provider_info.add_argument("--state-dir", default=".worldforge/worlds")
+    provider_info.add_argument("name", help="Provider name.")
+    provider_info.add_argument(
+        "--state-dir", default=".worldforge/worlds", help="World state directory."
+    )
 
     provider_health = provider_subparsers.add_parser("health", help="Show provider health.")
-    provider_health.add_argument("name", nargs="?")
-    provider_health.add_argument("--state-dir", default=".worldforge/worlds")
-    provider_health.add_argument("--registered-only", action="store_true")
-    provider_health.add_argument("--capability")
+    provider_health.add_argument("name", nargs="?", help="Optional provider name.")
+    provider_health.add_argument(
+        "--state-dir", default=".worldforge/worlds", help="World state directory."
+    )
+    provider_health.add_argument(
+        "--registered-only",
+        action="store_true",
+        help="Show only providers registered for this process.",
+    )
+    provider_health.add_argument("--capability", help="Filter providers by capability name.")
 
     doctor = subparsers.add_parser("doctor", help="Inspect the local WorldForge environment.")
-    doctor.add_argument("--state-dir", default=".worldforge/worlds")
-    doctor.add_argument("--registered-only", action="store_true")
-    doctor.add_argument("--capability")
+    doctor.add_argument("--state-dir", default=".worldforge/worlds", help="World state directory.")
+    doctor.add_argument(
+        "--registered-only",
+        action="store_true",
+        help="Show only providers registered for this process.",
+    )
+    doctor.add_argument("--capability", help="Filter providers by capability name.")
 
     generate = subparsers.add_parser("generate", help="Generate a clip with a provider.")
-    generate.add_argument("prompt")
-    generate.add_argument("--provider", default="mock")
-    generate.add_argument("--duration", type=float, default=5.0)
-    generate.add_argument("--output")
-    generate.add_argument("--state-dir", default=".worldforge/worlds")
+    generate.add_argument("prompt", help="Generation prompt.")
+    generate.add_argument("--provider", default="mock", help="Provider name.")
+    generate.add_argument("--duration", type=float, default=5.0, help="Clip duration in seconds.")
+    generate.add_argument("--output", help="Optional path for the generated clip bytes.")
+    generate.add_argument(
+        "--state-dir", default=".worldforge/worlds", help="World state directory."
+    )
     _add_generation_arguments(generate)
 
     transfer = subparsers.add_parser("transfer", help="Transform an input clip with a provider.")
-    transfer.add_argument("input")
-    transfer.add_argument("--provider", default="mock")
-    transfer.add_argument("--prompt", default="")
-    transfer.add_argument("--width", type=int, default=1280)
-    transfer.add_argument("--height", type=int, default=720)
-    transfer.add_argument("--fps", type=float, default=24.0)
-    transfer.add_argument("--duration", type=float, default=5.0)
-    transfer.add_argument("--output")
-    transfer.add_argument("--state-dir", default=".worldforge/worlds")
+    transfer.add_argument("input", help="Input clip path.")
+    transfer.add_argument("--provider", default="mock", help="Provider name.")
+    transfer.add_argument("--prompt", default="", help="Transfer prompt.")
+    transfer.add_argument("--width", type=int, default=1280, help="Input clip width.")
+    transfer.add_argument("--height", type=int, default=720, help="Input clip height.")
+    transfer.add_argument("--fps", type=float, default=24.0, help="Input clip frames per second.")
+    transfer.add_argument("--duration", type=float, default=5.0, help="Input clip duration.")
+    transfer.add_argument("--output", help="Optional path for the transformed clip bytes.")
+    transfer.add_argument(
+        "--state-dir", default=".worldforge/worlds", help="World state directory."
+    )
     _add_generation_arguments(transfer, include_fps=False)
 
     predict = subparsers.add_parser("predict", help="Run a deterministic prediction.")
-    predict.add_argument("world_name")
-    predict.add_argument("--provider", default="mock")
-    predict.add_argument("--x", type=float, required=True)
-    predict.add_argument("--y", type=float, required=True)
-    predict.add_argument("--z", type=float, required=True)
-    predict.add_argument("--steps", type=int, default=1)
-    predict.add_argument("--state-dir", default=".worldforge/worlds")
+    predict.add_argument("world_name", help="World name to create or load.")
+    predict.add_argument("--provider", default="mock", help="Provider name.")
+    predict.add_argument("--x", type=float, required=True, help="Target x coordinate.")
+    predict.add_argument("--y", type=float, required=True, help="Target y coordinate.")
+    predict.add_argument("--z", type=float, required=True, help="Target z coordinate.")
+    predict.add_argument("--steps", type=int, default=1, help="Prediction horizon in steps.")
+    predict.add_argument("--state-dir", default=".worldforge/worlds", help="World state directory.")
 
     evaluate = subparsers.add_parser("eval", help="Run a built-in evaluation suite.")
-    evaluate.add_argument("--suite", default="physics", choices=EvaluationSuite.builtin_names())
+    evaluate.add_argument(
+        "--suite",
+        default="physics",
+        choices=EvaluationSuite.builtin_names(),
+        help="Built-in evaluation suite.",
+    )
     evaluate.add_argument(
         "--provider",
         dest="providers",
@@ -214,8 +258,15 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Provider name to evaluate. Can be repeated.",
     )
-    evaluate.add_argument("--format", choices=("markdown", "json", "csv"), default="markdown")
-    evaluate.add_argument("--state-dir", default=".worldforge/worlds")
+    evaluate.add_argument(
+        "--format",
+        choices=("markdown", "json", "csv"),
+        default="markdown",
+        help="Evaluation report format.",
+    )
+    evaluate.add_argument(
+        "--state-dir", default=".worldforge/worlds", help="World state directory."
+    )
 
     benchmark = subparsers.add_parser(
         "benchmark",
@@ -236,10 +287,17 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=ProviderBenchmarkHarness.benchmarkable_operations,
         help="Operation to benchmark. Can be repeated.",
     )
-    benchmark.add_argument("--iterations", type=int, default=5)
-    benchmark.add_argument("--concurrency", type=int, default=1)
-    benchmark.add_argument("--format", choices=("markdown", "json", "csv"), default="markdown")
-    benchmark.add_argument("--state-dir", default=".worldforge/worlds")
+    benchmark.add_argument("--iterations", type=int, default=5, help="Iterations per operation.")
+    benchmark.add_argument("--concurrency", type=int, default=1, help="Concurrent workers.")
+    benchmark.add_argument(
+        "--format",
+        choices=("markdown", "json", "csv"),
+        default="markdown",
+        help="Benchmark report format.",
+    )
+    benchmark.add_argument(
+        "--state-dir", default=".worldforge/worlds", help="World state directory."
+    )
 
     return parser
 

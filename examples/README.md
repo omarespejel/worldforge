@@ -2,19 +2,42 @@
 
 Runnable examples are split into checkout scripts and packaged console commands.
 
-Use the CLI index when you need the current command list:
+Use the CLI index for the current command list and JSON metadata:
 
 ```bash
 uv run worldforge examples
 uv run worldforge examples --format json
 ```
 
+## Prediction And Evaluation
+
 | Example | Surface | Command |
 | --- | --- | --- |
 | `basic-prediction` | prediction, planning, evaluation | `uv run python examples/basic_prediction.py` |
+
+## Provider Comparison
+
+| Example | Surface | Command |
+| --- | --- | --- |
 | `cross-provider-compare` | provider registration, comparison | `uv run python examples/cross_provider_compare.py` |
+
+## Score Planning
+
+| Example | Surface | Command |
+| --- | --- | --- |
 | `leworldmodel-score-planning` | score provider, planning, persistence | `uv run worldforge-demo-leworldmodel` |
+
+## Policy Plus Score Planning
+
+| Example | Surface | Command |
+| --- | --- | --- |
 | `lerobot-policy-score-planning` | policy provider, score provider, planning, persistence | `uv run worldforge-demo-lerobot` |
+
+## Optional Runtime Smoke
+
+| Example | Surface | Command |
+| --- | --- | --- |
+| `leworldmodel-real-checkpoint-smoke` | real checkpoint smoke | `uv run --python 3.10 --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" worldforge-smoke-leworldmodel` |
 
 ## Runtime Boundary
 

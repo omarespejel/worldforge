@@ -145,6 +145,7 @@ Before publishing a release:
 uv lock --check
 uv run ruff check src tests examples scripts
 uv run ruff format --check src tests examples scripts
+uv run python scripts/generate_provider_docs.py --check
 uv run pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
 bash scripts/test_package.sh
 ```

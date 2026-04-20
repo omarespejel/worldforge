@@ -15,6 +15,9 @@ releases may still include breaking changes when the public API needs to tighten
   planning walkthrough under `src/worldforge/demos/lerobot_e2e.py`, keeping
   `examples/lerobot_e2e_demo.py` as a compatibility wrapper.
 - Added `examples/README.md` as a short command index for the checkout scripts and packaged demos.
+- Added CLI help snapshot tests for the primary `worldforge` command surface.
+- Added `scripts/generate_provider_docs.py` so the provider catalog table can be refreshed and
+  checked from `src/worldforge/providers/catalog.py`.
 - Added `.env.example` documenting every provider environment variable recognized by
   WorldForge (`COSMOS_BASE_URL`, `NVIDIA_API_KEY`, `RUNWAYML_API_SECRET` and the legacy
   `RUNWAY_API_SECRET` alias, `RUNWAYML_BASE_URL`, `LEWORLDMODEL_POLICY` and the legacy
@@ -43,6 +46,11 @@ releases may still include breaking changes when the public API needs to tighten
 - Centralized in-repo provider discovery in `src/worldforge/providers/catalog.py`, including the
   provider factory list and explicit always-register policy for `mock`. `WorldForge` now uses the
   catalog instead of relying on constructor ordering in `_known_providers()`.
+- Extended the provider catalog with documentation-page and runtime-ownership metadata used by the
+  generated provider docs table.
+- Grouped `worldforge examples`, `docs/src/examples.md`, and `examples/README.md` by task so
+  prediction, comparison, score planning, policy planning, and optional smoke paths are easier to
+  scan.
 - Reworked the README, introduction, architecture, provider, and operations docs around the
   capability contract: predictive models, score providers, policy providers, media adapters,
   host-owned optional runtimes, and explicit persistence/evaluation boundaries.
