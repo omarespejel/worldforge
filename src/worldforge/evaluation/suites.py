@@ -7,7 +7,7 @@ import io
 import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from worldforge.models import (
     Action,
@@ -523,79 +523,104 @@ class PhysicsEvaluationSuite(EvaluationSuite):
         forge: WorldForge,
         index: int,
     ) -> EvaluationResult:
+        handler = self._SCENARIO_HANDLERS.get(scenario.name)
+        if handler is None:
+            return super().evaluate_scenario(
+                scenario,
+                provider,
+                world=world,
+                forge=forge,
+                index=index,
+            )
+        return handler(self, scenario, provider, world=world, forge=forge, index=index)
+
+    def _evaluate_object_stability(
+        self,
+        scenario: EvaluationScenario,
+        provider: str,
+        *,
+        world: World,
+        forge: WorldForge,
+        index: int,
+    ) -> EvaluationResult:
         primary = _seed_object(world, "cube", Position(0.0, 0.5, 0.0))
         start = primary.position
-
-        if scenario.name == "object-stability":
-            prediction = world.predict(
-                Action.move_to(start.x, start.y, start.z),
-                steps=1,
-                provider=provider,
-            )
-            current = world.get_object_by_id(primary.id)
-            if current is None:  # pragma: no cover - world state corruption guard
-                raise WorldForgeError("Evaluation lost the primary object during physics run.")
-            displacement = _distance(start, current.position)
-            passed = displacement <= 0.01 and prediction.physics_score >= 0.7
-            score = _clamp_score(
-                ((prediction.physics_score + prediction.confidence) / 2) - min(0.25, displacement)
-            )
-            return EvaluationResult(
-                suite_id=self.suite_id,
-                suite=self.name,
-                scenario=scenario.name,
-                provider=provider,
-                score=score,
-                passed=passed,
-                metrics={
-                    "physics_score": prediction.physics_score,
-                    "confidence": prediction.confidence,
-                    "displacement": displacement,
-                    "step": world.step,
-                },
-            )
-
-        if scenario.name == "action-response":
-            target = Position(start.x + 0.35, start.y, start.z)
-            prediction = world.predict(
-                Action.move_to(target.x, target.y, target.z),
-                steps=2,
-                provider=provider,
-            )
-            current = world.get_object_by_id(primary.id)
-            if current is None:  # pragma: no cover - world state corruption guard
-                raise WorldForgeError("Evaluation lost the primary object during physics run.")
-            target_error = _distance(target, current.position)
-            moved_distance = _distance(start, current.position)
-            passed = target_error <= 0.05 and moved_distance >= 0.3
-            score = _clamp_score(
-                ((prediction.physics_score + prediction.confidence) / 2)
-                + min(0.2, moved_distance / 2)
-                - min(0.3, target_error)
-            )
-            return EvaluationResult(
-                suite_id=self.suite_id,
-                suite=self.name,
-                scenario=scenario.name,
-                provider=provider,
-                score=score,
-                passed=passed,
-                metrics={
-                    "physics_score": prediction.physics_score,
-                    "confidence": prediction.confidence,
-                    "moved_distance": moved_distance,
-                    "target_error": target_error,
-                    "step": world.step,
-                },
-            )
-
-        return super().evaluate_scenario(
-            scenario,
-            provider,
-            world=world,
-            forge=forge,
-            index=index,
+        prediction = world.predict(
+            Action.move_to(start.x, start.y, start.z),
+            steps=1,
+            provider=provider,
         )
+        current = world.get_object_by_id(primary.id)
+        if current is None:  # pragma: no cover - world state corruption guard
+            raise WorldForgeError("Evaluation lost the primary object during physics run.")
+        displacement = _distance(start, current.position)
+        passed = displacement <= 0.01 and prediction.physics_score >= 0.7
+        score = _clamp_score(
+            ((prediction.physics_score + prediction.confidence) / 2) - min(0.25, displacement)
+        )
+        return EvaluationResult(
+            suite_id=self.suite_id,
+            suite=self.name,
+            scenario=scenario.name,
+            provider=provider,
+            score=score,
+            passed=passed,
+            metrics={
+                "physics_score": prediction.physics_score,
+                "confidence": prediction.confidence,
+                "displacement": displacement,
+                "step": world.step,
+            },
+        )
+
+    def _evaluate_action_response(
+        self,
+        scenario: EvaluationScenario,
+        provider: str,
+        *,
+        world: World,
+        forge: WorldForge,
+        index: int,
+    ) -> EvaluationResult:
+        primary = _seed_object(world, "cube", Position(0.0, 0.5, 0.0))
+        start = primary.position
+        target = Position(start.x + 0.35, start.y, start.z)
+        prediction = world.predict(
+            Action.move_to(target.x, target.y, target.z),
+            steps=2,
+            provider=provider,
+        )
+        current = world.get_object_by_id(primary.id)
+        if current is None:  # pragma: no cover - world state corruption guard
+            raise WorldForgeError("Evaluation lost the primary object during physics run.")
+        target_error = _distance(target, current.position)
+        moved_distance = _distance(start, current.position)
+        passed = target_error <= 0.05 and moved_distance >= 0.3
+        score = _clamp_score(
+            ((prediction.physics_score + prediction.confidence) / 2)
+            + min(0.2, moved_distance / 2)
+            - min(0.3, target_error)
+        )
+        return EvaluationResult(
+            suite_id=self.suite_id,
+            suite=self.name,
+            scenario=scenario.name,
+            provider=provider,
+            score=score,
+            passed=passed,
+            metrics={
+                "physics_score": prediction.physics_score,
+                "confidence": prediction.confidence,
+                "moved_distance": moved_distance,
+                "target_error": target_error,
+                "step": world.step,
+            },
+        )
+
+    _SCENARIO_HANDLERS: ClassVar[dict[str, Callable[..., EvaluationResult]]] = {
+        "object-stability": _evaluate_object_stability,
+        "action-response": _evaluate_action_response,
+    }
 
 
 class PlanningEvaluationSuite(EvaluationSuite):
@@ -644,176 +669,223 @@ class PlanningEvaluationSuite(EvaluationSuite):
         forge: WorldForge,
         index: int,
     ) -> EvaluationResult:
+        handler = self._SCENARIO_HANDLERS.get(scenario.name)
+        if handler is None:
+            return super().evaluate_scenario(
+                scenario,
+                provider,
+                world=world,
+                forge=forge,
+                index=index,
+            )
+        return handler(self, scenario, provider, world=world, forge=forge, index=index)
+
+    def _evaluate_object_relocation(
+        self,
+        scenario: EvaluationScenario,
+        provider: str,
+        *,
+        world: World,
+        forge: WorldForge,
+        index: int,
+    ) -> EvaluationResult:
+        primary = _seed_object(world, "cube", Position(0.0, 0.5, 0.0))
+        _seed_object(world, "mug", Position(0.3, 0.8, 0.0))
+        plan = world.plan(
+            goal_spec=StructuredGoal.object_at(
+                object_id=primary.id,
+                object_name=primary.name,
+                position=Position(
+                    primary.position.x + 0.35,
+                    primary.position.y,
+                    primary.position.z,
+                ),
+                tolerance=0.05,
+            ),
+            max_steps=4,
+            provider=provider,
+        )
+        execution = world.execute_plan(plan, provider)
+        final_world = execution.final_world()
+        final_object = final_world.get_object_by_id(primary.id)
+        if final_object is None:  # pragma: no cover - world state corruption guard
+            raise WorldForgeError("Evaluation lost the primary object during plan execution.")
+        moved_distance = final_object.position.x - primary.position.x
+        passed = plan.action_count >= 1 and moved_distance >= 0.25
+        score = _clamp_score((plan.success_probability + min(1.0, moved_distance)) / 2)
+        return EvaluationResult(
+            suite_id=self.suite_id,
+            suite=self.name,
+            scenario=scenario.name,
+            provider=provider,
+            score=score,
+            passed=passed,
+            metrics={
+                "action_count": plan.action_count,
+                "success_probability": plan.success_probability,
+                "moved_distance": moved_distance,
+                "final_step": final_world.step,
+            },
+        )
+
+    def _evaluate_object_neighbor_placement(
+        self,
+        scenario: EvaluationScenario,
+        provider: str,
+        *,
+        world: World,
+        forge: WorldForge,
+        index: int,
+    ) -> EvaluationResult:
         primary = _seed_object(world, "cube", Position(0.0, 0.5, 0.0))
         reference = _seed_object(world, "mug", Position(0.3, 0.8, 0.0))
-
-        if scenario.name == "object-relocation":
-            plan = world.plan(
-                goal_spec=StructuredGoal.object_at(
-                    object_id=primary.id,
-                    object_name=primary.name,
-                    position=Position(
-                        primary.position.x + 0.35,
-                        primary.position.y,
-                        primary.position.z,
-                    ),
-                    tolerance=0.05,
-                ),
-                max_steps=4,
-                provider=provider,
-            )
-            execution = world.execute_plan(plan, provider)
-            final_world = execution.final_world()
-            final_object = final_world.get_object_by_id(primary.id)
-            if final_object is None:  # pragma: no cover - world state corruption guard
-                raise WorldForgeError("Evaluation lost the primary object during plan execution.")
-            moved_distance = final_object.position.x - primary.position.x
-            passed = plan.action_count >= 1 and moved_distance >= 0.25
-            score = _clamp_score((plan.success_probability + min(1.0, moved_distance)) / 2)
-            return EvaluationResult(
-                suite_id=self.suite_id,
-                suite=self.name,
-                scenario=scenario.name,
-                provider=provider,
-                score=score,
-                passed=passed,
-                metrics={
-                    "action_count": plan.action_count,
-                    "success_probability": plan.success_probability,
-                    "moved_distance": moved_distance,
-                    "final_step": final_world.step,
-                },
-            )
-
-        if scenario.name == "object-neighbor-placement":
-            offset = Position(0.15, 0.0, 0.0)
-            target = Position(
-                reference.position.x + offset.x,
-                reference.position.y + offset.y,
-                reference.position.z + offset.z,
-            )
-            plan = world.plan(
-                goal_spec=StructuredGoal.object_near(
-                    object_id=primary.id,
-                    object_name=primary.name,
-                    reference_object_id=reference.id,
-                    reference_object_name=reference.name,
-                    offset=offset,
-                    tolerance=0.05,
-                ),
-                max_steps=4,
-                provider=provider,
-            )
-            execution = world.execute_plan(plan, provider)
-            final_world = execution.final_world()
-            final_primary = final_world.get_object_by_id(primary.id)
-            final_reference = final_world.get_object_by_id(reference.id)
-            if final_primary is None or final_reference is None:  # pragma: no cover
-                raise WorldForgeError("Evaluation lost an object during relational plan execution.")
-            target_error = _distance(target, final_primary.position)
-            reference_drift = _distance(reference.position, final_reference.position)
-            passed = plan.action_count >= 1 and target_error <= 0.05 and reference_drift <= 0.01
-            score = average(
-                [
-                    plan.success_probability,
-                    _clamp_score(1.0 - min(1.0, target_error / 0.25)),
-                    _clamp_score(1.0 - min(1.0, reference_drift / 0.25)),
-                ]
-            )
-            return EvaluationResult(
-                suite_id=self.suite_id,
-                suite=self.name,
-                scenario=scenario.name,
-                provider=provider,
-                score=score,
-                passed=passed,
-                metrics={
-                    "action_count": plan.action_count,
-                    "success_probability": plan.success_probability,
-                    "target_error": target_error,
-                    "reference_drift": reference_drift,
-                    "final_step": final_world.step,
-                },
-            )
-
-        if scenario.name == "object-swap":
-            plan = world.plan(
-                goal_spec=StructuredGoal.swap_objects(
-                    object_id=primary.id,
-                    object_name=primary.name,
-                    reference_object_id=reference.id,
-                    reference_object_name=reference.name,
-                    tolerance=0.05,
-                ),
-                max_steps=4,
-                provider=provider,
-            )
-            execution = world.execute_plan(plan, provider)
-            final_world = execution.final_world()
-            final_primary = final_world.get_object_by_id(primary.id)
-            final_reference = final_world.get_object_by_id(reference.id)
-            if final_primary is None or final_reference is None:  # pragma: no cover
-                raise WorldForgeError("Evaluation lost an object during swap plan execution.")
-            primary_target_error = _distance(reference.position, final_primary.position)
-            reference_target_error = _distance(primary.position, final_reference.position)
-            passed = (
-                plan.action_count == 2
-                and primary_target_error <= 0.05
-                and reference_target_error <= 0.05
-            )
-            score = average(
-                [
-                    plan.success_probability,
-                    _clamp_score(1.0 - min(1.0, primary_target_error / 0.25)),
-                    _clamp_score(1.0 - min(1.0, reference_target_error / 0.25)),
-                ]
-            )
-            return EvaluationResult(
-                suite_id=self.suite_id,
-                suite=self.name,
-                scenario=scenario.name,
-                provider=provider,
-                score=score,
-                passed=passed,
-                metrics={
-                    "action_count": plan.action_count,
-                    "success_probability": plan.success_probability,
-                    "primary_target_error": primary_target_error,
-                    "reference_target_error": reference_target_error,
-                    "final_step": final_world.step,
-                },
-            )
-
-        if scenario.name == "object-spawn":
-            initial_count = world.object_count
-            plan = world.plan(goal="spawn cube", max_steps=3, provider=provider)
-            execution = world.execute_plan(plan, provider)
-            final_world = execution.final_world()
-            final_count = final_world.object_count
-            spawned = final_count > initial_count
-            score = _clamp_score((plan.success_probability + (1.0 if spawned else 0.0)) / 2)
-            return EvaluationResult(
-                suite_id=self.suite_id,
-                suite=self.name,
-                scenario=scenario.name,
-                provider=provider,
-                score=score,
-                passed=spawned,
-                metrics={
-                    "action_count": plan.action_count,
-                    "success_probability": plan.success_probability,
-                    "initial_object_count": initial_count,
-                    "final_object_count": final_count,
-                },
-            )
-
-        return super().evaluate_scenario(
-            scenario,
-            provider,
-            world=world,
-            forge=forge,
-            index=index,
+        offset = Position(0.15, 0.0, 0.0)
+        target = Position(
+            reference.position.x + offset.x,
+            reference.position.y + offset.y,
+            reference.position.z + offset.z,
         )
+        plan = world.plan(
+            goal_spec=StructuredGoal.object_near(
+                object_id=primary.id,
+                object_name=primary.name,
+                reference_object_id=reference.id,
+                reference_object_name=reference.name,
+                offset=offset,
+                tolerance=0.05,
+            ),
+            max_steps=4,
+            provider=provider,
+        )
+        execution = world.execute_plan(plan, provider)
+        final_world = execution.final_world()
+        final_primary = final_world.get_object_by_id(primary.id)
+        final_reference = final_world.get_object_by_id(reference.id)
+        if final_primary is None or final_reference is None:  # pragma: no cover
+            raise WorldForgeError("Evaluation lost an object during relational plan execution.")
+        target_error = _distance(target, final_primary.position)
+        reference_drift = _distance(reference.position, final_reference.position)
+        passed = plan.action_count >= 1 and target_error <= 0.05 and reference_drift <= 0.01
+        score = average(
+            [
+                plan.success_probability,
+                _clamp_score(1.0 - min(1.0, target_error / 0.25)),
+                _clamp_score(1.0 - min(1.0, reference_drift / 0.25)),
+            ]
+        )
+        return EvaluationResult(
+            suite_id=self.suite_id,
+            suite=self.name,
+            scenario=scenario.name,
+            provider=provider,
+            score=score,
+            passed=passed,
+            metrics={
+                "action_count": plan.action_count,
+                "success_probability": plan.success_probability,
+                "target_error": target_error,
+                "reference_drift": reference_drift,
+                "final_step": final_world.step,
+            },
+        )
+
+    def _evaluate_object_swap(
+        self,
+        scenario: EvaluationScenario,
+        provider: str,
+        *,
+        world: World,
+        forge: WorldForge,
+        index: int,
+    ) -> EvaluationResult:
+        primary = _seed_object(world, "cube", Position(0.0, 0.5, 0.0))
+        reference = _seed_object(world, "mug", Position(0.3, 0.8, 0.0))
+        plan = world.plan(
+            goal_spec=StructuredGoal.swap_objects(
+                object_id=primary.id,
+                object_name=primary.name,
+                reference_object_id=reference.id,
+                reference_object_name=reference.name,
+                tolerance=0.05,
+            ),
+            max_steps=4,
+            provider=provider,
+        )
+        execution = world.execute_plan(plan, provider)
+        final_world = execution.final_world()
+        final_primary = final_world.get_object_by_id(primary.id)
+        final_reference = final_world.get_object_by_id(reference.id)
+        if final_primary is None or final_reference is None:  # pragma: no cover
+            raise WorldForgeError("Evaluation lost an object during swap plan execution.")
+        primary_target_error = _distance(reference.position, final_primary.position)
+        reference_target_error = _distance(primary.position, final_reference.position)
+        passed = (
+            plan.action_count == 2
+            and primary_target_error <= 0.05
+            and reference_target_error <= 0.05
+        )
+        score = average(
+            [
+                plan.success_probability,
+                _clamp_score(1.0 - min(1.0, primary_target_error / 0.25)),
+                _clamp_score(1.0 - min(1.0, reference_target_error / 0.25)),
+            ]
+        )
+        return EvaluationResult(
+            suite_id=self.suite_id,
+            suite=self.name,
+            scenario=scenario.name,
+            provider=provider,
+            score=score,
+            passed=passed,
+            metrics={
+                "action_count": plan.action_count,
+                "success_probability": plan.success_probability,
+                "primary_target_error": primary_target_error,
+                "reference_target_error": reference_target_error,
+                "final_step": final_world.step,
+            },
+        )
+
+    def _evaluate_object_spawn(
+        self,
+        scenario: EvaluationScenario,
+        provider: str,
+        *,
+        world: World,
+        forge: WorldForge,
+        index: int,
+    ) -> EvaluationResult:
+        _seed_object(world, "cube", Position(0.0, 0.5, 0.0))
+        _seed_object(world, "mug", Position(0.3, 0.8, 0.0))
+        initial_count = world.object_count
+        plan = world.plan(goal="spawn cube", max_steps=3, provider=provider)
+        execution = world.execute_plan(plan, provider)
+        final_world = execution.final_world()
+        final_count = final_world.object_count
+        spawned = final_count > initial_count
+        score = _clamp_score((plan.success_probability + (1.0 if spawned else 0.0)) / 2)
+        return EvaluationResult(
+            suite_id=self.suite_id,
+            suite=self.name,
+            scenario=scenario.name,
+            provider=provider,
+            score=score,
+            passed=spawned,
+            metrics={
+                "action_count": plan.action_count,
+                "success_probability": plan.success_probability,
+                "initial_object_count": initial_count,
+                "final_object_count": final_count,
+            },
+        )
+
+    _SCENARIO_HANDLERS: ClassVar[dict[str, Callable[..., EvaluationResult]]] = {
+        "object-relocation": _evaluate_object_relocation,
+        "object-neighbor-placement": _evaluate_object_neighbor_placement,
+        "object-swap": _evaluate_object_swap,
+        "object-spawn": _evaluate_object_spawn,
+    }
 
 
 class GenerationEvaluationSuite(EvaluationSuite):
@@ -849,114 +921,140 @@ class GenerationEvaluationSuite(EvaluationSuite):
         forge: WorldForge,
         index: int,
     ) -> EvaluationResult:
+        handler = self._SCENARIO_HANDLERS.get(scenario.name)
+        if handler is None:
+            return super().evaluate_scenario(
+                scenario,
+                provider,
+                world=world,
+                forge=forge,
+                index=index,
+            )
+        return handler(self, scenario, provider, world=world, forge=forge, index=index)
+
+    def _evaluate_text_conditioned_video(
+        self,
+        scenario: EvaluationScenario,
+        provider: str,
+        *,
+        world: World,
+        forge: WorldForge,
+        index: int,
+    ) -> EvaluationResult:
         expected_duration = 1.0
         expected_resolution = (640, 360)
         prompt = "orbiting cube over a reflective floor"
-
-        if scenario.name == "text-conditioned-video":
-            clip = forge.generate(
-                prompt,
-                provider,
-                duration_seconds=expected_duration,
-                options=GenerationOptions(ratio="640:360", fps=8.0),
-            )
-            score = average(
-                [
-                    _blob_score(clip),
-                    _duration_score(
-                        actual_seconds=clip.duration_seconds,
-                        expected_seconds=expected_duration,
-                    ),
-                    _resolution_score(clip, expected=expected_resolution),
-                    _content_type_score(clip),
-                    _prompt_score(clip, expected_prompt=prompt),
-                ]
-            )
-            passed = (
-                _blob_score(clip) == 1.0
-                and _duration_score(
-                    actual_seconds=clip.duration_seconds,
-                    expected_seconds=expected_duration,
-                )
-                >= 0.75
-                and _resolution_score(clip, expected=expected_resolution) >= 0.75
-            )
-            return EvaluationResult(
-                suite_id=self.suite_id,
-                suite=self.name,
-                scenario=scenario.name,
-                provider=provider,
-                score=score,
-                passed=passed,
-                metrics={
-                    "frame_count": clip.frame_count,
-                    "fps": clip.fps,
-                    "resolution": list(clip.resolution),
-                    "duration_seconds": clip.duration_seconds,
-                    "content_type": clip.content_type(),
-                    "mode": clip.metadata.get("mode"),
-                },
-            )
-
-        if scenario.name == "image-conditioned-video":
-            clip = forge.generate(
-                prompt,
-                provider,
-                duration_seconds=expected_duration,
-                options=GenerationOptions(
-                    image=_SAMPLE_IMAGE_DATA_URI,
-                    ratio="640:360",
-                    fps=8.0,
-                ),
-            )
-            image_conditioned = _is_image_conditioned(clip)
-            score = average(
-                [
-                    _blob_score(clip),
-                    _duration_score(
-                        actual_seconds=clip.duration_seconds,
-                        expected_seconds=expected_duration,
-                    ),
-                    _resolution_score(clip, expected=expected_resolution),
-                    _content_type_score(clip),
-                    _prompt_score(clip, expected_prompt=prompt),
-                    1.0 if image_conditioned else 0.0,
-                ]
-            )
-            passed = (
-                _blob_score(clip) == 1.0
-                and image_conditioned
-                and _duration_score(
-                    actual_seconds=clip.duration_seconds,
-                    expected_seconds=expected_duration,
-                )
-                >= 0.75
-            )
-            return EvaluationResult(
-                suite_id=self.suite_id,
-                suite=self.name,
-                scenario=scenario.name,
-                provider=provider,
-                score=score,
-                passed=passed,
-                metrics={
-                    "frame_count": clip.frame_count,
-                    "fps": clip.fps,
-                    "resolution": list(clip.resolution),
-                    "duration_seconds": clip.duration_seconds,
-                    "content_type": clip.content_type(),
-                    "mode": clip.metadata.get("mode"),
-                    "image_conditioned": image_conditioned,
-                },
-            )
-
-        return super().evaluate_scenario(
-            scenario,
+        clip = forge.generate(
+            prompt,
             provider,
-            world=world,
-            forge=forge,
-            index=index,
+            duration_seconds=expected_duration,
+            options=GenerationOptions(ratio="640:360", fps=8.0),
         )
+        score = average(
+            [
+                _blob_score(clip),
+                _duration_score(
+                    actual_seconds=clip.duration_seconds,
+                    expected_seconds=expected_duration,
+                ),
+                _resolution_score(clip, expected=expected_resolution),
+                _content_type_score(clip),
+                _prompt_score(clip, expected_prompt=prompt),
+            ]
+        )
+        passed = (
+            _blob_score(clip) == 1.0
+            and _duration_score(
+                actual_seconds=clip.duration_seconds,
+                expected_seconds=expected_duration,
+            )
+            >= 0.75
+            and _resolution_score(clip, expected=expected_resolution) >= 0.75
+        )
+        return EvaluationResult(
+            suite_id=self.suite_id,
+            suite=self.name,
+            scenario=scenario.name,
+            provider=provider,
+            score=score,
+            passed=passed,
+            metrics={
+                "frame_count": clip.frame_count,
+                "fps": clip.fps,
+                "resolution": list(clip.resolution),
+                "duration_seconds": clip.duration_seconds,
+                "content_type": clip.content_type(),
+                "mode": clip.metadata.get("mode"),
+            },
+        )
+
+    def _evaluate_image_conditioned_video(
+        self,
+        scenario: EvaluationScenario,
+        provider: str,
+        *,
+        world: World,
+        forge: WorldForge,
+        index: int,
+    ) -> EvaluationResult:
+        expected_duration = 1.0
+        expected_resolution = (640, 360)
+        prompt = "orbiting cube over a reflective floor"
+        clip = forge.generate(
+            prompt,
+            provider,
+            duration_seconds=expected_duration,
+            options=GenerationOptions(
+                image=_SAMPLE_IMAGE_DATA_URI,
+                ratio="640:360",
+                fps=8.0,
+            ),
+        )
+        image_conditioned = _is_image_conditioned(clip)
+        score = average(
+            [
+                _blob_score(clip),
+                _duration_score(
+                    actual_seconds=clip.duration_seconds,
+                    expected_seconds=expected_duration,
+                ),
+                _resolution_score(clip, expected=expected_resolution),
+                _content_type_score(clip),
+                _prompt_score(clip, expected_prompt=prompt),
+                1.0 if image_conditioned else 0.0,
+            ]
+        )
+        passed = (
+            _blob_score(clip) == 1.0
+            and image_conditioned
+            and _duration_score(
+                actual_seconds=clip.duration_seconds,
+                expected_seconds=expected_duration,
+            )
+            >= 0.75
+        )
+        return EvaluationResult(
+            suite_id=self.suite_id,
+            suite=self.name,
+            scenario=scenario.name,
+            provider=provider,
+            score=score,
+            passed=passed,
+            metrics={
+                "frame_count": clip.frame_count,
+                "fps": clip.fps,
+                "resolution": list(clip.resolution),
+                "duration_seconds": clip.duration_seconds,
+                "content_type": clip.content_type(),
+                "mode": clip.metadata.get("mode"),
+                "image_conditioned": image_conditioned,
+            },
+        )
+
+    _SCENARIO_HANDLERS: ClassVar[dict[str, Callable[..., EvaluationResult]]] = {
+        "text-conditioned-video": _evaluate_text_conditioned_video,
+        "image-conditioned-video": _evaluate_image_conditioned_video,
+    }
 
 
 class TransferEvaluationSuite(EvaluationSuite):
@@ -992,117 +1090,144 @@ class TransferEvaluationSuite(EvaluationSuite):
         forge: WorldForge,
         index: int,
     ) -> EvaluationResult:
+        handler = self._SCENARIO_HANDLERS.get(scenario.name)
+        if handler is None:
+            return super().evaluate_scenario(
+                scenario,
+                provider,
+                world=world,
+                forge=forge,
+                index=index,
+            )
+        return handler(self, scenario, provider, world=world, forge=forge, index=index)
+
+    def _evaluate_prompt_guided_transfer(
+        self,
+        scenario: EvaluationScenario,
+        provider: str,
+        *,
+        world: World,
+        forge: WorldForge,
+        index: int,
+    ) -> EvaluationResult:
         input_clip = _sample_transfer_clip()
         expected_resolution = (320, 180)
         expected_fps = 12.0
         prompt = "re-render the clip with sharper cinematic contrast"
-
-        if scenario.name == "prompt-guided-transfer":
-            clip = forge.transfer(
-                input_clip,
-                provider,
-                width=expected_resolution[0],
-                height=expected_resolution[1],
-                fps=expected_fps,
-                prompt=prompt,
-            )
-            transfer_mode = _is_transfer_clip(clip)
-            score = average(
-                [
-                    _blob_score(clip),
-                    _duration_score(
-                        actual_seconds=clip.duration_seconds,
-                        expected_seconds=input_clip.duration_seconds,
-                    ),
-                    _resolution_score(clip, expected=expected_resolution),
-                    _fps_score(clip, expected_fps=expected_fps),
-                    _content_type_score(clip),
-                    _prompt_score(clip, expected_prompt=prompt),
-                    1.0 if transfer_mode else 0.0,
-                ]
-            )
-            passed = (
-                _blob_score(clip) == 1.0
-                and transfer_mode
-                and _resolution_score(clip, expected=expected_resolution) == 1.0
-                and _fps_score(clip, expected_fps=expected_fps) == 1.0
-            )
-            return EvaluationResult(
-                suite_id=self.suite_id,
-                suite=self.name,
-                scenario=scenario.name,
-                provider=provider,
-                score=score,
-                passed=passed,
-                metrics={
-                    "frame_count": clip.frame_count,
-                    "fps": clip.fps,
-                    "resolution": list(clip.resolution),
-                    "duration_seconds": clip.duration_seconds,
-                    "content_type": clip.content_type(),
-                    "mode": clip.metadata.get("mode"),
-                    "reference_count": _reference_count(clip),
-                },
-            )
-
-        if scenario.name == "reference-guided-transfer":
-            clip = forge.transfer(
-                input_clip,
-                provider,
-                width=expected_resolution[0],
-                height=expected_resolution[1],
-                fps=expected_fps,
-                prompt=prompt,
-                options=GenerationOptions(reference_images=[_SAMPLE_IMAGE_DATA_URI]),
-            )
-            reference_count = _reference_count(clip)
-            transfer_mode = _is_transfer_clip(clip)
-            score = average(
-                [
-                    _blob_score(clip),
-                    _duration_score(
-                        actual_seconds=clip.duration_seconds,
-                        expected_seconds=input_clip.duration_seconds,
-                    ),
-                    _resolution_score(clip, expected=expected_resolution),
-                    _fps_score(clip, expected_fps=expected_fps),
-                    _content_type_score(clip),
-                    _prompt_score(clip, expected_prompt=prompt),
-                    1.0 if transfer_mode else 0.0,
-                    1.0 if reference_count >= 1 else 0.0,
-                ]
-            )
-            passed = (
-                _blob_score(clip) == 1.0
-                and transfer_mode
-                and reference_count >= 1
-                and _resolution_score(clip, expected=expected_resolution) == 1.0
-            )
-            return EvaluationResult(
-                suite_id=self.suite_id,
-                suite=self.name,
-                scenario=scenario.name,
-                provider=provider,
-                score=score,
-                passed=passed,
-                metrics={
-                    "frame_count": clip.frame_count,
-                    "fps": clip.fps,
-                    "resolution": list(clip.resolution),
-                    "duration_seconds": clip.duration_seconds,
-                    "content_type": clip.content_type(),
-                    "mode": clip.metadata.get("mode"),
-                    "reference_count": reference_count,
-                },
-            )
-
-        return super().evaluate_scenario(
-            scenario,
+        clip = forge.transfer(
+            input_clip,
             provider,
-            world=world,
-            forge=forge,
-            index=index,
+            width=expected_resolution[0],
+            height=expected_resolution[1],
+            fps=expected_fps,
+            prompt=prompt,
         )
+        transfer_mode = _is_transfer_clip(clip)
+        score = average(
+            [
+                _blob_score(clip),
+                _duration_score(
+                    actual_seconds=clip.duration_seconds,
+                    expected_seconds=input_clip.duration_seconds,
+                ),
+                _resolution_score(clip, expected=expected_resolution),
+                _fps_score(clip, expected_fps=expected_fps),
+                _content_type_score(clip),
+                _prompt_score(clip, expected_prompt=prompt),
+                1.0 if transfer_mode else 0.0,
+            ]
+        )
+        passed = (
+            _blob_score(clip) == 1.0
+            and transfer_mode
+            and _resolution_score(clip, expected=expected_resolution) == 1.0
+            and _fps_score(clip, expected_fps=expected_fps) == 1.0
+        )
+        return EvaluationResult(
+            suite_id=self.suite_id,
+            suite=self.name,
+            scenario=scenario.name,
+            provider=provider,
+            score=score,
+            passed=passed,
+            metrics={
+                "frame_count": clip.frame_count,
+                "fps": clip.fps,
+                "resolution": list(clip.resolution),
+                "duration_seconds": clip.duration_seconds,
+                "content_type": clip.content_type(),
+                "mode": clip.metadata.get("mode"),
+                "reference_count": _reference_count(clip),
+            },
+        )
+
+    def _evaluate_reference_guided_transfer(
+        self,
+        scenario: EvaluationScenario,
+        provider: str,
+        *,
+        world: World,
+        forge: WorldForge,
+        index: int,
+    ) -> EvaluationResult:
+        input_clip = _sample_transfer_clip()
+        expected_resolution = (320, 180)
+        expected_fps = 12.0
+        prompt = "re-render the clip with sharper cinematic contrast"
+        clip = forge.transfer(
+            input_clip,
+            provider,
+            width=expected_resolution[0],
+            height=expected_resolution[1],
+            fps=expected_fps,
+            prompt=prompt,
+            options=GenerationOptions(reference_images=[_SAMPLE_IMAGE_DATA_URI]),
+        )
+        reference_count = _reference_count(clip)
+        transfer_mode = _is_transfer_clip(clip)
+        score = average(
+            [
+                _blob_score(clip),
+                _duration_score(
+                    actual_seconds=clip.duration_seconds,
+                    expected_seconds=input_clip.duration_seconds,
+                ),
+                _resolution_score(clip, expected=expected_resolution),
+                _fps_score(clip, expected_fps=expected_fps),
+                _content_type_score(clip),
+                _prompt_score(clip, expected_prompt=prompt),
+                1.0 if transfer_mode else 0.0,
+                1.0 if reference_count >= 1 else 0.0,
+            ]
+        )
+        passed = (
+            _blob_score(clip) == 1.0
+            and transfer_mode
+            and reference_count >= 1
+            and _resolution_score(clip, expected=expected_resolution) == 1.0
+        )
+        return EvaluationResult(
+            suite_id=self.suite_id,
+            suite=self.name,
+            scenario=scenario.name,
+            provider=provider,
+            score=score,
+            passed=passed,
+            metrics={
+                "frame_count": clip.frame_count,
+                "fps": clip.fps,
+                "resolution": list(clip.resolution),
+                "duration_seconds": clip.duration_seconds,
+                "content_type": clip.content_type(),
+                "mode": clip.metadata.get("mode"),
+                "reference_count": reference_count,
+            },
+        )
+
+    _SCENARIO_HANDLERS: ClassVar[dict[str, Callable[..., EvaluationResult]]] = {
+        "prompt-guided-transfer": _evaluate_prompt_guided_transfer,
+        "reference-guided-transfer": _evaluate_reference_guided_transfer,
+    }
 
 
 class ReasoningEvaluationSuite(EvaluationSuite):
@@ -1141,67 +1266,92 @@ class ReasoningEvaluationSuite(EvaluationSuite):
         forge: WorldForge,
         index: int,
     ) -> EvaluationResult:
+        handler = self._SCENARIO_HANDLERS.get(scenario.name)
+        if handler is None:
+            return super().evaluate_scenario(
+                scenario,
+                provider,
+                world=world,
+                forge=forge,
+                index=index,
+            )
+        return handler(self, scenario, provider, world=world, forge=forge, index=index)
+
+    def _evaluate_scene_count(
+        self,
+        scenario: EvaluationScenario,
+        provider: str,
+        *,
+        world: World,
+        forge: WorldForge,
+        index: int,
+    ) -> EvaluationResult:
+        _seed_object(world, "cube", Position(0.0, 0.5, 0.0))
+        _seed_object(world, "mug", Position(0.3, 0.8, 0.0))
+        expected_count = world.object_count
+        reasoning = forge.reason(provider, "How many objects are tracked?", world=world)
+        answer = reasoning.answer.lower()
+        mentions_count = str(expected_count) in answer
+        has_evidence = bool(reasoning.evidence)
+        score = _clamp_score(
+            (
+                reasoning.confidence
+                + (1.0 if mentions_count else 0.0)
+                + (1.0 if has_evidence else 0.0)
+            )
+            / 3
+        )
+        return EvaluationResult(
+            suite_id=self.suite_id,
+            suite=self.name,
+            scenario=scenario.name,
+            provider=provider,
+            score=score,
+            passed=mentions_count and has_evidence,
+            metrics={
+                "confidence": reasoning.confidence,
+                "expected_count": expected_count,
+                "evidence_count": len(reasoning.evidence),
+                "mentions_count": mentions_count,
+            },
+        )
+
+    def _evaluate_scene_identity(
+        self,
+        scenario: EvaluationScenario,
+        provider: str,
+        *,
+        world: World,
+        forge: WorldForge,
+        index: int,
+    ) -> EvaluationResult:
         _seed_object(world, "cube", Position(0.0, 0.5, 0.0))
         _seed_object(world, "mug", Position(0.3, 0.8, 0.0))
         object_ids = sorted(obj.id for obj in world.objects())
-
-        if scenario.name == "scene-count":
-            expected_count = world.object_count
-            reasoning = forge.reason(provider, "How many objects are tracked?", world=world)
-            answer = reasoning.answer.lower()
-            mentions_count = str(expected_count) in answer
-            has_evidence = bool(reasoning.evidence)
-            score = _clamp_score(
-                (
-                    reasoning.confidence
-                    + (1.0 if mentions_count else 0.0)
-                    + (1.0 if has_evidence else 0.0)
-                )
-                / 3
-            )
-            return EvaluationResult(
-                suite_id=self.suite_id,
-                suite=self.name,
-                scenario=scenario.name,
-                provider=provider,
-                score=score,
-                passed=mentions_count and has_evidence,
-                metrics={
-                    "confidence": reasoning.confidence,
-                    "expected_count": expected_count,
-                    "evidence_count": len(reasoning.evidence),
-                    "mentions_count": mentions_count,
-                },
-            )
-
-        if scenario.name == "scene-identity":
-            reasoning = forge.reason(provider, "Which object ids are tracked?", world=world)
-            haystack = " ".join([reasoning.answer, *reasoning.evidence]).lower()
-            matched_ids = [object_id for object_id in object_ids if object_id.lower() in haystack]
-            coverage = len(matched_ids) / len(object_ids) if object_ids else 1.0
-            score = _clamp_score((reasoning.confidence + coverage) / 2)
-            return EvaluationResult(
-                suite_id=self.suite_id,
-                suite=self.name,
-                scenario=scenario.name,
-                provider=provider,
-                score=score,
-                passed=coverage == 1.0,
-                metrics={
-                    "confidence": reasoning.confidence,
-                    "tracked_object_count": len(object_ids),
-                    "matched_object_count": len(matched_ids),
-                    "coverage": coverage,
-                },
-            )
-
-        return super().evaluate_scenario(
-            scenario,
-            provider,
-            world=world,
-            forge=forge,
-            index=index,
+        reasoning = forge.reason(provider, "Which object ids are tracked?", world=world)
+        haystack = " ".join([reasoning.answer, *reasoning.evidence]).lower()
+        matched_ids = [object_id for object_id in object_ids if object_id.lower() in haystack]
+        coverage = len(matched_ids) / len(object_ids) if object_ids else 1.0
+        score = _clamp_score((reasoning.confidence + coverage) / 2)
+        return EvaluationResult(
+            suite_id=self.suite_id,
+            suite=self.name,
+            scenario=scenario.name,
+            provider=provider,
+            score=score,
+            passed=coverage == 1.0,
+            metrics={
+                "confidence": reasoning.confidence,
+                "tracked_object_count": len(object_ids),
+                "matched_object_count": len(matched_ids),
+                "coverage": coverage,
+            },
         )
+
+    _SCENARIO_HANDLERS: ClassVar[dict[str, Callable[..., EvaluationResult]]] = {
+        "scene-count": _evaluate_scene_count,
+        "scene-identity": _evaluate_scene_identity,
+    }
 
 
 EvalScenario = EvaluationScenario
