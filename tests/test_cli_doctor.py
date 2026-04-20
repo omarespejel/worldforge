@@ -6,6 +6,22 @@ import sys
 from worldforge.cli import main
 
 
+def test_examples_cli_outputs_human_and_json_indexes(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(sys, "argv", ["worldforge", "examples"])
+    assert main() == 0
+    output = capsys.readouterr().out
+    assert output.startswith("# WorldForge Examples")
+    assert "worldforge-demo-leworldmodel" in output
+    assert "worldforge-demo-lerobot" in output
+
+    monkeypatch.setattr(sys, "argv", ["worldforge", "examples", "--format", "json"])
+    assert main() == 0
+    examples_payload = json.loads(capsys.readouterr().out)
+    example_names = {example["name"] for example in examples_payload}
+    assert "leworldmodel-score-planning" in example_names
+    assert "lerobot-policy-score-planning" in example_names
+
+
 def test_doctor_and_provider_info_cli(tmp_path, monkeypatch, capsys) -> None:
     for env_var in (
         "COSMOS_BASE_URL",

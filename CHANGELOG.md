@@ -9,6 +9,12 @@ releases may still include breaking changes when the public API needs to tighten
 
 ### Added
 
+- Added `worldforge examples` with Markdown and JSON output so CLI users can discover checkout
+  scripts, packaged demos, and optional smoke commands without scanning repository docs.
+- Added the `worldforge-demo-lerobot` console command and packaged the LeRobot policy-plus-score
+  planning walkthrough under `src/worldforge/demos/lerobot_e2e.py`, keeping
+  `examples/lerobot_e2e_demo.py` as a compatibility wrapper.
+- Added `examples/README.md` as a short command index for the checkout scripts and packaged demos.
 - Added `.env.example` documenting every provider environment variable recognized by
   WorldForge (`COSMOS_BASE_URL`, `NVIDIA_API_KEY`, `RUNWAYML_API_SECRET` and the legacy
   `RUNWAY_API_SECRET` alias, `RUNWAYML_BASE_URL`, `LEWORLDMODEL_POLICY` and the legacy

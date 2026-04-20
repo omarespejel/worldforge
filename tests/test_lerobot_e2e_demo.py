@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import sys
 from pathlib import Path
 from types import ModuleType
+
+import pytest
+
+from worldforge.demos import lerobot_e2e
 
 
 def _load_demo() -> ModuleType:
@@ -41,3 +47,26 @@ def test_lerobot_e2e_demo_runs_full_policy_plus_score_flow(tmp_path: Path) -> No
     assert summary["policy_requires_grad_disabled"] is True
     assert summary["policy_reset_calls"] == 1
     assert summary["policy_select_calls"] == 2
+
+
+def test_lerobot_e2e_demo_main_json_only(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "worldforge-demo-lerobot",
+            "--state-dir",
+            str(tmp_path),
+            "--json-only",
+        ],
+    )
+
+    assert lerobot_e2e.main() == 0
+
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["demo_kind"] == "lerobot_provider_surface"
+    assert summary["uses_real_upstream_checkpoint"] is False

@@ -100,6 +100,7 @@ print(doctor.healthy_provider_count, doctor.provider_count)
 CLI:
 
 ```bash
+uv run worldforge examples
 uv run worldforge doctor
 uv run worldforge provider list
 uv run worldforge provider info mock
@@ -181,18 +182,27 @@ adapter.
 - Scaffold adapters are reservations for future work. They must not be presented as real JEPA,
   Genie, or jepa-wms integrations.
 
-## LeWorldModel Demo And Smoke
+## Demos And Optional Smokes
 
-Checkout-safe provider/planner walkthrough:
+List runnable examples:
+
+```bash
+uv run worldforge examples
+uv run worldforge examples --format json
+```
+
+Checkout-safe packaged demos:
 
 ```bash
 uv run worldforge-demo-leworldmodel
 uv run worldforge-demo-leworldmodel --json-only
+uv run worldforge-demo-lerobot
+uv run worldforge-demo-lerobot --json-only
 ```
 
-This uses the real `LeWorldModelProvider` interface with an injected deterministic cost runtime.
-It proves the WorldForge score-planning, execution, persistence, and reload path without loading
-an upstream checkpoint.
+These use real WorldForge provider interfaces with injected deterministic runtimes. They verify the
+adapter, planning, execution, persistence, and reload path without installing optional model
+runtimes or downloading checkpoints.
 
 Real-checkpoint smoke:
 

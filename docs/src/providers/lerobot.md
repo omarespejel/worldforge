@@ -161,7 +161,8 @@ provider unless `score_action_candidates=...` supplies model-native candidates.
 Checkout-safe end-to-end demo:
 
 ```bash
-uv run python examples/lerobot_e2e_demo.py
+uv run worldforge-demo-lerobot
+uv run worldforge-demo-lerobot --json-only
 ```
 
 The demo injects a deterministic policy into the real `LeRobotPolicyProvider`. It exercises

@@ -124,6 +124,10 @@ include those IDs in surrounding application logs.
   `worldforge-smoke-leworldmodel` for that path. The demo should report
   `uses_leworldmodel_provider: true`, `uses_worldforge_score_planning: true`, and
   `uses_real_upstream_checkpoint: false`.
+- To demonstrate LeRobot policy-plus-score planning without optional dependencies, run
+  `uv run worldforge-demo-lerobot`. It uses the real `LeRobotPolicyProvider` interface with an
+  injected deterministic policy runtime and exercises policy selection, score ranking, execution,
+  persistence, and reload. It is not a real LeRobot checkpoint inference run.
 - To smoke-test a real GR00T policy server, install or check out NVIDIA Isaac-GR00T, prepare a
   host-specific observation factory and action translator, then run
   `python scripts/smoke_gr00t_policy.py --gr00t-root /path/to/Isaac-GR00T --start-server ...`.

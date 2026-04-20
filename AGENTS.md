@@ -42,6 +42,8 @@ evaluation harnesses, and testable prototypes.
   recording, and metrics aggregation.
 - `src/worldforge/testing/`: reusable adapter contract helpers.
 - `src/worldforge/demos/`: packaged demo entry points exposed through `uv run` console scripts.
+- `src/worldforge/demos/lerobot_e2e.py`: packaged LeRobot policy-plus-score planning demo exposed
+  through `uv run worldforge-demo-lerobot`.
 - `src/worldforge/smoke/`: packaged optional-runtime smoke entry points exposed through `uv run`
   console scripts.
 - `src/worldforge/smoke/leworldmodel_checkpoint.py`: optional host-owned builder for creating the
@@ -85,6 +87,14 @@ uv run ruff format --check src tests examples scripts
 uv run pytest
 uv run pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
 bash scripts/test_package.sh
+```
+
+Discover and run examples:
+
+```bash
+uv run worldforge examples
+uv run worldforge-demo-leworldmodel
+uv run worldforge-demo-lerobot
 ```
 
 Generate a provider scaffold:

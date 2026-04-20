@@ -1,4 +1,4 @@
-"""Command line interface for WorldForge."""
+"""Typed local-first CLI for WorldForge provider and evaluation workflows."""
 
 from __future__ import annotations
 
@@ -11,9 +11,96 @@ from worldforge.benchmark import ProviderBenchmarkHarness
 from worldforge.evaluation import EvaluationSuite
 from worldforge.providers import ProviderError
 
+CLI_DESCRIPTION = (
+    "Typed local-first CLI for provider diagnostics, prediction, generation, evaluation, "
+    "benchmarking, and runnable demos."
+)
+
+CLI_EPILOG = """Common commands:
+  worldforge examples
+  worldforge doctor
+  worldforge provider list
+  worldforge provider info mock
+  worldforge predict kitchen --provider mock --x 0.3 --y 0.8 --z 0.0 --steps 2
+  worldforge eval --suite planning --provider mock --format json
+  worldforge benchmark --provider mock --iterations 5 --format json
+"""
+
+EXAMPLE_COMMANDS: tuple[dict[str, str], ...] = (
+    {
+        "name": "basic-prediction",
+        "surface": "predict, planning, evaluation",
+        "requires": "base WorldForge package",
+        "command": "uv run python examples/basic_prediction.py",
+        "description": (
+            "Create a mock world, run a deterministic prediction, plan an object move, and "
+            "print a physics evaluation report."
+        ),
+    },
+    {
+        "name": "cross-provider-compare",
+        "surface": "provider registry, comparison",
+        "requires": "base WorldForge package",
+        "command": "uv run python examples/cross_provider_compare.py",
+        "description": (
+            "Register a second deterministic provider and compare prediction outputs across "
+            "provider surfaces."
+        ),
+    },
+    {
+        "name": "leworldmodel-score-planning",
+        "surface": "score provider, planning, persistence",
+        "requires": "base WorldForge package; injected deterministic score runtime",
+        "command": "uv run worldforge-demo-leworldmodel",
+        "description": (
+            "Run the packaged LeWorldModel provider-surface demo without downloading "
+            "upstream checkpoints."
+        ),
+    },
+    {
+        "name": "lerobot-policy-score-planning",
+        "surface": "policy provider, score provider, planning, persistence",
+        "requires": "base WorldForge package; injected deterministic policy runtime",
+        "command": "uv run worldforge-demo-lerobot",
+        "description": (
+            "Run the packaged LeRobot policy-plus-score planning demo without installing "
+            "LeRobot or torch."
+        ),
+    },
+    {
+        "name": "leworldmodel-real-checkpoint-smoke",
+        "surface": "optional runtime smoke",
+        "requires": "host-owned stable-worldmodel, torch, datasets, and LeWM checkpoint assets",
+        "command": (
+            'uv run --python 3.10 --with "stable-worldmodel[train,env] @ '
+            'git+https://github.com/galilai-group/stable-worldmodel.git" '
+            '--with "datasets>=2.21" worldforge-smoke-leworldmodel'
+        ),
+        "description": (
+            "Exercise the real LeWorldModel checkpoint path from a host environment that owns "
+            "the optional runtime and assets."
+        ),
+    },
+)
+
 
 def _print_json(payload: object) -> None:
     print(json.dumps(payload, indent=2))
+
+
+def _print_examples_markdown() -> None:
+    print("# WorldForge Examples")
+    print()
+    print("| Example | Surface | Requirements | Command |")
+    print("| --- | --- | --- | --- |")
+    for example in EXAMPLE_COMMANDS:
+        print(
+            "| "
+            f"`{example['name']}` | "
+            f"{example['surface']} | "
+            f"{example['requires']} | "
+            f"`{example['command']}` |"
+        )
 
 
 def _add_generation_arguments(parser: argparse.ArgumentParser, *, include_fps: bool = True) -> None:
@@ -49,8 +136,19 @@ def _build_generation_options(args: argparse.Namespace) -> GenerationOptions:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="worldforge", description=__doc__)
+    parser = argparse.ArgumentParser(
+        prog="worldforge",
+        description=CLI_DESCRIPTION,
+        epilog=CLI_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    examples = subparsers.add_parser(
+        "examples",
+        help="List runnable examples and demo entry points.",
+    )
+    examples.add_argument("--format", choices=("markdown", "json"), default="markdown")
 
     providers = subparsers.add_parser("providers", help="List registered providers.")
     providers.add_argument("--state-dir", default=".worldforge/worlds")
@@ -149,6 +247,13 @@ def _build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = _build_parser()
     args = parser.parse_args()
+
+    if args.command == "examples":
+        if args.format == "json":
+            _print_json(EXAMPLE_COMMANDS)
+        else:
+            _print_examples_markdown()
+        return 0
 
     forge = WorldForge(state_dir=args.state_dir)
 

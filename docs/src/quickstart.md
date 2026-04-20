@@ -71,6 +71,7 @@ for object creation.
 ## CLI
 
 ```bash
+uv run worldforge examples
 uv run worldforge doctor
 uv run worldforge provider list
 uv run worldforge provider info mock
@@ -81,3 +82,14 @@ uv run worldforge eval --suite physics --provider mock
 uv run worldforge eval --suite planning --provider mock --format json
 uv run worldforge benchmark --provider mock --iterations 5 --format json
 ```
+
+Packaged checkout-safe demos:
+
+```bash
+uv run worldforge-demo-leworldmodel
+uv run worldforge-demo-lerobot
+```
+
+Both demos use real WorldForge provider surfaces with injected deterministic runtimes. They verify
+the adapter, planning, execution, persistence, and reload path without installing optional model
+runtimes or downloading checkpoints.
