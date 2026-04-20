@@ -22,10 +22,15 @@ from worldforge.models import (
     ProviderHealth,
     WorldForgeError,
     require_bool,
-    require_finite_number,
 )
 
 from ._config import env_value, optional_non_empty
+from ._tensor_validation import (
+    _flatten_numeric,
+    _require_rank,
+    _shape,
+    _tensor_shape,
+)
 from .base import BaseProvider, ProviderError
 
 JEPA_WMS_ENV_VAR = "JEPA_WMS_MODEL_PATH"
@@ -49,105 +54,6 @@ class JEPAWMSRuntime(Protocol):
         action_candidates: object,
     ) -> object:
         """Return a raw JEPA-WMS score response for already validated inputs."""
-
-
-def _is_sequence(value: object) -> bool:
-    return isinstance(value, list | tuple)
-
-
-def _shape_from_sequence(value: object, *, name: str) -> tuple[int, ...]:
-    if _is_sequence(value):
-        if not value:
-            raise ProviderError(f"{name} must not contain empty sequences.")
-        child_shapes = [
-            _shape_from_sequence(child, name=f"{name}[{index}]")
-            for index, child in enumerate(value)
-        ]
-        first_shape = child_shapes[0]
-        if any(shape != first_shape for shape in child_shapes):
-            raise ProviderError(f"{name} must be a rectangular nested numeric sequence.")
-        return (len(value), *first_shape)
-
-    try:
-        require_finite_number(value, name=name)  # type: ignore[arg-type]
-    except WorldForgeError as exc:
-        raise ProviderError(f"{name} must contain only finite numbers.") from exc
-    return ()
-
-
-def _shape_from_attr(value: object, *, name: str) -> tuple[int, ...] | None:
-    shape = getattr(value, "shape", None)
-    if shape is None:
-        rank = getattr(value, "ndim", None)
-        if rank is None:
-            dim = getattr(value, "dim", None)
-            if callable(dim):
-                rank = dim()
-        if rank is None:
-            return None
-        try:
-            rank_int = int(rank)
-        except (TypeError, ValueError):
-            raise ProviderError(f"{name} tensor rank must be an integer.") from None
-        if rank_int <= 0:
-            raise ProviderError(f"{name} tensor rank must be positive.")
-        return tuple(-1 for _ in range(rank_int))
-
-    try:
-        parsed = tuple(int(dimension) for dimension in shape)
-    except (TypeError, ValueError):
-        raise ProviderError(f"{name} tensor shape must contain integer dimensions.") from None
-    if not parsed or any(dimension == 0 for dimension in parsed):
-        raise ProviderError(f"{name} tensor shape must contain non-zero dimensions.")
-    return parsed
-
-
-def _shape(value: object, *, name: str) -> tuple[int, ...]:
-    attr_shape = _shape_from_attr(value, name=name)
-    if attr_shape is not None:
-        return attr_shape
-
-    tolist = getattr(value, "tolist", None)
-    if callable(tolist):
-        return _shape(tolist(), name=name)
-
-    if not _is_sequence(value):
-        raise ProviderError(f"{name} must be a tensor-like object or nested numeric sequence.")
-    return _shape_from_sequence(value, name=name)
-
-
-def _require_rank(value: object, *, name: str, min_rank: int | None = None) -> tuple[int, ...]:
-    shape = _shape(value, name=name)
-    if min_rank is not None and len(shape) < min_rank:
-        raise ProviderError(f"{name} must have at least {min_rank} dimensions.")
-    return shape
-
-
-def _flatten_numeric(value: object, *, name: str) -> list[float]:
-    if _is_sequence(value):
-        flattened: list[float] = []
-        for index, child in enumerate(value):
-            flattened.extend(_flatten_numeric(child, name=f"{name}[{index}]"))
-        return flattened
-
-    tolist = getattr(value, "tolist", None)
-    if callable(tolist):
-        return _flatten_numeric(tolist(), name=name)
-
-    try:
-        return [require_finite_number(value, name=name)]  # type: ignore[arg-type]
-    except WorldForgeError as exc:
-        raise ProviderError(f"{name} must contain only finite numbers.") from exc
-
-
-def _tensor_shape(value: object) -> tuple[int, ...] | None:
-    shape = getattr(value, "shape", None)
-    if shape is None:
-        return None
-    try:
-        return tuple(int(dimension) for dimension in shape)
-    except (TypeError, ValueError):
-        return None
 
 
 class TorchHubJEPAWMSRuntime:
@@ -219,7 +125,14 @@ class TorchHubJEPAWMSRuntime:
 
         try:
             loaded = loader(self.hub_repo, self.model_name, **kwargs)
-        except Exception as exc:
+        except (
+            AttributeError,
+            ImportError,
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ) as exc:
             raise ProviderError(
                 f"Failed to load JEPA-WMS torch-hub model '{self.model_name}' "
                 f"from '{self.hub_repo}': {exc}"
@@ -252,7 +165,7 @@ class TorchHubJEPAWMSRuntime:
                 raise ProviderError("JEPA-WMS torch module does not expose as_tensor().")
             try:
                 tensor = as_tensor(value)
-            except Exception as exc:
+            except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
                 raise ProviderError(f"{name} could not be converted to a tensor: {exc}") from exc
         if self.device is not None and hasattr(tensor, "to"):
             tensor = tensor.to(self.device)
@@ -275,7 +188,7 @@ class TorchHubJEPAWMSRuntime:
             )
         try:
             return normalize(action_tensor)
-        except Exception as exc:
+        except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
             raise ProviderError(f"JEPA-WMS action normalization failed: {exc}") from exc
 
     def _no_grad_context(self, torch: Any) -> Any:
@@ -307,7 +220,7 @@ class TorchHubJEPAWMSRuntime:
             return {key: self._select_last_timestep(child) for key, child in value.items()}
         try:
             return value[-1]
-        except Exception:
+        except (IndexError, KeyError, TypeError):
             return value
 
     def _distance_scores(
@@ -365,7 +278,7 @@ class TorchHubJEPAWMSRuntime:
             return encode(value, act=act)
         except TypeError:
             return encode(value)
-        except Exception as exc:
+        except (AttributeError, RuntimeError, ValueError) as exc:
             raise ProviderError(f"JEPA-WMS model encoding failed: {exc}") from exc
 
     def _unroll(self, model: Any, z_init: Any, action_suffix: Any) -> Any:
@@ -374,7 +287,7 @@ class TorchHubJEPAWMSRuntime:
             raise ProviderError("JEPA-WMS loaded model does not expose unroll().")
         try:
             return unroll(z_init, act_suffix=action_suffix)
-        except Exception as exc:
+        except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
             raise ProviderError(f"JEPA-WMS model unroll failed: {exc}") from exc
 
     def score_actions(
@@ -422,7 +335,14 @@ class TorchHubJEPAWMSRuntime:
             model_actions = model_actions.permute(1, 0, 2)
         except ProviderError:
             raise
-        except Exception as exc:
+        except (
+            AttributeError,
+            IndexError,
+            KeyError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ) as exc:
             raise ProviderError(f"JEPA-WMS action tensor preparation failed: {exc}") from exc
 
         with self._no_grad_context(torch):
@@ -750,7 +670,17 @@ class JEPAWMSProvider(BaseProvider):
                 metadata={"model_path": self.model_path},
             )
             raise
-        except Exception as exc:
+        except (
+            ArithmeticError,
+            AttributeError,
+            BufferError,
+            ImportError,
+            LookupError,
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ) as exc:
             error = ProviderError(
                 f"JEPA-WMS scoring failed for model path '{self.model_path}': {exc}"
             )
