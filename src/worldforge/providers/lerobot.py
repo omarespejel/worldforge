@@ -18,8 +18,6 @@ evaluates the policy.
 from __future__ import annotations
 
 import importlib
-import math
-import os
 from collections.abc import Callable, Sequence
 from contextlib import nullcontext
 from time import perf_counter
@@ -36,6 +34,8 @@ from worldforge.models import (
     require_positive_int,
 )
 
+from ._config import env_value, first_env_value, optional_non_empty
+from ._policy import json_object, normalize_policy_action_candidates
 from .base import BaseProvider, ProviderError
 
 LEROBOT_POLICY_PATH_ENV_VAR = "LEROBOT_POLICY_PATH"
@@ -63,24 +63,8 @@ ActionTranslator = Callable[
 ]
 
 
-def _first_env_value(names: Sequence[str]) -> str | None:
-    for name in names:
-        value = os.environ.get(name)
-        if value is not None and value.strip():
-            return value.strip()
-    return None
-
-
-def _optional_non_empty(value: str | None, *, name: str) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str) or not value.strip():
-        raise WorldForgeError(f"{name} must be a non-empty string when provided.")
-    return value.strip()
-
-
 def _optional_policy_type(value: str | None, *, name: str) -> str | None:
-    normalized = _optional_non_empty(value, name=name)
+    normalized = optional_non_empty(value, name=name)
     if normalized is None:
         return None
     lowered = normalized.lower()
@@ -90,63 +74,10 @@ def _optional_policy_type(value: str | None, *, name: str) -> str | None:
     return lowered
 
 
-def _json_compatible(value: object, *, name: str) -> object:
-    tolist = getattr(value, "tolist", None)
-    if callable(tolist):
-        return _json_compatible(tolist(), name=name)
-    if value is None or isinstance(value, str | bool):
-        return value
-    if isinstance(value, int | float):
-        number = float(value)
-        if not math.isfinite(number):
-            raise ProviderError(f"{name} must contain only finite numbers.")
-        return value
-    if isinstance(value, dict):
-        normalized: JSONDict = {}
-        for key, child in value.items():
-            if not isinstance(key, str) or not key.strip():
-                raise ProviderError(f"{name} keys must be non-empty strings.")
-            normalized[key.strip()] = _json_compatible(child, name=f"{name}.{key}")
-        return normalized
-    if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
-        return [
-            _json_compatible(child, name=f"{name}[{index}]") for index, child in enumerate(value)
-        ]
-    raise ProviderError(f"{name} must be JSON-compatible.")
-
-
-def _json_object(value: object, *, name: str) -> JSONDict:
-    normalized = _json_compatible(value, name=name)
-    if not isinstance(normalized, dict):
-        raise ProviderError(f"{name} must be a JSON object.")
-    return normalized
-
-
 def _normalize_policy_action_candidates(
     value: Sequence[Action] | Sequence[Sequence[Action]],
 ) -> list[list[Action]]:
-    if not isinstance(value, Sequence) or isinstance(value, str | bytes) or not value:
-        raise ProviderError("LeRobot action translator must return a non-empty action sequence.")
-    if all(isinstance(item, Action) for item in value):
-        return [list(value)]  # type: ignore[list-item]
-
-    candidates: list[list[Action]] = []
-    for index, candidate in enumerate(value):
-        if (
-            not isinstance(candidate, Sequence)
-            or isinstance(candidate, str | bytes)
-            or not candidate
-        ):
-            raise ProviderError(
-                f"LeRobot action translator candidate {index} must be a non-empty action sequence."
-            )
-        actions = list(candidate)
-        if not all(isinstance(action, Action) for action in actions):
-            raise ProviderError(
-                f"LeRobot action translator candidate {index} must contain only Action instances."
-            )
-        candidates.append(actions)
-    return candidates
+    return normalize_policy_action_candidates(value, provider_label="LeRobot")
 
 
 class LeRobotPolicyProvider(BaseProvider):
@@ -172,28 +103,28 @@ class LeRobotPolicyProvider(BaseProvider):
         action_translator: ActionTranslator | None = None,
         event_handler: Callable[[ProviderEvent], None] | None = None,
     ) -> None:
-        self.policy_path = _optional_non_empty(
+        self.policy_path = optional_non_empty(
             policy_path
             if policy_path is not None
-            else _first_env_value(LEROBOT_POLICY_PATH_ENV_ALIASES),
+            else first_env_value(LEROBOT_POLICY_PATH_ENV_ALIASES),
             name="LeRobot policy_path",
         )
         self.policy_type = _optional_policy_type(
-            policy_type if policy_type is not None else os.environ.get(LEROBOT_POLICY_TYPE_ENV_VAR),
+            policy_type if policy_type is not None else env_value(LEROBOT_POLICY_TYPE_ENV_VAR),
             name="LeRobot policy_type",
         )
-        self.device = _optional_non_empty(
-            device if device is not None else os.environ.get(LEROBOT_DEVICE_ENV_VAR),
+        self.device = optional_non_empty(
+            device if device is not None else env_value(LEROBOT_DEVICE_ENV_VAR),
             name="LeRobot device",
         )
-        self.cache_dir = _optional_non_empty(
-            cache_dir if cache_dir is not None else os.environ.get(LEROBOT_CACHE_DIR_ENV_VAR),
+        self.cache_dir = optional_non_empty(
+            cache_dir if cache_dir is not None else env_value(LEROBOT_CACHE_DIR_ENV_VAR),
             name="LeRobot cache_dir",
         )
-        self.embodiment_tag = _optional_non_empty(
+        self.embodiment_tag = optional_non_empty(
             embodiment_tag
             if embodiment_tag is not None
-            else os.environ.get(LEROBOT_EMBODIMENT_TAG_ENV_VAR),
+            else env_value(LEROBOT_EMBODIMENT_TAG_ENV_VAR),
             name="LeRobot embodiment_tag",
         )
         self._policy = policy
@@ -481,11 +412,11 @@ class LeRobotPolicyProvider(BaseProvider):
                 raw_actions = raw
                 raw_provider_info = {}
 
-            normalized_raw_actions = _json_object(
+            normalized_raw_actions = json_object(
                 {"actions": raw_actions},
                 name="LeRobot raw_actions",
             )
-            normalized_provider_info = _json_object(
+            normalized_provider_info = json_object(
                 raw_provider_info,
                 name="LeRobot provider_info",
             )

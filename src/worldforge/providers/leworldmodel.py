@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import importlib
-import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from contextlib import nullcontext
 from time import perf_counter
 from typing import Any
@@ -19,6 +18,7 @@ from worldforge.models import (
     require_finite_number,
 )
 
+from ._config import env_value, first_env_value, optional_non_empty
 from .base import BaseProvider, ProviderError
 
 LEWORLDMODEL_POLICY_ENV_VAR = "LEWORLDMODEL_POLICY"
@@ -28,22 +28,6 @@ LEWORLDMODEL_DEVICE_ENV_VAR = "LEWORLDMODEL_DEVICE"
 REQUIRED_INFO_FIELDS = ("pixels", "goal", "action")
 
 ModelLoader = Callable[[str, str | None], Any]
-
-
-def _first_env_value(names: Sequence[str]) -> str | None:
-    for name in names:
-        value = os.environ.get(name)
-        if value is not None and value.strip():
-            return value.strip()
-    return None
-
-
-def _optional_non_empty(value: str | None, *, name: str) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str) or not value.strip():
-        raise WorldForgeError(f"{name} must be a non-empty string when provided.")
-    return value.strip()
 
 
 def _is_sequence(value: object) -> bool:
@@ -70,16 +54,16 @@ class LeWorldModelProvider(BaseProvider):
         tensor_module: Any | None = None,
         event_handler: Callable[[ProviderEvent], None] | None = None,
     ) -> None:
-        self.policy = _optional_non_empty(
-            policy if policy is not None else _first_env_value(LEWORLDMODEL_POLICY_ENV_ALIASES),
+        self.policy = optional_non_empty(
+            policy if policy is not None else first_env_value(LEWORLDMODEL_POLICY_ENV_ALIASES),
             name="LeWorldModel policy",
         )
-        self.cache_dir = _optional_non_empty(
-            cache_dir if cache_dir is not None else os.environ.get(LEWORLDMODEL_CACHE_DIR_ENV_VAR),
+        self.cache_dir = optional_non_empty(
+            cache_dir if cache_dir is not None else env_value(LEWORLDMODEL_CACHE_DIR_ENV_VAR),
             name="LeWorldModel cache_dir",
         )
-        self.device = _optional_non_empty(
-            device if device is not None else os.environ.get(LEWORLDMODEL_DEVICE_ENV_VAR),
+        self.device = optional_non_empty(
+            device if device is not None else env_value(LEWORLDMODEL_DEVICE_ENV_VAR),
             name="LeWorldModel device",
         )
         self._model_loader = model_loader

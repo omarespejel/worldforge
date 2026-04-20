@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import importlib
-import math
-import os
 from collections.abc import Callable, Sequence
 from time import perf_counter
 from typing import Any
@@ -16,10 +14,10 @@ from worldforge.models import (
     ProviderCapabilities,
     ProviderEvent,
     ProviderHealth,
-    WorldForgeError,
-    require_positive_int,
 )
 
+from ._config import env_value, optional_bool, optional_non_empty, optional_positive_int
+from ._policy import json_object, normalize_policy_action_candidates
 from .base import BaseProvider, ProviderError
 
 GROOT_POLICY_HOST_ENV_VAR = "GROOT_POLICY_HOST"
@@ -37,106 +35,10 @@ ActionTranslator = Callable[
 ]
 
 
-def _env_value(name: str) -> str | None:
-    value = os.environ.get(name)
-    if value is None or not value.strip():
-        return None
-    return value.strip()
-
-
-def _optional_non_empty(value: str | None, *, name: str) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str) or not value.strip():
-        raise WorldForgeError(f"{name} must be a non-empty string when provided.")
-    return value.strip()
-
-
-def _optional_positive_int(value: int | str | None, *, name: str) -> int | None:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        if not value.strip():
-            return None
-        try:
-            value = int(value)
-        except ValueError:
-            raise WorldForgeError(f"{name} must be an integer greater than 0.") from None
-    return require_positive_int(value, name=name)
-
-
-def _optional_bool(value: bool | str | None, *, name: str) -> bool | None:
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return value
-    if not isinstance(value, str):
-        raise WorldForgeError(f"{name} must be a boolean when provided.")
-    normalized = value.strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    raise WorldForgeError(f"{name} must be a boolean when provided.")
-
-
-def _json_compatible(value: object, *, name: str) -> object:
-    tolist = getattr(value, "tolist", None)
-    if callable(tolist):
-        return _json_compatible(tolist(), name=name)
-    if value is None or isinstance(value, str | bool):
-        return value
-    if isinstance(value, int | float):
-        number = float(value)
-        if not math.isfinite(number):
-            raise ProviderError(f"{name} must contain only finite numbers.")
-        return value
-    if isinstance(value, dict):
-        normalized: JSONDict = {}
-        for key, child in value.items():
-            if not isinstance(key, str) or not key.strip():
-                raise ProviderError(f"{name} keys must be non-empty strings.")
-            normalized[key.strip()] = _json_compatible(child, name=f"{name}.{key}")
-        return normalized
-    if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
-        return [
-            _json_compatible(child, name=f"{name}[{index}]") for index, child in enumerate(value)
-        ]
-    raise ProviderError(f"{name} must be JSON-compatible.")
-
-
-def _json_object(value: object, *, name: str) -> JSONDict:
-    normalized = _json_compatible(value, name=name)
-    if not isinstance(normalized, dict):
-        raise ProviderError(f"{name} must be a JSON object.")
-    return normalized
-
-
 def _normalize_policy_action_candidates(
     value: Sequence[Action] | Sequence[Sequence[Action]],
 ) -> list[list[Action]]:
-    if not isinstance(value, Sequence) or isinstance(value, str | bytes) or not value:
-        raise ProviderError("GR00T action translator must return a non-empty action sequence.")
-    if all(isinstance(item, Action) for item in value):
-        return [list(value)]  # type: ignore[list-item]
-
-    candidates: list[list[Action]] = []
-    for index, candidate in enumerate(value):
-        if (
-            not isinstance(candidate, Sequence)
-            or isinstance(candidate, str | bytes)
-            or not candidate
-        ):
-            raise ProviderError(
-                f"GR00T action translator candidate {index} must be a non-empty action sequence."
-            )
-        actions = list(candidate)
-        if not all(isinstance(action, Action) for action in actions):
-            raise ProviderError(
-                f"GR00T action translator candidate {index} must contain only Action instances."
-            )
-        candidates.append(actions)
-    return candidates
+    return normalize_policy_action_candidates(value, provider_label="GR00T")
 
 
 class GrootPolicyClientProvider(BaseProvider):
@@ -160,39 +62,39 @@ class GrootPolicyClientProvider(BaseProvider):
         action_translator: ActionTranslator | None = None,
         event_handler: Callable[[ProviderEvent], None] | None = None,
     ) -> None:
-        self.host = _optional_non_empty(
-            host if host is not None else _env_value(GROOT_POLICY_HOST_ENV_VAR),
+        self.host = optional_non_empty(
+            host if host is not None else env_value(GROOT_POLICY_HOST_ENV_VAR),
             name="GR00T policy host",
         )
         self.port = (
-            _optional_positive_int(
-                port if port is not None else _env_value(GROOT_POLICY_PORT_ENV_VAR),
+            optional_positive_int(
+                port if port is not None else env_value(GROOT_POLICY_PORT_ENV_VAR),
                 name="GR00T policy port",
             )
             or DEFAULT_GROOT_POLICY_PORT
         )
         self.timeout_ms = (
-            _optional_positive_int(
+            optional_positive_int(
                 timeout_ms
                 if timeout_ms is not None
-                else _env_value(GROOT_POLICY_TIMEOUT_MS_ENV_VAR),
+                else env_value(GROOT_POLICY_TIMEOUT_MS_ENV_VAR),
                 name="GR00T policy timeout_ms",
             )
             or DEFAULT_GROOT_POLICY_TIMEOUT_MS
         )
-        self.api_token = _optional_non_empty(
-            api_token if api_token is not None else _env_value(GROOT_POLICY_API_TOKEN_ENV_VAR),
+        self.api_token = optional_non_empty(
+            api_token if api_token is not None else env_value(GROOT_POLICY_API_TOKEN_ENV_VAR),
             name="GR00T policy api_token",
         )
-        parsed_strict = _optional_bool(
-            strict if strict is not None else _env_value(GROOT_POLICY_STRICT_ENV_VAR),
+        parsed_strict = optional_bool(
+            strict if strict is not None else env_value(GROOT_POLICY_STRICT_ENV_VAR),
             name="GR00T policy strict",
         )
         self.strict = False if parsed_strict is None else parsed_strict
-        self.embodiment_tag = _optional_non_empty(
+        self.embodiment_tag = optional_non_empty(
             embodiment_tag
             if embodiment_tag is not None
-            else _env_value(GROOT_EMBODIMENT_TAG_ENV_VAR),
+            else env_value(GROOT_EMBODIMENT_TAG_ENV_VAR),
             name="GR00T embodiment_tag",
         )
         self._policy_client = policy_client
@@ -388,8 +290,8 @@ class GrootPolicyClientProvider(BaseProvider):
                 raw_actions = response
                 raw_provider_info = {}
 
-            normalized_raw_actions = _json_object(raw_actions, name="GR00T raw_actions")
-            normalized_provider_info = _json_object(
+            normalized_raw_actions = json_object(raw_actions, name="GR00T raw_actions")
+            normalized_provider_info = json_object(
                 raw_provider_info,
                 name="GR00T provider_info",
             )
@@ -400,7 +302,7 @@ class GrootPolicyClientProvider(BaseProvider):
             )
             action_horizon_value = info.get("action_horizon")
             action_horizon = (
-                _optional_positive_int(action_horizon_value, name="GR00T action_horizon")
+                optional_positive_int(action_horizon_value, name="GR00T action_horizon")
                 if action_horizon_value is not None
                 else len(candidate_plans[0])
             )

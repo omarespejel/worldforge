@@ -9,7 +9,6 @@ added.
 from __future__ import annotations
 
 import importlib
-import os
 from collections.abc import Callable
 from contextlib import nullcontext
 from time import perf_counter
@@ -26,6 +25,7 @@ from worldforge.models import (
     require_finite_number,
 )
 
+from ._config import env_value, optional_non_empty
 from .base import BaseProvider, ProviderError
 
 JEPA_WMS_ENV_VAR = "JEPA_WMS_MODEL_PATH"
@@ -49,21 +49,6 @@ class JEPAWMSRuntime(Protocol):
         action_candidates: object,
     ) -> object:
         """Return a raw JEPA-WMS score response for already validated inputs."""
-
-
-def _env_value(name: str) -> str | None:
-    value = os.environ.get(name)
-    if value is None or not value.strip():
-        return None
-    return value.strip()
-
-
-def _optional_non_empty(value: str | None, *, name: str) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str) or not value.strip():
-        raise WorldForgeError(f"{name} must be a non-empty string when provided.")
-    return value.strip()
 
 
 def _is_sequence(value: object) -> bool:
@@ -184,13 +169,13 @@ class TorchHubJEPAWMSRuntime:
         hub_loader: HubLoader | None = None,
         torch_module: Any | None = None,
     ) -> None:
-        self.model_name = _optional_non_empty(model_name, name="JEPA-WMS model_name")
+        self.model_name = optional_non_empty(model_name, name="JEPA-WMS model_name")
         if self.model_name is None:
             raise WorldForgeError("JEPA-WMS model_name must be provided.")
-        self.hub_repo = _optional_non_empty(hub_repo, name="JEPA-WMS hub_repo")
+        self.hub_repo = optional_non_empty(hub_repo, name="JEPA-WMS hub_repo")
         if self.hub_repo is None:
             raise WorldForgeError("JEPA-WMS hub_repo must be provided.")
-        self.device = _optional_non_empty(device, name="JEPA-WMS device")
+        self.device = optional_non_empty(device, name="JEPA-WMS device")
         if not isinstance(pretrained, bool):
             raise WorldForgeError("JEPA-WMS pretrained must be a boolean.")
         if trust_repo is not None and not isinstance(trust_repo, bool):
@@ -483,8 +468,8 @@ class JEPAWMSProvider(BaseProvider):
         runtime: JEPAWMSRuntime | Callable[..., object] | None = None,
         event_handler: Callable[[ProviderEvent], None] | None = None,
     ) -> None:
-        self.model_path = _optional_non_empty(
-            model_path if model_path is not None else _env_value(JEPA_WMS_ENV_VAR),
+        self.model_path = optional_non_empty(
+            model_path if model_path is not None else env_value(JEPA_WMS_ENV_VAR),
             name="JEPA-WMS model_path",
         )
         self._runtime = runtime
@@ -530,16 +515,16 @@ class JEPAWMSProvider(BaseProvider):
     ) -> JEPAWMSProvider:
         """Create a direct JEPA-WMS provider backed by an explicit torch-hub runtime."""
 
-        resolved_model_name = _optional_non_empty(
-            model_name if model_name is not None else _env_value(JEPA_WMS_MODEL_NAME_ENV_VAR),
+        resolved_model_name = optional_non_empty(
+            model_name if model_name is not None else env_value(JEPA_WMS_MODEL_NAME_ENV_VAR),
             name="JEPA-WMS model_name",
         )
         if resolved_model_name is None:
             raise WorldForgeError(
                 f"JEPA-WMS torch-hub runtime requires model_name or {JEPA_WMS_MODEL_NAME_ENV_VAR}."
             )
-        resolved_device = _optional_non_empty(
-            device if device is not None else _env_value(JEPA_WMS_DEVICE_ENV_VAR),
+        resolved_device = optional_non_empty(
+            device if device is not None else env_value(JEPA_WMS_DEVICE_ENV_VAR),
             name="JEPA-WMS device",
         )
         runtime = TorchHubJEPAWMSRuntime(
