@@ -66,6 +66,6 @@ def test_the_world_harness_app_switches_to_diagnostics_flow(tmp_path) -> None:
             await pilot.pause()
             assert app.last_run is not None
             assert app.last_run.flow.id == "diagnostics"
-            assert app.last_run.summary["benchmark_operation_count"] == 4
+            assert app.last_run.summary["benchmark_operation_count"] == 5
 
     asyncio.run(scenario())

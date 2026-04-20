@@ -40,6 +40,58 @@ def _sample_transfer_clip() -> VideoClip:
     )
 
 
+def _sample_score_info() -> JSONDict:
+    return {
+        "pixels": [[[[0.0], [0.1]], [[0.2], [0.3]]]],
+        "goal": [[[0.3, 0.5, 0.0]]],
+        "action": [[[0.0, 0.5, 0.0]]],
+        "metadata": {"mode": "benchmark-score"},
+    }
+
+
+def _sample_score_action_candidates() -> list[list[list[list[float]]]]:
+    return [
+        [
+            [[0.0, 0.5, 0.0], [0.1, 0.5, 0.0]],
+            [[0.0, 0.5, 0.0], [0.3, 0.5, 0.0]],
+        ]
+    ]
+
+
+def _sample_policy_info() -> JSONDict:
+    return {
+        "observation": {
+            "state": {
+                "cube": [0.0, 0.5, 0.0],
+                "mug": [0.25, 0.8, 0.0],
+            },
+            "language": "move the cube toward the target",
+        },
+        "options": {"temperature": 0.0},
+        "mode": "select_action",
+        "action_horizon": 2,
+        "embodiment_tag": "benchmark",
+    }
+
+
+def _json_input_preview(value: object) -> object:
+    try:
+        dump_json(value)
+    except WorldForgeError:
+        payload: JSONDict = {
+            "type": f"{type(value).__module__}.{type(value).__qualname__}",
+            "json_serializable": False,
+        }
+        shape = getattr(value, "shape", None)
+        if shape is not None:
+            try:
+                payload["shape"] = [int(dimension) for dimension in shape]
+            except (TypeError, ValueError):
+                payload["shape"] = [str(dimension) for dimension in shape]
+        return payload
+    return value
+
+
 def _percentile(values: Sequence[float], quantile: float) -> float | None:
     if not values:
         return None
@@ -67,6 +119,10 @@ class BenchmarkInputs:
     transfer_height: int = 180
     transfer_fps: float = 12.0
     transfer_clip: VideoClip = field(default_factory=_sample_transfer_clip)
+    embedding_text: str = "benchmark cube state"
+    score_info: JSONDict = field(default_factory=_sample_score_info)
+    score_action_candidates: object = field(default_factory=_sample_score_action_candidates)
+    policy_info: JSONDict = field(default_factory=_sample_policy_info)
 
     def __post_init__(self) -> None:
         require_positive_int(self.prediction_steps, name="prediction_steps")
@@ -76,6 +132,16 @@ class BenchmarkInputs:
             raise WorldForgeError("transfer_width and transfer_height must be greater than 0.")
         if self.transfer_fps <= 0.0:
             raise WorldForgeError("transfer_fps must be greater than 0.")
+        if not isinstance(self.embedding_text, str) or not self.embedding_text.strip():
+            raise WorldForgeError("embedding_text must be a non-empty string.")
+        if not isinstance(self.score_info, dict) or not self.score_info:
+            raise WorldForgeError("score_info must be a non-empty JSON object.")
+        dump_json(self.score_info)
+        if self.score_action_candidates is None:
+            raise WorldForgeError("score_action_candidates must not be None.")
+        if not isinstance(self.policy_info, dict) or not self.policy_info:
+            raise WorldForgeError("policy_info must be a non-empty JSON object.")
+        dump_json(self.policy_info)
 
     def to_dict(self) -> JSONDict:
         return {
@@ -89,6 +155,10 @@ class BenchmarkInputs:
             "transfer_height": self.transfer_height,
             "transfer_fps": self.transfer_fps,
             "transfer_clip": self.transfer_clip.to_dict(),
+            "embedding_text": self.embedding_text,
+            "score_info": dict(self.score_info),
+            "score_action_candidates": _json_input_preview(self.score_action_candidates),
+            "policy_info": dict(self.policy_info),
         }
 
 
@@ -243,7 +313,15 @@ class _BenchmarkSample:
 class ProviderBenchmarkHarness:
     """Run latency, retry, and throughput benchmarks across registered providers."""
 
-    benchmarkable_operations = ("predict", "reason", "generate", "transfer")
+    benchmarkable_operations = (
+        "predict",
+        "reason",
+        "generate",
+        "transfer",
+        "embed",
+        "score",
+        "policy",
+    )
 
     def __init__(self, forge: WorldForge | None = None) -> None:
         self._forge = forge or WorldForge()
@@ -252,6 +330,9 @@ class ProviderBenchmarkHarness:
             "reason": self._op_reason,
             "generate": self._op_generate,
             "transfer": self._op_transfer,
+            "embed": self._op_embed,
+            "score": self._op_score,
+            "policy": self._op_policy,
         }
 
     def supported_operations(self, provider: str) -> list[str]:
@@ -310,6 +391,19 @@ class ProviderBenchmarkHarness:
             fps=inputs.transfer_fps,
             prompt=inputs.transfer_prompt,
         )
+
+    def _op_embed(self, provider: str, inputs: BenchmarkInputs) -> None:
+        self._forge.embed(provider, text=inputs.embedding_text)
+
+    def _op_score(self, provider: str, inputs: BenchmarkInputs) -> None:
+        self._forge.score_actions(
+            provider,
+            info=inputs.score_info,
+            action_candidates=inputs.score_action_candidates,
+        )
+
+    def _op_policy(self, provider: str, inputs: BenchmarkInputs) -> None:
+        self._forge.select_actions(provider, info=inputs.policy_info)
 
     def _invoke_operation(
         self,

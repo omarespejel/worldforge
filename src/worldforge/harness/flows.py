@@ -280,7 +280,10 @@ def _steps_for(flow_id: str, summary: JSONDict) -> tuple[HarnessStep, ...]:
             ),
             HarnessStep(
                 "Run benchmark matrix",
-                "Execute mock benchmark samples across predict, reason, generate, and transfer.",
+                (
+                    "Execute mock benchmark samples across predict, reason, generate, "
+                    "transfer, and embed."
+                ),
                 (
                     f"{summary['benchmark_operation_count']} operations, "
                     f"{summary['benchmark_iterations']} iterations each."

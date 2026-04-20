@@ -251,7 +251,7 @@ uv run --extra harness worldforge-harness --flow diagnostics
 | --- | --- |
 | `leworldmodel` | Score-provider planning with LeWorldModel-shaped costs, path selection, execution, persistence, reload, events. |
 | `lerobot` | Policy-plus-score planning with LeRobot-shaped action chunks, translation, ranking, execution, persistence, reload, events. |
-| `diagnostics` | Provider catalog diagnostics and a mock-provider benchmark across predict, reason, generate, transfer. |
+| `diagnostics` | Provider catalog diagnostics and a mock-provider benchmark across predict, reason, generate, transfer, embed. |
 
 Real-checkpoint live smoke (host-provided dependencies and assets):
 

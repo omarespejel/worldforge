@@ -175,8 +175,9 @@ uv run worldforge benchmark --provider mock --iterations 5 --format json
 Success signal:
 
 - suites skip or fail explicitly when a provider does not support the required capability.
-- reports identify provider, operation, pass/fail status, latency, retry counts, and exported
-  artifact format.
+- benchmark reports identify provider, operation, pass/fail status, latency, retry counts, and
+  exported artifact format for direct provider surfaces such as `score`, `policy`, `generate`,
+  `transfer`, and `embed`.
 - benchmark inputs and results are saved by the host when they are used for release or paper
   claims.
 

@@ -217,7 +217,7 @@ print(report.to_markdown())
 from worldforge import ProviderBenchmarkHarness
 
 harness = ProviderBenchmarkHarness(forge=forge)
-report = harness.run(["mock"], operations=["predict", "generate"], iterations=5)
+report = harness.run(["mock"], operations=["predict", "generate", "embed"], iterations=5)
 print(report.to_json())
 ```
 

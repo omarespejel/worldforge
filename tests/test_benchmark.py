@@ -5,10 +5,87 @@ import json
 import httpx
 import pytest
 
-from worldforge import ProviderBenchmarkHarness, ProviderRequestPolicy, WorldForge, WorldForgeError
+from worldforge import (
+    Action,
+    ActionPolicyResult,
+    ActionScoreResult,
+    ProviderBenchmarkHarness,
+    ProviderCapabilities,
+    ProviderEvent,
+    ProviderRequestPolicy,
+    WorldForge,
+    WorldForgeError,
+)
 from worldforge.benchmark import BenchmarkInputs
+from worldforge.models import JSONDict
 from worldforge.providers import CosmosProvider, RunwayProvider
-from worldforge.providers.base import ProviderError
+from worldforge.providers.base import BaseProvider, ProviderError
+
+
+class _ScoreBenchmarkProvider(BaseProvider):
+    def __init__(self) -> None:
+        super().__init__(
+            name="scorebench",
+            capabilities=ProviderCapabilities(score=True),
+            description="Injected score provider for benchmark tests.",
+        )
+        self.calls: list[dict[str, object]] = []
+
+    def score_actions(self, *, info: JSONDict, action_candidates: object) -> ActionScoreResult:
+        self.calls.append({"info": info, "action_candidates": action_candidates})
+        result = ActionScoreResult(
+            provider=self.name,
+            scores=[0.4, 0.1],
+            best_index=1,
+            lower_is_better=True,
+            metadata={"candidate_count": 2},
+        )
+        self._emit_event(
+            ProviderEvent(
+                provider=self.name,
+                operation="score",
+                phase="success",
+                duration_ms=0.1,
+                metadata={"candidate_count": 2},
+            )
+        )
+        return result
+
+
+class _PolicyBenchmarkProvider(BaseProvider):
+    def __init__(self) -> None:
+        super().__init__(
+            name="policybench",
+            capabilities=ProviderCapabilities(policy=True),
+            description="Injected policy provider for benchmark tests.",
+        )
+        self.calls: list[JSONDict] = []
+
+    def select_actions(self, *, info: JSONDict) -> ActionPolicyResult:
+        self.calls.append(info)
+        candidate_plans = [
+            [Action.move_to(0.1, 0.5, 0.0)],
+            [Action.move_to(0.3, 0.5, 0.0)],
+        ]
+        result = ActionPolicyResult(
+            provider=self.name,
+            actions=list(candidate_plans[0]),
+            raw_actions={"candidate_count": len(candidate_plans)},
+            action_horizon=1,
+            embodiment_tag="benchmark",
+            metadata={"candidate_count": len(candidate_plans)},
+            action_candidates=candidate_plans,
+        )
+        self._emit_event(
+            ProviderEvent(
+                provider=self.name,
+                operation="policy",
+                phase="success",
+                duration_ms=0.1,
+                metadata={"candidate_count": len(candidate_plans)},
+            )
+        )
+        return result
 
 
 def test_provider_benchmark_harness_reports_mock_operations(tmp_path) -> None:
@@ -17,12 +94,12 @@ def test_provider_benchmark_harness_reports_mock_operations(tmp_path) -> None:
 
     report = harness.run(
         "mock",
-        operations=["predict", "reason", "generate", "transfer"],
+        operations=["predict", "reason", "generate", "transfer", "embed"],
         iterations=2,
         concurrency=2,
     )
 
-    assert len(report.results) == 4
+    assert len(report.results) == 5
     assert json.loads(report.to_json())["results"][0]["provider"] == "mock"
     assert report.to_csv().startswith("provider,operation,iterations")
     assert report.to_markdown().startswith("# Benchmark Report")
@@ -34,6 +111,97 @@ def test_provider_benchmark_harness_reports_mock_operations(tmp_path) -> None:
         assert result.average_latency_ms is not None
         assert result.operation_metrics["provider"] == "mock"
         assert result.operation_metrics["events"]
+
+
+def test_provider_benchmark_harness_reports_score_and_policy_operations(tmp_path) -> None:
+    forge = WorldForge(state_dir=tmp_path, auto_register_remote=False)
+    score_provider = _ScoreBenchmarkProvider()
+    policy_provider = _PolicyBenchmarkProvider()
+    forge.register_provider(score_provider)
+    forge.register_provider(policy_provider)
+    harness = ProviderBenchmarkHarness(forge=forge)
+
+    report = harness.run(["scorebench", "policybench"], iterations=2)
+
+    assert [(result.provider, result.operation) for result in report.results] == [
+        ("scorebench", "score"),
+        ("policybench", "policy"),
+    ]
+    for result in report.results:
+        assert result.success_count == 2
+        assert result.error_count == 0
+        assert result.operation_metrics["events"][0]["operation"] == result.operation
+
+    assert score_provider.calls[0]["info"]["metadata"]["mode"] == "benchmark-score"
+    assert policy_provider.calls[0]["observation"]["language"] == "move the cube toward the target"
+
+
+class _TensorLikeCandidates:
+    shape = (1, 2, 2, 3)
+
+
+def test_benchmark_inputs_preview_provider_native_score_candidates() -> None:
+    inputs = BenchmarkInputs(score_action_candidates=_TensorLikeCandidates())
+
+    payload = inputs.to_dict()
+
+    assert payload["score_action_candidates"] == {
+        "type": "test_benchmark._TensorLikeCandidates",
+        "json_serializable": False,
+        "shape": [1, 2, 2, 3],
+    }
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"embedding_text": ""}, "embedding_text must be a non-empty string"),
+        ({"score_info": {}}, "score_info must be a non-empty JSON object"),
+        ({"score_action_candidates": None}, "score_action_candidates must not be None"),
+        ({"policy_info": []}, "policy_info must be a non-empty JSON object"),
+    ],
+)
+def test_benchmark_inputs_validate_planning_surface_inputs(
+    kwargs: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(WorldForgeError, match=message):
+        BenchmarkInputs(**kwargs)
+
+
+def test_provider_benchmark_harness_uses_custom_score_and_policy_inputs(tmp_path) -> None:
+    forge = WorldForge(state_dir=tmp_path, auto_register_remote=False)
+    score_provider = _ScoreBenchmarkProvider()
+    policy_provider = _PolicyBenchmarkProvider()
+    forge.register_provider(score_provider)
+    forge.register_provider(policy_provider)
+    inputs = BenchmarkInputs(
+        score_info={
+            "pixels": [[[[1.0]]]],
+            "goal": [[[0.1, 0.2, 0.3]]],
+            "action": [[[0.0, 0.0, 0.0]]],
+            "metadata": {"fixture": "custom"},
+        },
+        score_action_candidates=[[[[0.1, 0.2, 0.3]], [[0.4, 0.5, 0.6]]]],
+        policy_info={
+            "observation": {"state": {"object": [1.0, 2.0, 3.0]}, "language": "custom"},
+            "mode": "select_action",
+        },
+    )
+
+    ProviderBenchmarkHarness(forge=forge).run(
+        ["scorebench", "policybench"],
+        iterations=1,
+        inputs=inputs,
+    )
+
+    assert score_provider.calls == [
+        {
+            "info": inputs.score_info,
+            "action_candidates": inputs.score_action_candidates,
+        }
+    ]
+    assert policy_provider.calls == [inputs.policy_info]
 
 
 def test_provider_benchmark_harness_captures_retry_metrics(monkeypatch, tmp_path) -> None:

@@ -95,7 +95,7 @@ options:
 """,
     ("benchmark", "--help"): """\
 usage: worldforge benchmark [-h] [--provider PROVIDERS]
-                            [--operation {predict,reason,generate,transfer}]
+                            [--operation {predict,reason,generate,transfer,embed,score,policy}]
                             [--iterations ITERATIONS]
                             [--concurrency CONCURRENCY]
                             [--format {markdown,json,csv}]
@@ -104,7 +104,7 @@ usage: worldforge benchmark [-h] [--provider PROVIDERS]
 options:
   -h, --help            show this help message and exit
   --provider PROVIDERS  Provider name to benchmark. Can be repeated.
-  --operation {predict,reason,generate,transfer}
+  --operation {predict,reason,generate,transfer,embed,score,policy}
                         Operation to benchmark. Can be repeated.
   --iterations ITERATIONS
                         Iterations per operation.

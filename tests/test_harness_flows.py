@@ -45,12 +45,13 @@ def test_harness_runs_diagnostics_flow(tmp_path) -> None:
     assert len(run.steps) == 6
     assert len(run.metrics) == 6
     assert run.summary["registered_providers"] == ["mock"]
-    assert run.summary["benchmark_operation_count"] == 4
+    assert run.summary["benchmark_operation_count"] == 5
     assert run.summary["mock_supported_operations"] == [
         "predict",
         "reason",
         "generate",
         "transfer",
+        "embed",
     ]
-    assert run.summary["benchmark_event_count"] >= 8
-    assert "benchmark_operations: predict, reason, generate, transfer" in run.transcript
+    assert run.summary["benchmark_event_count"] >= 10
+    assert "benchmark_operations: predict, reason, generate, transfer, embed" in run.transcript
