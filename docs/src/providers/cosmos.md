@@ -122,3 +122,8 @@ Pass a custom `request_policy=` when the host needs different timeout or retry b
 - `tests/test_remote_video_providers.py` covers Cosmos health parsing, generation success,
   malformed health payloads, malformed generation payloads, invalid seeds, and size validation.
 - `tests/fixtures/providers/cosmos_*.json` stores the response fixtures used by parser tests.
+
+## Primary References
+
+- [NVIDIA Cosmos documentation](https://docs.nvidia.com/cosmos/latest/)
+- [NVIDIA Cosmos Predict2.5 code](https://github.com/nvidia-cosmos/cosmos-predict2.5)

@@ -1,16 +1,13 @@
-"""End-to-end LeRobot provider-surface policy+score-planning demo.
+"""LeRobot provider policy-plus-score planning demo.
 
-This demo uses the real :class:`LeRobotPolicyProvider` with an injected
-deterministic policy. It runs in a clean WorldForge checkout without downloading LeRobot
-checkpoints, torch, or HF weights. It exercises the same provider, policy
-planning, score planning, execution, and persistence path that a real
-Hugging Face LeRobot checkpoint would use, but it does not load upstream
-LeRobot neural weights.
+The demo injects a deterministic policy into :class:`LeRobotPolicyProvider`. It
+validates the provider, policy selection, score ranking, execution, persistence,
+and reload path without requiring LeRobot, torch, or checkpoint weights.
 
 What the demo does:
 
-1. Registers the real :class:`LeRobotPolicyProvider` alongside the local ``mock``
-   execution provider and a tiny deterministic score provider.
+1. Registers :class:`LeRobotPolicyProvider` alongside the local ``mock``
+   execution provider and a deterministic score provider.
 2. Creates a small world with one ``blue_cube`` and an ``object_at`` goal.
 3. Asks the LeRobot provider to propose three candidate two-step action chunks
    via ``select_actions(...)``.
@@ -105,7 +102,7 @@ class DemoDistanceScoreProvider(BaseProvider):
             name="demo-distance-score",
             capabilities=ProviderCapabilities(predict=False, score=True),
             is_local=True,
-            description="Deterministic distance-to-goal score provider for the LeRobot E2E demo.",
+            description="Deterministic distance-to-goal score provider for the LeRobot demo.",
             implementation_status="test",
             deterministic=True,
             requires_credentials=False,
@@ -193,7 +190,7 @@ def _build_translator(cube_id: str) -> Any:
 
 
 def run_demo(*, state_dir: Path | None = None, emit: bool = True) -> JSONDict:
-    """Run the full LeRobot E2E demo and return a JSON-serializable summary."""
+    """Run the LeRobot demo and return a JSON-serializable summary."""
 
     resolved_state_dir = state_dir or Path(tempfile.mkdtemp(prefix="worldforge-lerobot-demo-"))
     events: list[ProviderEvent] = []
@@ -226,7 +223,7 @@ def run_demo(*, state_dir: Path | None = None, emit: bool = True) -> JSONDict:
         return policy
 
     provider = LeRobotPolicyProvider(
-        policy_path="demo/lerobot-aloha-fake",
+        policy_path="demo/lerobot-aloha-deterministic",
         policy_type="act",
         embodiment_tag="aloha",
         device="cpu",
@@ -289,12 +286,12 @@ def run_demo(*, state_dir: Path | None = None, emit: bool = True) -> JSONDict:
 
 
 def _print_summary(summary: JSONDict) -> None:
-    print("WorldForge LeRobot E2E demo")
-    print("=" * 29)
-    print("Runtime mode: injected deterministic LeRobot-shaped policy")
-    print("Uses real LeRobotPolicyProvider: yes")
-    print("Uses upstream LeRobot checkpoint inference: no")
-    print("Planning path: WorldForge select_actions -> World.plan(policy+score) -> execute_plan")
+    print("WorldForge LeRobot provider demo")
+    print("=" * 32)
+    print("Provider: LeRobotPolicyProvider")
+    print("Runtime: injected deterministic policy")
+    print("Checkpoint inference: not used")
+    print("Planning: select_actions -> World.plan(policy+score) -> execute_plan")
     print(f"State directory: {summary['state_dir']}")
     print(f"Registered providers: {', '.join(summary['providers'])}")
     print(f"LeRobot health: {summary['lerobot_health']['details']}")

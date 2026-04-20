@@ -149,3 +149,8 @@ Pass a custom `request_policy=` when the host needs different timeout or retry b
   failed tasks, partial outputs, expired artifacts, content-type rejection, transfer behavior, and
   input validation.
 - `tests/fixtures/providers/runway_*.json` stores task and organization response fixtures.
+
+## Primary References
+
+- [Runway API reference](https://docs.dev.runwayml.com/api)
+- [Runway API input parameters](https://docs.dev.runwayml.com/assets/inputs/)

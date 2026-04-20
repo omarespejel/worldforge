@@ -1,4 +1,4 @@
-"""Cross-provider comparison example for the pure-Python WorldForge package."""
+"""Compare deterministic provider outputs for the same action."""
 
 from worldforge import Action, BBox, Position, SceneObject, WorldForge
 from worldforge.providers import MockProvider

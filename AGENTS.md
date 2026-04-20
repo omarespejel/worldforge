@@ -31,7 +31,7 @@ evaluation harnesses, and testable prototypes.
 - `src/worldforge/providers/lerobot.py`: host-owned Hugging Face LeRobot `PreTrainedPolicy`
   adapter for selecting embodied action chunks through the `policy` capability.
 - `src/worldforge/providers/jepa_wms.py`: candidate contract scaffold for
-  `facebookresearch/jepa-wms` score-provider work; it supports injected fake/runtime scoring and a
+  `facebookresearch/jepa-wms` score-provider work; it supports injected test/runtime scoring and a
   host-owned torch-hub runtime but is intentionally not exported or registered.
 - `src/worldforge/providers/remote.py`: credential-gated scaffold providers for `jepa` and
   `genie`; these intentionally use deterministic mock behavior after credential checks.
@@ -170,7 +170,7 @@ rm -f "$tmp_req"
   arrays shaped for the configured checkpoint. WorldForge validates the adapter boundary but does
   not infer task-specific image transforms.
 - Use `uv run worldforge-demo-leworldmodel` when you need a working LeWorldModel story in a clean
-  checkout. It deliberately injects a tiny cost runtime instead of requiring optional
+  checkout. It deliberately injects a deterministic cost runtime instead of requiring optional
   `stable_worldmodel` or `torch` dependencies, so it proves the WorldForge adapter/planner path
   rather than real LeWorldModel neural inference.
 - GR00T returns embodiment-specific raw action arrays. WorldForge preserves those raw actions but

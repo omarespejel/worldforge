@@ -1,11 +1,8 @@
-"""End-to-end LeWorldModel provider-surface score-planning demo.
+"""LeWorldModel provider score-planning demo.
 
-This demo uses the real ``LeWorldModelProvider`` interface with an injected tiny
-cost-model runtime. It therefore works in a clean WorldForge checkout without
-downloading LeWorldModel checkpoints. It exercises the same WorldForge provider,
-score-planning, execution, and persistence path used by a host-owned real
-checkpoint, but it does not run upstream LeWorldModel neural checkpoint
-inference.
+The demo injects a deterministic cost runtime into ``LeWorldModelProvider``. It
+validates the provider, score-planning, execution, persistence, and reload path
+without requiring upstream checkpoint inference.
 """
 
 from __future__ import annotations
@@ -81,7 +78,7 @@ class DemoTensorModule:
 
 
 class DemoLeWorldModelRuntime:
-    """Small deterministic runtime with LeWorldModel's ``get_cost`` shape."""
+    """Deterministic runtime with LeWorldModel's ``get_cost`` shape."""
 
     def __init__(self) -> None:
         self.eval_called = False
@@ -253,12 +250,12 @@ def run_demo(
 
 
 def _print_summary(summary: JSONDict) -> None:
-    print("WorldForge LeWorldModel E2E demo")
-    print("=" * 34)
-    print("Runtime mode: injected deterministic cost model")
-    print("Uses real LeWorldModelProvider: yes")
-    print("Uses upstream LeWorldModel checkpoint inference: no")
-    print("Planning path: WorldForge score_actions -> World.plan(score) -> execute_plan")
+    print("WorldForge LeWorldModel provider demo")
+    print("=" * 37)
+    print("Provider: LeWorldModelProvider")
+    print("Runtime: injected deterministic cost model")
+    print("Checkpoint inference: not used")
+    print("Planning: score_actions -> World.plan(score) -> execute_plan")
     print(f"State directory: {summary['state_dir']}")
     print(f"Registered providers: {', '.join(summary['providers'])}")
     print(f"LeWorldModel health: {summary['leworldmodel_health']['details']}")

@@ -165,3 +165,9 @@ uv run --python 3.10 \
 - `tests/test_leworldmodel_e2e_demo.py` covers the checkout-safe end-to-end demo.
 - `tests/test_leworldmodel_smoke_script.py` and `tests/test_leworldmodel_uv_tasks.py` cover smoke
   command parsing and checkpoint-builder behavior without requiring a real checkpoint.
+
+## Primary References
+
+- [LeWorldModel paper](https://arxiv.org/abs/2603.19312)
+- [LeWorldModel project page](https://le-wm.github.io/)
+- [LeWorldModel code](https://github.com/lucas-maes/le-wm)

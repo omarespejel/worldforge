@@ -1,4 +1,4 @@
-"""Deterministic local provider used for development and tests."""
+"""Deterministic local provider used for tests and examples."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ def _frame_bytes(seed: str, index: int) -> bytes:
 
 
 class MockProvider(BaseProvider):
-    """Deterministic provider for offline development, examples, and tests."""
+    """Deterministic provider for examples, tests, and contract checks."""
 
     def __init__(
         self,
@@ -48,16 +48,14 @@ class MockProvider(BaseProvider):
                 transfer=True,
             ),
             is_local=True,
-            description=(
-                "Deterministic local provider for examples, tests, and framework development."
-            ),
+            description=("Deterministic local provider for examples, tests, and contract checks."),
             package="worldforge",
             implementation_status="stable",
             deterministic=True,
             supported_modalities=["world_state", "text", "video"],
             artifact_types=["prediction", "video", "reasoning", "embedding", "transfer"],
             notes=[
-                "Reference implementation for local development and adapter contract tests.",
+                "Reference implementation for adapter contract tests.",
             ],
             default_model="mock-deterministic-v1",
             supported_models=["mock-deterministic-v1"],

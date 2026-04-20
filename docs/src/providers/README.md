@@ -150,5 +150,6 @@ Before adding or promoting a provider, document:
 - retry, timeout, polling, and artifact behavior
 - failure modes
 - fixture coverage and smoke path
+- primary upstream technical references: papers, repositories, or official API docs only
 
 See [Provider Authoring Guide](../provider-authoring-guide.md) for the implementation checklist.

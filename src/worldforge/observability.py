@@ -1,4 +1,4 @@
-"""Ready-to-use provider telemetry sinks built on ProviderEvent."""
+"""ProviderEvent sinks for logging, recording, and aggregate metrics."""
 
 from __future__ import annotations
 

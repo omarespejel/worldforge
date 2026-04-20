@@ -274,7 +274,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--server-host",
         default=os.environ.get("GROOT_POLICY_BIND_HOST", DEFAULT_HOST),
-        help="Bind host passed to the launched GR00T server.",
+        help="Bind host passed to the started GR00T server.",
     )
     parser.add_argument(
         "--startup-timeout-seconds",

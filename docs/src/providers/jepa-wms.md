@@ -48,7 +48,7 @@ from worldforge.providers.jepa_wms import JEPAWMSProvider
 
 provider = JEPAWMSProvider(
     model_path="/models/jepa-wms/checkpoint.pt",
-    runtime=fake_or_host_runtime,
+    runtime=test_or_host_runtime,
 )
 ```
 
@@ -177,3 +177,8 @@ Do not present this as public jepa-wms support until the promotion rule is satis
   malformed inputs, runtime error payloads, non-finite scores, score-count mismatches, provider
   contract checks, score planning, and provider events.
 - `tests/fixtures/providers/jepa_wms_*.json` stores the contract fixtures.
+
+## Primary References
+
+- [facebookresearch/jepa-wms](https://github.com/facebookresearch/jepa-wms)
+- [V-JEPA 2 paper](https://arxiv.org/abs/2506.09985)

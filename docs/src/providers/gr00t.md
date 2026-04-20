@@ -47,7 +47,7 @@ dependencies to WorldForge's base install.
 
 ## Runtime Contract
 
-Direct construction with a fake or host-owned client:
+Direct construction with an injected test client or host-owned client:
 
 ```python
 from worldforge.providers import GrootPolicyClientProvider
@@ -192,8 +192,12 @@ dependencies. On unsupported hosts, connect WorldForge to an already running rem
 
 ## Tests
 
-- `tests/test_gr00t_provider.py` covers fake-client contract checks, event emission, malformed
+- `tests/test_gr00t_provider.py` covers injected-client contract checks, event emission, malformed
   inputs, missing translator, health failures, policy-only planning, and policy-plus-score
   planning.
 - `tests/test_gr00t_smoke_script.py` covers smoke-script input loading and server preflight
   validation without requiring Isaac GR00T or a GPU.
+
+## Primary References
+
+- [NVIDIA Isaac GR00T code](https://github.com/NVIDIA/Isaac-GR00T)

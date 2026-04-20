@@ -168,23 +168,21 @@ WorldForge's `jepa` provider is a scaffold. A real JEPA provider should follow t
 LeWorldModel pattern: do not advertise generation or reasoning unless implemented; expose score,
 latent rollout, or prediction capabilities explicitly; document tensor shapes and task contracts.
 WorldForge also carries a [`jepa-wms` provider candidate scaffold](./providers/jepa-wms.md) with
-fake-runtime and host-owned torch-hub contract tests for future work against
+injected-runtime and host-owned torch-hub contract tests for future work against
 `facebookresearch/jepa-wms`; it is intentionally not exported or registered.
 
 ### Dreamer-style Model-Based RL
 
-Dreamer-style agents learn a latent dynamics model from observations and improve behavior by
-imagining future scenarios. This lineage fits WorldForge conceptually because it treats the world
-model as a control component, not just an artifact generator. A Dreamer provider could expose
-`predict`, `score`, or a future policy-selection capability depending on how much of the agent loop
-is exported.
+Dreamer-style agents learn a latent dynamics model from observations and improve behavior through
+imagined rollouts. This lineage fits WorldForge conceptually because it treats the world model as a
+control component, not just an artifact generator. A Dreamer provider could expose `predict`,
+`score`, or policy selection depending on which part of the agent loop is exported.
 
 ### Generative Video Simulators
 
 Sora-style and Genie-style systems use video generation to simulate physical or digital worlds.
-OpenAI explicitly frames Sora as a step toward simulators of physical and digital worlds while also
-documenting simulator limitations. Google DeepMind describes Genie 3 as a real-time interactive
-world model that generates controllable worlds from text.
+Their relevant technical contract is frame or world generation from prompt, state, frame, or action
+context. That is a different contract from state transition prediction or candidate-action scoring.
 
 These systems are valuable, but they are not the same interface as LeWorldModel:
 
@@ -196,9 +194,9 @@ latent planner:
   observation + goal + action candidates -> costs or future latent states
 ```
 
-WorldForge can use video models for data synthesis, transfer, evaluation, red teaming, and
-eventual predictive planning. It should not treat "generated plausible video" as proof that a
-provider exposes controllable planning semantics.
+WorldForge can use video models for synthetic observations, transfer, and evaluation. It should
+not treat generated plausible video as proof that a provider exposes controllable planning
+semantics.
 
 ### Spatial Intelligence and 3D World Models
 
@@ -342,21 +340,23 @@ into a new adapter PR.
 7. Keep host-owned concerns host-owned: secrets, locks, databases, long-running orchestration,
    production metrics, and real robot safety interlocks.
 
-## Sources
+## Primary References
 
-Primary sources used to shape this taxonomy:
+Primary technical references used to shape this taxonomy:
 
 - [Yann LeCun, A Path Towards Autonomous Machine Intelligence](https://openreview.net/pdf/315d43ba26f55357a84cec9a7ed15a6610094f79.pdf)
 - [LeWorldModel project page](https://le-wm.github.io/)
 - [LeWorldModel paper](https://arxiv.org/abs/2603.19312)
 - [LeWorldModel code](https://github.com/lucas-maes/le-wm)
 - [V-JEPA 2 paper](https://arxiv.org/abs/2506.09985)
-- [Meta announcement for V-JEPA 2](https://about.fb.com/news/2025/06/our-new-model-helps-ai-think-before-it-acts/)
 - [facebookresearch/jepa-wms](https://github.com/facebookresearch/jepa-wms)
 - [Ha and Schmidhuber, World Models](https://arxiv.org/abs/1803.10122)
-- [Dreamer introduction](https://research.google/blog/introducing-dreamer-scalable-reinforcement-learning-using-world-models/)
 - [DreamerV3 paper](https://arxiv.org/abs/2301.04104)
 - [OpenAI, Video generation models as world simulators](https://openai.com/index/video-generation-models-as-world-simulators/)
 - [Google DeepMind Genie 3](https://deepmind.google/models/genie/)
+- [NVIDIA Cosmos documentation](https://docs.nvidia.com/cosmos/latest/)
+- [NVIDIA Cosmos Predict2.5 code](https://github.com/nvidia-cosmos/cosmos-predict2.5)
+- [Hugging Face LeRobot code](https://github.com/huggingface/lerobot)
+- [Hugging Face LeRobot policy documentation](https://huggingface.co/docs/lerobot/bring_your_own_policies)
 - [NVIDIA Isaac GR00T](https://github.com/NVIDIA/Isaac-GR00T)
 - [World Labs Marble documentation](https://docs.worldlabs.ai/)

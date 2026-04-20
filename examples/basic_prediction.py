@@ -1,4 +1,6 @@
-"""Basic prediction example for WorldForge."""
+"""Minimal prediction, planning, and evaluation example."""
+
+import json
 
 from worldforge import Action, BBox, Position, SceneObject, WorldForge
 
@@ -16,10 +18,26 @@ def main() -> None:
     )
 
     prediction = world.predict(Action.move_to(0.3, 0.8, 0.0), steps=2)
-    print("prediction:", prediction.provider, prediction.physics_score)
-
     plan = world.plan(goal="move the mug to the right")
-    print("plan:", plan.action_count, plan.success_probability)
+
+    print(
+        json.dumps(
+            {
+                "prediction": {
+                    "provider": prediction.provider,
+                    "physics_score": prediction.physics_score,
+                    "confidence": prediction.confidence,
+                },
+                "plan": {
+                    "provider": plan.provider,
+                    "actions": plan.action_count,
+                    "success_probability": plan.success_probability,
+                },
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
 
     report = world.evaluate("physics")
     print(report.to_markdown())

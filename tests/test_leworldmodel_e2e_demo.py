@@ -53,8 +53,8 @@ def test_leworldmodel_e2e_demo_prints_human_summary(
     output = capsys.readouterr().out
 
     assert summary["selected_candidate_index"] == 1
-    assert "WorldForge LeWorldModel E2E demo" in output
-    assert "Uses upstream LeWorldModel checkpoint inference: no" in output
+    assert "WorldForge LeWorldModel provider demo" in output
+    assert "Checkpoint inference: not used" in output
     assert "candidate 1: 0.0275 <- selected" in output
 
 

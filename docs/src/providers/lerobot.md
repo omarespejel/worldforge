@@ -47,7 +47,7 @@ runtime dependencies to WorldForge's base install.
 
 ## Runtime Contract
 
-Direct construction with a fake or host-owned policy:
+Direct construction with an injected test policy or host-owned policy:
 
 ```python
 from worldforge.providers import LeRobotPolicyProvider
@@ -202,9 +202,14 @@ PyTorch tensors, or host preprocessing.
 
 ## Tests
 
-- `tests/test_lerobot_provider.py` covers fake-policy contract checks, event emission, malformed
+- `tests/test_lerobot_provider.py` covers injected-policy contract checks, event emission, malformed
   inputs, missing translator, unconfigured health, env configuration, lazy import,
   select/predict_chunk modes, reset delegation, auto-registration, and policy-plus-score planning.
 - `tests/test_lerobot_e2e_demo.py` covers the full checkout-safe demo.
 - `tests/test_lerobot_smoke_script.py` covers smoke-script input loading, callable resolution, and
   validation without requiring LeRobot or a GPU.
+
+## Primary References
+
+- [Hugging Face LeRobot code](https://github.com/huggingface/lerobot)
+- [LeRobot policy documentation](https://huggingface.co/docs/lerobot/bring_your_own_policies)

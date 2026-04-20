@@ -984,7 +984,7 @@ class ProviderRequestPolicy:
 
 @dataclass(slots=True)
 class GenerationOptions:
-    """Typed generation options for remote video and world-model providers."""
+    """Typed options for provider media generation requests."""
 
     image: str | None = None
     video: str | None = None
@@ -1032,7 +1032,7 @@ class GenerationOptions:
 
 @dataclass(slots=True)
 class ProviderInfo:
-    """Public provider metadata."""
+    """Provider metadata returned by registry APIs."""
 
     name: str
     capabilities: ProviderCapabilities
@@ -1050,7 +1050,7 @@ class ProviderInfo:
 
 @dataclass(slots=True)
 class ProviderProfile:
-    """Richer provider metadata for routing, docs, and diagnostics."""
+    """Provider profile metadata for routing and diagnostics."""
 
     name: str
     capabilities: ProviderCapabilities

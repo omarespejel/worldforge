@@ -624,7 +624,7 @@ def main(argv: list[str] | None = None) -> int:
     print("\nNext steps:")
     print("- implement the TODO methods before advertising capabilities")
     print("- add the provider to src/worldforge/providers/__init__.py when it is ready")
-    print("- register it in WorldForge._known_providers only after the adapter is tested")
+    print("- register it in src/worldforge/providers/catalog.py only after the adapter is tested")
     print("- link the docs stub from docs/src/providers/README.md")
     return 0
 
