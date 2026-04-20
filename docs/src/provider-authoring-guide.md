@@ -122,6 +122,8 @@ Checklist:
 ## Step 2: Choose Capabilities Narrowly
 
 WorldForge capabilities are not badges. They are callable contracts.
+`ProviderCapabilities()` starts with every flag set to `False`; adapters must opt into each
+supported operation explicitly.
 
 ```text
 capabilities.predict  -> predict(world_state, action, steps)

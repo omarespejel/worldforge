@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Iterable, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
@@ -48,6 +49,7 @@ if TYPE_CHECKING:
     from worldforge.evaluation import EvaluationReport, EvaluationResult
 
 SCHEMA_VERSION = 1
+_STORAGE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 
 def _clone_state(state: JSONDict) -> JSONDict:
@@ -56,6 +58,26 @@ def _clone_state(state: JSONDict) -> JSONDict:
 
 def _normalize_provider_name(provider: str | None, fallback: str) -> str:
     return provider or fallback
+
+
+def _require_non_empty_text(value: object, *, name: str, message: str | None = None) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise WorldForgeError(message or f"{name} must be a non-empty string.")
+    return value.strip()
+
+
+def _validate_storage_id(value: object, *, name: str) -> str:
+    identifier = _require_non_empty_text(value, name=name)
+    if (
+        identifier in {".", ".."}
+        or "/" in identifier
+        or "\\" in identifier
+        or _STORAGE_ID_PATTERN.fullmatch(identifier) is None
+    ):
+        raise WorldForgeError(
+            f"{name} must be a file-safe identifier using only letters, numbers, '.', '_', or '-'."
+        )
+    return identifier
 
 
 def _is_sequence_of_actions(value: object) -> bool:
@@ -91,7 +113,7 @@ def _action_plans_to_score_payload(
 
 
 def _world_file(state_dir: Path, world_id: str) -> Path:
-    return state_dir / f"{world_id}.json"
+    return state_dir / f"{_validate_storage_id(world_id, name='world_id')}.json"
 
 
 def _offset_position(base: Position, offset: Position) -> Position:
@@ -106,6 +128,12 @@ def _validate_world_state_payload(state: JSONDict, *, context: str) -> None:
     if missing_keys:
         joined = ", ".join(sorted(missing_keys))
         raise WorldStateError(f"{context} is missing required keys: {joined}.")
+    try:
+        _validate_storage_id(state["id"], name=f"{context} field 'id'")
+        _require_non_empty_text(state["name"], name=f"{context} field 'name'")
+        _require_non_empty_text(state["provider"], name=f"{context} field 'provider'")
+    except WorldForgeError as exc:
+        raise WorldStateError(str(exc)) from exc
 
     scene = state.get("scene", {})
     if not isinstance(scene, dict):
@@ -304,9 +332,13 @@ class World:
         metadata: JSONDict | None = None,
     ) -> None:
         self._forge = forge or WorldForge()
-        self.id = world_id or generate_id("world")
-        self.name = name
-        self.provider = provider
+        self.id = _validate_storage_id(world_id or generate_id("world"), name="world_id")
+        self.name = _require_non_empty_text(
+            name,
+            name="World name",
+            message="World name must not be empty.",
+        )
+        self.provider = _require_non_empty_text(provider, name="World provider")
         self.description = description
         self.step = 0
         self.metadata: JSONDict = metadata.copy() if metadata else {}
@@ -1004,10 +1036,9 @@ class WorldForge:
         )
 
     def create_world(self, name: str, provider: str = "mock", *, description: str = "") -> World:
-        if not name.strip():
-            raise WorldForgeError("World name must not be empty.")
-        self._require_provider(provider)
-        return World(name=name, provider=provider, forge=self, description=description)
+        selected_provider = _require_non_empty_text(provider, name="Provider name")
+        self._require_provider(selected_provider)
+        return World(name=name, provider=selected_provider, forge=self, description=description)
 
     def create_world_from_prompt(
         self,
@@ -1016,6 +1047,7 @@ class WorldForge:
         provider: str = "mock",
         name: str | None = None,
     ) -> World:
+        prompt = _require_non_empty_text(prompt, name="Prompt")
         world = self.create_world(name or "prompt-world", provider, description=prompt)
         prompt_lower = prompt.lower()
         if "kitchen" in prompt_lower:
@@ -1090,7 +1122,10 @@ class WorldForge:
             raise WorldStateError(f"Import payload is not valid JSON: {exc}") from exc
         if not isinstance(data, dict):
             raise WorldStateError("Import payload must decode to a JSON object.")
-        state = dict(data["state"]) if "state" in data else dict(data)
+        try:
+            state = dict(data["state"]) if "state" in data else dict(data)
+        except (TypeError, ValueError) as exc:
+            raise WorldStateError("Import payload state must be a JSON object.") from exc
         if new_id:
             state["id"] = generate_id("world")
         if name:

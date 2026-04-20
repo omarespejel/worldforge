@@ -128,6 +128,8 @@ rm -f "$tmp_req"
 - Public inputs fail explicitly with `WorldForgeError`; malformed persisted/provider state fails
   with `WorldStateError`; provider/runtime integration failures fail with `ProviderError`.
 - Provider capabilities must only advertise operations that are implemented end to end.
+  `ProviderCapabilities()` intentionally advertises no operations by default; opt into each
+  supported capability explicitly.
 - `leworldmodel` exposes `score`, not `predict`, `generate`, or `reason`; do not fake those
   capabilities around a cost model.
 - `gr00t` exposes `policy`, not `predict`, `score`, or `generate`; do not call an embodied policy
@@ -173,6 +175,8 @@ rm -f "$tmp_req"
   user-level operations; retry events increment both `request_count` and `retry_count`.
 - World persistence is local JSON under `.worldforge/worlds` by default and is not a concurrent
   multi-writer store.
+- World IDs are file stems for local JSON persistence. Reject path separators, traversal-shaped
+  values, and other non-file-safe IDs before loading, importing, or saving world state.
 - Persistence is host-owned beyond local JSON import/export; do not add a lock file, SQLite store,
   or service adapter without an explicit design.
 - Built-in evaluation suites are deterministic contract harnesses, not claims of physical or

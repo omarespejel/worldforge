@@ -48,6 +48,9 @@ releases may still include breaking changes when the public API needs to tighten
 
 ### Changed
 
+- Changed `ProviderCapabilities()` to advertise no operations by default. Providers must opt into
+  every capability explicitly, and unsupported `predict()` calls now fail with `ProviderError`
+  instead of `NotImplementedError`.
 - Centralized in-repo provider discovery in `src/worldforge/providers/catalog.py`, including the
   provider factory list and explicit always-register policy for `mock`. `WorldForge` now uses the
   catalog instead of relying on constructor ordering in `_known_providers()`.
@@ -72,6 +75,11 @@ releases may still include breaking changes when the public API needs to tighten
 
 ### Fixed
 
+- Rejected non-file-safe world IDs before local persistence reads and writes, preventing traversal
+  through imported or caller-supplied world identifiers.
+- Rejected stringly-typed booleans for scene object graspability, provider capabilities, and the
+  JEPA-WMS `actions_are_normalized` option instead of silently coercing values such as `"false"`
+  to `True`.
 - Tracked `.env.example` in the repository by adding an explicit `!.env.example` exception
   to `.gitignore`; the general `.env.*` glob was silently excluding the onboarding template.
 - Rejected non-finite public numeric inputs for positions, rotations, request policies, provider
@@ -91,6 +99,8 @@ releases may still include breaking changes when the public API needs to tighten
 
 ### Security
 
+- Hardened local JSON persistence against path traversal by validating world IDs before resolving
+  storage paths.
 - Raised the development dependency floor to `pytest>=9.0.3` and refreshed `uv.lock` to remove
   the locked `pytest 9.0.2` vulnerability reported as `CVE-2025-71176`.
 

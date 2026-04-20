@@ -185,6 +185,8 @@ adapter.
   fidelity, media quality, or real-world safety.
 - Scaffold adapters are reservations for future work. They must not be presented as real JEPA,
   Genie, or jepa-wms integrations.
+- World IDs are local storage identifiers. They may contain letters, numbers, `.`, `_`, and `-`;
+  path separators and traversal-shaped IDs are rejected before any persistence read or write.
 
 ## Demos And Optional Smokes
 
@@ -282,6 +284,33 @@ WorldForge has a narrow role in the physical-AI stack:
    commands, and contract tests for adapter development.
 4. Expand world, observation, scene, and evaluation contracts only when the library can validate
    them clearly.
+
+## Status And Roadmap
+
+As of April 20, 2026, WorldForge is a pre-1.0 beta library. It is suitable for local provider
+adapter development, deterministic planning/evaluation experiments, checkout-safe demos, and
+contract testing. It is not yet suitable as a production robot controller, safety case, hosted
+service backend, or durable multi-writer state store.
+
+Known limitations:
+
+- JEPA and Genie are credential-gated scaffold adapters backed by deterministic mock behavior.
+- `jepa-wms` remains a direct-construction candidate and is not exported or auto-registered.
+- Local JSON persistence is single-writer only and has no locking, migrations, backup, or recovery
+  policy beyond host-owned export/import.
+- Built-in evaluation scores are deterministic contract signals, not physical-fidelity,
+  media-quality, or real-world safety claims.
+- Optional model runtimes, checkpoints, robot dependencies, trace export, dashboards, and
+  production telemetry remain host-owned.
+
+Next milestones:
+
+1. **Provider contract hardening**: raise parser/error coverage for every remote adapter failure
+   mode, keep provider docs generated from the catalog, and preserve truthful capability metadata.
+2. **Evaluation credibility**: separate contract tests from empirical benchmarks, record benchmark
+   inputs/outputs as reproducible artifacts, and document what each score can and cannot prove.
+3. **Persistence adapter decision**: either keep local JSON explicitly development-only or design a
+   separate host-owned persistence adapter contract with locking, migrations, and recovery docs.
 
 ## Links
 

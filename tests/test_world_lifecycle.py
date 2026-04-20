@@ -135,6 +135,23 @@ def test_world_import_and_load_reject_malformed_state(tmp_path) -> None:
     with pytest.raises(WorldStateError, match="missing required keys"):
         forge.import_world(json.dumps({"state": {"name": "invalid"}}))
 
+    with pytest.raises(WorldStateError, match="JSON object"):
+        forge.import_world(json.dumps({"state": "not-a-world"}))
+
+    unsafe_state = {
+        "id": "../outside",
+        "name": "invalid",
+        "provider": "mock",
+        "scene": {"objects": {}},
+        "metadata": {},
+        "step": 0,
+    }
+    with pytest.raises(WorldStateError, match="file-safe identifier"):
+        forge.import_world(json.dumps(unsafe_state))
+
+    with pytest.raises(WorldForgeError, match="file-safe identifier"):
+        forge.load_world("../outside")
+
     broken_world_path = tmp_path / "broken.json"
     broken_world_path.write_text('{"state": "not-a-world"}', encoding="utf-8")
 

@@ -50,6 +50,8 @@ local JSON store cannot enforce.
 
 Supported persistence invariants:
 
+- World IDs are validated as file-safe local storage identifiers before any read or write. Path
+  separators, traversal-shaped IDs, empty strings, and non-string IDs are rejected.
 - Local JSON imports reject malformed scene object IDs, non-object state payloads, invalid
   metadata, invalid history, and negative steps.
 - README and operations docs state that multi-writer persistence is host-owned.

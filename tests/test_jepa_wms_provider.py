@@ -535,6 +535,21 @@ def test_jepa_wms_torchhub_runtime_requires_preprocessor_for_raw_actions() -> No
         )
 
 
+def test_jepa_wms_torchhub_runtime_rejects_string_boolean_options() -> None:
+    payload = _fixture("jepa_wms_success.json")
+    provider = JEPAWMSProvider.from_torch_hub(
+        model_name="jepa_wm_pusht",
+        hub_loader=lambda *_args, **_kwargs: (FakeHubEncodeUnrollModel(), FakePreprocessor()),
+        torch_module=FakeTorch(),
+    )
+
+    with pytest.raises(ProviderError, match="actions_are_normalized"):
+        provider.score_actions(
+            info={**payload["info"], "actions_are_normalized": "false"},
+            action_candidates=payload["action_candidates"],
+        )
+
+
 def test_jepa_wms_torchhub_runtime_rejects_unknown_objective() -> None:
     payload = _fixture("jepa_wms_success.json")
     provider = JEPAWMSProvider.from_torch_hub(

@@ -249,7 +249,7 @@ report = assert_provider_contract(provider, policy_info=policy_info)
 WorldForge uses three public exception families for runtime workflows:
 
 - `WorldForgeError`: invalid caller input, invalid model values, unsupported formats, and invalid
-  local configuration values.
+  local configuration values, including non-file-safe world IDs used for persistence lookup.
 - `WorldStateError`: malformed persisted state or provider-supplied world state that cannot be
   safely restored or applied.
 - `ProviderError`: provider credentials, transport failures, unsupported provider operations,

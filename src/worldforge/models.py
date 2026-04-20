@@ -83,6 +83,14 @@ def require_probability(value: float | int, *, name: str) -> float:
     return number
 
 
+def require_bool(value: bool, *, name: str) -> bool:
+    """Raise WorldForgeError unless ``value`` is a real boolean."""
+
+    if not isinstance(value, bool):
+        raise WorldForgeError(f"{name} must be a boolean.")
+    return value
+
+
 def deterministic_floats(seed: str, size: int) -> list[float]:
     """Generate deterministic floats in the range [0, 1)."""
 
@@ -709,7 +717,7 @@ class SceneObjectPatch:
         self.position = position
 
     def set_graspable(self, value: bool) -> None:
-        self.graspable = bool(value)
+        self.graspable = require_bool(value, name="SceneObjectPatch graspable")
 
 
 @dataclass(slots=True)
@@ -736,7 +744,10 @@ class SceneObject:
             raise WorldForgeError("SceneObject metadata must be a JSON object.")
         self.name = self.name.strip()
         self.id = self.id.strip()
-        self.is_graspable = bool(self.is_graspable)
+        self.is_graspable = require_bool(
+            self.is_graspable,
+            name="SceneObject is_graspable",
+        )
         self.metadata = dict(self.metadata)
 
     @property
@@ -778,7 +789,7 @@ class SceneObject:
             name=str(payload["name"]),
             position=pose.position,
             bbox=BBox.from_dict(payload["bbox"]),
-            is_graspable=bool(payload.get("is_graspable", False)),
+            is_graspable=payload.get("is_graspable", False),
             metadata=dict(payload.get("metadata", {})),
         )
 
@@ -787,7 +798,7 @@ class SceneObject:
 class ProviderCapabilities:
     """Boolean capability matrix for a provider."""
 
-    predict: bool = True
+    predict: bool = False
     generate: bool = False
     reason: bool = False
     embed: bool = False
@@ -795,6 +806,17 @@ class ProviderCapabilities:
     transfer: bool = False
     score: bool = False
     policy: bool = False
+
+    def __post_init__(self) -> None:
+        for capability in self.to_dict():
+            setattr(
+                self,
+                capability,
+                require_bool(
+                    getattr(self, capability),
+                    name=f"ProviderCapabilities {capability}",
+                ),
+            )
 
     def to_dict(self) -> JSONDict:
         return {

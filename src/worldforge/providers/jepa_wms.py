@@ -22,6 +22,7 @@ from worldforge.models import (
     ProviderEvent,
     ProviderHealth,
     WorldForgeError,
+    require_bool,
     require_finite_number,
 )
 
@@ -411,7 +412,13 @@ class TorchHubJEPAWMSRuntime:
             return direct_result
 
         objective = str(info.get("objective", "l2")).lower()
-        actions_are_normalized = bool(info.get("actions_are_normalized", True))
+        try:
+            actions_are_normalized = require_bool(
+                info.get("actions_are_normalized", True),
+                name="JEPA-WMS actions_are_normalized",
+            )
+        except WorldForgeError as exc:
+            raise ProviderError(str(exc)) from exc
 
         observation = self._as_tensor(torch, info["observation"], name="JEPA-WMS observation")
         goal = self._as_tensor(torch, info["goal"], name="JEPA-WMS goal")

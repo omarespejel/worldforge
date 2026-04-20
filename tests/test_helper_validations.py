@@ -14,6 +14,7 @@ from worldforge import (
     GenerationOptions,
     Pose,
     Position,
+    ProviderCapabilities,
     ProviderEvent,
     ProviderRequestPolicy,
     ReasoningResult,
@@ -271,6 +272,8 @@ def test_public_validation_guards_cover_boundary_failure_modes() -> None:
         patch.set_name("")
     with pytest.raises(WorldForgeError):
         patch.set_position("not-a-position")  # type: ignore[arg-type]
+    with pytest.raises(WorldForgeError, match="graspable"):
+        patch.set_graspable("true")  # type: ignore[arg-type]
     with pytest.raises(WorldForgeError):
         SceneObject(
             "",
@@ -296,6 +299,30 @@ def test_public_validation_guards_cover_boundary_failure_modes() -> None:
             BBox(Position(0.0, 0.0, 0.0), Position(1.0, 1.0, 1.0)),
             id="",
         )
+    with pytest.raises(WorldForgeError):
+        SceneObject(
+            "cube",
+            Position(0.0, 0.0, 0.0),
+            BBox(Position(0.0, 0.0, 0.0), Position(1.0, 1.0, 1.0)),
+            is_graspable="false",  # type: ignore[arg-type]
+        )
+    with pytest.raises(WorldForgeError):
+        SceneObject.from_dict(
+            {
+                "id": "obj_1",
+                "name": "cube",
+                "pose": Pose(Position(0.0, 0.0, 0.0)).to_dict(),
+                "bbox": BBox(
+                    Position(0.0, 0.0, 0.0),
+                    Position(1.0, 1.0, 1.0),
+                ).to_dict(),
+                "is_graspable": "false",
+            }
+        )
+
+    assert ProviderCapabilities().enabled_names() == []
+    with pytest.raises(WorldForgeError, match="ProviderCapabilities predict"):
+        ProviderCapabilities(predict="true")  # type: ignore[arg-type]
     with pytest.raises(WorldForgeError):
         SceneObject(
             "cube",

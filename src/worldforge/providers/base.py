@@ -162,7 +162,7 @@ class BaseProvider:
             self.event_handler(event)
 
     def predict(self, world_state: JSONDict, action: Action, steps: int) -> PredictionPayload:
-        raise NotImplementedError
+        raise ProviderError(f"Provider '{self.name}' does not implement predict().")
 
     def generate(
         self,

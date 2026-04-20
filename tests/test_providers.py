@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-from worldforge import Action, BBox, Position, SceneObject, WorldForge
+import pytest
+
+from worldforge import Action, BBox, Position, ProviderCapabilities, SceneObject, WorldForge
 from worldforge.providers import (
+    BaseProvider,
     CosmosProvider,
     GenieProvider,
     JepaProvider,
     LeWorldModelProvider,
     MockProvider,
+    ProviderError,
     RunwayProvider,
 )
 
@@ -18,6 +22,22 @@ def test_provider_submodule_exports_provider_classes() -> None:
     assert LeWorldModelProvider is not None
     assert MockProvider is not None
     assert RunwayProvider is not None
+
+
+def test_provider_capabilities_are_closed_by_default_and_unsupported_predict_is_typed(
+    tmp_path,
+) -> None:
+    provider = BaseProvider("empty")
+
+    assert provider.capabilities == ProviderCapabilities()
+    assert provider.capabilities.enabled_names() == []
+
+    forge = WorldForge(state_dir=tmp_path, auto_register_remote=False)
+    forge.register_provider(provider)
+    world = forge.create_world("capability-world", "empty")
+
+    with pytest.raises(ProviderError, match="does not implement predict"):
+        world.predict(Action.move_to(0.1, 0.5, 0.0))
 
 
 def test_generation_transfer_reason_embedding_and_manual_registration(tmp_path) -> None:

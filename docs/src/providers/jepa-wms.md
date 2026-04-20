@@ -110,7 +110,7 @@ semantics remain undefined in the public `ActionScoreResult` contract.
 - `goal`: goal payload accepted by the upstream model
 - `objective`: optional, `l2` by default; `l1` is also supported
 - `actions_are_normalized`: optional, `true` by default. Set `false` only when the loaded
-  preprocessor exposes `normalize_actions(...)`
+  preprocessor exposes `normalize_actions(...)`. This value must be a JSON boolean, not a string.
 
 ## Runtime Response Contract
 
