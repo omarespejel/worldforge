@@ -43,10 +43,9 @@ class ProviderCatalogEntry:
     def create(self, *, event_handler: ProviderEventHandler = None) -> BaseProvider:
         return self.factory(event_handler)
 
-    @property
-    def display_name(self) -> str:
+    def display_name(self, *, docs_link_prefix: str = "./") -> str:
         if self.docs_page:
-            return f"[`{self.name}`](./{self.docs_page})"
+            return f"[`{self.name}`]({docs_link_prefix}{self.docs_page})"
         return f"`{self.name}`"
 
 
@@ -142,7 +141,7 @@ def create_known_providers(
     return tuple(entry.create(event_handler=event_handler) for entry in PROVIDER_CATALOG)
 
 
-def render_provider_catalog_markdown() -> str:
+def render_provider_catalog_markdown(*, docs_link_prefix: str = "./") -> str:
     """Render the provider catalog table used by the provider documentation index."""
 
     lines = [
@@ -165,9 +164,46 @@ def render_provider_catalog_markdown() -> str:
             registration = "direct construction"
         lines.append(
             "| "
-            f"{entry.display_name} | "
+            f"{entry.display_name(docs_link_prefix=docs_link_prefix)} | "
             f"{capability_surface} | "
             f"{registration} | "
             f"{entry.runtime_ownership} |"
         )
     return "\n".join(lines)
+
+
+def provider_docs_index(
+    *, docs_path_prefix: str = "docs/src/providers/"
+) -> tuple[dict[str, str], ...]:
+    """Return provider documentation metadata for CLI discovery surfaces."""
+
+    docs: list[dict[str, str]] = []
+    for entry in PROVIDER_CATALOG:
+        profile = entry.create().profile()
+        docs_path = (
+            f"{docs_path_prefix}{entry.docs_page}"
+            if entry.docs_page
+            else f"{docs_path_prefix}README.md"
+        )
+        if profile.implementation_status == "scaffold":
+            capabilities = "scaffold"
+        else:
+            capabilities = ", ".join(
+                task for task in DOC_CAPABILITY_ORDER if profile.capabilities.supports(task)
+            )
+        docs.append(
+            {
+                "name": entry.name,
+                "docs_path": docs_path,
+                "capabilities": capabilities,
+                "registration": (
+                    "always registered"
+                    if entry.always_register
+                    else " or ".join(profile.required_env_vars)
+                    if profile.required_env_vars
+                    else "direct construction"
+                ),
+                "runtime_ownership": entry.runtime_ownership,
+            }
+        )
+    return tuple(docs)

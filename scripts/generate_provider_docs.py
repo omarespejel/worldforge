@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,14 +14,27 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 PROVIDER_INDEX = ROOT / "docs" / "src" / "providers" / "README.md"
-START_MARKER = "<!-- provider-catalog:start -->"
-END_MARKER = "<!-- provider-catalog:end -->"
+README = ROOT / "README.md"
 
 
-def _replace_block(content: str, replacement: str) -> str:
-    start = content.index(START_MARKER)
-    end = content.index(END_MARKER, start)
-    return content[: start + len(START_MARKER)] + "\n" + replacement.rstrip() + "\n" + content[end:]
+@dataclass(frozen=True, slots=True)
+class GeneratedBlock:
+    path: Path
+    start_marker: str
+    end_marker: str
+    render: Callable[[], str]
+
+
+def _replace_block(content: str, *, block: GeneratedBlock) -> str:
+    start = content.index(block.start_marker)
+    end = content.index(block.end_marker, start)
+    return (
+        content[: start + len(block.start_marker)]
+        + "\n"
+        + block.render().rstrip()
+        + "\n"
+        + content[end:]
+    )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -36,21 +51,53 @@ def main(argv: list[str] | None = None) -> int:
     from worldforge.providers.catalog import render_provider_catalog_markdown
 
     args = _parser().parse_args(argv)
-    current = PROVIDER_INDEX.read_text(encoding="utf-8")
-    updated = _replace_block(current, render_provider_catalog_markdown())
+    blocks = (
+        GeneratedBlock(
+            path=PROVIDER_INDEX,
+            start_marker="<!-- provider-catalog:start -->",
+            end_marker="<!-- provider-catalog:end -->",
+            render=render_provider_catalog_markdown,
+        ),
+        GeneratedBlock(
+            path=README,
+            start_marker="<!-- provider-catalog-readme:start -->",
+            end_marker="<!-- provider-catalog-readme:end -->",
+            render=lambda: render_provider_catalog_markdown(
+                docs_link_prefix="./docs/src/providers/"
+            ),
+        ),
+    )
+
+    updates: list[tuple[GeneratedBlock, str, str]] = []
+    for block in blocks:
+        current = block.path.read_text(encoding="utf-8")
+        updates.append((block, current, _replace_block(current, block=block)))
 
     if args.check:
-        if updated != current:
+        stale = [
+            block.path.relative_to(ROOT)
+            for block, current, updated in updates
+            if updated != current
+        ]
+        if stale:
+            stale_paths = ", ".join(str(path) for path in stale)
             print(
-                f"{PROVIDER_INDEX.relative_to(ROOT)} is out of date; "
-                "run `uv run python scripts/generate_provider_docs.py`.",
+                f"{stale_paths} out of date; run "
+                "`uv run python scripts/generate_provider_docs.py`.",
                 file=sys.stderr,
             )
             return 1
         return 0
 
-    PROVIDER_INDEX.write_text(updated, encoding="utf-8")
-    print(f"updated {PROVIDER_INDEX.relative_to(ROOT)}")
+    changed: list[str] = []
+    for block, current, updated in updates:
+        if updated != current:
+            block.path.write_text(updated, encoding="utf-8")
+            changed.append(str(block.path.relative_to(ROOT)))
+    if changed:
+        print("updated " + ", ".join(changed))
+    else:
+        print("provider docs already up to date")
     return 0
 
 

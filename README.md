@@ -103,6 +103,7 @@ CLI:
 uv run worldforge examples
 uv run worldforge doctor
 uv run worldforge provider list
+uv run worldforge provider docs
 uv run worldforge provider info mock
 uv run worldforge predict kitchen --provider mock --x 0.3 --y 0.8 --z 0.0 --steps 2
 uv run worldforge eval --suite planning --provider mock --format json
@@ -111,16 +112,18 @@ uv run worldforge benchmark --provider mock --iterations 5 --format json
 
 ## Provider Surfaces
 
-| Provider | Surface | Registration | Runtime ownership |
+<!-- provider-catalog-readme:start -->
+| Provider | Capability surface | Registration | Runtime ownership |
 | --- | --- | --- | --- |
 | `mock` | `predict`, `generate`, `transfer`, `reason`, `embed`, `plan` | always registered | in-repo deterministic local provider |
-| [`leworldmodel`](./docs/src/providers/leworldmodel.md) | `score` | `LEWORLDMODEL_POLICY` or `LEWM_POLICY` | host installs `stable_worldmodel`, torch, and checkpoints |
+| [`cosmos`](./docs/src/providers/cosmos.md) | `generate` | `COSMOS_BASE_URL` | host supplies a reachable Cosmos deployment and optional `NVIDIA_API_KEY` |
+| [`runway`](./docs/src/providers/runway.md) | `generate`, `transfer` | `RUNWAYML_API_SECRET` or `RUNWAY_API_SECRET` | host supplies Runway credentials and persists returned artifacts |
+| [`leworldmodel`](./docs/src/providers/leworldmodel.md) | `score` | `LEWORLDMODEL_POLICY` or `LEWM_POLICY` | host installs `stable_worldmodel`, torch, and compatible checkpoints |
 | [`gr00t`](./docs/src/providers/gr00t.md) | `policy` | `GROOT_POLICY_HOST` | host runs or reaches an Isaac GR00T policy server |
-| [`lerobot`](./docs/src/providers/lerobot.md) | `policy` | `LEROBOT_POLICY_PATH` or `LEROBOT_POLICY` | host installs LeRobot and policy checkpoints |
-| [`cosmos`](./docs/src/providers/cosmos.md) | `generate` | `COSMOS_BASE_URL` | host supplies reachable Cosmos deployment and optional `NVIDIA_API_KEY` |
-| [`runway`](./docs/src/providers/runway.md) | `generate`, `transfer` | `RUNWAYML_API_SECRET` or `RUNWAY_API_SECRET` | host supplies Runway credentials |
-| `jepa` | scaffold | `JEPA_MODEL_PATH` | credential-gated mock-backed reservation |
-| `genie` | scaffold | `GENIE_API_KEY` | credential-gated mock-backed reservation |
+| [`lerobot`](./docs/src/providers/lerobot.md) | `policy` | `LEROBOT_POLICY_PATH` or `LEROBOT_POLICY` | host installs LeRobot and compatible policy checkpoints |
+| `jepa` | scaffold | `JEPA_MODEL_PATH` | credential-gated mock-backed reservation, not a real JEPA runtime |
+| `genie` | scaffold | `GENIE_API_KEY` | credential-gated mock-backed reservation, not a real Genie runtime |
+<!-- provider-catalog-readme:end -->
 
 Provider candidate scaffolds stay outside package exports and auto-registration until they have a
 validated runtime path, typed parser coverage, limits, and docs. The active candidate is

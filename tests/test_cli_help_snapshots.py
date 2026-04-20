@@ -28,6 +28,17 @@ options:
   --capability CAPABILITY
                         Filter providers by capability name.
 """,
+    ("provider", "docs", "--help"): """\
+usage: worldforge provider docs [-h] [--format {markdown,json}] [name]
+
+positional arguments:
+  name                  Optional provider name.
+
+options:
+  -h, --help            show this help message and exit
+  --format {markdown,json}
+                        Output format for provider docs metadata.
+""",
     ("predict", "--help"): """\
 usage: worldforge predict [-h] [--provider PROVIDER] --x X --y Y --z Z
                           [--steps STEPS] [--state-dir STATE_DIR]
@@ -118,6 +129,7 @@ def test_top_level_help_lists_command_surface(monkeypatch, capsys) -> None:
     for common_command in (
         "worldforge examples",
         "worldforge provider list",
+        "worldforge provider docs",
         "worldforge provider info mock",
         "worldforge eval --suite planning --provider mock --format json",
     ):

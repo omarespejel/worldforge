@@ -95,6 +95,7 @@ Discover and run examples:
 
 ```bash
 uv run worldforge examples
+uv run worldforge provider docs
 uv run worldforge-demo-leworldmodel
 uv run worldforge-demo-lerobot
 ```

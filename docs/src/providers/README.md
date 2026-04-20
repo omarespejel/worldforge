@@ -85,6 +85,8 @@ CLI:
 
 ```bash
 uv run worldforge provider list
+uv run worldforge provider docs
+uv run worldforge provider docs leworldmodel --format json
 uv run worldforge provider info leworldmodel
 uv run worldforge doctor
 uv run worldforge doctor --capability score

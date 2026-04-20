@@ -60,6 +60,32 @@ def test_doctor_and_provider_info_cli(tmp_path, monkeypatch, capsys) -> None:
     assert provider_payload["health"]["healthy"] is True
 
 
+def test_provider_docs_cli_outputs_markdown_and_json(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(sys, "argv", ["worldforge", "provider", "docs"])
+    assert main() == 0
+    output = capsys.readouterr().out
+    assert output.startswith("# WorldForge Provider Docs")
+    assert "`leworldmodel`" in output
+    assert "`docs/src/providers/leworldmodel.md`" in output
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["worldforge", "provider", "docs", "runway", "--format", "json"],
+    )
+    assert main() == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == [
+        {
+            "name": "runway",
+            "docs_path": "docs/src/providers/runway.md",
+            "capabilities": "generate, transfer",
+            "registration": "RUNWAYML_API_SECRET or RUNWAY_API_SECRET",
+            "runtime_ownership": "host supplies Runway credentials and persists returned artifacts",
+        }
+    ]
+
+
 def test_generate_cli_writes_output_file(tmp_path, monkeypatch, capsys) -> None:
     output_path = tmp_path / "mock-output.bin"
 

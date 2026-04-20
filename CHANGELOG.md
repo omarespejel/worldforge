@@ -18,6 +18,7 @@ releases may still include breaking changes when the public API needs to tighten
 - Added CLI help snapshot tests for the primary `worldforge` command surface.
 - Added `scripts/generate_provider_docs.py` so the provider catalog table can be refreshed and
   checked from `src/worldforge/providers/catalog.py`.
+- Added `worldforge provider docs` so users can discover provider documentation paths from the CLI.
 - Added `.env.example` documenting every provider environment variable recognized by
   WorldForge (`COSMOS_BASE_URL`, `NVIDIA_API_KEY`, `RUNWAYML_API_SECRET` and the legacy
   `RUNWAY_API_SECRET` alias, `RUNWAYML_BASE_URL`, `LEWORLDMODEL_POLICY` and the legacy
@@ -48,6 +49,8 @@ releases may still include breaking changes when the public API needs to tighten
   catalog instead of relying on constructor ordering in `_known_providers()`.
 - Extended the provider catalog with documentation-page and runtime-ownership metadata used by the
   generated provider docs table.
+- Moved the README provider surface table onto the same generated catalog source as the provider
+  docs index.
 - Grouped `worldforge examples`, `docs/src/examples.md`, and `examples/README.md` by task so
   prediction, comparison, score planning, policy planning, and optional smoke paths are easier to
   scan.

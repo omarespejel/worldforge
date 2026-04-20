@@ -10,6 +10,7 @@ from worldforge import Action, GenerationOptions, VideoClip, WorldForge, WorldFo
 from worldforge.benchmark import ProviderBenchmarkHarness
 from worldforge.evaluation import EvaluationSuite
 from worldforge.providers import ProviderError
+from worldforge.providers.catalog import provider_docs_index
 
 CLI_DESCRIPTION = (
     "Typed local-first CLI for provider diagnostics, prediction, generation, evaluation, "
@@ -20,6 +21,7 @@ CLI_EPILOG = """Common commands:
   worldforge examples
   worldforge doctor
   worldforge provider list
+  worldforge provider docs
   worldforge provider info mock
   worldforge predict kitchen --provider mock --x 0.3 --y 0.8 --z 0.0 --steps 2
   worldforge eval --suite planning --provider mock --format json
@@ -113,6 +115,28 @@ def _print_examples_markdown() -> None:
         )
 
 
+def _provider_docs_entries(name: str | None = None) -> tuple[dict[str, str], ...]:
+    entries = provider_docs_index()
+    if name is None:
+        return entries
+    return tuple(entry for entry in entries if entry["name"] == name)
+
+
+def _print_provider_docs_markdown(entries: tuple[dict[str, str], ...]) -> None:
+    print("# WorldForge Provider Docs")
+    print()
+    print("| Provider | Capability surface | Registration | Docs |")
+    print("| --- | --- | --- | --- |")
+    for entry in entries:
+        print(
+            "| "
+            f"`{entry['name']}` | "
+            f"{entry['capabilities']} | "
+            f"{entry['registration']} | "
+            f"`{entry['docs_path']}` |"
+        )
+
+
 def _add_generation_arguments(parser: argparse.ArgumentParser, *, include_fps: bool = True) -> None:
     parser.add_argument("--image", help="Input image path, URL, or provider-native reference.")
     parser.add_argument("--video", help="Input video path, URL, or provider-native reference.")
@@ -201,6 +225,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Show only providers registered for this process.",
     )
     provider_health.add_argument("--capability", help="Filter providers by capability name.")
+
+    provider_docs = provider_subparsers.add_parser(
+        "docs",
+        help="List provider documentation paths.",
+    )
+    provider_docs.add_argument("name", nargs="?", help="Optional provider name.")
+    provider_docs.add_argument(
+        "--format",
+        choices=("markdown", "json"),
+        default="markdown",
+        help="Output format for provider docs metadata.",
+    )
 
     doctor = subparsers.add_parser("doctor", help="Inspect the local WorldForge environment.")
     doctor.add_argument("--state-dir", default=".worldforge/worlds", help="World state directory.")
@@ -311,6 +347,16 @@ def main() -> int:
             _print_json(EXAMPLE_COMMANDS)
         else:
             _print_examples_markdown()
+        return 0
+
+    if args.command == "provider" and args.provider_command == "docs":
+        entries = _provider_docs_entries(args.name)
+        if not entries:
+            parser.exit(2, f"Unknown provider: {args.name}\n")
+        if args.format == "json":
+            _print_json(entries)
+        else:
+            _print_provider_docs_markdown(entries)
         return 0
 
     forge = WorldForge(state_dir=args.state_dir)

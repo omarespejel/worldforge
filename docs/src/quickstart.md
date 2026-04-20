@@ -74,6 +74,7 @@ for object creation.
 uv run worldforge examples
 uv run worldforge doctor
 uv run worldforge provider list
+uv run worldforge provider docs
 uv run worldforge provider info mock
 uv run worldforge providers
 uv run worldforge predict kitchen --provider mock --x 0.3 --y 0.8 --z 0.0 --steps 2
