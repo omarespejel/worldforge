@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -23,6 +23,7 @@ from worldforge.models import (
     require_positive_int,
 )
 from worldforge.observability import ProviderMetricsSink, compose_event_handlers
+from worldforge.providers.base import ProviderError
 
 
 def _sample_transfer_clip() -> VideoClip:
@@ -246,6 +247,12 @@ class ProviderBenchmarkHarness:
 
     def __init__(self, forge: WorldForge | None = None) -> None:
         self._forge = forge or WorldForge()
+        self._operation_handlers: dict[str, Callable[[str, BenchmarkInputs], None]] = {
+            "predict": self._op_predict,
+            "reason": self._op_reason,
+            "generate": self._op_generate,
+            "transfer": self._op_transfer,
+        }
 
     def supported_operations(self, provider: str) -> list[str]:
         profile = self._forge.provider_profile(provider)
@@ -275,49 +282,48 @@ class ProviderBenchmarkHarness:
         )
         return world, (cube, mug)
 
+    def _op_predict(self, provider: str, inputs: BenchmarkInputs) -> None:
+        world, _ = self._seed_world(provider)
+        world.predict(
+            inputs.prediction_action,
+            steps=inputs.prediction_steps,
+            provider=provider,
+        )
+
+    def _op_reason(self, provider: str, inputs: BenchmarkInputs) -> None:
+        world, _ = self._seed_world(provider)
+        self._forge.reason(provider, inputs.reason_query, world=world)
+
+    def _op_generate(self, provider: str, inputs: BenchmarkInputs) -> None:
+        self._forge.generate(
+            inputs.generation_prompt,
+            provider,
+            duration_seconds=inputs.generation_duration_seconds,
+        )
+
+    def _op_transfer(self, provider: str, inputs: BenchmarkInputs) -> None:
+        self._forge.transfer(
+            inputs.transfer_clip,
+            provider,
+            width=inputs.transfer_width,
+            height=inputs.transfer_height,
+            fps=inputs.transfer_fps,
+            prompt=inputs.transfer_prompt,
+        )
+
     def _invoke_operation(
         self,
         provider: str,
         operation: str,
         inputs: BenchmarkInputs,
     ) -> None:
-        if operation == "predict":
-            world, _ = self._seed_world(provider)
-            world.predict(
-                inputs.prediction_action,
-                steps=inputs.prediction_steps,
-                provider=provider,
+        handler = self._operation_handlers.get(operation)
+        if handler is None:
+            raise WorldForgeError(
+                f"Unknown benchmark operation '{operation}'. "
+                f"Known operations: {', '.join(self.benchmarkable_operations)}."
             )
-            return
-
-        if operation == "reason":
-            world, _ = self._seed_world(provider)
-            self._forge.reason(provider, inputs.reason_query, world=world)
-            return
-
-        if operation == "generate":
-            self._forge.generate(
-                inputs.generation_prompt,
-                provider,
-                duration_seconds=inputs.generation_duration_seconds,
-            )
-            return
-
-        if operation == "transfer":
-            self._forge.transfer(
-                inputs.transfer_clip,
-                provider,
-                width=inputs.transfer_width,
-                height=inputs.transfer_height,
-                fps=inputs.transfer_fps,
-                prompt=inputs.transfer_prompt,
-            )
-            return
-
-        raise WorldForgeError(
-            f"Unknown benchmark operation '{operation}'. "
-            f"Known operations: {', '.join(self.benchmarkable_operations)}."
-        )
+        handler(provider, inputs)
 
     def _sample_once(
         self,
@@ -328,7 +334,7 @@ class ProviderBenchmarkHarness:
         started = perf_counter()
         try:
             self._invoke_operation(provider, operation, inputs)
-        except Exception as exc:
+        except (ProviderError, WorldForgeError, TimeoutError) as exc:
             return _BenchmarkSample(
                 latency_ms=max(0.1, (perf_counter() - started) * 1000),
                 error=str(exc),

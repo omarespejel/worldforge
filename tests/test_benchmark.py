@@ -6,7 +6,9 @@ import httpx
 import pytest
 
 from worldforge import ProviderBenchmarkHarness, ProviderRequestPolicy, WorldForge, WorldForgeError
+from worldforge.benchmark import BenchmarkInputs
 from worldforge.providers import CosmosProvider, RunwayProvider
+from worldforge.providers.base import ProviderError
 
 
 def test_provider_benchmark_harness_reports_mock_operations(tmp_path) -> None:
@@ -104,3 +106,44 @@ def test_provider_benchmark_harness_rejects_unsupported_operations(tmp_path) -> 
 
     with pytest.raises(WorldForgeError, match="unsupported operations: transfer"):
         harness.run("cosmos", operations=["transfer"], iterations=1)
+
+
+def test_provider_benchmark_harness_rejects_unknown_invoke_operation(tmp_path) -> None:
+    forge = WorldForge(state_dir=tmp_path)
+    harness = ProviderBenchmarkHarness(forge=forge)
+
+    with pytest.raises(WorldForgeError, match="Unknown benchmark operation"):
+        harness._invoke_operation("mock", "not-a-real-op", BenchmarkInputs())
+
+
+def test_provider_benchmark_harness_records_provider_error_samples(tmp_path) -> None:
+    forge = WorldForge(state_dir=tmp_path)
+    harness = ProviderBenchmarkHarness(forge=forge)
+
+    def _boom(provider: str, inputs: BenchmarkInputs) -> None:
+        raise ProviderError("simulated provider outage")
+
+    # Swap the predict handler so the narrowed except branch fires without an outbound call.
+    harness._operation_handlers["predict"] = _boom
+
+    report = harness.run("mock", operations=["predict"], iterations=2, concurrency=1)
+    result = report.results[0]
+    assert result.success_count == 0
+    assert result.error_count == 2
+    assert all("simulated provider outage" in message for message in result.errors)
+
+
+def test_provider_benchmark_harness_propagates_unexpected_exceptions(tmp_path) -> None:
+    forge = WorldForge(state_dir=tmp_path)
+    harness = ProviderBenchmarkHarness(forge=forge)
+
+    class _UnexpectedError(Exception):
+        pass
+
+    def _boom(provider: str, inputs: BenchmarkInputs) -> None:
+        raise _UnexpectedError("this must propagate")
+
+    harness._operation_handlers["predict"] = _boom
+
+    with pytest.raises(_UnexpectedError, match="this must propagate"):
+        harness.run("mock", operations=["predict"], iterations=1, concurrency=1)
