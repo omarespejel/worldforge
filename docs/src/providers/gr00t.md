@@ -1,35 +1,36 @@
 # GR00T Provider
 
-Status: experimental host-owned policy-client adapter
+Capability: `policy`
 
 Taxonomy category: embodied policy / VLA action model
 
-This adapter wraps NVIDIA Isaac GR00T's policy-client shape. GR00T is modeled as an actor: it
-accepts multimodal observations and language instructions, then returns robot action chunks. It is
-not modeled as a predictive world model, video generator, or candidate scorer.
+`gr00t` wraps NVIDIA Isaac GR00T's policy-client shape. GR00T is modeled as an actor: it accepts
+multimodal observations and language instructions, then returns robot action chunks. It is not
+modeled as a predictive world model, video generator, or candidate scorer.
 
 ```text
-observation + language instruction -> action chunk
-```
-
-WorldForge keeps the boundary explicit:
-
-```text
-GR00T policy client
+observation + language instruction
+  -> GR00T policy client
   -> raw embodiment-specific action arrays
-  -> host-supplied action_translator
+  -> host action_translator
   -> ActionPolicyResult
-  -> World.plan(... planning_mode="policy")
 ```
 
-For actor plus world-model planning:
+## Runtime Ownership
 
-```text
-GR00T proposes candidate action chunks
-  -> LeWorldModel / JEPA-WMS / another score provider ranks candidates
-  -> World.plan(... planning_mode="policy+score")
-  -> execution_provider runs the chosen WorldForge actions
-```
+WorldForge owns provider registration, observation envelope validation, raw-action preservation,
+action-result validation, planning composition, and provider events.
+
+The host owns:
+
+- Isaac GR00T installation and dependencies
+- reachable policy server
+- model checkpoints and robot-specific runtime setup
+- observations from sensors, simulator, or logs
+- translation from raw policy arrays to WorldForge `Action` objects
+- robot execution, safety interlocks, and controller integration
+
+WorldForge never drives hardware directly.
 
 ## Configuration
 
@@ -38,20 +39,13 @@ GR00T proposes candidate action chunks
 - `GROOT_POLICY_PORT`: optional, defaults to `5555`.
 - `GROOT_POLICY_TIMEOUT_MS`: optional, defaults to `15000`.
 - `GROOT_POLICY_API_TOKEN`: optional token passed to the policy client.
-- `GROOT_POLICY_STRICT`: optional boolean. Defaults to `false` on the client.
-- `GROOT_EMBODIMENT_TAG`: optional profile metadata for the robot embodiment.
+- `GROOT_POLICY_STRICT`: optional boolean, defaults to `false`.
+- `GROOT_EMBODIMENT_TAG`: optional metadata for the robot embodiment.
 
 The adapter does not add Isaac GR00T, PyTorch, CUDA, TensorRT, checkpoints, or robot runtime
-dependencies to WorldForge's base install. Those dependencies remain host-owned.
+dependencies to WorldForge's base install.
 
-Current smoke status: the 2026-04-17 live-smoke attempt could clone Isaac-GR00T and reach upstream
-dependency resolution, but it could not launch the policy server on the local macOS arm64 host.
-The upstream runtime attempted to install CUDA/TensorRT packages, including
-`tensorrt-cu13-libs`, and no compatible Darwin arm64 NVIDIA runtime was available. Use a Linux
-NVIDIA GPU host or connect to an already running remote GR00T policy server for real live
-validation.
-
-## Policy Runtime Contract
+## Runtime Contract
 
 Direct construction with a fake or host-owned client:
 
@@ -71,30 +65,19 @@ The injected or lazily created client must expose:
 get_action(observation, options=None) -> actions | (actions, info)
 ```
 
-If no client is injected, WorldForge lazily imports:
+Without an injected client, WorldForge lazily imports:
 
 ```python
 from gr00t.policy.server_client import PolicyClient
 ```
 
-and creates:
+and creates a client from `GROOT_POLICY_*` settings.
+
+## Input Contract
 
 ```python
-PolicyClient(
-    host=GROOT_POLICY_HOST,
-    port=GROOT_POLICY_PORT or 5555,
-    timeout_ms=GROOT_POLICY_TIMEOUT_MS or 15000,
-    api_token=GROOT_POLICY_API_TOKEN,
-    strict=GROOT_POLICY_STRICT or False,
-)
-```
-
-## Input Shape
-
-`select_actions(...)` expects:
-
-```python
-provider.select_actions(
+result = forge.select_actions(
+    "gr00t",
     info={
         "observation": {
             "video": {"front": video_array},
@@ -104,20 +87,23 @@ provider.select_actions(
         "embodiment_tag": "LIBERO_PANDA",
         "action_horizon": 16,
         "options": {},
-    }
+    },
 )
 ```
 
-`info["observation"]` must be a JSON object and include at least one of `video`, `state`, or
-`language`. Arrays may be tensor-like objects with `tolist()` because the adapter normalizes raw
-provider output into JSON-compatible metadata.
+Validation rules:
+
+- `info["observation"]` must be a JSON object.
+- Observation must include at least one of `video`, `state`, or `language`.
+- `options`, when supplied, must be a JSON object.
+- Tensor-like values with `tolist()` are normalized for metadata and raw-action preservation.
+- A host-supplied `action_translator` is required before `ActionPolicyResult` can be returned.
 
 ## Action Translation
 
-GR00T actions are embodiment-specific physical action arrays. WorldForge cannot safely infer what a
-joint position, gripper channel, or end-effector delta means for a host robot. The provider
-therefore requires an `action_translator` before it can return executable WorldForge `Action`
-objects.
+GR00T actions are embodiment-specific physical action arrays. WorldForge cannot infer joint
+meaning, gripper semantics, controller timing, or coordinate frames. The translator owns that
+mapping:
 
 ```python
 from worldforge import Action
@@ -129,22 +115,12 @@ def translate_actions(raw_actions, info, provider_info):
     ]
 ```
 
-The translator may return a single action chunk:
+The translator may return:
 
-```python
-[Action.move_to(...), Action.move_to(...)]
-```
+- a single action chunk: `[Action.move_to(...), Action.move_to(...)]`
+- multiple candidate chunks: `[[Action.move_to(...)], [Action.move_to(...)] ]`
 
-or multiple candidate chunks:
-
-```python
-[
-    [Action.move_to(0.1, 0.5, 0.0)],
-    [Action.move_to(0.4, 0.5, 0.0)],
-]
-```
-
-Multiple candidates are useful when pairing GR00T with a score provider.
+Multiple candidates are useful for policy-plus-score planning.
 
 ## Planning
 
@@ -172,18 +148,12 @@ plan = world.plan(
 )
 ```
 
-WorldForge serializes policy candidates into `Action.to_dict()` payloads by default before calling
-the score provider. If the scorer needs native tensors or latents, pass
-`score_action_candidates=...`; WorldForge only requires that the number of policy candidates and
-native score candidates describe the same candidate set.
+WorldForge serializes policy candidates into `Action.to_dict()` payloads before calling the score
+provider unless `score_action_candidates=...` supplies model-native candidates.
 
 ## Live Smoke
 
-Use `scripts/smoke_gr00t_policy.py` for a real PolicyClient smoke. The script can either connect
-to a server that is already running or launch the upstream GR00T server from an Isaac-GR00T
-checkout.
-
-Connect to an existing server:
+Connect to an existing GR00T policy server:
 
 ```bash
 GROOT_POLICY_HOST=127.0.0.1 \
@@ -193,7 +163,7 @@ uv run python scripts/smoke_gr00t_policy.py \
   --translator /path/to/translator.py:translate_actions
 ```
 
-Launch the upstream server first, then run the smoke:
+Launch the upstream server from a host-owned Isaac-GR00T checkout:
 
 ```bash
 uv run python scripts/smoke_gr00t_policy.py \
@@ -205,27 +175,25 @@ uv run python scripts/smoke_gr00t_policy.py \
   --translator /path/to/translator.py:translate_actions
 ```
 
-The translator callable receives `(raw_actions, info, provider_info)` and must return either a
-single WorldForge action chunk or multiple candidate chunks. Use `--observation-module
-module_or_file:function` when observations need NumPy arrays or host-side preprocessing that JSON
-cannot represent cleanly.
+Launching upstream Isaac GR00T requires a compatible NVIDIA/Linux runtime for CUDA and TensorRT
+dependencies. On unsupported hosts, connect WorldForge to an already running remote policy server.
 
 ## Failure Modes
 
-- Missing `GROOT_POLICY_HOST` leaves the auto-registered provider unavailable.
+- Missing `GROOT_POLICY_HOST` leaves the provider unregistered.
 - Missing `gr00t.policy.server_client.PolicyClient` is reported by `health()`.
 - Missing `action_translator` fails with `ProviderError`.
 - Malformed observations fail before invoking the policy client.
 - Non-JSON-compatible raw actions or provider info fail before returning `ActionPolicyResult`.
 - Failed policy inference is wrapped in `ProviderError`.
-- Launching the upstream server on an unsupported host can fail during CUDA/TensorRT dependency
-  resolution before WorldForge can connect.
-- Policy+score planning fails if the score provider selects an index outside the policy candidate
-  list.
+- Launching the upstream server on an unsupported host can fail before WorldForge can connect.
+- Policy-plus-score planning fails if the score provider selects an index outside the policy
+  candidate list.
 
 ## Tests
 
 - `tests/test_gr00t_provider.py` covers fake-client contract checks, event emission, malformed
-  inputs, missing translator, health failures, policy-only planning, and policy+score planning.
+  inputs, missing translator, health failures, policy-only planning, and policy-plus-score
+  planning.
 - `tests/test_gr00t_smoke_script.py` covers smoke-script input loading and server preflight
-  validation. It does not require Isaac-GR00T or a GPU.
+  validation without requiring Isaac GR00T or a GPU.

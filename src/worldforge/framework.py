@@ -40,16 +40,9 @@ from worldforge.models import (
 )
 from worldforge.providers import (
     BaseProvider,
-    CosmosProvider,
-    GenieProvider,
-    GrootPolicyClientProvider,
-    JepaProvider,
-    LeRobotPolicyProvider,
-    LeWorldModelProvider,
-    MockProvider,
     ProviderError,
-    RunwayProvider,
 )
+from worldforge.providers.catalog import PROVIDER_CATALOG, create_known_providers
 
 if TYPE_CHECKING:
     from worldforge.evaluation import EvaluationReport, EvaluationResult
@@ -900,24 +893,13 @@ class WorldForge:
         ensure_directory(self.state_dir)
         self._providers: dict[str, BaseProvider] = {}
         self._event_handler = event_handler
-        builtin_providers = self._known_providers()
-        self.register_provider(builtin_providers[0])
-        if auto_register_remote:
-            for provider in builtin_providers[1:]:
-                if provider.configured():
-                    self.register_provider(provider)
+        for entry in PROVIDER_CATALOG:
+            provider = entry.create(event_handler=self._event_handler)
+            if entry.always_register or (auto_register_remote and provider.configured()):
+                self.register_provider(provider)
 
     def _known_providers(self) -> tuple[BaseProvider, ...]:
-        return (
-            MockProvider(event_handler=self._event_handler),
-            CosmosProvider(event_handler=self._event_handler),
-            RunwayProvider(event_handler=self._event_handler),
-            LeWorldModelProvider(event_handler=self._event_handler),
-            GrootPolicyClientProvider(event_handler=self._event_handler),
-            LeRobotPolicyProvider(event_handler=self._event_handler),
-            JepaProvider(event_handler=self._event_handler),
-            GenieProvider(event_handler=self._event_handler),
-        )
+        return create_known_providers(event_handler=self._event_handler)
 
     def _require_provider(self, name: str) -> BaseProvider:
         try:
@@ -1088,7 +1070,7 @@ class WorldForge:
 
     def export_world(self, world_id: str, *, format: str = "json") -> str:
         if format != "json":
-            raise WorldForgeError("Only json export is currently supported.")
+            raise WorldForgeError("Only json export is supported.")
         world = self.load_world(world_id)
         return dump_json({"schema_version": SCHEMA_VERSION, "state": world.to_dict()})
 
@@ -1101,7 +1083,7 @@ class WorldForge:
         name: str | None = None,
     ) -> World:
         if format != "json":
-            raise WorldForgeError("Only json import is currently supported.")
+            raise WorldForgeError("Only json import is supported.")
         try:
             data = json.loads(payload)
         except json.JSONDecodeError as exc:

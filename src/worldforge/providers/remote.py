@@ -115,7 +115,7 @@ class JepaProvider(StubRemoteProvider):
             artifact_types=["prediction", "reasoning", "embedding"],
             notes=[
                 "Credential-gated scaffold adapter.",
-                "Current runtime path falls back to deterministic mock behavior after auth checks.",
+                "Runtime path falls back to deterministic mock behavior after auth checks.",
             ],
             default_model="jepa-scaffold-v1",
             supported_models=["jepa-scaffold-v1"],
@@ -151,7 +151,7 @@ class GenieProvider(StubRemoteProvider):
             artifact_types=["prediction", "video", "reasoning"],
             notes=[
                 "Credential-gated scaffold adapter.",
-                "Current runtime path falls back to deterministic mock behavior after auth checks.",
+                "Runtime path falls back to deterministic mock behavior after auth checks.",
             ],
             default_model="genie-scaffold-v1",
             supported_models=["genie-scaffold-v1"],

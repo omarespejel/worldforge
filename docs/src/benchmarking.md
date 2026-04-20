@@ -33,4 +33,4 @@ uv run worldforge benchmark --provider mock --operation generate --format json
 - average, min/max, p50, and p95 latency
 - serialized provider-operation event aggregates for deeper inspection
 
-The benchmark harness is synthetic. It measures operation latency, retries, and throughput for the current provider adapter path; it does not score media quality or replace a distributed load-test setup.
+The benchmark harness is synthetic. It measures operation latency, retries, and throughput for the selected provider adapter path; it does not score media quality or replace a distributed load-test setup.

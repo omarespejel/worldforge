@@ -8,6 +8,7 @@ from worldforge.models import (
 )
 
 from .base import BaseProvider, PredictionPayload, ProviderError, RemoteProvider
+from .catalog import PROVIDER_CATALOG, ProviderCatalogEntry, create_known_providers
 from .cosmos import CosmosProvider
 from .gr00t import GrootPolicyClientProvider
 from .lerobot import LeRobotPolicyProvider
@@ -25,7 +26,9 @@ __all__ = [
     "LeRobotPolicyProvider",
     "LeWorldModelProvider",
     "MockProvider",
+    "PROVIDER_CATALOG",
     "PredictionPayload",
+    "ProviderCatalogEntry",
     "ProviderError",
     "ProviderEvent",
     "ProviderRequestPolicy",
@@ -34,4 +37,5 @@ __all__ = [
     "RetryPolicy",
     "RunwayProvider",
     "StubRemoteProvider",
+    "create_known_providers",
 ]

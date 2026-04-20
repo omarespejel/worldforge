@@ -19,6 +19,12 @@ def test_provider_profiles_and_doctor_report_include_known_scaffolds(tmp_path, m
         "GROOT_POLICY_API_TOKEN",
         "GROOT_POLICY_STRICT",
         "GROOT_EMBODIMENT_TAG",
+        "LEROBOT_POLICY_PATH",
+        "LEROBOT_POLICY",
+        "LEROBOT_POLICY_TYPE",
+        "LEROBOT_DEVICE",
+        "LEROBOT_CACHE_DIR",
+        "LEROBOT_EMBODIMENT_TAG",
         "JEPA_MODEL_PATH",
         "GENIE_API_KEY",
     ):
@@ -33,9 +39,16 @@ def test_provider_profiles_and_doctor_report_include_known_scaffolds(tmp_path, m
     assert registered_profiles["mock"].request_policy is None
 
     builtin_profiles = {profile.name: profile for profile in forge.builtin_provider_profiles()}
-    assert {"mock", "cosmos", "runway", "leworldmodel", "gr00t", "jepa", "genie"} <= set(
-        builtin_profiles
-    )
+    assert {
+        "mock",
+        "cosmos",
+        "runway",
+        "leworldmodel",
+        "gr00t",
+        "lerobot",
+        "jepa",
+        "genie",
+    } <= set(builtin_profiles)
     assert builtin_profiles["cosmos"].implementation_status == "beta"
     assert builtin_profiles["cosmos"].required_env_vars == ["COSMOS_BASE_URL"]
     assert builtin_profiles["cosmos"].request_policy is not None
@@ -58,6 +71,13 @@ def test_provider_profiles_and_doctor_report_include_known_scaffolds(tmp_path, m
     assert builtin_profiles["gr00t"].capabilities.policy is True
     assert builtin_profiles["gr00t"].capabilities.predict is False
     assert builtin_profiles["gr00t"].required_env_vars == ["GROOT_POLICY_HOST"]
+    assert builtin_profiles["lerobot"].implementation_status == "beta"
+    assert builtin_profiles["lerobot"].capabilities.policy is True
+    assert builtin_profiles["lerobot"].capabilities.predict is False
+    assert builtin_profiles["lerobot"].required_env_vars == [
+        "LEROBOT_POLICY_PATH",
+        "LEROBOT_POLICY",
+    ]
 
     report = forge.doctor()
     assert isinstance(report, DoctorReport)

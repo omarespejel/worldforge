@@ -19,6 +19,20 @@ releases may still include breaking changes when the public API needs to tighten
   required for auto-registration or strictly optional, closing the gap between the README's
   `cp .env.example .env` onboarding step and the repository contents.
 
+### Changed
+
+- Centralized in-repo provider discovery in `src/worldforge/providers/catalog.py`, including the
+  provider factory list and explicit always-register policy for `mock`. `WorldForge` now uses the
+  catalog instead of relying on constructor ordering in `_known_providers()`.
+- Reworked the README, introduction, architecture, provider, and operations docs around the
+  capability contract: predictive models, score providers, policy providers, media adapters,
+  host-owned optional runtimes, and explicit persistence/evaluation boundaries.
+- Added dedicated provider pages for Cosmos, Runway, and LeWorldModel, and normalized the GR00T,
+  LeRobot, and JEPA-WMS pages around capability surface, runtime ownership, input/output
+  contracts, failure modes, and validation coverage.
+- Updated package metadata to describe WorldForge as a typed local-first physical-AI world-model
+  framework and removed the development-status classifier from the front-facing package metadata.
+
 ### Fixed
 
 - Tracked `.env.example` in the repository by adding an explicit `!.env.example` exception
@@ -67,7 +81,7 @@ releases may still include breaking changes when the public API needs to tighten
 - Corrected the LeWorldModel smoke task to require an existing upstream object checkpoint instead
   of relying on a nonexistent PyPI checkpoint-preparation helper.
 - Updated the real LeWorldModel smoke instructions to use the GitHub `stable-worldmodel` source
-  package and `datasets>=2.21`, matching the runtime that can load current LeWM checkpoints.
+  package and `datasets>=2.21`, matching the runtime that can load supported LeWM checkpoints.
 
 ### Security
 
@@ -92,16 +106,14 @@ releases may still include breaking changes when the public API needs to tighten
 - Added `AGENTS.md` with repository identity, architecture, commands, conventions, constraints,
   and gotchas for AI-assisted and first-time contributors.
 - Added this changelog and linked it from the README.
-- Documented the Provider Hardening RC persistence decision, provider limits, and provider
-  workflow failure modes.
+- Documented host-owned persistence, provider limits, and provider workflow failure modes.
 - Added a world-model taxonomy and vision document, plus expanded architecture docs with text and
   Mermaid diagrams for provider injection, predictive planning, score-based planning, observability,
   and the LeWorldModel-shaped runtime pipeline.
 - Added a provider authoring guide that turns the taxonomy into capability, validation, testing,
   observability, and documentation checklists for new adapters.
-- Documented the current GR00T live-smoke status: local macOS arm64 validation reaches upstream
-  dependency resolution but cannot run Isaac-GR00T's CUDA/TensorRT runtime without a compatible
-  NVIDIA/Linux host or remote policy server.
+- Documented GR00T live-smoke requirements for Isaac-GR00T's CUDA/TensorRT runtime and the remote
+  policy-server path for unsupported hosts.
 
 ## 0.3.0 - 2026-04-08
 

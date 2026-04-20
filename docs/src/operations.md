@@ -22,6 +22,9 @@ Configuration comes from constructor arguments and environment variables documen
 - `GROOT_POLICY_TIMEOUT_MS` defaults to `15000`.
 - `GROOT_POLICY_API_TOKEN`, `GROOT_POLICY_STRICT`, and `GROOT_EMBODIMENT_TAG` are optional GR00T
   PolicyClient settings.
+- `LEROBOT_POLICY_PATH` or `LEROBOT_POLICY` enables the optional LeRobot embodied-policy adapter.
+- `LEROBOT_POLICY_TYPE`, `LEROBOT_DEVICE`, `LEROBOT_CACHE_DIR`, and `LEROBOT_EMBODIMENT_TAG` are
+  optional LeRobot settings.
 - `JEPA_MODEL_PATH` and `GENIE_API_KEY` enable scaffold adapters only.
 
 Validate configuration at startup with:
@@ -40,14 +43,12 @@ This store is suitable for local development, tests, examples, and single-writer
 not a concurrent database. Services that need multi-writer persistence should store exported world
 payloads in their own database and apply their own locking, backup, and retention policy.
 
-Persistence decision for the Provider Hardening RC: persistence remains explicitly host-owned.
-WorldForge will continue to provide deterministic local JSON import/export and validation, but it
-will not add a library-owned lock file, SQLite store, or network database adapter in this milestone.
-The reason is boundary clarity: host applications already own deployment topology, durability,
-locking semantics, backup policy, and retention requirements. WorldForge should not imply
-production durability guarantees that a local JSON store cannot enforce.
+Persistence remains explicitly host-owned beyond local JSON import/export. The reason is boundary
+clarity: host applications own deployment topology, durability, locking semantics, backup policy,
+and retention requirements. WorldForge should not imply production durability guarantees that a
+local JSON store cannot enforce.
 
-Release-candidate exit criteria for persistence:
+Supported persistence invariants:
 
 - Local JSON imports reject malformed scene object IDs, non-object state payloads, invalid
   metadata, invalid history, and negative steps.
@@ -86,6 +87,9 @@ include those IDs in surrounding application logs.
 - GR00T policy selection fails explicitly when the PolicyClient dependency is unavailable, the
   policy server is unreachable, observations are malformed, raw actions are not JSON-compatible,
   or no host-owned action translator is provided.
+- LeRobot policy selection fails explicitly when the LeRobot dependency is unavailable, policy
+  loading fails, observations are malformed, raw actions are not JSON-compatible, or no host-owned
+  action translator is provided.
 
 ## Recovery
 
@@ -125,10 +129,9 @@ include those IDs in surrounding application logs.
   `python scripts/smoke_gr00t_policy.py --gr00t-root /path/to/Isaac-GR00T --start-server ...`.
   The script can also connect to an existing server with `GROOT_POLICY_HOST` and
   `--policy-info-json` or `--observation-module`.
-- The 2026-04-17 local GR00T live-smoke attempt failed on macOS arm64 because upstream
-  Isaac-GR00T depends on CUDA/TensorRT packages such as `tensorrt-cu13-libs`; no compatible wheel
-  or NVIDIA driver runtime was available. Use a Linux NVIDIA GPU host, or point WorldForge at an
-  already running remote GR00T policy server.
+- Launching the upstream GR00T server requires a compatible NVIDIA/Linux runtime for its CUDA and
+  TensorRT dependencies. On unsupported hosts, point WorldForge at an already running remote GR00T
+  policy server.
 
 ## Release Checklist
 
@@ -142,10 +145,9 @@ uv run pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
 bash scripts/test_package.sh
 ```
 
-Also update `CHANGELOG.md`, README status, and provider documentation for any public behavior
-change.
+Also update `CHANGELOG.md`, the README, and provider documentation for any public behavior change.
 
-## Provider Hardening RC Exit Criteria
+## Provider Hardening Criteria
 
 - Cosmos and Runway response parsers cover success and malformed upstream payloads with fixture
   tests.
@@ -154,12 +156,5 @@ change.
   limits.
 - Persistence remains documented as host-owned unless a dedicated persistence adapter is designed.
 - API documentation lists the public exception families and provider workflow failure modes.
-- Remaining work is tracked in GitHub issues with severity labels and measurable exit criteria.
-
-Tracked RC issues:
-
-- [#11 Provider Hardening RC: expand upstream response contract fixtures](https://github.com/AbdelStark/worldforge-backup/issues/11)
-- [#12 Provider Hardening RC: document and gate host-owned persistence](https://github.com/AbdelStark/worldforge-backup/issues/12)
-- [#13 Planner and evaluator maturity: move beyond deterministic contract checks](https://github.com/AbdelStark/worldforge-backup/issues/13)
-- [#14 Release discipline: define first RC checklist and gating policy](https://github.com/AbdelStark/worldforge-backup/issues/14)
-- [#15 Provider Hardening RC: complete API failure-mode reference](https://github.com/AbdelStark/worldforge-backup/issues/15)
+- Remaining work is tracked with measurable exit criteria before provider capabilities are
+  advertised as complete.

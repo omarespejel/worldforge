@@ -164,7 +164,7 @@ pretraining, then action-conditioned post-training for robotic planning with ima
 because it contains code, data, weights, training loops, shared planning components, and simulation
 planning evaluations for joint-embedding predictive world models.
 
-WorldForge's current `jepa` provider is only a scaffold. A real JEPA provider should follow the
+WorldForge's `jepa` provider is a scaffold. A real JEPA provider should follow the
 LeWorldModel pattern: do not advertise generation or reasoning unless implemented; expose score,
 latent rollout, or prediction capabilities explicitly; document tensor shapes and task contracts.
 WorldForge also carries a [`jepa-wms` provider candidate scaffold](./providers/jepa-wms.md) with
@@ -265,7 +265,7 @@ GR00T proposes actions
 ### Active Inference
 
 Active inference uses structured generative models, beliefs, and expected free energy rather than
-the usual reward-maximization framing. It is not currently implemented in WorldForge, but it
+the usual reward-maximization framing. It is not implemented in WorldForge, but it
 matters because it keeps the architecture honest about uncertainty, beliefs, object structure, and
 online replanning. A future provider in this family should expose beliefs and uncertainty as typed
 outputs rather than hiding them inside generic scores.

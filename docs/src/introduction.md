@@ -1,27 +1,29 @@
 # Introduction
 
-WorldForge is a Python framework for orchestrating world-model workflows.
+WorldForge is a typed Python framework for physical-AI world-model workflows. It provides a
+local-first API for world state, provider adapters, planning, evaluation, benchmarking, and
+diagnostics.
 
-The project is structured as a framework first:
+The project is built around a strict provider boundary:
 
-- a typed package under `src/worldforge/`
-- a deterministic mock provider for local work
-- a provider registry for real, optional, and scaffold adapters
-- framework primitives for state, planning, comparison, evaluation, and benchmarking
-- action-scoring support for cost-model providers such as LeWorldModel
-- action-policy support for embodied VLA providers such as NVIDIA Isaac GR00T
+- predictive models roll state forward through `predict`
+- score models rank candidate action sequences through `score`
+- embodied policies propose action chunks through `policy`
+- video and media systems expose `generate` or `transfer`
+- auxiliary models expose `reason` or `embed` only when those operations are implemented directly
 
-The goal is to provide a clean, public-facing framework surface that fits naturally into the
-Python ML ecosystem.
+This keeps provider semantics honest. A JEPA cost model is not treated as a video generator. A VLA
+robot policy is not treated as a predictive dynamics model. A media generation API is not treated
+as proof of controllable physical planning.
 
-WorldForge uses a precise definition of "world model": an action-conditioned predictive model
-that helps a caller evaluate, rank, or roll out possible futures from observations, state, actions,
-and goals. That definition is narrower than the current hype cycle, where the same term may refer
-to video generators, 3D scene tools, simulation platforms, or cognitive architectures. Read
-[World Model Taxonomy](./world-model-taxonomy.md) before evaluating provider semantics, then read
-[Architecture](./architecture.md) for the end-to-end runtime pipeline. New adapters should follow
-the [Provider Authoring Guide](./provider-authoring-guide.md).
+WorldForge is for Python developers building provider adapters, local physical-AI experiments,
+world-model planning loops, evaluation harnesses, and testable prototypes. It is not a hosted
+control plane and it does not own checkpoints, robot runtimes, production telemetry, or durable
+multi-writer persistence.
 
-Embodied policies are intentionally separate from predictive world models. GR00T proposes action
-chunks from observations and instructions; WorldForge can execute those actions directly or pair
-them with a score provider for policy+score planning.
+Start with:
+
+- [Quick Start](./quickstart.md) for the Python and CLI path.
+- [World Model Taxonomy](./world-model-taxonomy.md) for terminology and capability boundaries.
+- [Architecture](./architecture.md) for the provider pipeline and planning modes.
+- [Provider Authoring Guide](./provider-authoring-guide.md) before adding an adapter.

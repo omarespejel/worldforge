@@ -1,14 +1,14 @@
 # Architecture
 
-WorldForge is a local-first orchestration library for world-model workflows. Its job is not to
-declare that every provider means the same thing by "world model." Its job is to expose each
-provider through an honest typed capability surface, validate the boundary, and let host
-applications compose planning, prediction, generation, evaluation, persistence, and observability.
+WorldForge is a local-first orchestration library for physical-AI world-model workflows. Its job
+is to expose each provider through an honest typed capability surface, validate the boundary, and
+let host applications compose planning, prediction, generation, evaluation, persistence, and
+observability without pretending every provider means the same thing by "world model."
 
-The current architecture is shaped around LeWorldModel as the first real latent predictive world
-model provider. LeWorldModel does not generate videos and does not mutate WorldForge state
-directly. It scores action candidates from observations, actions, and goals. WorldForge treats that
-as a first-class planning surface instead of forcing it through a fake video or text interface.
+The architecture centers on capability-specific contracts. LeWorldModel scores action candidates.
+GR00T and LeRobot select embodied action chunks. Cosmos and Runway return media artifacts. The
+framework keeps those surfaces distinct, then composes them through typed planning, evaluation,
+diagnostics, and observability.
 
 ## System Map
 
@@ -21,10 +21,12 @@ worldforge/
 |   |-- models.py          # public data contracts and validation
 |   |-- providers/
 |   |   |-- base.py        # provider interface, ProviderError, PredictionPayload
+|   |   |-- catalog.py     # provider factories and auto-registration policy
 |   |   |-- mock.py        # deterministic reference provider
 |   |   |-- leworldmodel.py# local JEPA cost-model adapter
 |   |   |-- cosmos.py      # HTTP video generation adapter
 |   |   |-- gr00t.py       # host-owned embodied policy client adapter
+|   |   |-- lerobot.py     # host-owned LeRobot policy adapter
 |   |   |-- runway.py      # HTTP video generation/transfer adapter
 |   |   `-- remote.py      # scaffold adapters for JEPA and Genie
 |   |-- observability.py   # ProviderEvent sinks
@@ -84,7 +86,7 @@ flowchart TD
     Forge[WorldForge facade\nregistry, diagnostics, persistence]
     World[World\nstate, history, planning]
     Provider[Provider adapter\ncapability contract]
-    Upstream[Upstream runtime or API\nLeWM, GR00T, Cosmos, Runway, mock]
+    Upstream[Upstream runtime or API\nLeWM, GR00T, LeRobot, Cosmos, Runway, mock]
     Models[Typed public models\nPrediction, VideoClip, ActionScoreResult, ActionPolicyResult]
     Obs[ProviderEvent sinks\nlogs, recorder, metrics]
     Store[Local JSON state]
@@ -124,6 +126,12 @@ flowchart TD
 - `ProviderError`, the public provider/runtime failure type.
 - `PredictionPayload`, the validated payload returned by `predict(...)` implementations.
 
+`providers/catalog.py`
+
+- `PROVIDER_CATALOG`, the single in-repo list of known provider factories.
+- Registration policy for providers that are always available versus providers enabled by host
+  environment configuration.
+
 `providers/leworldmodel.py`
 
 - Optional local adapter for `stable_worldmodel.policy.AutoCostModel`.
@@ -136,9 +144,10 @@ flowchart TD
 - Real HTTP adapters with typed request policy, parser boundaries, retry events, and artifact
   validation.
 
-`providers/gr00t.py`
+`providers/gr00t.py` and `providers/lerobot.py`
 
-- Experimental host-owned adapter for NVIDIA Isaac GR00T PolicyClient inference.
+- Host-owned policy adapters for NVIDIA Isaac GR00T PolicyClient and Hugging Face LeRobot
+  `PreTrainedPolicy` inference.
 - Exposes only `policy=True`.
 - Requires an explicit action translator because robot actions are embodiment-specific.
 
@@ -261,8 +270,8 @@ flowchart LR
 
 ## Predictive Planning Pipeline
 
-Predictive planning is the older WorldForge path. It is useful for providers that can take a world
-state plus an action and return a future world state.
+Predictive planning is the path for providers that can take a world state plus an action and
+return a future world state.
 
 ```text
 World.plan(goal_spec=..., provider="mock")
@@ -393,8 +402,8 @@ execution = world.execute_plan(plan)
 
 ## Policy Planning Pipeline
 
-Policy planning is the GR00T-shaped path. It treats a VLA policy as an actor that proposes
-executable action chunks from observations and instructions.
+Policy planning treats an embodied policy as an actor that proposes executable action chunks from
+observations and instructions.
 
 ```text
 policy_info
@@ -463,21 +472,23 @@ BaseProvider
 `-- select_actions(info) -> ActionPolicyResult
 ```
 
-Current in-repo mapping:
+In-repo provider mapping:
 
-| Provider | Real integration | Primary capability | Runtime kind |
+| Provider | Surface | Primary capability | Runtime kind |
 | --- | --- | --- | --- |
-| `mock` | yes | predict, generate, reason, embed, plan, transfer | deterministic local surrogate |
-| `leworldmodel` | yes | score | local JEPA cost model |
-| `gr00t` | yes | policy | host-owned embodied VLA policy client |
-| `cosmos` | yes | generate | remote physical-AI video foundation model API |
-| `runway` | yes | generate, transfer | remote video generation API |
-| `jepa` | scaffold | mock-backed | placeholder for future JEPA provider work |
-| `genie` | scaffold | mock-backed | placeholder for future interactive simulator work |
+| `mock` | implemented | predict, generate, reason, embed, plan, transfer | deterministic local surrogate |
+| `leworldmodel` | optional runtime adapter | score | local JEPA cost model |
+| `gr00t` | optional runtime adapter | policy | host-owned Isaac GR00T policy client |
+| `lerobot` | optional runtime adapter | policy | host-owned LeRobot policy checkpoint |
+| `cosmos` | HTTP adapter | generate | remote physical-AI video foundation model API |
+| `runway` | HTTP adapter | generate, transfer | remote video generation API |
+| `jepa` | scaffold | mock-backed | reservation for future JEPA provider work |
+| `genie` | scaffold | mock-backed | reservation for future interactive simulator work |
 
-Provider profiles expose the same information through Python and CLI diagnostics. `doctor()` also
-includes known but unregistered optional providers by default, so missing local dependencies and
-missing credentials show up before a workflow fails.
+`src/worldforge/providers/catalog.py` owns the in-repo provider factory list and auto-registration
+policy. Provider profiles expose the same information through Python and CLI diagnostics.
+`doctor()` also includes known but unregistered optional providers by default, so missing local
+dependencies and missing credentials show up before a workflow fails.
 
 ## Data Contracts
 
@@ -614,8 +625,9 @@ Host application owns
   production backup/restore
 ```
 
-This keeps the library small and makes the alpha contract explicit. A future persistence adapter
-must preserve the same state validation invariants before it becomes a supported runtime surface.
+This keeps the library small and makes persistence ownership explicit. A future persistence
+adapter must preserve the same state validation invariants before it becomes a supported runtime
+surface.
 
 ## Design Implications
 

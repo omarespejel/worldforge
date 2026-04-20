@@ -1,55 +1,51 @@
 # LeRobot Provider
 
-Status: beta host-owned policy-client adapter
+Capability: `policy`
 
-Taxonomy category: embodied policy / imitation + RL action model
+Taxonomy category: embodied policy / imitation and RL action model
 
-This adapter wraps Hugging Face [LeRobot](https://github.com/huggingface/lerobot)'s pretrained
-policy interface. LeRobot is modeled as an actor: it accepts multimodal observations
-(state, cameras, language) and returns robot action tensors. It is not modeled as a
-predictive world model, video generator, or candidate scorer.
-
-```text
-observation (+ language instruction) -> action tensor
-```
-
-WorldForge keeps the boundary explicit:
+`lerobot` wraps Hugging Face LeRobot's `PreTrainedPolicy` interface. LeRobot is modeled as an
+actor: it accepts robot observations and returns action tensors. It is not modeled as a predictive
+world model, video generator, or candidate scorer.
 
 ```text
-LeRobot PreTrainedPolicy
+observation + optional task language
+  -> LeRobot policy
   -> raw embodiment-specific action tensors
-  -> host-supplied action_translator
+  -> host action_translator
   -> ActionPolicyResult
-  -> World.plan(... planning_mode="policy")
 ```
 
-For actor plus world-model planning:
+## Runtime Ownership
 
-```text
-LeRobot proposes candidate action chunks
-  -> LeWorldModel / JEPA-WMS / another score provider ranks candidates
-  -> World.plan(... planning_mode="policy+score")
-  -> execution_provider runs the chosen WorldForge actions
-```
+WorldForge owns provider registration, policy-call envelope validation, raw-action preservation,
+action-result validation, planning composition, and provider events.
+
+The host owns:
+
+- LeRobot installation and robot-specific dependencies
+- Hugging Face repo id or local checkpoint directory
+- observation construction and preprocessing
+- translation from raw policy tensors to WorldForge `Action` objects
+- robot execution, safety interlocks, and controller integration
+
+WorldForge never drives hardware directly.
 
 ## Configuration
 
-- `LEROBOT_POLICY_PATH` (alias `LEROBOT_POLICY`): required for auto-registration. Hugging Face
-  repo id (e.g. `lerobot/act_aloha_sim_transfer_cube_human`) or local checkpoint directory.
-- `LEROBOT_POLICY_TYPE`: optional. One of `act`, `diffusion`, `tdmpc`, `vqbet`, `pi0`,
-  `pi0fast`, `sac`, `smolvla`. Skipped policy-type auto-detection goes through
-  `PreTrainedPolicy.from_pretrained`, which reads the checkpoint metadata itself.
-- `LEROBOT_DEVICE`: optional. Device string passed to `policy.to(...)` after loading
-  (e.g. `cpu`, `cuda`, `cuda:0`, `mps`).
-- `LEROBOT_CACHE_DIR`: optional. Hugging Face cache directory override.
-- `LEROBOT_EMBODIMENT_TAG`: optional. Metadata string stored on the returned
-  `ActionPolicyResult`.
+- `LEROBOT_POLICY_PATH` or `LEROBOT_POLICY`: required for auto-registration. Value is a Hugging
+  Face repo id or local checkpoint directory, for example
+  `lerobot/act_aloha_sim_transfer_cube_human`.
+- `LEROBOT_POLICY_TYPE`: optional policy class hint. Supported values include `act`, `diffusion`,
+  `tdmpc`, `vqbet`, `pi0`, `pi0fast`, `sac`, and `smolvla`.
+- `LEROBOT_DEVICE`: optional device string passed to `policy.to(...)`.
+- `LEROBOT_CACHE_DIR`: optional Hugging Face cache directory.
+- `LEROBOT_EMBODIMENT_TAG`: optional metadata for the robot embodiment.
 
-The adapter does not add `lerobot`, PyTorch, NumPy, or robot runtime dependencies to
-WorldForge's base install. Those dependencies remain host-owned and are only imported when
-a non-injected policy is loaded.
+The adapter does not add LeRobot, PyTorch, NumPy, checkpoints, simulation packages, or robot
+runtime dependencies to WorldForge's base install.
 
-## Policy Runtime Contract
+## Runtime Contract
 
 Direct construction with a fake or host-owned policy:
 
@@ -71,27 +67,18 @@ policy.predict_action_chunk(observation) -> action_chunk_tensor # optional
 policy.reset()                                                  # optional
 ```
 
-If no policy is injected, WorldForge lazily imports:
+Without an injected policy, WorldForge lazily imports `PreTrainedPolicy` and loads the configured
+checkpoint. If `LEROBOT_POLICY_TYPE` is set, it resolves the specific policy class before calling
+`from_pretrained(...)`.
+
+After loading, the adapter calls `policy.to(device)`, `policy.eval()`,
+`policy.requires_grad_(False)`, and `policy.reset()` when those methods exist.
+
+## Input Contract
 
 ```python
-from lerobot.policies.pretrained import PreTrainedPolicy
-policy = PreTrainedPolicy.from_pretrained(LEROBOT_POLICY_PATH, cache_dir=...)
-```
-
-When `LEROBOT_POLICY_TYPE` is set, the adapter imports the specific policy class (for example
-`lerobot.policies.act.modeling_act.ACTPolicy`) and calls `from_pretrained` on that class
-instead. Both lookup paths are lazy: `lerobot` is only imported when a real policy needs to
-load.
-
-After loading, the adapter calls `policy.to(device)`, `policy.eval()`, `policy.requires_grad_(False)`,
-and `policy.reset()` when those methods exist.
-
-## Input Shape
-
-`select_actions(...)` expects:
-
-```python
-provider.select_actions(
+result = forge.select_actions(
+    "lerobot",
     info={
         "observation": {
             "observation.state": state_tensor_or_array,
@@ -101,26 +88,26 @@ provider.select_actions(
         "embodiment_tag": "aloha",
         "action_horizon": 16,
         "options": {},
-        "mode": "select_action",   # or "predict_chunk"
-    }
+        "mode": "select_action",
+    },
 )
 ```
 
-- `info["observation"]` must be a non-empty JSON object. Keys follow LeRobot's naming convention
-  (e.g. `observation.state`, `observation.images.<camera>`, `task`). Arrays may be tensor-like
-  objects with `tolist()`; the adapter normalizes raw provider output into JSON-compatible
-  metadata.
-- `info["options"]` is optional, must be a JSON object when provided, and is passed through to
-  the translator via `info`.
-- `info["mode"]` selects between `select_action` (one step) and `predict_chunk` (full action
-  chunk). `predict_chunk` only works when the policy implements `predict_action_chunk`.
+Validation rules:
+
+- `info["observation"]` must be a non-empty JSON object.
+- Observation keys should follow LeRobot conventions such as `observation.state`,
+  `observation.images.<camera>`, and `task`.
+- `info["options"]`, when supplied, must be a JSON object.
+- `info["mode"]` is `select_action` or `predict_chunk`.
+- `predict_chunk` requires a policy that implements `predict_action_chunk`.
+- Tensor-like values with `tolist()` are normalized for metadata and raw-action preservation.
+- A host-supplied `action_translator` is required before `ActionPolicyResult` can be returned.
 
 ## Action Translation
 
-LeRobot actions are embodiment-specific: a 7-DoF arm, a bimanual 14-DoF setup, a
-gripper-plus-mobile-base, or something else entirely. WorldForge cannot safely infer what a
-joint command means for a host robot. The provider therefore requires a host-supplied
-`action_translator` before it can return executable WorldForge `Action` objects:
+LeRobot action tensors are embodiment-specific: a 7-DoF arm, a bimanual setup, a mobile base, or a
+custom robot may all encode actions differently. The translator owns that mapping:
 
 ```python
 from worldforge import Action
@@ -133,23 +120,12 @@ def translate_actions(raw_actions, info, provider_info):
     ]
 ```
 
-The translator may return a single action chunk:
+The translator may return:
 
-```python
-[Action.move_to(...), Action.move_to(...)]
-```
+- a single action chunk: `[Action.move_to(...), Action.move_to(...)]`
+- multiple candidate chunks: `[[Action.move_to(...)], [Action.move_to(...)] ]`
 
-or multiple candidate chunks:
-
-```python
-[
-    [Action.move_to(0.1, 0.5, 0.0)],
-    [Action.move_to(0.4, 0.5, 0.0)],
-]
-```
-
-Multiple candidates are useful when pairing LeRobot with a score provider (policy+score
-planning).
+Multiple candidates are useful for policy-plus-score planning.
 
 ## Planning
 
@@ -177,27 +153,22 @@ plan = world.plan(
 )
 ```
 
-WorldForge serializes policy candidates into `Action.to_dict()` payloads by default before
-calling the score provider. If the scorer needs native tensors or latents, pass
-`score_action_candidates=...`; WorldForge only requires that the number of policy candidates
-and native score candidates describe the same candidate set.
+WorldForge serializes policy candidates into `Action.to_dict()` payloads before calling the score
+provider unless `score_action_candidates=...` supplies model-native candidates.
 
-## Checkout-Safe Demo
+## Demo And Smoke
 
-`examples/lerobot_e2e_demo.py` runs the real `LeRobotPolicyProvider` with an injected
-deterministic policy. It exercises `select_actions`, `World.plan(policy+score)`,
-`execute_plan`, JSON persistence, and reload without needing `lerobot`, torch, or checkpoint
-downloads:
+Checkout-safe end-to-end demo:
 
 ```bash
 uv run python examples/lerobot_e2e_demo.py
 ```
 
-## Live Smoke
+The demo injects a deterministic policy into the real `LeRobotPolicyProvider`. It exercises
+`select_actions`, policy-plus-score planning, execution, JSON persistence, reload, and event
+emission without requiring LeRobot, torch, or checkpoints.
 
-Use `scripts/smoke_lerobot_policy.py` for a real `PreTrainedPolicy` smoke. It loads the
-checkpoint in the host environment, so `lerobot` and the robot's dependencies must already be
-installed.
+Real policy smoke:
 
 ```bash
 uv venv --python=3.10 .venv-lerobot
@@ -212,36 +183,27 @@ python scripts/smoke_lerobot_policy.py \
   --device cpu
 ```
 
-`--policy-info-json` accepts a complete `policy_info` JSON payload. `--observation-json`
-accepts an observation-only payload. `--observation-module module_or_file:function` is the
-right escape hatch when observations need NumPy arrays, PyTorch tensors, or host-side
-preprocessing that JSON cannot represent cleanly.
-
-The translator callable receives `(raw_actions, info, provider_info)` and must return either
-a single WorldForge action chunk or multiple candidate chunks. `--health-only` reports
-provider health without running inference and is useful during environment setup.
+Use `--policy-info-json` for a full policy payload, `--observation-json` for an observation-only
+payload, or `--observation-module module_or_file:function` when observations need NumPy arrays,
+PyTorch tensors, or host preprocessing.
 
 ## Failure Modes
 
-- Missing `LEROBOT_POLICY_PATH` leaves the auto-registered provider unavailable.
-- Missing `lerobot` (or `lerobot.policies.pretrained.PreTrainedPolicy`) is reported by
-  `health()`.
+- Missing `LEROBOT_POLICY_PATH` and `LEROBOT_POLICY` leaves the provider unregistered.
+- Missing `lerobot` or `PreTrainedPolicy` is reported by `health()`.
+- Policy class resolution or checkpoint loading failures are wrapped in `ProviderError`.
 - Missing `action_translator` fails with `ProviderError`.
-- Malformed `info.observation` (not a non-empty JSON object, non-string keys, options not a
-  dict, unknown `mode`) fails before invoking the policy.
-- Non-JSON-compatible raw actions or provider info fail before returning
-  `ActionPolicyResult`.
+- Malformed observations, options, or modes fail before invoking the policy.
+- Requesting `mode="predict_chunk"` against a policy without `predict_action_chunk` fails
+  explicitly.
+- Non-JSON-compatible raw actions or provider info fail before returning `ActionPolicyResult`.
 - Failed policy inference is wrapped in `ProviderError`.
-- Requesting `mode="predict_chunk"` against a policy that does not implement
-  `predict_action_chunk` fails explicitly instead of returning stale single-step output.
 
 ## Tests
 
-- `tests/test_lerobot_provider.py` covers fake-policy contract checks, event emission,
-  malformed inputs, missing translator, unconfigured health, env configuration, lazy import
-  of `PreTrainedPolicy`, select/predict_chunk modes, `reset()` delegation, auto-registration,
-  and policy+score planning.
-- `tests/test_lerobot_e2e_demo.py` runs the full end-to-end demo and asserts the planning,
-  execution, persistence, reload, and event-emission output.
-- `tests/test_lerobot_smoke_script.py` covers the smoke script's JSON-file and factory input
-  loaders, callable resolution, and input validation. It does not require `lerobot` or a GPU.
+- `tests/test_lerobot_provider.py` covers fake-policy contract checks, event emission, malformed
+  inputs, missing translator, unconfigured health, env configuration, lazy import,
+  select/predict_chunk modes, reset delegation, auto-registration, and policy-plus-score planning.
+- `tests/test_lerobot_e2e_demo.py` covers the full checkout-safe demo.
+- `tests/test_lerobot_smoke_script.py` covers smoke-script input loading, callable resolution, and
+  validation without requiring LeRobot or a GPU.

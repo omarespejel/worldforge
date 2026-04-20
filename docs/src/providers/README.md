@@ -1,221 +1,154 @@
 # Providers
 
-WorldForge providers are capability adapters, not a claim that every upstream system uses the same
-definition of "world model." See [World Model Taxonomy](../world-model-taxonomy.md) for the project
-definition, [Architecture](../architecture.md) for the end-to-end provider injection pipeline, and
-[Provider Authoring Guide](../provider-authoring-guide.md) before adding a new adapter.
+WorldForge providers are capability adapters. A provider page should explain what the adapter can
+actually do, what the host must supply, what WorldForge validates, and which failure modes callers
+should expect.
 
-## In-repo providers
+Provider discovery and auto-registration policy live in `src/worldforge/providers/catalog.py`.
+Keep this page and the provider pages aligned with that catalog.
 
-| Provider | Status | Auto-registration rule | Notes |
+## Provider Catalog
+
+| Provider | Capability surface | Registration | Runtime ownership |
 | --- | --- | --- | --- |
-| `mock` | stable | always registered | deterministic local provider used by tests, examples, framework development, and adapter contract checks |
-| `cosmos` | beta | register when `COSMOS_BASE_URL` is set | real HTTP adapter for Cosmos NIM; `NVIDIA_API_KEY` is optional and sent as bearer auth when present |
-| `runway` | beta | register when `RUNWAYML_API_SECRET` or `RUNWAY_API_SECRET` is set | real HTTP adapter for Runway image-to-video and video-to-video APIs |
-| `leworldmodel` | beta | register when `LEWORLDMODEL_POLICY` or `LEWM_POLICY` is set | real optional adapter for LeWorldModel JEPA cost models through `stable_worldmodel.policy.AutoCostModel` |
-| [`gr00t`](./gr00t.md) | experimental | register when `GROOT_POLICY_HOST` is set | host-owned NVIDIA Isaac GR00T PolicyClient adapter for embodied action selection |
-| [`lerobot`](./lerobot.md) | beta | register when `LEROBOT_POLICY_PATH` or `LEROBOT_POLICY` is set | host-owned Hugging Face LeRobot `PreTrainedPolicy` adapter for embodied action selection |
-| `jepa` | scaffold | register when `JEPA_MODEL_PATH` is set | credential-gated stub backed by deterministic mock behavior |
-| `genie` | scaffold | register when `GENIE_API_KEY` is set | credential-gated stub backed by deterministic mock behavior |
+| `mock` | `predict`, `generate`, `transfer`, `reason`, `embed`, `plan` | always registered | in-repo deterministic local provider |
+| [`cosmos`](./cosmos.md) | `generate` | `COSMOS_BASE_URL` | host supplies a reachable Cosmos deployment and optional `NVIDIA_API_KEY` |
+| [`runway`](./runway.md) | `generate`, `transfer` | `RUNWAYML_API_SECRET` or `RUNWAY_API_SECRET` | host supplies Runway credentials and persists returned artifacts |
+| [`leworldmodel`](./leworldmodel.md) | `score` | `LEWORLDMODEL_POLICY` or `LEWM_POLICY` | host installs `stable_worldmodel`, torch, and compatible checkpoints |
+| [`gr00t`](./gr00t.md) | `policy` | `GROOT_POLICY_HOST` | host runs or reaches an Isaac GR00T policy server |
+| [`lerobot`](./lerobot.md) | `policy` | `LEROBOT_POLICY_PATH` or `LEROBOT_POLICY` | host installs LeRobot and compatible policy checkpoints |
+| `jepa` | scaffold | `JEPA_MODEL_PATH` | credential-gated mock-backed reservation, not a real JEPA runtime |
+| `genie` | scaffold | `GENIE_API_KEY` | credential-gated mock-backed reservation, not a real Genie runtime |
 
-## Provider candidate scaffolds
+## Candidate Scaffolds
 
-Candidate scaffolds are source files kept outside package exports and auto-registration until they
-have a real runtime adapter, typed parser coverage, provider-specific limits, and API docs. They
-exist to make future integrations explicit without claiming runtime support.
-
-| Provider | Status | Registration rule | Notes |
+| Provider | Capability surface | Registration | Runtime ownership |
 | --- | --- | --- | --- |
-| [`jepa-wms`](./jepa-wms.md) | scaffold candidate | none; not exported or registered | local candidate with fake-runtime and host-owned torch-hub `score` contract tests for future `facebookresearch/jepa-wms` integration |
+| [`jepa-wms`](./jepa-wms.md) | direct-construction `score` candidate | none | host-owned torch-hub/runtime experiment; not exported or auto-registered |
 
-## Provider profiles
+Candidate scaffolds stay outside package exports and auto-registration until the runtime adapter,
+limits, parser coverage, docs, and smoke path are credible enough for users to depend on.
 
-Every provider exposes a profile describing:
+## Capability Model
 
-- supported task surface derived from capabilities
-- deterministic vs stochastic behavior
-- local vs remote runtime
-- implementation status such as `stable`, `beta`, or `scaffold`
-- credential requirements and environment variables
+WorldForge does not treat provider capabilities as badges. They are callable contracts.
+
+| Capability | Provider method | Result contract |
+| --- | --- | --- |
+| `predict` | `predict(world_state, action, steps)` | `PredictionPayload` |
+| `generate` | `generate(prompt, duration_seconds, options)` | `VideoClip` |
+| `transfer` | `transfer(clip, width, height, fps, prompt, options)` | `VideoClip` |
+| `reason` | `reason(query, world_state)` | `ReasoningResult` |
+| `embed` | `embed(text=...)` | `EmbeddingResult` |
+| `score` | `score_actions(info, action_candidates)` | `ActionScoreResult` |
+| `policy` | `select_actions(info)` | `ActionPolicyResult` |
+
+Rules:
+
+- Do not advertise a capability unless the adapter implements the method end to end.
+- Do not expose `predict` for a model that only returns latent costs.
+- Do not expose `policy` unless raw actions are translated into executable WorldForge `Action`
+  objects.
+- Do not expose `generate` or `transfer` unless the returned media is validated as a `VideoClip`.
+- Keep scaffold providers obvious: they reserve names and contracts without claiming runtime
+  support.
+
+## Provider Profiles
+
+Every provider exposes a `ProviderProfile` for routing, diagnostics, and documentation:
+
+- capability surface derived from `ProviderCapabilities`
+- local versus remote runtime
+- deterministic versus stochastic behavior
+- implementation maturity such as `stable`, `beta`, `experimental`, or `scaffold`
+- required environment variables
 - supported modalities and artifact types
+- request policy for HTTP-backed providers
 - maintainer notes for caveats
 
-Programmatically:
+Python:
+
+```python
+from worldforge import WorldForge
+
+forge = WorldForge()
+profile = forge.provider_profile("leworldmodel")
+doctor = forge.doctor()
+
+print(profile.supported_tasks)
+print(doctor.issues)
+```
+
+CLI:
+
+```bash
+uv run worldforge provider list
+uv run worldforge provider info leworldmodel
+uv run worldforge doctor
+uv run worldforge doctor --capability score
+```
+
+`doctor()` includes known but unregistered optional providers by default. That makes missing
+configuration visible before a workflow fails. Use `--registered-only` when a service wants to
+check only the providers enabled for that process.
+
+## Runtime Ownership
+
+WorldForge owns:
+
+- provider registration and profile metadata
+- typed input and output validation
+- local JSON world persistence
+- planning composition across `predict`, `score`, and `policy`
+- deterministic evaluation and benchmark harnesses
+- provider event hooks
+
+The host owns:
+
+- credentials and endpoint reachability
+- torch, LeWorldModel, LeRobot, Isaac GR00T, CUDA, TensorRT, checkpoints, datasets, and robot
+  runtimes
+- observation preprocessing into model-native tensors
+- embodiment-specific action translation
+- production telemetry, trace IDs, dashboards, and alerts
+- durable persistence and artifact retention
+
+## Observability
+
+HTTP adapters emit `ProviderEvent` records for retries, successes, and failures. Local score and
+policy adapters emit success and failure events around the model boundary where supported.
+
+Attach sinks through `WorldForge(event_handler=...)`:
 
 ```python
 import logging
 
 from worldforge import WorldForge
-from worldforge.observability import (
-    InMemoryRecorderSink,
-    JsonLoggerSink,
-    ProviderMetricsSink,
-    compose_event_handlers,
-)
+from worldforge.observability import JsonLoggerSink, ProviderMetricsSink, compose_event_handlers
 
-logger = logging.getLogger("demo.worldforge")
 metrics = ProviderMetricsSink()
-recorder = InMemoryRecorderSink()
-
 forge = WorldForge(
     event_handler=compose_event_handlers(
-        JsonLoggerSink(logger=logger),
+        JsonLoggerSink(logger=logging.getLogger("demo.worldforge")),
         metrics,
-        recorder,
     )
 )
-profile = forge.provider_profile("mock")
-forge.generate("orbiting cube", "mock", duration_seconds=1.0)
-
-print(profile.supported_tasks, profile.deterministic)
-print(metrics.get("mock", "generate").to_dict())
-print(recorder.snapshot()[0].phase)
 ```
 
-From the CLI:
+`ProviderMetricsSink.request_count` counts emitted provider events, so retry events increment both
+`request_count` and `retry_count`.
 
-```bash
-uv run worldforge provider list
-uv run worldforge provider info mock
-uv run worldforge doctor
-```
+## Authoring Standard
 
-## Capability model
+Before adding or promoting a provider, document:
 
-Providers can declare support for:
+- taxonomy category and capability surface
+- configuration and auto-registration rule
+- host-owned dependencies
+- input shape and range constraints
+- output schema and score direction, if any
+- retry, timeout, polling, and artifact behavior
+- failure modes
+- fixture coverage and smoke path
 
-- `predict`
-- `generate`
-- `reason`
-- `embed`
-- `plan`
-- `transfer`
-- `score`
-- `policy`
-
-`score` providers return `ActionScoreResult` from `score_actions(...)`. The result contains the
-provider name, one score per candidate, `best_index`, `best_score`, and explicit score direction.
-For `leworldmodel`, scores are costs and lower values are better. `World.plan(...)` serializes
-WorldForge action candidates for scoring by default; hosts can pass provider-native tensors through
-`score_action_candidates` when an adapter needs them.
-
-`policy` providers return `ActionPolicyResult` from `select_actions(...)`. The result preserves raw
-provider actions, selected WorldForge actions, candidate action chunks, embodiment metadata, and
-provider-native info. `gr00t` and `lerobot` both use this surface because Isaac GR00T and Hugging
-Face LeRobot are embodied action policies, not future-state predictors.
-
-LeWorldModel is the architectural reference provider for score-based planning. It is first class
-because it matches the JEPA planning contract WorldForge is designed to support: observations,
-goals, and action candidates in; ranked futures out. WorldForge therefore models it as `score`
-instead of pretending it can generate video, reason over text, or mutate world state directly.
-
-## Operational notes
-
-- `doctor()` includes known providers by default so missing configuration shows up in diagnostics.
-- Missing local asset paths now fail before the outbound request instead of being treated as opaque remote strings.
-- `cosmos` and `runway` expose a typed `ProviderRequestPolicy` through `provider_profile()` and CLI JSON output.
-- `cosmos` validates health and generation response payloads before decoding generated video bytes.
-- `runway` validates organization, task creation, task polling, task output, artifact content type, and expired artifact responses before returning a `VideoClip`.
-- `leworldmodel` validates required `pixels`, `goal`, and `action` fields plus four-dimensional
-  action-candidate payloads before invoking the cost model.
-- `gr00t` validates policy observations, preserves raw policy actions, and requires a host-owned
-  action translator before returning executable WorldForge actions.
-- `lerobot` validates policy observations, preserves raw policy actions, lazily loads
-  `lerobot.policies.pretrained.PreTrainedPolicy`, and requires a host-owned action translator
-  before returning executable WorldForge actions.
-- Health checks, polling, and downloads retry with backoff by default. Create-style POST requests remain single-attempt unless a caller passes a custom policy.
-- `WorldForge(event_handler=...)` and provider constructor `event_handler=` arguments accept a `ProviderEvent` callback for host-side logging and metrics.
-- `worldforge.observability.compose_event_handlers(...)` lets host apps attach multiple sinks without writing a custom dispatcher.
-- `ProviderMetricsSink.request_count` counts emitted request attempts, so retry events increment both `request_count` and `retry_count`.
-- `cosmos` and `runway` emit `retry`, `success`, and `failure` events for HTTP operations.
-  `leworldmodel` emits `success` and `failure` events for local scoring. `mock`, `jepa`, and
-  `genie` emit success events for local provider operations.
-- `cosmos` and `runway` are the only in-repo adapters that currently perform real HTTP requests.
-
-## Provider-specific limits
-
-Cosmos:
-
-- `duration_seconds` must be greater than 0.
-- Output width and height resolved from `GenerationOptions.size` or `GenerationOptions.ratio`
-  must be greater than 0 and multiples of 8.
-- `fps` must be greater than 0.
-- `b64_video` must be a non-empty base64 string.
-- Optional `seed` must be an integer when returned by the upstream API.
-
-Runway:
-
-- `duration_seconds` must be greater than 0. WorldForge maps accepted values into Runway's
-  2-10 second request range for the current image-to-video endpoint.
-- `GenerationOptions.ratio` must use `WIDTH:HEIGHT` with positive integer dimensions.
-- `transfer(...)` output `width`, `height`, and `fps` must be greater than 0.
-- `poll_interval_seconds` must be non-negative and `max_polls` must be greater than 0.
-- Task responses must include a non-empty string `id` when creating tasks and a non-empty string
-  `status` when polling tasks.
-- Succeeded tasks must include at least one non-empty output URL.
-- Downloaded artifacts reject explicit non-video content types such as `text/html`.
-
-LeWorldModel:
-
-- `LEWORLDMODEL_POLICY` or `LEWM_POLICY` must be the checkpoint run name relative to
-  `$STABLEWM_HOME`, without the `_object.ckpt` suffix.
-- `stable_worldmodel` and `torch` are optional host dependencies and are imported only when the
-  provider is configured or used.
-- `info` must include `pixels`, `goal`, and `action` as tensors or rectangular nested numeric
-  sequences with at least three dimensions.
-- `action_candidates` must be a tensor or rectangular nested numeric sequence shaped as
-  `(batch, samples, horizon, action_dim)`.
-- Model output must flatten to at least one finite numeric score.
-- `uv run --python 3.10 --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" worldforge-smoke-leworldmodel`
-  can run a local end-to-end smoke against `quentinll/lewm-pusht`. This is the real checkpoint
-  path: it requires an extracted object checkpoint such as `~/.stable-wm/pusht/lewm_object.ckpt`,
-  builds synthetic task-shaped tensors, and runs upstream LeWorldModel scoring through
-  `LeWorldModelProvider`.
-- `uv run --python 3.10 --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" --with huggingface_hub worldforge-build-leworldmodel-checkpoint`
-  can build the `*_object.ckpt` file expected by `AutoCostModel` from Hugging Face LeWM
-  `config.json` and `weights.pt` assets before you run the real checkpoint smoke.
-- `uv run worldforge-demo-leworldmodel` is the checkout-safe walkthrough for the same public
-  provider surface. It injects a deterministic LeWorldModel-compatible runtime, scores candidate
-  action tensors, selects a plan, executes it through `mock`, persists the result, and reloads it.
-  It uses the real `LeWorldModelProvider` and score-planning pipeline, but it does not load an
-  upstream LeWorldModel checkpoint or run neural inference.
-  `predicted_states` is empty in that demo because the provider returns costs for candidate action
-  sequences; the selected WorldForge actions are applied later by the execution provider.
-
-GR00T:
-
-- `GROOT_POLICY_HOST` points at a running Isaac GR00T policy server.
-- `GROOT_POLICY_PORT` defaults to `5555`; `GROOT_POLICY_TIMEOUT_MS` defaults to `15000`.
-- `GROOT_POLICY_API_TOKEN`, `GROOT_POLICY_STRICT`, and `GROOT_EMBODIMENT_TAG` are optional.
-- The adapter lazily imports `gr00t.policy.server_client.PolicyClient` only when a non-injected
-  client is used.
-- `info["observation"]` must be a JSON object containing at least one of `video`, `state`, or
-  `language`.
-- A host-supplied `action_translator` maps GR00T's embodiment-specific raw actions to WorldForge
-  `Action` objects.
-- `scripts/smoke_gr00t_policy.py` can connect to an existing policy server or launch
-  `gr00t/eval/run_gr00t_server.py` from a local Isaac-GR00T checkout for a live PolicyClient
-  smoke.
-- The latest local live-smoke attempt could not run upstream Isaac-GR00T on macOS arm64 because
-  CUDA/TensorRT packages such as `tensorrt-cu13-libs` require a compatible NVIDIA/Linux runtime.
-
-LeRobot:
-
-- `LEROBOT_POLICY_PATH` (alias `LEROBOT_POLICY`) is the Hugging Face repo id or local checkpoint
-  directory for a LeRobot `PreTrainedPolicy`.
-- `LEROBOT_POLICY_TYPE` optionally pins a specific policy class such as `act`, `diffusion`,
-  `tdmpc`, `vqbet`, `pi0`, `pi0fast`, `sac`, or `smolvla`.
-- `LEROBOT_DEVICE`, `LEROBOT_CACHE_DIR`, and `LEROBOT_EMBODIMENT_TAG` are optional.
-- The adapter lazily imports `lerobot.policies.pretrained.PreTrainedPolicy` only when a
-  non-injected policy is loaded.
-- `info["observation"]` must be a non-empty JSON object; keys follow LeRobot's naming
-  conventions (`observation.state`, `observation.images.<camera>`, `task`, ...).
-- `info["mode"]` picks between `select_action` (single-step) and `predict_chunk` (full action
-  chunk, only available when the policy implements `predict_action_chunk`).
-- A host-supplied `action_translator` maps LeRobot's embodiment-specific raw action tensors to
-  WorldForge `Action` objects, optionally as multiple candidate chunks.
-- `examples/lerobot_e2e_demo.py` runs a checkout-safe end-to-end demo of the real provider
-  with an injected deterministic policy.
-- `scripts/smoke_lerobot_policy.py` loads a real LeRobot checkpoint via `PreTrainedPolicy`
-  and runs a live policy smoke; it requires `lerobot` and any robot-specific dependencies in
-  the host environment.
+See [Provider Authoring Guide](../provider-authoring-guide.md) for the implementation checklist.

@@ -2,9 +2,10 @@
 
 ## Project Identity
 
-WorldForge is an alpha-stage Python library for building, persisting, evaluating, and routing
-world-model workflows behind a typed local-first API. It is a library and CLI, not a hosted
-service, on-chain contract, or end-user application.
+WorldForge is a typed local-first Python library for physical-AI world-model workflows: provider
+adapters, world state, planning, evaluation, benchmarking, diagnostics, and host-owned optional
+runtimes. It is a library and CLI, not a hosted service, on-chain contract, or end-user
+application.
 
 Intended users are Python developers building provider adapters, local world-model experiments,
 evaluation harnesses, and testable prototypes.
@@ -17,6 +18,8 @@ evaluation harnesses, and testable prototypes.
   comparison, diagnostics, and top-level evaluation helpers.
 - `src/worldforge/providers/base.py`: provider interfaces, `ProviderError`, remote-provider
   base behavior, and `PredictionPayload`.
+- `src/worldforge/providers/catalog.py`: provider factories and auto-registration policy for the
+  in-repo provider catalog.
 - `src/worldforge/providers/mock.py`: deterministic local provider used by tests, examples, and
   contract checks.
 - `src/worldforge/providers/cosmos.py` and `runway.py`: real HTTP adapters with typed timeout,
@@ -24,6 +27,8 @@ evaluation harnesses, and testable prototypes.
 - `src/worldforge/providers/leworldmodel.py`: real optional LeWorldModel JEPA cost-model adapter
   for scoring action candidates through `stable_worldmodel.policy.AutoCostModel`.
 - `src/worldforge/providers/gr00t.py`: experimental host-owned NVIDIA Isaac GR00T PolicyClient
+  adapter for selecting embodied action chunks through the `policy` capability.
+- `src/worldforge/providers/lerobot.py`: host-owned Hugging Face LeRobot `PreTrainedPolicy`
   adapter for selecting embodied action chunks through the `policy` capability.
 - `src/worldforge/providers/jepa_wms.py`: candidate contract scaffold for
   `facebookresearch/jepa-wms` score-provider work; it supports injected fake/runtime scoring and a
@@ -43,12 +48,16 @@ evaluation harnesses, and testable prototypes.
   LeWorldModel `*_object.ckpt` file expected by `AutoCostModel` from Hugging Face LeWM assets.
 - `examples/leworldmodel_e2e_demo.py`: checkout-safe end-to-end LeWorldModel provider-surface
   score-planning compatibility wrapper for `uv run worldforge-demo-leworldmodel`.
+- `examples/lerobot_e2e_demo.py`: checkout-safe end-to-end LeRobot policy-plus-score planning
+  compatibility wrapper with an injected deterministic policy.
 - `scripts/scaffold_provider.py`: safe scaffold generator for new provider adapter files,
   fixture placeholders, tests, and docs stubs.
 - `scripts/smoke_leworldmodel.py`: compatibility wrapper for
   `uv run --python 3.10 --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" worldforge-smoke-leworldmodel`.
 - `scripts/smoke_gr00t_policy.py`: optional live GR00T PolicyClient smoke for host environments
   with Isaac-GR00T and a policy server.
+- `scripts/smoke_lerobot_policy.py`: optional live LeRobot `PreTrainedPolicy` smoke for host
+  environments with LeRobot and robot-specific dependencies.
 
 ## Tech Stack
 
@@ -59,8 +68,8 @@ evaluation harnesses, and testable prototypes.
   environment only when using `leworldmodel`.
 - Optional GR00T runtime: `gr00t.policy.server_client.PolicyClient`, CUDA/TensorRT/checkpoints,
   and robot-specific dependencies supplied by the host environment only when using `gr00t`.
-  Current live smoke status: macOS arm64 without NVIDIA drivers cannot run the upstream
-  Isaac-GR00T server because its dependency resolver pulls CUDA/TensorRT packages.
+- Optional LeRobot runtime: `lerobot.policies.pretrained.PreTrainedPolicy`, torch/checkpoints, and
+  robot-specific dependencies supplied by the host environment only when using `lerobot`.
 - Development tools: `pytest`, `pytest-cov`, `ruff`, `pip-audit` in CI.
 - License: MIT.
 
@@ -104,6 +113,8 @@ rm -f "$tmp_req"
   capabilities around a cost model.
 - `gr00t` exposes `policy`, not `predict`, `score`, or `generate`; do not call an embodied policy
   a predictive world model.
+- `lerobot` exposes `policy`, not `predict`, `score`, or `generate`; keep embodiment-specific
+  action translation host-owned.
 - Remote create/mutation requests are single-attempt by default; health, polling, and downloads
   use retry/backoff policy.
 - Keep public API models typed and serializable. Validate boundary values before persistence or
@@ -118,12 +129,15 @@ rm -f "$tmp_req"
 - Do not replace scaffold providers with claims of real JEPA/Genie integration; they are
   credential-gated mock-backed adapters until real provider behavior is implemented.
 - Do not export or auto-register `JEPAWMSProvider` until provider-specific limits are validated
-  against real upstream weights. The current torch-hub path is direct-construction only and keeps
+  against real upstream weights. The torch-hub path is direct-construction only and keeps
   PyTorch plus JEPA-WMS dependencies host-owned.
 - Do not add `stable_worldmodel`, `torch`, checkpoint archives, or downloaded datasets to the base
   dependency set or repository. Keep LeWorldModel optional and host-owned.
 - Do not add Isaac GR00T, CUDA, TensorRT, robot checkpoints, or robot controller dependencies to
   the base dependency set. Keep GR00T host-owned and require explicit action translators.
+- Do not add LeRobot, torch, robot checkpoints, simulation packages, or robot controller
+  dependencies to the base dependency set. Keep LeRobot host-owned and require explicit action
+  translators.
 - Do not auto-register optional providers unless their required environment variables are present.
 - Do not add hardcoded credentials, test secrets, or environment-specific endpoints.
 - Do not weaken coverage gates or remove package validation from CI.
@@ -138,7 +152,7 @@ rm -f "$tmp_req"
   user-level operations; retry events increment both `request_count` and `retry_count`.
 - World persistence is local JSON under `.worldforge/worlds` by default and is not a concurrent
   multi-writer store.
-- Persistence is host-owned for the Provider Hardening RC; do not add a lock file, SQLite store,
+- Persistence is host-owned beyond local JSON import/export; do not add a lock file, SQLite store,
   or service adapter without an explicit design.
 - Built-in evaluation suites are deterministic contract harnesses, not claims of physical or
   media-quality fidelity.
@@ -151,8 +165,12 @@ rm -f "$tmp_req"
   rather than real LeWorldModel neural inference.
 - GR00T returns embodiment-specific raw action arrays. WorldForge preserves those raw actions but
   requires a host-supplied `action_translator` before it can return executable `Action` objects.
-- Policy+score planning uses `policy_provider="gr00t"` plus `score_provider="leworldmodel"` or
-  another score provider; score tensors remain host-preprocessed and provider-native.
+- LeRobot returns embodiment-specific raw policy actions. WorldForge preserves those raw actions
+  but requires a host-supplied `action_translator` before it can return executable `Action`
+  objects.
+- Policy+score planning uses `policy_provider="gr00t"` or `policy_provider="lerobot"` plus
+  `score_provider="leworldmodel"` or another score provider; score tensors remain
+  host-preprocessed and provider-native.
 - `worldforge-smoke-leworldmodel` is an optional real-checkpoint smoke. Run it through
   `uv run --python 3.10 --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" ...`;
   do not add those dependencies to WorldForge's base package. The upstream default storage root is
@@ -165,13 +183,13 @@ rm -f "$tmp_req"
 - `scripts/smoke_gr00t_policy.py` is an optional live PolicyClient smoke. It may launch
   `gr00t/eval/run_gr00t_server.py` from a host-owned Isaac-GR00T checkout, but it still requires
   the host to provide real observations and an embodiment-specific action translator.
-- The most recent GR00T live smoke attempt on 2026-04-17 reached upstream dependency resolution
-  but could not run on this machine: `tensorrt-cu13-libs` has no compatible Darwin arm64 wheel and
-  `nvidia-smi` is unavailable. Use a Linux NVIDIA GPU host or an already running remote GR00T
-  policy server for true live validation.
-- GitHub Actions checks currently fail before execution because repository/account billing or
-  spending-limit settings prevent jobs from starting. Treat local `uv`/package validation as the
-  available gate until GitHub billing is fixed.
+- Launching the upstream GR00T server requires a compatible NVIDIA/Linux runtime for CUDA and
+  TensorRT dependencies. On unsupported hosts, connect to an already running remote GR00T policy
+  server.
+- `scripts/smoke_lerobot_policy.py` is an optional live LeRobot policy smoke. It requires the host
+  to provide real observations and an embodiment-specific action translator.
+- If GitHub Actions checks fail before execution because repository/account billing or spending
+  limits prevent jobs from starting, treat local `uv`/package validation as the available gate.
 - `JEPA_WMS_MODEL_PATH`, `JEPA_WMS_MODEL_NAME`, and `JEPA_WMS_DEVICE` are documented by the
   `jepa-wms` candidate only. They do not make `JEPAWMSProvider` available through `WorldForge`;
   direct tests must inject `runtime=` or use `JEPAWMSProvider.from_torch_hub(...)`.
@@ -182,12 +200,12 @@ rm -f "$tmp_req"
 - `make lint` and `make format` run against `src tests examples scripts` to match CI and the
   commands documented in `README.md`. Do not drop `scripts` from either target.
 
-## Current State
+## Direction
 
-As of 2026-04-17, WorldForge is alpha. It includes typed provider contracts for prediction,
-generation, transfer, scoring, and embodied policy selection; first-class optional LeWorldModel
-and GR00T adapters; a direct-construction JEPA-WMS candidate; and live smoke scripts for
-host-owned LeWorldModel/GR00T runtimes. It is suitable for local development, adapter contract
-testing, deterministic evaluation, and provider-prototype workflows. It is not suitable for
-unattended production operation against third-party providers without host-level monitoring,
-credential management, persistence strategy, and operational safeguards.
+WorldForge aims to be the typed Python framework layer for local physical-AI world-model work:
+truthful provider capabilities, score/policy planning composition, deterministic adapter
+contracts, host-owned optional runtimes, strict validation, and clear operational boundaries.
+Keep the front face serious and precise. Do not present scaffold adapters as real integrations,
+do not imply physical fidelity from deterministic evaluation suites, and do not move host-owned
+runtime, persistence, credential, or robot-controller responsibilities into the base package
+without an explicit design.

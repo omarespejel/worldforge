@@ -604,7 +604,7 @@ class JEPAWMSProvider(BaseProvider):
             )
         if shape[0] != 1:
             raise ProviderError(
-                "JEPA-WMS action_candidates currently supports exactly one batch for "
+                "JEPA-WMS action_candidates supports exactly one batch for "
                 "WorldForge score planning."
             )
         candidate_count = shape[1]

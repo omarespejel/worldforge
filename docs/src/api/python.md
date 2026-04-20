@@ -187,7 +187,7 @@ plan = world.plan(
 )
 ```
 
-Typed structured goals currently cover:
+Typed structured goals cover:
 
 - `StructuredGoal.object_at(...)`
 - `StructuredGoal.object_near(...)`

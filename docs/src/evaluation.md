@@ -1,6 +1,6 @@
 # Evaluation
 
-WorldForge currently ships five built-in suites:
+WorldForge ships five built-in suites:
 
 - `generation`: prompt-only and image-conditioned video generation checks
 - `physics`: deterministic object stability and action-response checks

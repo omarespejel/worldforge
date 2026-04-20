@@ -1,4 +1,4 @@
-"""WorldForge: a Python framework for world-model workflows."""
+"""WorldForge: typed local-first framework for physical-AI world-model workflows."""
 
 from __future__ import annotations
 

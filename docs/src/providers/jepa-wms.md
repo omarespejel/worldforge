@@ -1,60 +1,47 @@
-# JEPA WMS Provider
+# JEPA-WMS Provider Candidate
 
-Status: scaffold candidate with fake-runtime and host-owned torch-hub contract tests
+Capability: direct-construction `score` candidate
 
 Taxonomy category: JEPA latent predictive world model
 
-This is a candidate scaffold for a future adapter around
-[`facebookresearch/jepa-wms`](https://github.com/facebookresearch/jepa-wms), the Meta FAIR code,
-data, weights, training loops, shared planning components, and planning evaluations for
-joint-embedding predictive world models.
+`jepa-wms` is a candidate scaffold for future work against
+[`facebookresearch/jepa-wms`](https://github.com/facebookresearch/jepa-wms). It exists to make the
+planned score-provider contract explicit without claiming runtime support in the public provider
+registry.
 
-It is not exported from `worldforge.providers`, not registered by `WorldForge._known_providers`,
-and does not auto-import the upstream research repository. Keep it that way until the adapter calls
-the real upstream runtime and returns validated WorldForge models.
+It is intentionally not exported from `worldforge.providers`, not present in
+`PROVIDER_CATALOG`, and not auto-registered. Tests and host experiments may import
+`worldforge.providers.jepa_wms.JEPAWMSProvider` directly.
 
-By default the provider advertises no public capabilities. When a test or host experiment injects
-`runtime=` or uses `JEPAWMSProvider.from_torch_hub(...)`, it advertises `score` and exercises the
-WorldForge-side scoring contract. These direct construction paths are intentionally not wired into
-auto-registration.
+## Promotion Rule
 
-The scaffold health check remains unhealthy when only `JEPA_WMS_MODEL_PATH` is set because a path
-does not prove the integration can execute. It becomes healthy only when both `JEPA_WMS_MODEL_PATH`
-or `model_path=` and an injected runtime, including the torch-hub runtime, are present.
+Do not export or auto-register this provider until the integration has:
 
-## Contract Status
+- a validated upstream runtime path against real weights
+- documented checkpoint, device, task-family, and batch limits
+- a stable mapping between JEPA-WMS candidate tensors and WorldForge `Action` sequences
+- fixture coverage for malformed inputs, upstream errors, and invalid outputs
+- a live smoke path that does not hide optional dependency requirements
 
-- [x] `score` contract implemented behind injected fake/runtime object.
-- [x] Fixture-driven tests for malformed input, upstream error payloads, non-finite scores, score
-  count mismatches, provider contract checks, and event emission.
-- [x] Host-owned torch-hub runtime shim for `facebookresearch/jepa-wms` model loading and
-  encode/unroll/latent-distance scoring.
-- [x] `World.plan(...)` score-planning coverage through the JEPA-WMS candidate.
-- [ ] Real upstream smoke against downloaded `facebook/jepa-wms` weights completed.
-- [ ] Auto-registration decision made.
+## Runtime Ownership
 
-The intended public surface is `score_actions(...) -> ActionScoreResult`, matching the
-LeWorldModel-shaped planning path. A future implementation should rank candidate action sequences
-from task-shaped observations, goals, and action candidates. It should not expose `predict=True`
-unless it can return a complete validated WorldForge `PredictionPayload`, not just a latent rollout
-internal to JEPA-WMS.
+WorldForge owns the candidate provider shell, score-result validation, event emission, and
+score-planning tests.
 
-## Configuration
+The host owns:
 
-- Required environment variable: `JEPA_WMS_MODEL_PATH`.
-- Optional torch-hub model name: `JEPA_WMS_MODEL_NAME`, for example `jepa_wm_pusht`.
-- Optional torch device: `JEPA_WMS_DEVICE`, for example `cpu` or `cuda:0`.
+- PyTorch and JEPA-WMS dependencies
+- model download and checkpoint compatibility
+- optional torch-hub loading
+- observation, goal, action-history, and candidate preprocessing
+- mapping between model-native actions and WorldForge `Action` objects
 
-- Optional dependencies: expected to be host-owned until a real adapter is implemented. Do not add
-  `jepa-wms`, PyTorch, datasets, checkpoints, or simulator dependencies to WorldForge's base
-  install.
-- Registration rule: none yet. The scaffold is not auto-registered. A real adapter can consider
-  registration when `JEPA_WMS_MODEL_PATH` points at a supported checkpoint or local repo/runtime
-  layout.
+WorldForge does not add JEPA-WMS, torch, datasets, checkpoints, or simulator dependencies to its
+base package.
 
-## Current Fake Runtime Contract
+## Direct Construction
 
-For tests and host experiments, instantiate the provider directly:
+Injected runtime:
 
 ```python
 from worldforge.providers.jepa_wms import JEPAWMSProvider
@@ -71,18 +58,63 @@ The injected runtime must be callable or expose:
 score_actions(*, model_path: str, info: dict, action_candidates: object) -> object
 ```
 
-Input validation currently requires:
+Torch-hub runtime:
+
+```python
+from worldforge.providers.jepa_wms import JEPAWMSProvider
+
+provider = JEPAWMSProvider.from_torch_hub(
+    model_name="jepa_wm_pusht",
+    device="cpu",
+)
+```
+
+The torch-hub runtime lazily imports torch and loads:
+
+```python
+model, preprocessor = torch.hub.load(
+    "facebookresearch/jepa-wms",
+    "jepa_wm_pusht",
+)
+```
+
+It first delegates to model-native scoring methods when present. If the loaded model does not
+expose a scoring method, it uses the planning shape:
+
+```text
+observation -> model.encode(..., act=True) -> z_init
+goal        -> model.encode(..., act=False) -> z_goal
+actions     -> model.unroll(z_init, act_suffix=actions)
+score       -> latent L1/L2 distance between final predicted latent and goal latent
+```
+
+## Input Contract
+
+Required score inputs:
 
 - `info["observation"]`: tensor-like object or rectangular nested finite numeric sequence with at
-  least two dimensions.
+  least two dimensions
 - `info["goal"]`: tensor-like object or rectangular nested finite numeric sequence with at least
-  two dimensions.
+  two dimensions
 - `info["action_history"]`: optional tensor-like object or rectangular nested finite numeric
-  sequence with at least two dimensions.
+  sequence with at least two dimensions
 - `action_candidates`: tensor-like object or rectangular nested finite numeric sequence shaped as
-  `(batch, samples, horizon, action_dim)`.
+  `(batch, samples, horizon, action_dim)`
 
-The runtime success response must be a JSON object:
+The torch-hub runtime supports exactly one batch and returns one score per sample. Batched score
+semantics remain undefined in the public `ActionScoreResult` contract.
+
+`score_info` keys:
+
+- `observation`: observation payload accepted by the upstream model
+- `goal`: goal payload accepted by the upstream model
+- `objective`: optional, `l2` by default; `l1` is also supported
+- `actions_are_normalized`: optional, `true` by default. Set `false` only when the loaded
+  preprocessor exposes `normalize_actions(...)`
+
+## Runtime Response Contract
+
+Success:
 
 ```json
 {
@@ -94,11 +126,7 @@ The runtime success response must be a JSON object:
 }
 ```
 
-`best_index` is optional. If omitted, WorldForge derives it from `scores` and
-`lower_is_better`. The number of scores must equal the `samples` dimension in
-`action_candidates`.
-
-The runtime failure response must be a JSON object:
+Failure:
 
 ```json
 {
@@ -109,77 +137,43 @@ The runtime failure response must be a JSON object:
 }
 ```
 
-Failure responses are converted to `ProviderError` and emit a `ProviderEvent` with
-`operation="score"` and `phase="failure"`.
+`best_index` is optional. If omitted, WorldForge derives it from `scores` and
+`lower_is_better`. Failure responses become `ProviderError` and emit a failure event.
 
-## Host-Owned Torch-Hub Runtime
+## Planning
 
-The candidate includes a lazy torch-hub runtime shim:
+The candidate can be registered manually for local score-planning experiments:
 
 ```python
-from worldforge.providers.jepa_wms import JEPAWMSProvider
+forge = WorldForge(auto_register_remote=False)
+forge.register_provider(provider)
 
-provider = JEPAWMSProvider.from_torch_hub(
-    model_name="jepa_wm_pusht",
-    device="cpu",
+plan = world.plan(
+    goal="choose the lowest latent-distance candidate",
+    provider="jepa-wms",
+    candidate_actions=[candidate_a, candidate_b],
+    score_info=score_info,
+    score_action_candidates=action_candidate_tensor,
+    execution_provider="mock",
 )
 ```
 
-This follows the upstream loading pattern:
+Do not present this as public jepa-wms support until the promotion rule is satisfied.
 
-```python
-model, preprocessor = torch.hub.load(
-    "facebookresearch/jepa-wms",
-    "jepa_wm_pusht",
-)
-```
+## Failure Modes
 
-The runtime lazily imports `torch` and lazily calls `torch.hub.load(...)` only when
-`score_actions(...)` is invoked. It first delegates to a model-native
-`score_actions(...)`, `score_action_candidates(...)`, or `compute_scores(...)` method if a host
-wraps one. If the loaded model does not expose a scoring method, it uses the JEPA-WMS planning
-shape described upstream:
-
-```text
-observation -> model.encode(..., act=True) -> z_init
-goal        -> model.encode(..., act=False) -> z_goal
-actions     -> model.unroll(z_init, act_suffix=actions)
-score       -> latent L1/L2 distance between final predicted latent and goal latent
-```
-
-The torch-hub runtime expects `action_candidates` shaped as
-`(1, samples, horizon, action_dim)`. WorldForge returns one score per sample and rejects multi-batch
-payloads until the public `ActionScoreResult` contract defines batched score semantics.
-
-Current `score_info` keys:
-
-- `observation`: tensor-like or nested numeric observation payload accepted by the upstream model.
-- `goal`: tensor-like or nested numeric goal payload accepted by the upstream model.
-- `objective`: optional, `l2` by default; `l1` is also supported.
-- `actions_are_normalized`: optional, `true` by default. Set `false` only when the loaded
-  preprocessor exposes `normalize_actions(...)`.
-
-## Remaining Upstream Contract To Define
-
-- Mapping between JEPA-WMS candidate tensors and WorldForge `Action` sequences.
-- Provider-specific limits such as context window, rollout horizon, action dimension, batch size,
-  device placement, dataset/task family, and checkpoint compatibility.
-- Failure modes for missing checkpoints, unsupported task configs, malformed tensor inputs,
-  non-finite model outputs, unavailable simulator assets, and optional dependency failures.
+- Missing model path fails provider construction or health.
+- Missing runtime keeps health unhealthy.
+- Runtime error payloads become `ProviderError`.
+- Missing observation or goal fields fail before runtime invocation.
+- Ragged nested arrays, non-finite values, unsupported action-candidate shape, multi-batch
+  tensors, and score-count mismatches fail explicitly.
+- Missing torch-hub loader, unsupported objective, action normalization failures, and unexpected
+  runtime exceptions are wrapped in `ProviderError`.
 
 ## Tests
 
-- `tests/test_jepa_wms_provider.py` covers the fake-runtime happy path, provider contract helper,
-  missing model path, missing runtime, upstream error payloads, malformed fixtures, non-finite
-  score output, score-count mismatches, torch-hub runtime delegation, score-planning through
-  `World.plan(...)`, and success/failure event emission.
-- `tests/fixtures/providers/jepa_wms_*.json` defines the current contract fixtures.
-
-## Release Checklist
-
-- [ ] Provider capabilities are narrow and truthful.
-- [x] Provider profile metadata is complete for the fake-runtime candidate state.
-- [x] Public API docs mention current failure modes.
-- [x] `docs/src/providers/README.md` links this provider page.
-- [x] `AGENTS.md` documents current dependencies and gotchas.
-- [x] `CHANGELOG.md` records the user-visible behavior.
+- `tests/test_jepa_wms_provider.py` covers injected runtime scoring, torch-hub runtime behavior,
+  malformed inputs, runtime error payloads, non-finite scores, score-count mismatches, provider
+  contract checks, score planning, and provider events.
+- `tests/fixtures/providers/jepa_wms_*.json` stores the contract fixtures.
