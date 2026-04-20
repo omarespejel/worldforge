@@ -1,95 +1,90 @@
+<div align="center">
+
 # WorldForge
 
-Build physical-AI workflows from world models, not one-off scripts.
+**An integration layer for physical-AI world models.**
 
-WorldForge is a Python integration layer for predictive world models, action scorers, embodied
-policies, video generators, and evaluation harnesses. It gives each model a clear capability
-contract, then adds the missing engineering layer around it: world state, planning loops, provider
-diagnostics, evaluation suites, benchmarks, persistence, and a CLI.
+One typed interface for predictive models, action scorers, embodied policies, and media generators —
+so you can compose them, plan through them, evaluate them, and ship them without pretending every
+model is the same thing.
 
-Use it when you want to wire physical-AI systems together without pretending every model is the
-same thing.
+[![CI](https://img.shields.io/github/actions/workflow/status/AbdelStark/worldforge/ci.yml?branch=main&label=CI&style=plastic)](https://github.com/AbdelStark/worldforge/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-3776AB?style=plastic&logo=python&logoColor=white)](https://github.com/AbdelStark/worldforge/blob/main/pyproject.toml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=plastic)](./LICENSE)
+[![Coverage](https://img.shields.io/badge/coverage-%E2%89%A590%25-brightgreen?style=plastic)](./.github/workflows/ci.yml)
+[![Typed](https://img.shields.io/badge/typed-py.typed-3f7cac?style=plastic)](./src/worldforge/py.typed)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json&style=plastic)](https://github.com/astral-sh/ruff)
+[![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json&style=plastic)](https://github.com/astral-sh/uv)
+[![Status: pre-1.0](https://img.shields.io/badge/status-pre--1.0%20beta-orange?style=plastic)](#project-status)
 
-It is deliberately not a hosted service or a lowest-common-denominator model API. Optional model
-runtimes, robot stacks, credentials, checkpoints, production telemetry, and durable storage stay
-owned by the host application.
+[**Quickstart**](#quickstart) ·
+[**Providers**](#provider-surfaces) ·
+[**Capability Model**](#capability-model) ·
+[**Architecture**](#architecture) ·
+[**Docs**](./docs/src) ·
+[**Playbooks**](./docs/src/playbooks.md) ·
+[**Changelog**](./CHANGELOG.md)
 
-## Why It Exists
+</div>
 
-Physical-AI tooling is fragmented. A JEPA cost model, a robot policy server, a video simulator,
-and a remote media API all have different inputs, runtimes, failure modes, and claims. That
-fragmentation is fine. Hiding it is where projects get brittle.
+---
 
-WorldForge keeps those differences visible while making the workflow composable:
+## Overview
 
-- adapters declare exactly what a provider can do.
-- planning code can combine policy providers, score providers, and predictive providers.
-- evaluation and benchmark runs exercise the same surfaces users call.
-- optional heavy runtimes stay out of the base package.
-- diagnostics make missing credentials, missing dependencies, and capability mismatches obvious.
+Physical-AI tooling is fragmented. A JEPA-style cost model, a robot policy server, a video
+simulator, and a remote media API have different inputs, runtimes, failure modes, and claims.
+Hiding that fragmentation is where projects get brittle.
 
-## What You Can Build
+**WorldForge keeps the differences visible while making the workflow composable.** Each provider
+adapter declares exactly what it can do — `predict`, `score`, `policy`, `generate`, `transfer`,
+`reason`, `embed`, `plan` — behind a strict, fail-closed capability contract. Planning, evaluation,
+benchmarks, diagnostics, and persistence are built on that contract, not on top of any particular
+runtime.
 
-- provider adapters for new world-model runtimes and APIs.
-- score-based planners that rank candidate action sequences.
-- policy-plus-score workflows where an embodied policy proposes actions and a world model ranks
-  them.
-- local evaluation harnesses for planning, reasoning, generation, transfer, and provider behavior.
-- benchmark runs for latency, retries, throughput, and report export.
-- checkout-safe demos that validate integration paths without downloading large models.
-- optional live smokes for host environments with checkpoints, robot stacks, or remote servers.
+It is **not** a hosted service, a lowest-common-denominator model API, or a training framework.
+Optional model runtimes, robot stacks, credentials, checkpoints, and durable storage stay owned by
+the host application.
 
-## Who It's For
+## Highlights
 
-- ML researchers comparing model surfaces without rewriting the harness each time.
-- robotics and physical-AI engineers wiring policies, scorers, simulators, and media providers
-  around host-owned systems.
-- Python developers building adapter packages, CLI workflows, and reproducible demos.
-- builders and enthusiasts who want something that runs from a clean checkout before they install
-  CUDA stacks or download checkpoints.
-
-## Capability Model
-
-WorldForge treats "world model" as an operational interface, not a marketing label.
-
-- `predict`: state + action -> predicted state
-- `score`: observations + goal + action candidates -> ranked candidates
-- `policy`: observation + instruction -> action chunks
-- `generate`: prompt/options -> media artifact
-- `transfer`: media artifact + prompt/options -> media artifact
-- `reason` and `embed`: narrow auxiliary contracts where providers implement them directly
-
-This separation is deliberate. LeWorldModel is a score provider, not a video generator. GR00T and
-LeRobot are policy providers, not predictive world models. Cosmos and Runway are media generation
-adapters, not proof of controllable physical planning semantics.
-
-The typical loop looks like this:
-
-```text
-observe state
-  -> propose candidate actions
-  -> score or roll out possible futures
-  -> select an action sequence
-  -> execute through a provider
-  -> persist, evaluate, and observe again
-```
+| | |
+| --- | --- |
+| **Strict capability contracts** | Eight named capabilities. Adapters advertise only what they implement end-to-end and return typed WorldForge results. Unknown capability names fail loudly. |
+| **Composable planning** | Combine predictive, score, and policy providers in a single planning loop. Rank candidates, roll out futures, execute actions, persist state. |
+| **Deterministic-by-default** | A built-in `mock` provider, reusable contract assertions (`worldforge.testing`), and deterministic demos make every workflow runnable from a clean checkout. |
+| **Host-owned runtimes** | No torch, CUDA, robot controllers, or checkpoints in base dependencies. Integrate LeWorldModel, GR00T, LeRobot, Cosmos, and Runway through their official surfaces — on your terms. |
+| **First-class diagnostics** | `worldforge doctor`, provider events, benchmark and evaluation harnesses, and a Textual TUI (`TheWorldHarness`) for inspectable traces. |
+| **Typed, linted, covered** | `py.typed`, ruff on `src tests examples scripts`, ≥90% coverage gate, wheel + sdist contract tests in CI across Python 3.10 – 3.13. |
 
 ## Install
 
-Application project:
+### Library (recommended)
 
 ```bash
-uv add worldforge
+uv add "worldforge @ git+https://github.com/AbdelStark/worldforge"
 ```
 
-Repository development:
+### Repository development
 
 ```bash
+git clone https://github.com/AbdelStark/worldforge.git
+cd worldforge
 uv sync --group dev
 cp .env.example .env
 ```
 
-## Quick Start
+Optional extras:
+
+```bash
+uv sync --group dev --extra harness   # TheWorldHarness Textual TUI
+```
+
+Python 3.10+. Base install is pure-Python (httpx only). Every heavy runtime is an optional,
+host-owned integration.
+
+## Quickstart
+
+### Python
 
 ```python
 from worldforge import Action, BBox, Position, SceneObject, StructuredGoal, WorldForge
@@ -120,17 +115,46 @@ doctor = forge.doctor()
 print(doctor.healthy_provider_count, doctor.provider_count)
 ```
 
-CLI:
+### CLI
 
 ```bash
-uv run worldforge examples
-uv run worldforge doctor
-uv run worldforge provider list
-uv run worldforge provider docs
-uv run worldforge provider info mock
+uv run worldforge examples                                              # runnable scripts index
+uv run worldforge doctor                                                # provider health
+uv run worldforge provider list                                         # registered providers
+uv run worldforge provider info mock                                    # capability surface
 uv run worldforge predict kitchen --provider mock --x 0.3 --y 0.8 --z 0.0 --steps 2
 uv run worldforge eval --suite planning --provider mock --format json
 uv run worldforge benchmark --provider mock --iterations 5 --format json
+```
+
+## Capability Model
+
+WorldForge treats "world model" as an operational interface, not a marketing label.
+
+| Capability | Signature | Example providers |
+| --- | --- | --- |
+| `predict` | `state + action → predicted state` | `mock` |
+| `score` | `observations + goal + candidates → ranked candidates` | `leworldmodel` |
+| `policy` | `observation + instruction → action chunks` | `gr00t`, `lerobot` |
+| `generate` | `prompt + options → media artifact` | `cosmos`, `runway`, `mock` |
+| `transfer` | `artifact + prompt/options → artifact` | `runway`, `mock` |
+| `reason` | structured reasoning over state | `mock` |
+| `embed` | observation → embedding | `mock` |
+| `plan` | facade over composed surfaces | `mock` |
+
+This separation is deliberate. LeWorldModel is a score provider, not a video generator. GR00T and
+LeRobot are policy providers, not predictive world models. Cosmos and Runway are media generation
+adapters, not controllable physical-planning semantics.
+
+The canonical loop:
+
+```text
+observe state
+  → propose candidate actions
+  → score or roll out possible futures  (score / predict)
+  → select an action sequence            (plan)
+  → execute through a provider           (policy / predict)
+  → persist, evaluate, observe again
 ```
 
 ## Provider Surfaces
@@ -148,34 +172,42 @@ uv run worldforge benchmark --provider mock --iterations 5 --format json
 | `genie` | scaffold | `GENIE_API_KEY` | credential-gated mock-backed reservation, not a real Genie runtime |
 <!-- provider-catalog-readme:end -->
 
-Provider candidate scaffolds stay outside package exports and auto-registration until they have a
-validated runtime path, typed parser coverage, limits, and docs. The active candidate is
-[`jepa-wms`](./docs/src/providers/jepa-wms.md), a direct-construction scaffold for future
+Scaffold adapters stay outside package exports and auto-registration until they have a validated
+runtime path, typed parser coverage, request limits, and docs. The active candidate is
+[`jepa-wms`](./docs/src/providers/jepa-wms.md), a direct-construction scaffold targeting future
 `facebookresearch/jepa-wms` score-provider work.
 
 ## Architecture
 
 ```text
-Host application / CLI
-  |
-  v
-WorldForge facade
-  provider catalog, registry, diagnostics, persistence helpers
-  |
-  v
-World runtime
-  state, history, planning, execution
-  |
-  v
-Provider adapter
-  capability contract, validation, events
-  |
-  v
-Upstream runtime or API
-  local model, robot policy server, media API, deterministic mock
+  ┌──────────────────────────────────────────────┐
+  │  Host application / CLI                      │
+  └──────────────────────┬───────────────────────┘
+                         │
+                         ▼
+  ┌──────────────────────────────────────────────┐
+  │  WorldForge facade                           │
+  │  catalog · registry · diagnostics · persist  │
+  └──────────────────────┬───────────────────────┘
+                         │
+                         ▼
+  ┌──────────────────────────────────────────────┐
+  │  World runtime                               │
+  │  state · history · planning · execution      │
+  └──────────────────────┬───────────────────────┘
+                         │
+                         ▼
+  ┌──────────────────────────────────────────────┐
+  │  Provider adapter                            │
+  │  capability contract · validation · events   │
+  └──────────────────────┬───────────────────────┘
+                         │
+                         ▼
+  ┌──────────────────────────────────────────────┐
+  │  Upstream runtime or API                     │
+  │  local model · policy server · media API     │
+  └──────────────────────────────────────────────┘
 ```
-
-Repository responsibilities:
 
 | Path | Responsibility |
 | --- | --- |
@@ -183,92 +215,43 @@ Repository responsibilities:
 | `src/worldforge/framework.py` | `WorldForge`, `World`, persistence, planning, prediction, comparison, diagnostics |
 | `src/worldforge/providers/catalog.py` | In-repo provider factories and auto-registration policy |
 | `src/worldforge/providers/base.py` | Provider interfaces, `ProviderError`, remote-provider behavior, `PredictionPayload` |
-| `src/worldforge/providers/` | Concrete adapters for mock, Cosmos, Runway, LeWorldModel, GR00T, LeRobot, JEPA, and Genie |
-| `src/worldforge/evaluation/` | Built-in deterministic evaluation suites and report renderers |
+| `src/worldforge/providers/` | Concrete adapters: mock, Cosmos, Runway, LeWorldModel, GR00T, LeRobot, JEPA, Genie |
+| `src/worldforge/evaluation/` | Deterministic evaluation suites and report renderers |
 | `src/worldforge/benchmark.py` | Capability-aware latency, retry, throughput, and event benchmark harness |
 | `src/worldforge/observability.py` | `ProviderEvent` sinks for logs, recording, and metrics |
 | `src/worldforge/testing/` | Reusable provider contract assertions |
 
-Read the detailed [architecture](./docs/src/architecture.md), [taxonomy](./docs/src/world-model-taxonomy.md),
-and [provider authoring guide](./docs/src/provider-authoring-guide.md) before adding a new
-adapter.
+Read [architecture](./docs/src/architecture.md) ·
+[world-model taxonomy](./docs/src/world-model-taxonomy.md) ·
+[provider authoring guide](./docs/src/provider-authoring-guide.md)
+before adding a new adapter.
 
-## Operating Boundaries
+## Demos
 
-- Provider capabilities are contracts. Do not advertise an operation unless the adapter implements
-  it end to end and returns the typed WorldForge result. Capability names are strict; unknown
-  names fail instead of behaving like empty filters.
-- Optional runtimes remain host-owned. WorldForge does not install torch, LeWorldModel, LeRobot,
-  Isaac GR00T, CUDA, TensorRT, robot controllers, checkpoints, or datasets as base dependencies.
-- Embodiment-specific translation remains host-owned. Policy providers preserve raw actions, but a
-  caller must translate them into executable `Action` objects for the target robot or simulator.
-- Local JSON persistence is for deterministic single-writer workflows. Services needing locking,
-  transactions, migrations, object storage, or backup policy should own that persistence layer.
-- Built-in evaluation suites are deterministic contract harnesses. They do not claim physical
-  fidelity, media quality, or real-world safety.
-- Scaffold adapters are reservations for future work. They must not be presented as real JEPA,
-  Genie, or jepa-wms integrations.
-- World IDs are local storage identifiers. They may contain letters, numbers, `.`, `_`, and `-`;
-  path separators and traversal-shaped IDs are rejected before any persistence read or write.
-
-## User And Operator Playbooks
-
-The [playbooks](./docs/src/playbooks.md) collect concrete runbooks for common work:
-
-- bootstrap a clean checkout and verify provider docs.
-- choose the right provider capability for a workflow.
-- add or promote a provider adapter without overstating capabilities.
-- diagnose provider registration, health, and capability mismatches.
-- operate and recover local JSON persistence.
-- run evaluation, benchmarks, optional runtime smokes, and release gates.
-
-Use the playbooks with [operations](./docs/src/operations.md) when embedding WorldForge in a job
-or service. Production credentials, telemetry export, dashboards, artifact retention, robot safety,
-and durable storage are still host-owned.
-
-## Demos And Optional Smokes
-
-List runnable examples:
+Checkout-safe packaged demos run against deterministic injected runtimes — no checkpoints, no
+credentials, no GPU:
 
 ```bash
-uv run worldforge examples
-uv run worldforge examples --format json
+uv run worldforge-demo-leworldmodel          # score-based planning end-to-end
+uv run worldforge-demo-lerobot               # policy + score planning end-to-end
 ```
 
-Visual harness:
+Visual TUI (optional `harness` extra):
 
 ```bash
 uv run --extra harness worldforge-harness
+uv run --extra harness worldforge-harness --flow leworldmodel
 uv run --extra harness worldforge-harness --flow lerobot
 uv run --extra harness worldforge-harness --flow diagnostics
-uv run worldforge harness --list
-uv run worldforge harness --list --format json
 ```
 
-`TheWorldHarness` is a Textual-based optional TUI for running integration flows as visible,
-inspectable traces. It keeps Textual outside the base dependency set and presents each run through
-a timeline, metrics inspector, persisted-state summary, and structured transcript.
-
-| Flow | What it exercises |
+| Flow | Exercises |
 | --- | --- |
-| `leworldmodel` | Score-provider planning with deterministic LeWorldModel-shaped costs, selected action path, execution, persistence, reload, and provider events. |
-| `lerobot` | Policy-plus-score planning with deterministic LeRobot-shaped action chunks, translation, ranking, execution, persistence, reload, and provider events. |
-| `diagnostics` | Provider catalog diagnostics plus a mock-provider benchmark comparison across predict, reason, generate, and transfer. |
+| `leworldmodel` | Score-provider planning with LeWorldModel-shaped costs, path selection, execution, persistence, reload, events. |
+| `lerobot` | Policy-plus-score planning with LeRobot-shaped action chunks, translation, ranking, execution, persistence, reload, events. |
+| `diagnostics` | Provider catalog diagnostics and a mock-provider benchmark across predict, reason, generate, transfer. |
 
-Checkout-safe packaged demos:
-
-```bash
-uv run worldforge-demo-leworldmodel
-uv run worldforge-demo-leworldmodel --json-only
-uv run worldforge-demo-lerobot
-uv run worldforge-demo-lerobot --json-only
-```
-
-These use real WorldForge provider interfaces with injected deterministic runtimes. They verify the
-adapter, planning, execution, persistence, and reload path without installing optional model
-runtimes or downloading checkpoints.
-
-Real-checkpoint smoke:
+Real-checkpoint live smoke (host-provided dependencies and assets):
 
 ```bash
 uv run --python 3.10 \
@@ -280,13 +263,37 @@ uv run --python 3.10 \
   --device cpu
 ```
 
-The checkpoint smoke requires host-provided LeWorldModel dependencies and an extracted object
-checkpoint such as `~/.stable-wm/pusht/lewm_object.ckpt`. If you have Hugging Face LeWM assets
-instead of an object checkpoint, use `worldforge-build-leworldmodel-checkpoint` first.
+See [examples/](./examples) and [`uv run worldforge examples`](./docs/src/examples.md) for the full
+runnable index.
+
+## Who It's For
+
+- **Researchers** comparing world-model surfaces without rewriting the harness each time.
+- **Robotics and physical-AI engineers** wiring policies, scorers, simulators, and media providers
+  around host-owned systems.
+- **Framework builders** shipping adapter packages, CLI workflows, and reproducible demos.
+- **Enthusiasts** who want something that runs from a clean checkout before installing CUDA stacks
+  or downloading checkpoints.
+
+## Operating Boundaries
+
+- Capabilities are contracts. Don't advertise an operation unless the adapter implements it and
+  returns the typed WorldForge result.
+- Optional runtimes remain host-owned. No torch, LeWorldModel, LeRobot, GR00T, CUDA, TensorRT,
+  controllers, checkpoints, or datasets in base dependencies.
+- Embodiment-specific action translation is host-owned. Policy providers preserve raw actions; the
+  caller converts them into executable `Action` objects.
+- Local JSON persistence is single-writer, deterministic. Services needing locking, transactions,
+  or migrations own that layer.
+- Built-in evaluation suites are deterministic contract harnesses — not physical fidelity, media
+  quality, or real-world safety claims.
+- Scaffold adapters (`jepa`, `genie`, `jepa-wms`) are reservations. They are never presented as
+  real integrations.
+- World IDs are local storage identifiers; path separators and traversal-shaped IDs are rejected.
 
 ## Development
 
-Primary local gates:
+Primary local gate (same as CI):
 
 ```bash
 uv lock --check
@@ -298,7 +305,7 @@ uv run pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
 bash scripts/test_package.sh
 ```
 
-Provider scaffolding:
+Scaffold a new provider:
 
 ```bash
 uv run python scripts/scaffold_provider.py "Acme WM" \
@@ -306,45 +313,62 @@ uv run python scripts/scaffold_provider.py "Acme WM" \
   --planned-capability score
 ```
 
-The scaffold creates adapter, fixture, test, and docs-stub files without advertising public
-capabilities until a real implementation is complete.
+Full contributor guide: [CONTRIBUTING.md](./CONTRIBUTING.md). Repository agent context:
+[AGENTS.md](./AGENTS.md).
 
-## Scope
+## Project Status
 
-WorldForge owns the software layer around world-model workflows:
+WorldForge is **pre-1.0 beta**. Minor releases may still include breaking changes when the public
+API needs to tighten.
 
-1. provider capability contracts.
-2. world state, actions, scene objects, media artifacts, and result models.
-3. planning loops that compose predictive, score, policy, and execution surfaces.
-4. diagnostics, evaluation, benchmarks, and provider events.
-5. deterministic demos, smoke commands, and adapter contract tests.
+**Useful today for**
 
-WorldForge does not own model training, robot safety, checkpoint hosting, credential storage,
-production telemetry, dashboards, or durable multi-writer persistence.
+- local provider adapter development
+- deterministic planning and evaluation experiments
+- checkout-safe demos and optional-runtime smoke tests
+- contract testing for third-party provider packages
+- CLI diagnostics around provider registration, health, and capabilities
 
-## Current State
+**Known limits**
 
-WorldForge is pre-1.0 beta. It is useful today for:
+- `jepa` and `genie` are credential-gated scaffold adapters backed by mock behavior
+- `jepa-wms` is a direct-construction candidate, not exported or auto-registered
+- local JSON persistence is single-writer only
+- evaluation scores are contract signals, not physical-fidelity or safety claims
+- optional runtimes, checkpoints, trace export, dashboards, and production telemetry stay
+  host-owned
 
-- local provider adapter development.
-- deterministic planning and evaluation experiments.
-- checkout-safe demos and optional-runtime smoke tests.
-- contract testing for provider packages.
-- CLI diagnostics around provider registration, health, and capabilities.
+## Citing WorldForge
 
-Known limits:
+If you use WorldForge in academic work, please cite it:
 
-- JEPA and Genie are credential-gated scaffold adapters backed by deterministic mock behavior.
-- `jepa-wms` is a direct-construction candidate and is not exported or auto-registered.
-- local JSON persistence is single-writer only.
-- built-in evaluation scores are contract signals, not physical-fidelity, media-quality, or
-  real-world safety claims.
-- optional model runtimes, checkpoints, robot dependencies, trace export, dashboards, and
-  production telemetry remain host-owned.
+```bibtex
+@software{worldforge,
+  title   = {WorldForge: An integration layer for physical-AI world models},
+  author  = {{WorldForge contributors}},
+  year    = {2026},
+  url     = {https://github.com/AbdelStark/worldforge},
+  version = {0.3.0}
+}
+```
+
+## Contributing
+
+Issues, discussions, and pull requests are welcome. Please read
+[CONTRIBUTING.md](./CONTRIBUTING.md) and open an issue for non-trivial changes before sending a
+patch. The [provider authoring guide](./docs/src/provider-authoring-guide.md) and
+[playbooks](./docs/src/playbooks.md) are the fastest paths to a merge-ready contribution.
+
+## License
+
+WorldForge is released under the [MIT License](./LICENSE).
 
 ## Links
 
-- Documentation: [docs/src](./docs/src)
-- Playbooks: [docs/src/playbooks.md](./docs/src/playbooks.md)
-- Repository: <https://github.com/AbdelStark/worldforge>
-- Issues: <https://github.com/AbdelStark/worldforge/issues>
+- **Documentation** — [docs/src](./docs/src)
+- **Quickstart** — [docs/src/quickstart.md](./docs/src/quickstart.md)
+- **Playbooks** — [docs/src/playbooks.md](./docs/src/playbooks.md)
+- **Architecture** — [docs/src/architecture.md](./docs/src/architecture.md)
+- **World-model taxonomy** — [docs/src/world-model-taxonomy.md](./docs/src/world-model-taxonomy.md)
+- **Repository** — <https://github.com/AbdelStark/worldforge>
+- **Issues** — <https://github.com/AbdelStark/worldforge/issues>
