@@ -88,6 +88,30 @@ class FakeScoreProvider(BaseProvider):
         return self._result
 
 
+def test_gr00t_provider_contract() -> None:
+    client = FakeGrootClient(({"arm": [[[0.1, 0.5, 0.0]]]}, {}))
+    provider = GrootPolicyClientProvider(
+        policy_client=client,
+        embodiment_tag="LIBERO_PANDA",
+        action_translator=lambda *_args: [Action.move_to(0.1, 0.5, 0.0)],
+    )
+
+    report = assert_provider_contract(provider, policy_info=_policy_info())
+
+    assert report.configured is True
+    assert report.exercised_operations == ["policy"]
+    assert set(provider.profile().capabilities.enabled_names()) == {"policy"}
+
+
+def test_gr00t_provider_contract_unconfigured(monkeypatch) -> None:
+    monkeypatch.delenv("GROOT_POLICY_HOST", raising=False)
+
+    report = assert_provider_contract(GrootPolicyClientProvider())
+
+    assert report.configured is False
+    assert report.exercised_operations == []
+
+
 def test_gr00t_policy_client_provider_passes_contract_and_emits_events() -> None:
     raw_response = (
         {
