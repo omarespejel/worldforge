@@ -423,3 +423,90 @@ def test_cli_supports_provider_listing_predict_transfer_and_eval(
     benchmark_payload = json.loads(capsys.readouterr().out)
     assert benchmark_payload["results"][0]["provider"] == "mock"
     assert benchmark_payload["results"][0]["operation"] == "generate"
+
+
+def test_benchmark_cli_applies_budget_file(tmp_path, monkeypatch, capsys) -> None:
+    passing_budget = tmp_path / "passing-budget.json"
+    passing_budget.write_text(
+        json.dumps(
+            {
+                "budgets": [
+                    {
+                        "provider": "mock",
+                        "operation": "generate",
+                        "min_success_rate": 1.0,
+                        "max_error_count": 0,
+                        "max_retry_count": 0,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "worldforge",
+            "benchmark",
+            "--provider",
+            "mock",
+            "--operation",
+            "generate",
+            "--iterations",
+            "1",
+            "--format",
+            "json",
+            "--budget-file",
+            str(passing_budget),
+            "--state-dir",
+            str(tmp_path),
+        ],
+    )
+
+    assert main() == 0
+    passing_payload = json.loads(capsys.readouterr().out)
+    assert passing_payload["gate"]["passed"] is True
+    assert passing_payload["benchmark"]["results"][0]["operation"] == "generate"
+
+    failing_budget = tmp_path / "failing-budget.json"
+    failing_budget.write_text(
+        json.dumps(
+            {
+                "budgets": [
+                    {
+                        "provider": "mock",
+                        "operation": "generate",
+                        "max_average_latency_ms": 0.0,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "worldforge",
+            "benchmark",
+            "--provider",
+            "mock",
+            "--operation",
+            "generate",
+            "--iterations",
+            "1",
+            "--format",
+            "markdown",
+            "--budget-file",
+            str(failing_budget),
+            "--state-dir",
+            str(tmp_path),
+        ],
+    )
+
+    assert main() == 1
+    failing_output = capsys.readouterr().out
+    assert "# Benchmark Report" in failing_output
+    assert "# Benchmark Gate Report" in failing_output
+    assert "average_latency_ms" in failing_output

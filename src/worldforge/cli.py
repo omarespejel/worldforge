@@ -8,7 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from worldforge import Action, GenerationOptions, VideoClip, WorldForge, WorldForgeError
-from worldforge.benchmark import ProviderBenchmarkHarness
+from worldforge.benchmark import ProviderBenchmarkHarness, load_benchmark_budgets
 from worldforge.evaluation import EvaluationSuite
 from worldforge.models import CAPABILITY_NAMES
 from worldforge.providers import ProviderError
@@ -530,6 +530,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Benchmark report format.",
     )
     benchmark.add_argument(
+        "--budget-file",
+        type=Path,
+        help=("Optional JSON budget file. Failing gates exit non-zero after printing the report."),
+    )
+    benchmark.add_argument(
         "--state-dir", default=".worldforge/worlds", help="World state directory."
     )
 
@@ -845,13 +850,42 @@ def _cmd_benchmark(args: argparse.Namespace, forge: WorldForge) -> int:
         iterations=args.iterations,
         concurrency=args.concurrency,
     )
+    gate_report = None
+    if args.budget_file:
+        try:
+            budget_payload = json.loads(args.budget_file.expanduser().read_text(encoding="utf-8"))
+        except OSError as exc:
+            raise WorldForgeError(
+                f"Failed to read benchmark budget file {args.budget_file}: {exc}"
+            ) from exc
+        except json.JSONDecodeError as exc:
+            raise WorldForgeError(f"Benchmark budget file must contain valid JSON: {exc}") from exc
+        gate_report = report.evaluate_budgets(load_benchmark_budgets(budget_payload))
+
     if args.format == "json":
-        print(report.to_json())
+        if gate_report is None:
+            print(report.to_json())
+        else:
+            print(
+                json.dumps(
+                    {
+                        "benchmark": report.to_dict(),
+                        "gate": gate_report.to_dict(),
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
     elif args.format == "csv":
-        print(report.to_csv())
+        print(gate_report.to_csv() if gate_report is not None else report.to_csv())
     else:
-        print(report.to_markdown())
-    return 0
+        if gate_report is None:
+            print(report.to_markdown())
+        else:
+            print(report.to_markdown())
+            print()
+            print(gate_report.to_markdown())
+    return 0 if gate_report is None or gate_report.passed else 1
 
 
 _ForgeHandler = Callable[[argparse.Namespace, WorldForge], "int | None"]

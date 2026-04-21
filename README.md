@@ -42,6 +42,8 @@ unsupported capability raises rather than quietly returning empty results.
 
 Planning, evaluation, benchmarks, diagnostics, and persistence are built on top of that contract,
 not on any specific runtime.
+Benchmark budget files can turn success rate, error count, retry count, latency, and throughput
+thresholds into non-zero CLI gates for release checks or preserved benchmark claims.
 
 WorldForge is not a hosted service, a model API abstraction, or a training framework. Optional
 runtimes, robot stacks, credentials, checkpoints, and durable storage remain the host
@@ -130,6 +132,7 @@ uv run worldforge provider info mock                                    # capabi
 uv run worldforge predict kitchen --provider mock --x 0.3 --y 0.8 --z 0.0 --steps 2
 uv run worldforge eval --suite planning --provider mock --format json
 uv run worldforge benchmark --provider mock --iterations 5 --format json
+uv run worldforge benchmark --provider mock --operation generate --budget-file benchmark-budget.json
 ```
 
 ## Capability Model

@@ -16,7 +16,7 @@ from worldforge import (
     WorldForge,
     WorldForgeError,
 )
-from worldforge.benchmark import BenchmarkInputs
+from worldforge.benchmark import BenchmarkBudget, BenchmarkInputs, load_benchmark_budgets
 from worldforge.models import JSONDict
 from worldforge.providers import CosmosProvider, RunwayProvider
 from worldforge.providers.base import BaseProvider, ProviderError
@@ -111,6 +111,98 @@ def test_provider_benchmark_harness_reports_mock_operations(tmp_path) -> None:
         assert result.average_latency_ms is not None
         assert result.operation_metrics["provider"] == "mock"
         assert result.operation_metrics["events"]
+
+
+def test_benchmark_report_evaluates_budget_gates(tmp_path) -> None:
+    forge = WorldForge(state_dir=tmp_path)
+    report = ProviderBenchmarkHarness(forge=forge).run(
+        "mock",
+        operations=["generate"],
+        iterations=2,
+    )
+
+    passing = report.evaluate_budgets(
+        [
+            BenchmarkBudget(
+                provider="mock",
+                operation="generate",
+                min_success_rate=1.0,
+                max_error_count=0,
+                max_retry_count=0,
+                max_average_latency_ms=10_000.0,
+                max_p95_latency_ms=10_000.0,
+                min_throughput_per_second=0.0,
+            )
+        ]
+    )
+
+    assert passing.passed is True
+    assert passing.checked_result_count == 1
+    assert passing.to_markdown().startswith("# Benchmark Gate Report")
+    assert passing.to_csv().startswith("provider,operation,metric")
+    assert json.loads(passing.to_json())["passed"] is True
+
+    failing = report.evaluate_budgets(
+        [
+            BenchmarkBudget(
+                provider="mock",
+                operation="generate",
+                max_average_latency_ms=0.0,
+            ),
+            BenchmarkBudget(provider="mock", operation="policy", max_error_count=0),
+        ]
+    )
+
+    assert failing.passed is False
+    assert {violation.metric for violation in failing.violations} == {
+        "average_latency_ms",
+        "matching_results",
+    }
+    assert json.loads(failing.to_json())["violation_count"] == 2
+
+
+def test_load_benchmark_budgets_accepts_list_or_object_payload() -> None:
+    loaded = load_benchmark_budgets(
+        {
+            "budgets": [
+                {
+                    "provider": "mock",
+                    "operation": "generate",
+                    "min_success_rate": 1.0,
+                    "max_error_count": 0,
+                }
+            ]
+        }
+    )
+
+    assert loaded == [
+        BenchmarkBudget(
+            provider="mock",
+            operation="generate",
+            min_success_rate=1.0,
+            max_error_count=0,
+        )
+    ]
+    assert load_benchmark_budgets([{"max_retry_count": 0}]) == [BenchmarkBudget(max_retry_count=0)]
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ({}, "non-empty 'budgets' list"),
+        ([], "non-empty list"),
+        ([{"operation": "not-real", "max_error_count": 0}], "operation must be one of"),
+        ([{"provider": "", "max_error_count": 0}], "provider must be a non-empty string"),
+        ([{"provider": "mock"}], "requires at least one threshold"),
+        ([{"max_error_count": -1}], "max_error_count must be an integer"),
+    ],
+)
+def test_load_benchmark_budgets_rejects_invalid_payloads(
+    payload: object,
+    message: str,
+) -> None:
+    with pytest.raises(WorldForgeError, match=message):
+        load_benchmark_budgets(payload)
 
 
 def test_provider_benchmark_harness_reports_score_and_policy_operations(tmp_path) -> None:

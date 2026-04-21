@@ -187,6 +187,7 @@ uv run worldforge eval --suite planning --provider mock --format markdown
 uv run worldforge eval --suite generation --provider mock --format json
 uv run worldforge benchmark --provider mock --iterations 5 --format markdown
 uv run worldforge benchmark --provider mock --iterations 5 --format json
+uv run worldforge benchmark --provider mock --operation generate --budget-file benchmark-budget.json
 ```
 
 Success signal:
@@ -195,6 +196,8 @@ Success signal:
 - benchmark reports identify provider, operation, pass/fail status, latency, retry counts, and
   exported artifact format for direct provider surfaces such as `score`, `policy`, `generate`,
   `transfer`, and `embed`.
+- benchmark budget files fail non-zero when success rate, error count, retry count, latency, or
+  throughput thresholds regress.
 - benchmark inputs and results are saved by the host when they are used for release or paper
   claims.
 

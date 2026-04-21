@@ -20,10 +20,23 @@ from worldforge.models import (
     VideoClip,
     WorldForgeError,
     dump_json,
+    require_finite_number,
+    require_non_negative_int,
     require_positive_int,
+    require_probability,
 )
 from worldforge.observability import ProviderMetricsSink, compose_event_handlers
 from worldforge.providers.base import ProviderError
+
+BENCHMARKABLE_OPERATIONS = (
+    "predict",
+    "reason",
+    "generate",
+    "transfer",
+    "embed",
+    "score",
+    "policy",
+)
 
 
 def _sample_transfer_clip() -> VideoClip:
@@ -103,6 +116,299 @@ def _percentile(values: Sequence[float], quantile: float) -> float | None:
     upper = min(len(ordered) - 1, lower + 1)
     weight = index - lower
     return ordered[lower] + ((ordered[upper] - ordered[lower]) * weight)
+
+
+def _non_empty_optional_text(value: object, *, name: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise WorldForgeError(f"{name} must be a non-empty string when provided.")
+    return value.strip()
+
+
+def _optional_non_negative_int(value: object, *, name: str) -> int | None:
+    if value is None:
+        return None
+    return require_non_negative_int(value, name=name)
+
+
+def _optional_non_negative_number(value: object, *, name: str) -> float | None:
+    if value is None:
+        return None
+    number = require_finite_number(value, name=name)
+    if number < 0.0:
+        raise WorldForgeError(f"{name} must be greater than or equal to 0.")
+    return number
+
+
+def _format_optional_number(value: float | int | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, int):
+        return str(value)
+    return f"{value:.4f}"
+
+
+@dataclass(slots=True, frozen=True)
+class BenchmarkBudget:
+    """Thresholds for release or claim-oriented benchmark gates.
+
+    ``provider`` and ``operation`` are optional selectors. When either selector is omitted, the
+    budget applies to every matching result on that dimension.
+    """
+
+    provider: str | None = None
+    operation: str | None = None
+    min_success_rate: float | None = None
+    max_error_count: int | None = None
+    max_retry_count: int | None = None
+    max_average_latency_ms: float | None = None
+    max_p95_latency_ms: float | None = None
+    min_throughput_per_second: float | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "provider",
+            _non_empty_optional_text(self.provider, name="BenchmarkBudget provider"),
+        )
+        operation = _non_empty_optional_text(
+            self.operation,
+            name="BenchmarkBudget operation",
+        )
+        if operation is not None and operation not in BENCHMARKABLE_OPERATIONS:
+            known = ", ".join(BENCHMARKABLE_OPERATIONS)
+            raise WorldForgeError(f"BenchmarkBudget operation must be one of: {known}.")
+        object.__setattr__(self, "operation", operation)
+        object.__setattr__(
+            self,
+            "min_success_rate",
+            (
+                require_probability(
+                    self.min_success_rate,
+                    name="BenchmarkBudget min_success_rate",
+                )
+                if self.min_success_rate is not None
+                else None
+            ),
+        )
+        object.__setattr__(
+            self,
+            "max_error_count",
+            _optional_non_negative_int(
+                self.max_error_count,
+                name="BenchmarkBudget max_error_count",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "max_retry_count",
+            _optional_non_negative_int(
+                self.max_retry_count,
+                name="BenchmarkBudget max_retry_count",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "max_average_latency_ms",
+            _optional_non_negative_number(
+                self.max_average_latency_ms,
+                name="BenchmarkBudget max_average_latency_ms",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "max_p95_latency_ms",
+            _optional_non_negative_number(
+                self.max_p95_latency_ms,
+                name="BenchmarkBudget max_p95_latency_ms",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "min_throughput_per_second",
+            _optional_non_negative_number(
+                self.min_throughput_per_second,
+                name="BenchmarkBudget min_throughput_per_second",
+            ),
+        )
+        if not any(
+            value is not None
+            for value in (
+                self.min_success_rate,
+                self.max_error_count,
+                self.max_retry_count,
+                self.max_average_latency_ms,
+                self.max_p95_latency_ms,
+                self.min_throughput_per_second,
+            )
+        ):
+            raise WorldForgeError("BenchmarkBudget requires at least one threshold.")
+
+    @classmethod
+    def from_dict(cls, payload: JSONDict) -> BenchmarkBudget:
+        if not isinstance(payload, dict):
+            raise WorldForgeError("Benchmark budget entries must be JSON objects.")
+        return cls(
+            provider=payload.get("provider"),
+            operation=payload.get("operation"),
+            min_success_rate=payload.get("min_success_rate"),
+            max_error_count=payload.get("max_error_count"),
+            max_retry_count=payload.get("max_retry_count"),
+            max_average_latency_ms=payload.get("max_average_latency_ms"),
+            max_p95_latency_ms=payload.get("max_p95_latency_ms"),
+            min_throughput_per_second=payload.get("min_throughput_per_second"),
+        )
+
+    def matches(self, result: BenchmarkResult) -> bool:
+        provider_matches = self.provider is None or self.provider == result.provider
+        operation_matches = self.operation is None or self.operation == result.operation
+        return provider_matches and operation_matches
+
+    def selector_label(self) -> str:
+        provider = self.provider or "*"
+        operation = self.operation or "*"
+        return f"{provider}/{operation}"
+
+    def to_dict(self) -> JSONDict:
+        return {
+            "provider": self.provider,
+            "operation": self.operation,
+            "min_success_rate": self.min_success_rate,
+            "max_error_count": self.max_error_count,
+            "max_retry_count": self.max_retry_count,
+            "max_average_latency_ms": self.max_average_latency_ms,
+            "max_p95_latency_ms": self.max_p95_latency_ms,
+            "min_throughput_per_second": self.min_throughput_per_second,
+        }
+
+
+@dataclass(slots=True, frozen=True)
+class BenchmarkGateViolation:
+    """One failed benchmark budget check."""
+
+    provider: str
+    operation: str
+    metric: str
+    observed: float | int | None
+    threshold: float | int
+    condition: str
+    budget_selector: str
+
+    def to_dict(self) -> JSONDict:
+        return {
+            "provider": self.provider,
+            "operation": self.operation,
+            "metric": self.metric,
+            "observed": self.observed,
+            "threshold": self.threshold,
+            "condition": self.condition,
+            "budget_selector": self.budget_selector,
+        }
+
+
+@dataclass(slots=True)
+class BenchmarkGateReport:
+    """Budget evaluation report for a benchmark run."""
+
+    budgets: list[BenchmarkBudget]
+    checked_result_count: int
+    violations: list[BenchmarkGateViolation] = field(default_factory=list)
+
+    @property
+    def passed(self) -> bool:
+        return not self.violations
+
+    @property
+    def violation_count(self) -> int:
+        return len(self.violations)
+
+    def to_dict(self) -> JSONDict:
+        return {
+            "passed": self.passed,
+            "budget_count": len(self.budgets),
+            "checked_result_count": self.checked_result_count,
+            "violation_count": self.violation_count,
+            "budgets": [budget.to_dict() for budget in self.budgets],
+            "violations": [violation.to_dict() for violation in self.violations],
+        }
+
+    def to_json(self) -> str:
+        return dump_json(self.to_dict())
+
+    def to_markdown(self) -> str:
+        status = "passed" if self.passed else "failed"
+        lines = [
+            "# Benchmark Gate Report",
+            "",
+            f"Status: {status}",
+            f"Budgets: {len(self.budgets)}",
+            f"Checked results: {self.checked_result_count}",
+            f"Violations: {self.violation_count}",
+        ]
+        if self.violations:
+            lines.extend(
+                [
+                    "",
+                    "| provider | operation | metric | observed | threshold | condition | budget |",
+                    "| --- | --- | --- | ---: | ---: | --- | --- |",
+                ]
+            )
+            for violation in self.violations:
+                lines.append(
+                    "| "
+                    f"{violation.provider} | "
+                    f"{violation.operation} | "
+                    f"{violation.metric} | "
+                    f"{_format_optional_number(violation.observed)} | "
+                    f"{_format_optional_number(violation.threshold)} | "
+                    f"{violation.condition} | "
+                    f"{violation.budget_selector} |"
+                )
+        return "\n".join(lines)
+
+    def to_csv(self) -> str:
+        buffer = io.StringIO()
+        writer = csv.DictWriter(
+            buffer,
+            fieldnames=[
+                "provider",
+                "operation",
+                "metric",
+                "observed",
+                "threshold",
+                "condition",
+                "budget_selector",
+            ],
+        )
+        writer.writeheader()
+        for violation in self.violations:
+            writer.writerow(
+                {
+                    "provider": violation.provider,
+                    "operation": violation.operation,
+                    "metric": violation.metric,
+                    "observed": _format_optional_number(violation.observed),
+                    "threshold": _format_optional_number(violation.threshold),
+                    "condition": violation.condition,
+                    "budget_selector": violation.budget_selector,
+                }
+            )
+        return buffer.getvalue().strip()
+
+
+def load_benchmark_budgets(payload: object) -> list[BenchmarkBudget]:
+    """Parse benchmark budget JSON from a list or ``{"budgets": [...]}`` object."""
+
+    budget_entries = payload
+    if isinstance(payload, dict):
+        budget_entries = payload.get("budgets")
+    if not isinstance(budget_entries, list) or not budget_entries:
+        raise WorldForgeError(
+            "Benchmark budget payload must be a non-empty list or an object with a non-empty "
+            "'budgets' list."
+        )
+    return [BenchmarkBudget.from_dict(entry) for entry in budget_entries]
 
 
 @dataclass(slots=True)
@@ -204,6 +510,113 @@ class BenchmarkResult:
         }
 
 
+def _add_max_violation(
+    violations: list[BenchmarkGateViolation],
+    *,
+    budget: BenchmarkBudget,
+    result: BenchmarkResult,
+    metric: str,
+    observed: float | int | None,
+    threshold: float | int | None,
+) -> None:
+    if threshold is None:
+        return
+    if observed is None or observed > threshold:
+        violations.append(
+            BenchmarkGateViolation(
+                provider=result.provider,
+                operation=result.operation,
+                metric=metric,
+                observed=observed,
+                threshold=threshold,
+                condition=f"<= {_format_optional_number(threshold)}",
+                budget_selector=budget.selector_label(),
+            )
+        )
+
+
+def _add_min_violation(
+    violations: list[BenchmarkGateViolation],
+    *,
+    budget: BenchmarkBudget,
+    result: BenchmarkResult,
+    metric: str,
+    observed: float | int | None,
+    threshold: float | int | None,
+) -> None:
+    if threshold is None:
+        return
+    if observed is None or observed < threshold:
+        violations.append(
+            BenchmarkGateViolation(
+                provider=result.provider,
+                operation=result.operation,
+                metric=metric,
+                observed=observed,
+                threshold=threshold,
+                condition=f">= {_format_optional_number(threshold)}",
+                budget_selector=budget.selector_label(),
+            )
+        )
+
+
+def _evaluate_budget_for_result(
+    budget: BenchmarkBudget,
+    result: BenchmarkResult,
+) -> list[BenchmarkGateViolation]:
+    violations: list[BenchmarkGateViolation] = []
+    success_rate = result.success_count / result.iterations if result.iterations else None
+    _add_min_violation(
+        violations,
+        budget=budget,
+        result=result,
+        metric="success_rate",
+        observed=success_rate,
+        threshold=budget.min_success_rate,
+    )
+    _add_max_violation(
+        violations,
+        budget=budget,
+        result=result,
+        metric="error_count",
+        observed=result.error_count,
+        threshold=budget.max_error_count,
+    )
+    _add_max_violation(
+        violations,
+        budget=budget,
+        result=result,
+        metric="retry_count",
+        observed=result.retry_count,
+        threshold=budget.max_retry_count,
+    )
+    _add_max_violation(
+        violations,
+        budget=budget,
+        result=result,
+        metric="average_latency_ms",
+        observed=result.average_latency_ms,
+        threshold=budget.max_average_latency_ms,
+    )
+    _add_max_violation(
+        violations,
+        budget=budget,
+        result=result,
+        metric="p95_latency_ms",
+        observed=result.p95_latency_ms,
+        threshold=budget.max_p95_latency_ms,
+    )
+    _add_min_violation(
+        violations,
+        budget=budget,
+        result=result,
+        metric="throughput_per_second",
+        observed=result.throughput_per_second,
+        threshold=budget.min_throughput_per_second,
+    )
+    return violations
+
+
 @dataclass(slots=True)
 class BenchmarkReport:
     """Materialized benchmark report with export helpers."""
@@ -299,6 +712,45 @@ class BenchmarkReport:
             "csv": self.to_csv(),
         }
 
+    def evaluate_budgets(
+        self,
+        budgets: Sequence[BenchmarkBudget],
+    ) -> BenchmarkGateReport:
+        """Evaluate release or claim budgets against materialized benchmark results."""
+
+        if not budgets:
+            raise WorldForgeError("evaluate_budgets() requires at least one BenchmarkBudget.")
+
+        violations: list[BenchmarkGateViolation] = []
+        checked_result_count = 0
+        for budget in budgets:
+            if not isinstance(budget, BenchmarkBudget):
+                raise WorldForgeError("evaluate_budgets() accepts only BenchmarkBudget entries.")
+            matched_results = [result for result in self.results if budget.matches(result)]
+            if not matched_results:
+                violations.append(
+                    BenchmarkGateViolation(
+                        provider=budget.provider or "*",
+                        operation=budget.operation or "*",
+                        metric="matching_results",
+                        observed=0,
+                        threshold=1,
+                        condition=">= 1 matching result",
+                        budget_selector=budget.selector_label(),
+                    )
+                )
+                continue
+
+            checked_result_count += len(matched_results)
+            for result in matched_results:
+                violations.extend(_evaluate_budget_for_result(budget, result))
+
+        return BenchmarkGateReport(
+            budgets=list(budgets),
+            checked_result_count=checked_result_count,
+            violations=violations,
+        )
+
 
 @dataclass(slots=True)
 class _BenchmarkSample:
@@ -313,15 +765,7 @@ class _BenchmarkSample:
 class ProviderBenchmarkHarness:
     """Run latency, retry, and throughput benchmarks across registered providers."""
 
-    benchmarkable_operations = (
-        "predict",
-        "reason",
-        "generate",
-        "transfer",
-        "embed",
-        "score",
-        "policy",
-    )
+    benchmarkable_operations = BENCHMARKABLE_OPERATIONS
 
     def __init__(self, forge: WorldForge | None = None) -> None:
         self._forge = forge or WorldForge()
@@ -588,8 +1032,13 @@ def run_benchmark(
 
 __all__ = [
     "BenchmarkInputs",
+    "BenchmarkBudget",
+    "BenchmarkGateReport",
+    "BenchmarkGateViolation",
     "BenchmarkReport",
     "BenchmarkResult",
+    "BENCHMARKABLE_OPERATIONS",
     "ProviderBenchmarkHarness",
+    "load_benchmark_budgets",
     "run_benchmark",
 ]

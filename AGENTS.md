@@ -107,6 +107,7 @@ uv run worldforge provider docs
 uv run --extra harness worldforge-harness
 uv run worldforge-demo-leworldmodel
 uv run worldforge-demo-lerobot
+uv run worldforge benchmark --provider mock --operation generate --budget-file benchmark-budget.json
 ```
 
 Generate a provider scaffold:
@@ -256,6 +257,9 @@ rm -f "$tmp_req"
   when adding new provider environment variables.
 - `make lint` and `make format` run against `src tests examples scripts` to match CI and the
   commands documented in `README.md`. Do not drop `scripts` from either target.
+- `worldforge benchmark --budget-file <path>` evaluates direct provider benchmark results against
+  JSON thresholds and exits non-zero on violations. Keep benchmark budgets tied to preserved run
+  artifacts when using them for release or paper claims.
 
 ## Technical Scope
 

@@ -152,6 +152,7 @@ usage: worldforge benchmark [-h] [--provider PROVIDERS]
                             [--iterations ITERATIONS]
                             [--concurrency CONCURRENCY]
                             [--format {markdown,json,csv}]
+                            [--budget-file BUDGET_FILE]
                             [--state-dir STATE_DIR]
 
 options:
@@ -165,6 +166,9 @@ options:
                         Concurrent workers.
   --format {markdown,json,csv}
                         Benchmark report format.
+  --budget-file BUDGET_FILE
+                        Optional JSON budget file. Failing gates exit non-zero
+                        after printing the report.
   --state-dir STATE_DIR
                         World state directory.
 """,
