@@ -89,11 +89,12 @@ Before setting any capability flag to `True`, prove the full contract:
 Validation:
 
 ```bash
+uv sync --group dev
 uv run ruff check src tests examples scripts
 uv run ruff format --check src tests examples scripts
 uv run python scripts/generate_provider_docs.py --check
 uv run pytest tests/test_provider_contracts.py tests/test_provider_catalog_docs.py
-uv run pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
+uv run --extra harness pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
 ```
 
 Success signal: the provider contract helper passes for supported surfaces, every documented
@@ -138,7 +139,11 @@ CLI:
 ```bash
 uv run worldforge world create lab --provider mock
 uv run worldforge world create seeded-lab --provider mock --prompt "A kitchen with a mug"
+uv run worldforge world add-object <world-id> cube --x 0 --y 0.5 --z 0 --object-id cube-1
+uv run worldforge world update-object <world-id> cube-1 --x 0.2 --y 0.5 --z 0 --graspable true
+uv run worldforge world predict <world-id> --object-id cube-1 --x 0.4 --y 0.5 --z 0
 uv run worldforge world list
+uv run worldforge world objects <world-id>
 uv run worldforge world show <world-id>
 uv run worldforge world history <world-id>
 uv run worldforge world export <world-id> --output world.json
@@ -164,8 +169,10 @@ Success signal:
 
 - world IDs are file-safe local identifiers.
 - saved JSON validates before it replaces the destination file.
-- the CLI create/import/fork commands save through the same validation path as Python
+- the CLI create/import/fork/object/predict commands save through the same validation path as Python
   `save_world(...)`.
+- `world predict` persists the provider-updated state by default; use `--dry-run` to inspect a
+  prediction without replacing the local JSON file.
 - imported state rejects malformed scene objects, invalid history, negative steps, and traversal
   shaped IDs.
 
@@ -270,12 +277,13 @@ describe an injected demo as real neural inference.
 Use this before publishing a package, merging provider work, or pushing a milestone.
 
 ```bash
+uv sync --group dev
 uv lock --check
 uv run ruff check src tests examples scripts
 uv run ruff format --check src tests examples scripts
 uv run python scripts/generate_provider_docs.py --check
 uv run pytest
-uv run pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
+uv run --extra harness pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
 bash scripts/test_package.sh
 ```
 
@@ -308,7 +316,7 @@ Use this as the first stop when a user reports a failure.
 | persistence load failed | reproduce `load_world` with saved JSON | failing JSON, world ID, state dir | restore from backup or fix importer validation |
 | remote media failed | provider events and provider-specific docs | status code, attempt, sanitized target | parser, retry policy, artifact handling, or host credentials |
 | optional runtime smoke failed | smoke command and `--help` output | host OS, dependency path, checkpoint path | host runtime setup; do not add heavy deps to base package |
-| coverage failed | `uv run pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90` | missing lines and changed files | add behavior tests, especially error paths |
+| coverage failed | `uv run --extra harness pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90` | missing lines and changed files | add behavior tests, especially error paths |
 
 Do not paper over a failure by widening docs or loosening a capability. Fix the contract or make
 the limitation explicit.

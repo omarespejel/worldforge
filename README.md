@@ -124,7 +124,10 @@ print(doctor.healthy_provider_count, doctor.provider_count)
 uv run worldforge examples                                              # runnable scripts index
 uv run worldforge doctor                                                # provider health
 uv run worldforge world create lab --provider mock                      # save a local world
+uv run worldforge world add-object <world-id> cube --x 0 --y 0.5 --z 0  # edit scene state
+uv run worldforge world predict <world-id> --object-id <object-id> --x 0.4 --y 0.5 --z 0
 uv run worldforge world list                                            # persisted worlds
+uv run worldforge world objects <world-id>                              # scene objects
 uv run worldforge world history <world-id>                              # persisted history
 uv run worldforge world export <world-id> --output world.json           # portable state JSON
 uv run worldforge provider list                                         # registered providers
@@ -305,12 +308,13 @@ runnable index.
 Primary local gate (same as CI):
 
 ```bash
+uv sync --group dev
 uv lock --check
 uv run ruff check src tests examples scripts
 uv run ruff format --check src tests examples scripts
 uv run python scripts/generate_provider_docs.py --check
 uv run pytest
-uv run pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
+uv run --extra harness pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
 bash scripts/test_package.sh
 ```
 

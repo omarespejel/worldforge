@@ -19,7 +19,7 @@ test:
 	$(UV) run pytest
 
 test-cov:
-	$(UV) run pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
+	$(UV) run --extra harness pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
 
 test-package:
 	bash scripts/test_package.sh

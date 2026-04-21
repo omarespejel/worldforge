@@ -41,22 +41,6 @@ options:
   --format {markdown,json}
                         Output format for provider docs metadata.
 """,
-    ("world", "--help"): """\
-usage: worldforge world [-h] {list,create,show,history,export,import,fork} ...
-
-positional arguments:
-  {list,create,show,history,export,import,fork}
-    list                List persisted worlds.
-    create              Create and save a world.
-    show                Show a persisted world.
-    history             Show persisted world history.
-    export              Export a persisted world as JSON.
-    import              Import and save exported world JSON.
-    fork                Fork a world from a history entry.
-
-options:
-  -h, --help            show this help message and exit
-""",
     ("world", "create", "--help"): """\
 usage: worldforge world create [-h] [--provider PROVIDER] [--prompt PROMPT]
                                [--description DESCRIPTION]
@@ -174,6 +158,21 @@ options:
 """,
 }
 
+WORLD_HELP_COMMANDS: tuple[tuple[str, str], ...] = (
+    ("list", "List persisted worlds."),
+    ("create", "Create and save a world."),
+    ("show", "Show a persisted world."),
+    ("history", "Show persisted world history."),
+    ("objects", "List objects in a world."),
+    ("add-object", "Add an object to a persisted world."),
+    ("update-object", "Patch an object in a persisted world."),
+    ("remove-object", "Remove an object from a persisted world."),
+    ("predict", "Predict and save the next state for a persisted world."),
+    ("export", "Export a persisted world as JSON."),
+    ("import", "Import and save exported world JSON."),
+    ("fork", "Fork a world from a history entry."),
+)
+
 
 def _help_output(argv: tuple[str, ...], monkeypatch, capsys) -> str:
     monkeypatch.setenv("COLUMNS", "80")
@@ -216,6 +215,15 @@ def test_top_level_help_lists_command_surface(monkeypatch, capsys) -> None:
         "worldforge eval --suite planning --provider mock --format json",
     ):
         assert common_command in output
+
+
+def test_world_help_lists_persistence_command_surface(monkeypatch, capsys) -> None:
+    output = _help_output(("world", "--help"), monkeypatch, capsys)
+
+    assert output.startswith("usage: worldforge world [-h] command ...")
+    for command, help_text in WORLD_HELP_COMMANDS:
+        assert command in output
+        assert help_text in output
 
 
 @pytest.mark.parametrize("argv", HELP_SNAPSHOTS)

@@ -4,10 +4,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from collections.abc import Callable
 from pathlib import Path
 
-from worldforge import Action, GenerationOptions, VideoClip, WorldForge, WorldForgeError
+from worldforge import (
+    Action,
+    BBox,
+    GenerationOptions,
+    Position,
+    SceneObject,
+    SceneObjectPatch,
+    VideoClip,
+    WorldForge,
+    WorldForgeError,
+)
 from worldforge.benchmark import ProviderBenchmarkHarness, load_benchmark_budgets
 from worldforge.evaluation import EvaluationSuite
 from worldforge.models import CAPABILITY_NAMES
@@ -23,7 +34,10 @@ CLI_EPILOG = """Common commands:
   worldforge examples
   worldforge doctor
   worldforge world create lab --provider mock
+  worldforge world add-object <world-id> cube --x 0 --y 0.5 --z 0
+  worldforge world predict <world-id> --object-id <object-id> --x 0.4 --y 0.5 --z 0
   worldforge world list
+  worldforge world objects <world-id>
   worldforge world history <world-id>
   worldforge provider list
   worldforge provider docs
@@ -124,6 +138,58 @@ def _world_summary(world) -> dict[str, object]:
     }
 
 
+def _object_summary(obj: SceneObject) -> dict[str, object]:
+    return {
+        "id": obj.id,
+        "name": obj.name,
+        "position": obj.position.to_dict(),
+        "bbox": obj.bbox.to_dict(),
+        "is_graspable": obj.is_graspable,
+        "metadata": dict(obj.metadata),
+    }
+
+
+def _position_from_args(args: argparse.Namespace) -> Position:
+    return Position(args.x, args.y, args.z)
+
+
+def _optional_position_from_args(args: argparse.Namespace) -> Position | None:
+    coordinates = (args.x, args.y, args.z)
+    if all(value is None for value in coordinates):
+        return None
+    if any(value is None for value in coordinates):
+        raise WorldForgeError("Position updates require --x, --y, and --z together.")
+    return Position(args.x, args.y, args.z)
+
+
+def _bbox_around(position: Position, size: float) -> BBox:
+    if not math.isfinite(size) or size <= 0.0:
+        raise WorldForgeError("--size must be a finite number greater than 0.")
+    half = size / 2.0
+    return BBox(
+        Position(position.x - half, position.y - half, position.z - half),
+        Position(position.x + half, position.y + half, position.z + half),
+    )
+
+
+def _parse_json_object(value: str, *, label: str) -> dict[str, object]:
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise WorldForgeError(f"{label} must be valid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise WorldForgeError(f"{label} must decode to a JSON object.")
+    return payload
+
+
+def _parse_bool(value: str) -> bool:
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    raise WorldForgeError("Boolean values must be 'true' or 'false'.")
+
+
 def _world_history_payload(world) -> list[dict[str, object]]:
     entries: list[dict[str, object]] = []
     for entry in world.history():
@@ -166,6 +232,36 @@ def _print_world_summary_markdown(world) -> None:
     print(f"- history: {world.history_length}")
     if world.description:
         print(f"- description: {world.description}")
+
+
+def _print_world_objects_markdown(world, objects: list[dict[str, object]]) -> None:
+    print(f"# World Objects: {world.id}")
+    print()
+    print("| id | name | x | y | z | graspable |")
+    print("| --- | --- | ---: | ---: | ---: | --- |")
+    for obj in objects:
+        position = obj["position"]
+        assert isinstance(position, dict)
+        print(
+            "| "
+            f"`{obj['id']}` | "
+            f"{obj['name']} | "
+            f"{float(position['x']):.3f} | "
+            f"{float(position['y']):.3f} | "
+            f"{float(position['z']):.3f} | "
+            f"{obj['is_graspable']} |"
+        )
+
+
+def _print_world_prediction_markdown(payload: dict[str, object]) -> None:
+    print(f"# World Prediction: {payload['world_id']}")
+    print()
+    print(f"- provider: {payload['provider']}")
+    print(f"- saved: {payload['saved']}")
+    print(f"- physics_score: {float(payload['physics_score']):.4f}")
+    print(f"- confidence: {float(payload['confidence']):.4f}")
+    print(f"- step: {payload['world']['step']}")
+    print(f"- objects: {payload['world']['object_count']}")
 
 
 def _print_world_history_markdown(world, entries: list[dict[str, object]]) -> None:
@@ -335,7 +431,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     world = subparsers.add_parser("world", help="Manage persisted local JSON worlds.")
-    world_subparsers = world.add_subparsers(dest="world_command", required=True)
+    world_subparsers = world.add_subparsers(
+        dest="world_command",
+        required=True,
+        metavar="command",
+    )
 
     world_list = world_subparsers.add_parser("list", help="List persisted worlds.")
     world_list.add_argument(
@@ -388,6 +488,124 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("json", "markdown"),
         default="json",
         help="Output format for history entries.",
+    )
+
+    world_objects = world_subparsers.add_parser("objects", help="List objects in a world.")
+    world_objects.add_argument("world_id", help="World identifier.")
+    world_objects.add_argument(
+        "--state-dir", default=".worldforge/worlds", help="World state directory."
+    )
+    world_objects.add_argument(
+        "--format",
+        choices=("json", "markdown"),
+        default="json",
+        help="Output format for scene objects.",
+    )
+
+    world_add_object = world_subparsers.add_parser(
+        "add-object",
+        help="Add an object to a persisted world.",
+    )
+    world_add_object.add_argument("world_id", help="World identifier.")
+    world_add_object.add_argument("name", help="Object name.")
+    world_add_object.add_argument("--x", type=float, required=True, help="Object x coordinate.")
+    world_add_object.add_argument("--y", type=float, required=True, help="Object y coordinate.")
+    world_add_object.add_argument("--z", type=float, required=True, help="Object z coordinate.")
+    world_add_object.add_argument(
+        "--size",
+        type=float,
+        default=0.1,
+        help="Centered bounding-box edge length.",
+    )
+    world_add_object.add_argument("--object-id", help="Optional object identifier.")
+    world_add_object.add_argument(
+        "--graspable",
+        action="store_true",
+        help="Mark the object as graspable.",
+    )
+    world_add_object.add_argument(
+        "--metadata",
+        help="Optional JSON object stored on the scene object.",
+    )
+    world_add_object.add_argument(
+        "--state-dir", default=".worldforge/worlds", help="World state directory."
+    )
+    world_add_object.add_argument(
+        "--format",
+        choices=("json", "markdown"),
+        default="json",
+        help="Output format for the updated world summary.",
+    )
+
+    world_update_object = world_subparsers.add_parser(
+        "update-object",
+        help="Patch an object in a persisted world.",
+    )
+    world_update_object.add_argument("world_id", help="World identifier.")
+    world_update_object.add_argument("object_id", help="Scene object identifier.")
+    world_update_object.add_argument("--name", help="Replacement object name.")
+    world_update_object.add_argument("--x", type=float, help="Replacement x coordinate.")
+    world_update_object.add_argument("--y", type=float, help="Replacement y coordinate.")
+    world_update_object.add_argument("--z", type=float, help="Replacement z coordinate.")
+    world_update_object.add_argument(
+        "--graspable",
+        choices=("true", "false"),
+        help="Replacement graspable flag.",
+    )
+    world_update_object.add_argument(
+        "--state-dir", default=".worldforge/worlds", help="World state directory."
+    )
+    world_update_object.add_argument(
+        "--format",
+        choices=("json", "markdown"),
+        default="json",
+        help="Output format for the updated object.",
+    )
+
+    world_remove_object = world_subparsers.add_parser(
+        "remove-object",
+        help="Remove an object from a persisted world.",
+    )
+    world_remove_object.add_argument("world_id", help="World identifier.")
+    world_remove_object.add_argument("object_id", help="Scene object identifier.")
+    world_remove_object.add_argument(
+        "--state-dir", default=".worldforge/worlds", help="World state directory."
+    )
+    world_remove_object.add_argument(
+        "--format",
+        choices=("json", "markdown"),
+        default="json",
+        help="Output format for the removed object.",
+    )
+
+    world_predict = world_subparsers.add_parser(
+        "predict",
+        help="Predict and save the next state for a persisted world.",
+    )
+    world_predict.add_argument("world_id", help="World identifier.")
+    world_predict.add_argument(
+        "--provider",
+        help="Provider name. Defaults to the world's provider.",
+    )
+    world_predict.add_argument("--x", type=float, required=True, help="Target x coordinate.")
+    world_predict.add_argument("--y", type=float, required=True, help="Target y coordinate.")
+    world_predict.add_argument("--z", type=float, required=True, help="Target z coordinate.")
+    world_predict.add_argument("--speed", type=float, default=1.0, help="Action speed.")
+    world_predict.add_argument("--object-id", help="Optional object id to move.")
+    world_predict.add_argument("--steps", type=int, default=1, help="Prediction horizon in steps.")
+    world_predict.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Run prediction without saving the updated world.",
+    )
+    world_predict.add_argument(
+        "--state-dir", default=".worldforge/worlds", help="World state directory."
+    )
+    world_predict.add_argument(
+        "--format",
+        choices=("json", "markdown"),
+        default="json",
+        help="Output format for the prediction result.",
     )
 
     world_export = world_subparsers.add_parser("export", help="Export a persisted world as JSON.")
@@ -700,6 +918,123 @@ def _cmd_world_history(args: argparse.Namespace, forge: WorldForge) -> int:
     return 0
 
 
+def _cmd_world_objects(args: argparse.Namespace, forge: WorldForge) -> int:
+    world = forge.load_world(args.world_id)
+    objects = [_object_summary(obj) for obj in world.objects()]
+    if args.format == "markdown":
+        _print_world_objects_markdown(world, objects)
+    else:
+        _print_json({"world_id": world.id, "objects": objects})
+    return 0
+
+
+def _cmd_world_add_object(args: argparse.Namespace, forge: WorldForge) -> int:
+    world = forge.load_world(args.world_id)
+    position = _position_from_args(args)
+    metadata = _parse_json_object(args.metadata, label="--metadata") if args.metadata else {}
+    object_kwargs = {"id": args.object_id} if args.object_id else {}
+    obj = SceneObject(
+        args.name,
+        position,
+        _bbox_around(position, args.size),
+        is_graspable=args.graspable,
+        metadata=metadata,
+        **object_kwargs,
+    )
+    added = world.add_object(obj)
+    forge.save_world(world)
+    payload = {
+        "world": _world_summary(world),
+        "object": _object_summary(added),
+    }
+    if args.format == "markdown":
+        _print_world_summary_markdown(world)
+        print()
+        _print_world_objects_markdown(world, [_object_summary(added)])
+    else:
+        _print_json(payload)
+    return 0
+
+
+def _cmd_world_update_object(args: argparse.Namespace, forge: WorldForge) -> int:
+    world = forge.load_world(args.world_id)
+    patch = SceneObjectPatch()
+    has_update = False
+    if args.name is not None:
+        patch.set_name(args.name)
+        has_update = True
+    position = _optional_position_from_args(args)
+    if position is not None:
+        patch.set_position(position)
+        has_update = True
+    if args.graspable is not None:
+        patch.set_graspable(_parse_bool(args.graspable))
+        has_update = True
+    if not has_update:
+        raise WorldForgeError(
+            "update-object requires at least one of --name, --x/--y/--z, or --graspable."
+        )
+    updated = world.update_object_patch(args.object_id, patch)
+    forge.save_world(world)
+    payload = {
+        "world": _world_summary(world),
+        "object": _object_summary(updated),
+    }
+    if args.format == "markdown":
+        _print_world_objects_markdown(world, [_object_summary(updated)])
+    else:
+        _print_json(payload)
+    return 0
+
+
+def _cmd_world_remove_object(args: argparse.Namespace, forge: WorldForge) -> int:
+    world = forge.load_world(args.world_id)
+    removed = world.remove_object_by_id(args.object_id)
+    if removed is None:
+        raise WorldForgeError(f"Object '{args.object_id}' is not present in world '{world.id}'.")
+    forge.save_world(world)
+    payload = {
+        "world": _world_summary(world),
+        "removed_object": _object_summary(removed),
+    }
+    if args.format == "markdown":
+        _print_world_summary_markdown(world)
+        print()
+        _print_world_objects_markdown(world, [_object_summary(removed)])
+    else:
+        _print_json(payload)
+    return 0
+
+
+def _cmd_world_predict(args: argparse.Namespace, forge: WorldForge) -> int:
+    world = forge.load_world(args.world_id)
+    action = Action.move_to(
+        args.x,
+        args.y,
+        args.z,
+        speed=args.speed,
+        object_id=args.object_id,
+    )
+    prediction = world.predict(action, steps=args.steps, provider=args.provider)
+    if not args.dry_run:
+        forge.save_world(world)
+    payload = {
+        "world_id": world.id,
+        "saved": not args.dry_run,
+        "provider": prediction.provider,
+        "physics_score": prediction.physics_score,
+        "confidence": prediction.confidence,
+        "metadata": prediction.metadata,
+        "world": _world_summary(world),
+        "world_state": prediction.world_state,
+    }
+    if args.format == "markdown":
+        _print_world_prediction_markdown(payload)
+    else:
+        _print_json(payload)
+    return 0
+
+
 def _cmd_world_export(args: argparse.Namespace, forge: WorldForge) -> int:
     payload = forge.export_world(args.world_id)
     if args.output:
@@ -755,6 +1090,11 @@ def _cmd_world(args: argparse.Namespace, forge: WorldForge) -> int | None:
         "create": _cmd_world_create,
         "show": _cmd_world_show,
         "history": _cmd_world_history,
+        "objects": _cmd_world_objects,
+        "add-object": _cmd_world_add_object,
+        "update-object": _cmd_world_update_object,
+        "remove-object": _cmd_world_remove_object,
+        "predict": _cmd_world_predict,
         "export": _cmd_world_export,
         "import": _cmd_world_import,
         "fork": _cmd_world_fork,

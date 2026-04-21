@@ -63,7 +63,11 @@ The same local store is available from the CLI for checkout jobs and operator ha
 
 ```bash
 uv run worldforge world create lab --provider mock
+uv run worldforge world add-object <world-id> cube --x 0 --y 0.5 --z 0 --object-id cube-1
+uv run worldforge world update-object <world-id> cube-1 --x 0.2 --y 0.5 --z 0
+uv run worldforge world predict <world-id> --object-id cube-1 --x 0.4 --y 0.5 --z 0
 uv run worldforge world list
+uv run worldforge world objects <world-id>
 uv run worldforge world history <world-id>
 uv run worldforge world export <world-id> --output world.json
 uv run worldforge world import world.json --new-id --name lab-copy
@@ -83,6 +87,9 @@ Supported persistence invariants:
 
 - World IDs are validated as file-safe local storage identifiers before any read or write. Path
   separators, traversal-shaped IDs, empty strings, and non-string IDs are rejected.
+- CLI object mutations and persisted predictions load the world, apply typed `SceneObject`,
+  `SceneObjectPatch`, or `Action` values, and write through `save_world(...)`.
+- `world predict` saves the provider-updated world unless `--dry-run` is supplied.
 - Local JSON imports reject malformed scene object IDs, non-object state payloads, invalid
   metadata, invalid history, negative steps, history entries from future steps, empty history
   summaries, malformed serialized actions, and invalid historical snapshot states.
@@ -178,11 +185,12 @@ include those IDs in surrounding application logs.
 Before publishing a release:
 
 ```bash
+uv sync --group dev
 uv lock --check
 uv run ruff check src tests examples scripts
 uv run ruff format --check src tests examples scripts
 uv run python scripts/generate_provider_docs.py --check
-uv run pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
+uv run --extra harness pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
 bash scripts/test_package.sh
 ```
 

@@ -12,6 +12,11 @@ releases may still include breaking changes when the public API needs to tighten
 - Added the `worldforge world` CLI command group for local JSON persistence workflows, including
   create, list, show, history, export, import, and fork commands backed by the existing validated
   `WorldForge` persistence API.
+- Added persisted-world mutation and prediction commands:
+  `worldforge world objects`, `add-object`, `update-object`, `remove-object`, and `predict`.
+  These commands load local JSON worlds, apply typed scene/action values, and save through
+  `WorldForge.save_world(...)`; `world predict --dry-run` previews provider output without
+  replacing the saved file.
 - Added `worldforge examples` with Markdown and JSON output so CLI users can discover checkout
   scripts, packaged demos, and optional smoke commands without scanning repository docs.
 - Added the `worldforge-demo-lerobot` console command and packaged the LeRobot policy-plus-score
@@ -101,6 +106,8 @@ releases may still include breaking changes when the public API needs to tighten
 - Rejected duplicate scene object IDs when adding objects to a world.
 - Rejected persisted/provider-supplied world state whose scene-object map key disagrees with the
   object's embedded `id`.
+- Made the coverage gate invoke pytest with the `harness` extra so optional Textual TUI tests are
+  available during coverage runs while the base package and matrix tests remain free of Textual.
 - Validated Runway ratio parsing before constructing returned clip metadata.
 - Validated Cosmos health and generation response payloads before decoding returned videos.
 - Validated Runway organization, task creation, task polling, task output, artifact content type,

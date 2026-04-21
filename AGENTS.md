@@ -91,7 +91,7 @@ uv run ruff check src tests examples scripts
 uv run ruff format --check src tests examples scripts
 uv run python scripts/generate_provider_docs.py --check
 uv run pytest
-uv run pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
+uv run --extra harness pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
 bash scripts/test_package.sh
 ```
 
@@ -100,7 +100,10 @@ Discover and run examples:
 ```bash
 uv run worldforge examples
 uv run worldforge world create lab --provider mock
+uv run worldforge world add-object <world-id> cube --x 0 --y 0.5 --z 0 --object-id cube-1
+uv run worldforge world predict <world-id> --object-id cube-1 --x 0.4 --y 0.5 --z 0
 uv run worldforge world list
+uv run worldforge world objects <world-id>
 uv run worldforge world history <world-id>
 uv run worldforge world export <world-id> --output world.json
 uv run worldforge provider docs
@@ -203,8 +206,8 @@ rm -f "$tmp_req"
 - `ProviderMetricsSink.request_count` counts emitted provider events, not necessarily logical
   user-level operations; retry events increment both `request_count` and `retry_count`.
 - World persistence is local JSON under `.worldforge/worlds` by default and is not a concurrent
-  multi-writer store. Use `worldforge world ...` for CLI create/list/show/history/export/import/fork
-  flows, and keep service-grade durability host-owned.
+  multi-writer store. Use `worldforge world ...` for CLI create/list/show/history/object
+  mutation/predict/export/import/fork flows, and keep service-grade durability host-owned.
 - World IDs are file stems for local JSON persistence. Reject path separators, traversal-shaped
   values, and other non-file-safe IDs before loading, importing, or saving world state.
 - Persisted history is part of the state contract: history entries must have non-negative steps,
