@@ -40,6 +40,7 @@ Top-level boundaries:
 | `tests/fixtures/providers/` | Remote/provider parser fixtures | Create/modify for provider failure modes |
 | `examples/` | Runnable checkout examples and compatibility wrappers | Keep deterministic unless explicitly live-smoke |
 | `docs/src/` | User docs, architecture, playbooks, provider pages, API notes | Update with public behavior |
+| `specs/` | Per-feature spec triads (`<feature>/{spec.md, plan.md, tasks.md}`) following the GitHub Spec Kit pattern; today populated for the TheWorldHarness M0–M5 milestones | Author a new triad before implementing a multi-task feature; update the triad as scope changes |
 | `scripts/` | Docs generator, provider scaffold, package check, smokes | Gated for workflow/CI-impacting changes |
 | `.github/workflows/` | CI, release, security pipelines | Explicit approval before modifying |
 | `pyproject.toml`, `uv.lock` | Package metadata, deps, lockfile | Explicit approval for dependency/version changes |

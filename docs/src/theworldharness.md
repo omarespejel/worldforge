@@ -86,3 +86,23 @@ provider health, benchmark latency, benchmark throughput, and provider event pha
 
 Each run reveals stages through a timeline, then fills the inspector and transcript panes from the
 same structured `HarnessRun` data used by tests.
+
+## Roadmap
+
+TheWorldHarness is evolving from the read-only demo viewer described above into the project's
+front-door interactive workspace — keyboard-first, command-palette-driven, and the canonical
+example of how to compose WorldForge from Python. The work is broken into six milestones
+(M0–M5), each with a published spec triad (`spec.md` + `plan.md` + `tasks.md`) under
+[`specs/`](https://github.com/AbdelStark/worldforge/tree/main/specs):
+
+| Milestone | What it adds |
+| --- | --- |
+| [M0 — Theme + chrome reset](https://github.com/AbdelStark/worldforge/tree/main/specs/theworldharness-M0-theme-chrome) | Registered light/dark themes, semantic CSS variables, header clock and breadcrumb. |
+| [M1 — Screen architecture](https://github.com/AbdelStark/worldforge/tree/main/specs/theworldharness-M1-screen-architecture) | App split into named `Screen`s, `push_screen` navigation, `?` help overlay, `Ctrl+P` system commands. |
+| [M2 — Worlds CRUD](https://github.com/AbdelStark/worldforge/tree/main/specs/theworldharness-M2-worlds-crud) | Create / edit / save / fork / delete worlds entirely from the TUI through the public `WorldForge` API. |
+| [M3 — Live providers](https://github.com/AbdelStark/worldforge/tree/main/specs/theworldharness-M3-live-providers) | `ProvidersScreen` with capability matrix and one real provider call streamed through a worker; `Esc` cancels. |
+| [M4 — Eval + Benchmark](https://github.com/AbdelStark/worldforge/tree/main/specs/theworldharness-M4-eval-benchmark) | `EvalScreen` and `BenchmarkScreen`; capability mismatch as a hard toast; reports preserved to disk and exportable. |
+| [M5 — Polish + showcase](https://github.com/AbdelStark/worldforge/tree/main/specs/theworldharness-M5-polish-showcase) | High-contrast theme, dynamic command-palette provider, recent items, snapshot test matrix, README screenshot refresh. |
+
+The intent and design language behind these milestones live in the contributor-facing roadmap
+spec at `.codex/skills/tui-development/references/roadmap.md`.

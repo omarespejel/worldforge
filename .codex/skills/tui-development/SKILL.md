@@ -186,7 +186,13 @@ Do **not** trigger for:
 ## References
 
 - `references/roadmap.md` — TheWorldHarness vision, screen inventory,
-  flows, design language, milestones
+  flows, design language, milestone summaries (with status table)
+- `specs/theworldharness-M{0..5}-*/` — per-milestone Spec Kit triad
+  (`spec.md` = WHAT/WHY, `plan.md` = HOW, `tasks.md` = ordered
+  PR-sized units). Read the relevant milestone's triad before
+  implementing tasks for that milestone — the roadmap summary is the
+  intent; the spec triad is the source of truth for scope, acceptance
+  criteria, architecture decisions, and dependencies.
 - `src/worldforge/harness/tui.py` — App, screens, widgets (current)
 - `src/worldforge/harness/flows.py` — flow registry and run orchestration
 - `src/worldforge/harness/models.py` — typed `HarnessFlow` / `HarnessRun`

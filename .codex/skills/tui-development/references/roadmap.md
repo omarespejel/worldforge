@@ -258,9 +258,26 @@ or a provider runs on a worker. The contract:
 
 ## 8. Milestones
 
+Each milestone follows the spec-first workflow: a `spec.md` (WHAT and
+WHY) + `plan.md` (HOW) + `tasks.md` (ordered, PR-sized units) lands
+under `specs/theworldharness-M{N}-{slug}/` *before* implementation
+starts. Implementation PRs reference the relevant task in `tasks.md`.
 Each milestone ends with a runnable harness, a Pilot test for the new
 flow, snapshot tests for the new screens, and a roadmap update marking
 the milestone "done" with the date.
+
+| Milestone | Spec | Plan | Tasks | Implementation status |
+| --- | --- | --- | --- | --- |
+| M0 — Theme + chrome reset | [spec](../../../../specs/theworldharness-M0-theme-chrome/spec.md) | [plan](../../../../specs/theworldharness-M0-theme-chrome/plan.md) | [tasks](../../../../specs/theworldharness-M0-theme-chrome/tasks.md) | not started |
+| M1 — Screen architecture | [spec](../../../../specs/theworldharness-M1-screen-architecture/spec.md) | [plan](../../../../specs/theworldharness-M1-screen-architecture/plan.md) | [tasks](../../../../specs/theworldharness-M1-screen-architecture/tasks.md) | not started |
+| M2 — Worlds CRUD | [spec](../../../../specs/theworldharness-M2-worlds-crud/spec.md) | [plan](../../../../specs/theworldharness-M2-worlds-crud/plan.md) | [tasks](../../../../specs/theworldharness-M2-worlds-crud/tasks.md) | not started |
+| M3 — Live providers | [spec](../../../../specs/theworldharness-M3-live-providers/spec.md) | [plan](../../../../specs/theworldharness-M3-live-providers/plan.md) | [tasks](../../../../specs/theworldharness-M3-live-providers/tasks.md) | not started |
+| M4 — Eval + Benchmark | [spec](../../../../specs/theworldharness-M4-eval-benchmark/spec.md) | [plan](../../../../specs/theworldharness-M4-eval-benchmark/plan.md) | [tasks](../../../../specs/theworldharness-M4-eval-benchmark/tasks.md) | not started |
+| M5 — Polish + showcase | [spec](../../../../specs/theworldharness-M5-polish-showcase/spec.md) | [plan](../../../../specs/theworldharness-M5-polish-showcase/plan.md) | [tasks](../../../../specs/theworldharness-M5-polish-showcase/tasks.md) | not started |
+
+The summaries below are the load-bearing intent of each milestone; the
+linked spec triad is the source of truth for scope, acceptance, and
+task breakdown.
 
 ### M0 — Theme + chrome reset (foundation)
 
@@ -269,6 +286,7 @@ the milestone "done" with the date.
 - Add `Header` clock + `Breadcrumb` widget + provider status pill.
 - Outcome: same flows, but the harness reads as a polished workspace
   rather than a single-screen demo.
+- Spec triad: `specs/theworldharness-M0-theme-chrome/`.
 
 ### M1 — Screen architecture
 
@@ -278,6 +296,7 @@ the milestone "done" with the date.
 - Add `Ctrl+P` system commands.
 - Outcome: navigation feels routed; nothing is hidden behind muscle
   memory.
+- Spec triad: `specs/theworldharness-M1-screen-architecture/`.
 
 ### M2 — Worlds CRUD
 
@@ -286,6 +305,7 @@ the milestone "done" with the date.
 - Outcome: a user can create, edit, save, and reopen a world entirely
   from the TUI — and the same code path is what library users would
   call.
+- Spec triad: `specs/theworldharness-M2-worlds-crud/`.
 
 ### M3 — Live providers
 
@@ -294,6 +314,7 @@ the milestone "done" with the date.
   events streaming into `RichLog`.
 - Cancel via `Esc`.
 - Outcome: the harness stops being a slideshow.
+- Spec triad: `specs/theworldharness-M3-live-providers/`.
 
 ### M4 — Eval + Benchmark
 
@@ -302,6 +323,7 @@ the milestone "done" with the date.
   JSON / Markdown / CSV.
 - Outcome: every public WorldForge surface is reachable from the TUI;
   the harness is the integration reference example.
+- Spec triad: `specs/theworldharness-M4-eval-benchmark/`.
 
 ### M5 — Polish + showcase
 
@@ -311,6 +333,7 @@ the milestone "done" with the date.
   README screenshot refresh.
 - Outcome: the harness is a credible "front face of the project" —
   worth screenshotting for talks and PRs.
+- Spec triad: `specs/theworldharness-M5-polish-showcase/`.
 
 ## 9. Inspirations (and why)
 
