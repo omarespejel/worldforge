@@ -71,6 +71,10 @@ releases may still include breaking changes when the public API needs to tighten
 - Added benchmark budget gates for release and claim-oriented checks. `worldforge benchmark` can
   load a JSON budget file, print gate violations, and exit non-zero when success-rate,
   error-count, retry-count, latency, throughput, or unmatched-budget checks fail.
+- Added benchmark input fixtures. `worldforge benchmark --input-file benchmark-inputs.json` now
+  loads deterministic JSON inputs for prediction, generation, transfer, embedding, score, and
+  policy runs; transfer clips can point at files relative to the input JSON or inline base64
+  frames.
 - Added `.env.example` documenting every provider environment variable recognized by
   WorldForge (`COSMOS_BASE_URL`, `NVIDIA_API_KEY`, `RUNWAYML_API_SECRET` and the legacy
   `RUNWAY_API_SECRET` alias, `RUNWAYML_BASE_URL`, `LEWORLDMODEL_POLICY` and the legacy

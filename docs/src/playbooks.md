@@ -211,6 +211,7 @@ uv run worldforge eval --suite planning --provider mock --format markdown
 uv run worldforge eval --suite generation --provider mock --format json
 uv run worldforge benchmark --provider mock --iterations 5 --format markdown
 uv run worldforge benchmark --provider mock --iterations 5 --format json
+uv run worldforge benchmark --provider mock --operation embed --input-file benchmark-inputs.json
 uv run worldforge benchmark --provider mock --operation generate --budget-file benchmark-budget.json
 ```
 
@@ -222,8 +223,10 @@ Success signal:
   `transfer`, and `embed`.
 - benchmark budget files fail non-zero when success rate, error count, retry count, latency, or
   throughput thresholds regress.
-- benchmark inputs and results are saved by the host when they are used for release or paper
-  claims.
+- `--input-file` fixtures reproduce benchmark inputs for prediction, generation, transfer,
+  embedding, score, and policy runs; transfer clip paths resolve relative to the fixture file.
+- benchmark input files and result JSON are saved by the host when they are used for release or
+  paper claims.
 
 If a score changes, first check provider capability, test fixture changes, input data, and retry
 events. Do not rewrite claims around a one-off run without preserving the run artifact.

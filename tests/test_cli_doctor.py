@@ -510,3 +510,45 @@ def test_benchmark_cli_applies_budget_file(tmp_path, monkeypatch, capsys) -> Non
     assert "# Benchmark Report" in failing_output
     assert "# Benchmark Gate Report" in failing_output
     assert "average_latency_ms" in failing_output
+
+
+def test_benchmark_cli_accepts_input_file(tmp_path, monkeypatch, capsys) -> None:
+    input_file = tmp_path / "benchmark-inputs.json"
+    input_file.write_text(
+        json.dumps(
+            {
+                "inputs": {
+                    "generation_prompt": "fixture benchmark generation",
+                    "generation_duration_seconds": 1.0,
+                    "embedding_text": "fixture benchmark embedding",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "worldforge",
+            "benchmark",
+            "--provider",
+            "mock",
+            "--operation",
+            "generate",
+            "--iterations",
+            "1",
+            "--format",
+            "json",
+            "--input-file",
+            str(input_file),
+            "--state-dir",
+            str(tmp_path),
+        ],
+    )
+
+    assert main() == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["results"][0]["provider"] == "mock"
+    assert payload["results"][0]["operation"] == "generate"
+    assert payload["results"][0]["success_count"] == 1

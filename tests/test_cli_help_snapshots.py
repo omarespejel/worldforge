@@ -136,6 +136,7 @@ usage: worldforge benchmark [-h] [--provider PROVIDERS]
                             [--iterations ITERATIONS]
                             [--concurrency CONCURRENCY]
                             [--format {markdown,json,csv}]
+                            [--input-file INPUT_FILE]
                             [--budget-file BUDGET_FILE]
                             [--state-dir STATE_DIR]
 
@@ -150,6 +151,9 @@ options:
                         Concurrent workers.
   --format {markdown,json,csv}
                         Benchmark report format.
+  --input-file INPUT_FILE
+                        Optional JSON file with deterministic benchmark
+                        inputs.
   --budget-file BUDGET_FILE
                         Optional JSON budget file. Failing gates exit non-zero
                         after printing the report.

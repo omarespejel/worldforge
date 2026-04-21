@@ -19,7 +19,11 @@ from worldforge import (
     WorldForge,
     WorldForgeError,
 )
-from worldforge.benchmark import ProviderBenchmarkHarness, load_benchmark_budgets
+from worldforge.benchmark import (
+    ProviderBenchmarkHarness,
+    load_benchmark_budgets,
+    load_benchmark_inputs,
+)
 from worldforge.evaluation import EvaluationSuite
 from worldforge.models import CAPABILITY_NAMES
 from worldforge.providers import ProviderError
@@ -746,6 +750,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Benchmark report format.",
     )
     benchmark.add_argument(
+        "--input-file",
+        type=Path,
+        help="Optional JSON file with deterministic benchmark inputs.",
+    )
+    benchmark.add_argument(
         "--budget-file",
         type=Path,
         help=("Optional JSON budget file. Failing gates exit non-zero after printing the report."),
@@ -1182,11 +1191,27 @@ def _cmd_eval(args: argparse.Namespace, forge: WorldForge) -> int:
 def _cmd_benchmark(args: argparse.Namespace, forge: WorldForge) -> int:
     harness = ProviderBenchmarkHarness(forge=forge)
     providers = args.providers or ["mock"]
+    benchmark_inputs = None
+    if args.input_file:
+        input_path = args.input_file.expanduser()
+        try:
+            input_payload = json.loads(input_path.read_text(encoding="utf-8"))
+        except OSError as exc:
+            raise WorldForgeError(
+                f"Failed to read benchmark input file {args.input_file}: {exc}"
+            ) from exc
+        except json.JSONDecodeError as exc:
+            raise WorldForgeError(f"Benchmark input file must contain valid JSON: {exc}") from exc
+        benchmark_inputs = load_benchmark_inputs(
+            input_payload,
+            base_path=input_path.parent,
+        )
     report = harness.run(
         providers,
         operations=args.operations,
         iterations=args.iterations,
         concurrency=args.concurrency,
+        inputs=benchmark_inputs,
     )
     gate_report = None
     if args.budget_file:

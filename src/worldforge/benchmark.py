@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import csv
 import io
+from base64 import b64decode
+from binascii import Error as BinasciiError
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from time import perf_counter
 
 from worldforge.framework import WorldForge
@@ -36,6 +39,32 @@ BENCHMARKABLE_OPERATIONS = (
     "embed",
     "score",
     "policy",
+)
+
+_BENCHMARK_INPUT_KEYS = (
+    "prediction_action",
+    "prediction_steps",
+    "reason_query",
+    "generation_prompt",
+    "generation_duration_seconds",
+    "transfer_prompt",
+    "transfer_width",
+    "transfer_height",
+    "transfer_fps",
+    "transfer_clip",
+    "embedding_text",
+    "score_info",
+    "score_action_candidates",
+    "policy_info",
+)
+
+_TRANSFER_CLIP_KEYS = (
+    "path",
+    "frames_base64",
+    "fps",
+    "resolution",
+    "duration_seconds",
+    "metadata",
 )
 
 
@@ -147,6 +176,142 @@ def _format_optional_number(value: float | int | None) -> str:
     if isinstance(value, int):
         return str(value)
     return f"{value:.4f}"
+
+
+def _required_json_object(value: object, *, name: str) -> JSONDict:
+    if not isinstance(value, dict) or not value:
+        raise WorldForgeError(f"{name} must be a non-empty JSON object.")
+    dump_json(value)
+    return dict(value)
+
+
+def _optional_json_object(value: object, *, name: str) -> JSONDict:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise WorldForgeError(f"{name} must be a JSON object.")
+    dump_json(value)
+    return dict(value)
+
+
+def _required_text(value: object, *, name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise WorldForgeError(f"{name} must be a non-empty string.")
+    return value.strip()
+
+
+def _positive_number(value: object, *, name: str) -> float:
+    number = require_finite_number(value, name=name)
+    if number <= 0.0:
+        raise WorldForgeError(f"{name} must be greater than 0.")
+    return number
+
+
+def _positive_int(value: object, *, name: str) -> int:
+    return require_positive_int(value, name=name)
+
+
+def _positive_resolution(value: object, *, name: str) -> tuple[int, int]:
+    if (
+        not isinstance(value, list | tuple)
+        or len(value) != 2
+        or any(isinstance(dimension, bool) or not isinstance(dimension, int) for dimension in value)
+    ):
+        raise WorldForgeError(f"{name} must contain integer width and height.")
+    width, height = value
+    if width <= 0 or height <= 0:
+        raise WorldForgeError(f"{name} values must be greater than 0.")
+    return (width, height)
+
+
+def _resolve_input_path(path: str, *, base_path: Path | None) -> Path:
+    source = Path(path).expanduser()
+    if not source.is_absolute():
+        source = (base_path or Path.cwd()) / source
+    return source
+
+
+def _load_base64_frames(value: object, *, name: str) -> list[bytes]:
+    if not isinstance(value, list) or not value:
+        raise WorldForgeError(f"{name} must be a non-empty list of base64 strings.")
+    frames: list[bytes] = []
+    for index, frame in enumerate(value):
+        if not isinstance(frame, str) or not frame:
+            raise WorldForgeError(f"{name}[{index}] must be a non-empty base64 string.")
+        try:
+            frames.append(b64decode(frame, validate=True))
+        except (BinasciiError, ValueError) as exc:
+            raise WorldForgeError(f"{name}[{index}] must contain valid base64 bytes.") from exc
+    return frames
+
+
+def _load_transfer_clip(value: object, *, base_path: Path | None) -> VideoClip:
+    if not isinstance(value, dict):
+        raise WorldForgeError("transfer_clip must be a JSON object.")
+    unknown_keys = sorted(set(value) - set(_TRANSFER_CLIP_KEYS))
+    if unknown_keys:
+        joined = ", ".join(unknown_keys)
+        raise WorldForgeError(f"Unknown transfer_clip fields: {joined}.")
+
+    fps = _positive_number(value.get("fps", 8.0), name="transfer_clip fps")
+    resolution = _positive_resolution(
+        value.get("resolution", [160, 90]),
+        name="transfer_clip resolution",
+    )
+    duration_seconds = require_finite_number(
+        value.get("duration_seconds", 1.0),
+        name="transfer_clip duration_seconds",
+    )
+    if duration_seconds < 0.0:
+        raise WorldForgeError("transfer_clip duration_seconds must be greater than or equal to 0.")
+    metadata = _optional_json_object(value.get("metadata"), name="transfer_clip metadata")
+
+    has_path = value.get("path") is not None
+    has_frames = value.get("frames_base64") is not None
+    if has_path == has_frames:
+        raise WorldForgeError(
+            "transfer_clip must provide exactly one of 'path' or 'frames_base64'."
+        )
+
+    if has_path:
+        source = _resolve_input_path(
+            _required_text(value.get("path"), name="transfer_clip path"),
+            base_path=base_path,
+        )
+        return VideoClip.from_file(
+            source,
+            fps=fps,
+            resolution=resolution,
+            duration_seconds=duration_seconds,
+            metadata=metadata,
+        )
+
+    return VideoClip(
+        frames=_load_base64_frames(value.get("frames_base64"), name="transfer_clip frames_base64"),
+        fps=fps,
+        resolution=resolution,
+        duration_seconds=duration_seconds,
+        metadata=metadata,
+    )
+
+
+def _benchmark_inputs_payload(payload: object) -> JSONDict:
+    if isinstance(payload, dict) and "inputs" in payload:
+        allowed_wrapper_keys = {"inputs", "metadata"}
+        unknown_wrapper_keys = sorted(set(payload) - allowed_wrapper_keys)
+        if unknown_wrapper_keys:
+            joined = ", ".join(unknown_wrapper_keys)
+            raise WorldForgeError(f"Unknown benchmark input wrapper fields: {joined}.")
+        payload = payload["inputs"]
+    if not isinstance(payload, dict):
+        raise WorldForgeError("Benchmark input payload must be a JSON object.")
+    if not payload:
+        raise WorldForgeError("Benchmark input payload must contain at least one input field.")
+    unknown_keys = sorted(set(payload) - set(_BENCHMARK_INPUT_KEYS))
+    if unknown_keys:
+        joined = ", ".join(unknown_keys)
+        raise WorldForgeError(f"Unknown benchmark input fields: {joined}.")
+    return dict(payload)
 
 
 @dataclass(slots=True, frozen=True)
@@ -431,13 +596,21 @@ class BenchmarkInputs:
     policy_info: JSONDict = field(default_factory=_sample_policy_info)
 
     def __post_init__(self) -> None:
-        require_positive_int(self.prediction_steps, name="prediction_steps")
-        if self.generation_duration_seconds <= 0.0:
-            raise WorldForgeError("generation_duration_seconds must be greater than 0.")
-        if self.transfer_width <= 0 or self.transfer_height <= 0:
-            raise WorldForgeError("transfer_width and transfer_height must be greater than 0.")
-        if self.transfer_fps <= 0.0:
-            raise WorldForgeError("transfer_fps must be greater than 0.")
+        if not isinstance(self.prediction_action, Action):
+            raise WorldForgeError("prediction_action must be an Action.")
+        self.prediction_steps = require_positive_int(
+            self.prediction_steps,
+            name="prediction_steps",
+        )
+        self.generation_duration_seconds = _positive_number(
+            self.generation_duration_seconds,
+            name="generation_duration_seconds",
+        )
+        self.transfer_width = require_positive_int(self.transfer_width, name="transfer_width")
+        self.transfer_height = require_positive_int(self.transfer_height, name="transfer_height")
+        self.transfer_fps = _positive_number(self.transfer_fps, name="transfer_fps")
+        if not isinstance(self.transfer_clip, VideoClip):
+            raise WorldForgeError("transfer_clip must be a VideoClip.")
         if not isinstance(self.embedding_text, str) or not self.embedding_text.strip():
             raise WorldForgeError("embedding_text must be a non-empty string.")
         if not isinstance(self.score_info, dict) or not self.score_info:
@@ -466,6 +639,102 @@ class BenchmarkInputs:
             "score_action_candidates": _json_input_preview(self.score_action_candidates),
             "policy_info": dict(self.policy_info),
         }
+
+
+def load_benchmark_inputs(
+    payload: object,
+    *,
+    base_path: str | Path | None = None,
+) -> BenchmarkInputs:
+    """Parse benchmark input JSON into ``BenchmarkInputs``.
+
+    Omitted fields keep deterministic defaults. Relative ``transfer_clip.path`` values resolve
+    against ``base_path`` when supplied, which lets benchmark input files carry portable media
+    references next to the JSON fixture.
+    """
+
+    data = _benchmark_inputs_payload(payload)
+    defaults = BenchmarkInputs()
+    resolved_base_path = Path(base_path).expanduser().resolve() if base_path is not None else None
+
+    prediction_action = defaults.prediction_action
+    if "prediction_action" in data:
+        if not isinstance(data["prediction_action"], dict):
+            raise WorldForgeError("prediction_action must be a JSON object.")
+        prediction_action = Action.from_dict(data["prediction_action"])
+
+    score_action_candidates = defaults.score_action_candidates
+    if "score_action_candidates" in data:
+        score_action_candidates = data["score_action_candidates"]
+        dump_json(score_action_candidates)
+
+    return BenchmarkInputs(
+        prediction_action=prediction_action,
+        prediction_steps=(
+            _positive_int(data["prediction_steps"], name="prediction_steps")
+            if "prediction_steps" in data
+            else defaults.prediction_steps
+        ),
+        reason_query=(
+            _required_text(data["reason_query"], name="reason_query")
+            if "reason_query" in data
+            else defaults.reason_query
+        ),
+        generation_prompt=(
+            _required_text(data["generation_prompt"], name="generation_prompt")
+            if "generation_prompt" in data
+            else defaults.generation_prompt
+        ),
+        generation_duration_seconds=(
+            _positive_number(
+                data["generation_duration_seconds"],
+                name="generation_duration_seconds",
+            )
+            if "generation_duration_seconds" in data
+            else defaults.generation_duration_seconds
+        ),
+        transfer_prompt=(
+            _required_text(data["transfer_prompt"], name="transfer_prompt")
+            if "transfer_prompt" in data
+            else defaults.transfer_prompt
+        ),
+        transfer_width=(
+            _positive_int(data["transfer_width"], name="transfer_width")
+            if "transfer_width" in data
+            else defaults.transfer_width
+        ),
+        transfer_height=(
+            _positive_int(data["transfer_height"], name="transfer_height")
+            if "transfer_height" in data
+            else defaults.transfer_height
+        ),
+        transfer_fps=(
+            _positive_number(data["transfer_fps"], name="transfer_fps")
+            if "transfer_fps" in data
+            else defaults.transfer_fps
+        ),
+        transfer_clip=(
+            _load_transfer_clip(data["transfer_clip"], base_path=resolved_base_path)
+            if "transfer_clip" in data
+            else defaults.transfer_clip
+        ),
+        embedding_text=(
+            _required_text(data["embedding_text"], name="embedding_text")
+            if "embedding_text" in data
+            else defaults.embedding_text
+        ),
+        score_info=(
+            _required_json_object(data["score_info"], name="score_info")
+            if "score_info" in data
+            else defaults.score_info
+        ),
+        score_action_candidates=score_action_candidates,
+        policy_info=(
+            _required_json_object(data["policy_info"], name="policy_info")
+            if "policy_info" in data
+            else defaults.policy_info
+        ),
+    )
 
 
 @dataclass(slots=True)
@@ -1062,5 +1331,6 @@ __all__ = [
     "BENCHMARKABLE_OPERATIONS",
     "ProviderBenchmarkHarness",
     "load_benchmark_budgets",
+    "load_benchmark_inputs",
     "run_benchmark",
 ]

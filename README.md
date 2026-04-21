@@ -135,6 +135,7 @@ uv run worldforge provider info mock                                    # capabi
 uv run worldforge predict kitchen --provider mock --x 0.3 --y 0.8 --z 0.0 --steps 2
 uv run worldforge eval --suite planning --provider mock --format json
 uv run worldforge benchmark --provider mock --iterations 5 --format json
+uv run worldforge benchmark --provider mock --operation embed --input-file benchmark-inputs.json
 uv run worldforge benchmark --provider mock --operation generate --budget-file benchmark-budget.json
 ```
 

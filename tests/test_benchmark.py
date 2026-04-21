@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from base64 import b64encode
 
 import httpx
 import pytest
@@ -16,7 +17,12 @@ from worldforge import (
     WorldForge,
     WorldForgeError,
 )
-from worldforge.benchmark import BenchmarkBudget, BenchmarkInputs, load_benchmark_budgets
+from worldforge.benchmark import (
+    BenchmarkBudget,
+    BenchmarkInputs,
+    load_benchmark_budgets,
+    load_benchmark_inputs,
+)
 from worldforge.models import JSONDict
 from worldforge.providers import CosmosProvider, RunwayProvider
 from worldforge.providers.base import BaseProvider, ProviderError
@@ -247,10 +253,12 @@ def test_benchmark_inputs_preview_provider_native_score_candidates() -> None:
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
+        ({"prediction_action": {"type": "move_to"}}, "prediction_action must be an Action"),
         ({"embedding_text": ""}, "embedding_text must be a non-empty string"),
         ({"score_info": {}}, "score_info must be a non-empty JSON object"),
         ({"score_action_candidates": None}, "score_action_candidates must not be None"),
         ({"policy_info": []}, "policy_info must be a non-empty JSON object"),
+        ({"transfer_clip": {}}, "transfer_clip must be a VideoClip"),
     ],
 )
 def test_benchmark_inputs_validate_planning_surface_inputs(
@@ -261,24 +269,144 @@ def test_benchmark_inputs_validate_planning_surface_inputs(
         BenchmarkInputs(**kwargs)
 
 
+def test_load_benchmark_inputs_accepts_fixture_payload_and_relative_clip(tmp_path) -> None:
+    clip_path = tmp_path / "seed.bin"
+    clip_path.write_bytes(b"transfer-seed")
+
+    inputs = load_benchmark_inputs(
+        {
+            "metadata": {"fixture": "unit"},
+            "inputs": {
+                "prediction_action": {
+                    "type": "move_to",
+                    "parameters": {
+                        "target": {"x": 0.4, "y": 0.5, "z": 0.0},
+                        "speed": 0.75,
+                        "object_id": "cube",
+                    },
+                },
+                "prediction_steps": 3,
+                "reason_query": "fixture query",
+                "generation_prompt": "fixture generation",
+                "generation_duration_seconds": 1.5,
+                "transfer_prompt": "fixture transfer",
+                "transfer_width": 640,
+                "transfer_height": 360,
+                "transfer_fps": 24.0,
+                "transfer_clip": {
+                    "path": "seed.bin",
+                    "fps": 6.0,
+                    "resolution": [80, 45],
+                    "duration_seconds": 0.5,
+                    "metadata": {"fixture": "clip"},
+                },
+                "embedding_text": "fixture embedding",
+                "score_info": {"observation": [[0.0]], "goal": [[1.0]]},
+                "score_action_candidates": [[[[0.0]], [[1.0]]]],
+                "policy_info": {"observation": {"language": "fixture"}, "mode": "select_action"},
+            },
+        },
+        base_path=tmp_path,
+    )
+
+    assert inputs.prediction_action.parameters["object_id"] == "cube"
+    assert inputs.prediction_steps == 3
+    assert inputs.reason_query == "fixture query"
+    assert inputs.generation_prompt == "fixture generation"
+    assert inputs.transfer_width == 640
+    assert inputs.transfer_height == 360
+    assert inputs.transfer_clip.blob() == b"transfer-seed"
+    assert inputs.transfer_clip.fps == 6.0
+    assert inputs.transfer_clip.resolution == (80, 45)
+    assert inputs.embedding_text == "fixture embedding"
+    assert inputs.score_info["goal"] == [[1.0]]
+    assert inputs.score_action_candidates == [[[[0.0]], [[1.0]]]]
+    assert inputs.policy_info["mode"] == "select_action"
+
+
+def test_load_benchmark_inputs_accepts_inline_base64_transfer_frames() -> None:
+    inputs = load_benchmark_inputs(
+        {
+            "transfer_clip": {
+                "frames_base64": [
+                    b64encode(b"frame-a").decode("ascii"),
+                    b64encode(b"frame-b").decode("ascii"),
+                ],
+                "fps": 10.0,
+                "resolution": [100, 50],
+                "duration_seconds": 0.2,
+            }
+        }
+    )
+
+    assert inputs.transfer_clip.frames == [b"frame-a", b"frame-b"]
+    assert inputs.transfer_clip.resolution == (100, 50)
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ("not an object", "Benchmark input payload must be a JSON object"),
+        ({}, "at least one input field"),
+        ({"inputs": {}, "extra": True}, "Unknown benchmark input wrapper fields"),
+        ({"unknown": True}, "Unknown benchmark input fields"),
+        ({"prediction_action": []}, "prediction_action must be a JSON object"),
+        ({"reason_query": ""}, "reason_query must be a non-empty string"),
+        ({"generation_duration_seconds": 0}, "generation_duration_seconds must be greater"),
+        ({"transfer_width": True}, "transfer_width must be an integer"),
+        ({"transfer_clip": []}, "transfer_clip must be a JSON object"),
+        (
+            {"transfer_clip": {"frames_base64": ["Zm9v"], "unknown": True}},
+            "Unknown transfer_clip fields",
+        ),
+        ({"transfer_clip": {"frames_base64": []}}, "frames_base64 must be a non-empty list"),
+        ({"transfer_clip": {"frames_base64": [""]}}, "must be a non-empty base64 string"),
+        (
+            {"transfer_clip": {"path": "missing.bin", "frames_base64": ["Zm9v"]}},
+            "exactly one of 'path' or 'frames_base64'",
+        ),
+        ({"transfer_clip": {"frames_base64": ["not base64"]}}, "valid base64 bytes"),
+        (
+            {"transfer_clip": {"frames_base64": ["Zm9v"], "duration_seconds": -1}},
+            "duration_seconds must be greater",
+        ),
+        (
+            {"transfer_clip": {"frames_base64": ["Zm9v"], "metadata": []}},
+            "metadata must be a JSON object",
+        ),
+        ({"transfer_clip": {"frames_base64": ["Zm9v"], "resolution": [0, 50]}}, "greater"),
+        ({"score_info": []}, "score_info must be a non-empty JSON object"),
+        ({"score_action_candidates": float("nan")}, "finite numbers"),
+    ],
+)
+def test_load_benchmark_inputs_rejects_invalid_payloads(
+    payload: object,
+    message: str,
+) -> None:
+    with pytest.raises(WorldForgeError, match=message):
+        load_benchmark_inputs(payload)
+
+
 def test_provider_benchmark_harness_uses_custom_score_and_policy_inputs(tmp_path) -> None:
     forge = WorldForge(state_dir=tmp_path, auto_register_remote=False)
     score_provider = _ScoreBenchmarkProvider()
     policy_provider = _PolicyBenchmarkProvider()
     forge.register_provider(score_provider)
     forge.register_provider(policy_provider)
-    inputs = BenchmarkInputs(
-        score_info={
-            "pixels": [[[[1.0]]]],
-            "goal": [[[0.1, 0.2, 0.3]]],
-            "action": [[[0.0, 0.0, 0.0]]],
-            "metadata": {"fixture": "custom"},
-        },
-        score_action_candidates=[[[[0.1, 0.2, 0.3]], [[0.4, 0.5, 0.6]]]],
-        policy_info={
-            "observation": {"state": {"object": [1.0, 2.0, 3.0]}, "language": "custom"},
-            "mode": "select_action",
-        },
+    inputs = load_benchmark_inputs(
+        {
+            "score_info": {
+                "pixels": [[[[1.0]]]],
+                "goal": [[[0.1, 0.2, 0.3]]],
+                "action": [[[0.0, 0.0, 0.0]]],
+                "metadata": {"fixture": "custom"},
+            },
+            "score_action_candidates": [[[[0.1, 0.2, 0.3]], [[0.4, 0.5, 0.6]]]],
+            "policy_info": {
+                "observation": {"state": {"object": [1.0, 2.0, 3.0]}, "language": "custom"},
+                "mode": "select_action",
+            },
+        }
     )
 
     ProviderBenchmarkHarness(forge=forge).run(

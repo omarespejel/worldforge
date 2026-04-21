@@ -111,6 +111,7 @@ uv run --extra harness worldforge-harness
 uv run worldforge-demo-leworldmodel
 uv run worldforge-demo-lerobot
 uv run worldforge benchmark --provider mock --operation generate --budget-file benchmark-budget.json
+uv run worldforge benchmark --provider mock --operation embed --input-file benchmark-inputs.json
 ```
 
 Generate a provider scaffold:
@@ -263,6 +264,9 @@ rm -f "$tmp_req"
 - `worldforge benchmark --budget-file <path>` evaluates direct provider benchmark results against
   JSON thresholds and exits non-zero on violations. Keep benchmark budgets tied to preserved run
   artifacts when using them for release or paper claims.
+- `worldforge benchmark --input-file <path>` loads deterministic benchmark inputs from JSON.
+  Relative transfer clip paths resolve next to the input file; inline `frames_base64` is available
+  when the clip bytes must be preserved inside the fixture.
 
 ## Technical Scope
 

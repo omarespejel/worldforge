@@ -215,9 +215,21 @@ print(report.to_markdown())
 
 ```python
 from worldforge import ProviderBenchmarkHarness
+from worldforge.benchmark import load_benchmark_inputs
 
 harness = ProviderBenchmarkHarness(forge=forge)
-report = harness.run(["mock"], operations=["predict", "generate", "embed"], iterations=5)
+inputs = load_benchmark_inputs(
+    {
+        "embedding_text": "benchmark cube state",
+        "generation_prompt": "benchmark orbiting cube",
+    }
+)
+report = harness.run(
+    ["mock"],
+    operations=["predict", "generate", "embed"],
+    iterations=5,
+    inputs=inputs,
+)
 print(report.to_json())
 ```
 

@@ -56,7 +56,62 @@ report = ProviderBenchmarkHarness(forge=forge).run(
 uv run worldforge benchmark --provider mock --iterations 5
 uv run worldforge benchmark --provider mock --operation generate --format json
 uv run worldforge benchmark --provider mock --operation embed --format markdown
+uv run worldforge benchmark --provider mock --operation embed --input-file benchmark-inputs.json
 ```
+
+Use `--input-file` when a benchmark result needs to be reproducible from preserved inputs. The
+file can contain input fields directly, or an `inputs` object plus metadata:
+
+```json
+{
+  "metadata": {
+    "run": "release-smoke"
+  },
+  "inputs": {
+    "prediction_action": {
+      "type": "move_to",
+      "parameters": {
+        "target": { "x": 0.25, "y": 0.5, "z": 0.0 },
+        "speed": 1.0,
+        "object_id": "cube"
+      }
+    },
+    "prediction_steps": 2,
+    "reason_query": "How many objects are tracked?",
+    "generation_prompt": "benchmark orbiting cube",
+    "generation_duration_seconds": 1.0,
+    "transfer_prompt": "benchmark transfer rerender",
+    "transfer_width": 320,
+    "transfer_height": 180,
+    "transfer_fps": 12.0,
+    "transfer_clip": {
+      "path": "seed-transfer.bin",
+      "fps": 8.0,
+      "resolution": [160, 90],
+      "duration_seconds": 1.0,
+      "metadata": { "content_type": "application/octet-stream" }
+    },
+    "embedding_text": "benchmark cube state",
+    "score_info": {
+      "pixels": [[[[0.0]]]],
+      "goal": [[[0.3, 0.5, 0.0]]],
+      "action": [[[0.0, 0.5, 0.0]]]
+    },
+    "score_action_candidates": [[[[0.0, 0.5, 0.0]], [[0.3, 0.5, 0.0]]]],
+    "policy_info": {
+      "observation": {
+        "state": { "cube": [0.0, 0.5, 0.0] },
+        "language": "move the cube"
+      },
+      "mode": "select_action"
+    }
+  }
+}
+```
+
+Omitted fields keep deterministic defaults. A `transfer_clip.path` is resolved relative to the
+input JSON file; use `frames_base64` instead of `path` when the clip bytes must be contained
+inside the JSON fixture.
 
 The same provider-operation runner is available from TheWorldHarness:
 
