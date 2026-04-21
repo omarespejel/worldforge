@@ -197,6 +197,7 @@ Load skills on demand:
 - `.codex/skills/evaluation-benchmarking/SKILL.md`: evaluation suites, benchmarks, report claims.
 - `.codex/skills/optional-runtime-smokes/SKILL.md`: LeWorldModel, GR00T, LeRobot live or injected runtime checks.
 - `.codex/skills/persistence-state/SKILL.md`: world IDs, local JSON state, history import/export.
+- `.codex/skills/tui-development/SKILL.md`: TheWorldHarness Textual TUI — screens, workers, command palette, snapshot tests (bundled `references/roadmap.md`).
 </skills>
 
 <context_lifecycle>

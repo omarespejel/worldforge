@@ -1,6 +1,6 @@
 # Skill Registry
 
-Last updated: 2026-04-21
+Last updated: 2026-04-21 — added `tui-development` skill with bundled roadmap spec.
 
 Project-local agent skills for WorldForge. Each skill follows the
 Claude-Code progressive-disclosure layout: a `<name>/SKILL.md` is loaded when
@@ -16,6 +16,7 @@ inside the skill body.
 | Evaluation And Benchmarking | `evaluation-benchmarking/SKILL.md` | Deterministic evaluation suites, benchmark harness, renderers, claim hygiene, capability-gated runs. |
 | Optional Runtime Smokes | `optional-runtime-smokes/SKILL.md` | LeWorldModel / GR00T / LeRobot smokes, host-owned dependencies, demo-vs-real labelling. |
 | Persistence And State | `persistence-state/SKILL.md` | World IDs, local JSON persistence, save / load / import / export / fork, history validation. |
+| TUI Development | `tui-development/SKILL.md` | TheWorldHarness Textual TUI — screens, widgets, themes, workers, command palette, snapshot tests. Roadmap in `references/roadmap.md`. |
 
 ## Disambiguation — which skill for what
 
@@ -29,6 +30,7 @@ Secondary skills can be loaded as the task crosses boundaries.
 | "run / publish / interpret an eval or benchmark number" | `evaluation-benchmarking` |
 | "live LeWorldModel / GR00T / LeRobot run" / "is this real or injected?" | `optional-runtime-smokes` |
 | "save / load / export / import a world" / `.worldforge/` / history | `persistence-state` |
+| TheWorldHarness TUI / Textual / screens / command palette / harness roadmap | `tui-development` |
 | Adding a database / lock file / migration / multi-writer persistence | `persistence-state` (the answer is *stop and ask*) |
 | Adding torch / CUDA / robot SDK to base deps | `optional-runtime-smokes` (the answer is *stop and ask*) |
 | Lowering coverage / dropping a CI gate | `testing-validation` (the answer is *stop and ask*) |
