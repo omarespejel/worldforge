@@ -121,7 +121,7 @@ Configuration cascade:
 </bug_fix>
 
 <provider_change>
-1. Load `.codex/skills/provider-adapter-development.md`.
+1. Load `.codex/skills/provider-adapter-development/SKILL.md`.
 2. Classify the provider by actual callable behavior, not marketing label.
 3. Add fixtures under `tests/fixtures/providers/` for success and malformed/error outputs.
 4. Assert `worldforge.testing.assert_provider_contract()` for supported surfaces.
@@ -192,11 +192,11 @@ Safe to do without additional approval when aligned with the task:
 Project skills live in `.codex/skills/`; `.claude/skills` and `.agents/skills` must be symlinks to that directory.
 
 Load skills on demand:
-- `.codex/skills/provider-adapter-development.md`: adding, promoting, or debugging providers.
-- `.codex/skills/testing-validation.md`: test selection, coverage, package, docs, CI gates.
-- `.codex/skills/evaluation-benchmarking.md`: evaluation suites, benchmarks, report claims.
-- `.codex/skills/optional-runtime-smokes.md`: LeWorldModel, GR00T, LeRobot live or injected runtime checks.
-- `.codex/skills/persistence-state.md`: world IDs, local JSON state, history import/export.
+- `.codex/skills/provider-adapter-development/SKILL.md`: adding, promoting, or debugging providers (bundled `references/capability-matrix.md`).
+- `.codex/skills/testing-validation/SKILL.md`: test selection, coverage, package, docs, CI gates (bundled `references/release-gate.md`).
+- `.codex/skills/evaluation-benchmarking/SKILL.md`: evaluation suites, benchmarks, report claims.
+- `.codex/skills/optional-runtime-smokes/SKILL.md`: LeWorldModel, GR00T, LeRobot live or injected runtime checks.
+- `.codex/skills/persistence-state/SKILL.md`: world IDs, local JSON state, history import/export.
 </skills>
 
 <context_lifecycle>
