@@ -9,6 +9,9 @@ releases may still include breaking changes when the public API needs to tighten
 
 ### Added
 
+- Added the `worldforge world` CLI command group for local JSON persistence workflows, including
+  create, list, show, history, export, import, and fork commands backed by the existing validated
+  `WorldForge` persistence API.
 - Added `worldforge examples` with Markdown and JSON output so CLI users can discover checkout
   scripts, packaged demos, and optional smoke commands without scanning repository docs.
 - Added the `worldforge-demo-lerobot` console command and packaged the LeRobot policy-plus-score

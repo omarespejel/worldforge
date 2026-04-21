@@ -73,6 +73,10 @@ for object creation.
 ```bash
 uv run worldforge examples
 uv run worldforge doctor
+uv run worldforge world create lab --provider mock
+uv run worldforge world list
+uv run worldforge world history <world-id>
+uv run worldforge world export <world-id> --output world.json
 uv run worldforge provider list
 uv run worldforge provider docs
 uv run worldforge provider info mock

@@ -22,6 +22,9 @@ CLI_DESCRIPTION = (
 CLI_EPILOG = """Common commands:
   worldforge examples
   worldforge doctor
+  worldforge world create lab --provider mock
+  worldforge world list
+  worldforge world history <world-id>
   worldforge provider list
   worldforge provider docs
   worldforge provider info mock
@@ -107,6 +110,77 @@ EXAMPLE_COMMANDS: tuple[dict[str, str], ...] = (
 
 def _print_json(payload: object) -> None:
     print(json.dumps(payload, indent=2))
+
+
+def _world_summary(world) -> dict[str, object]:
+    return {
+        "id": world.id,
+        "name": world.name,
+        "provider": world.provider,
+        "description": world.description,
+        "step": world.step,
+        "object_count": world.object_count,
+        "history_length": world.history_length,
+    }
+
+
+def _world_history_payload(world) -> list[dict[str, object]]:
+    entries: list[dict[str, object]] = []
+    for entry in world.history():
+        action = json.loads(entry.action_json) if entry.action_json is not None else None
+        entries.append(
+            {
+                "step": entry.step,
+                "summary": entry.summary,
+                "action": action,
+                "object_count": len(entry.state.get("scene", {}).get("objects", {})),
+            }
+        )
+    return entries
+
+
+def _print_world_list_markdown(worlds: list[dict[str, object]]) -> None:
+    print("# WorldForge Worlds")
+    print()
+    print("| id | name | provider | step | objects | history |")
+    print("| --- | --- | --- | ---: | ---: | ---: |")
+    for world in worlds:
+        print(
+            "| "
+            f"`{world['id']}` | "
+            f"{world['name']} | "
+            f"`{world['provider']}` | "
+            f"{world['step']} | "
+            f"{world['object_count']} | "
+            f"{world['history_length']} |"
+        )
+
+
+def _print_world_summary_markdown(world) -> None:
+    print(f"# World {world.id}")
+    print()
+    print(f"- name: {world.name}")
+    print(f"- provider: {world.provider}")
+    print(f"- step: {world.step}")
+    print(f"- objects: {world.object_count}")
+    print(f"- history: {world.history_length}")
+    if world.description:
+        print(f"- description: {world.description}")
+
+
+def _print_world_history_markdown(world, entries: list[dict[str, object]]) -> None:
+    print(f"# World History: {world.id}")
+    print()
+    print("| step | summary | action | objects |")
+    print("| ---: | --- | --- | ---: |")
+    for entry in entries:
+        action = entry["action"]
+        action_label = ""
+        if isinstance(action, dict):
+            action_label = str(action.get("type", ""))
+        print(
+            f"| {entry['step']} | {entry['summary']} | {action_label} | {entry['object_count']} |"
+        )
 
 
 def _print_examples_markdown() -> None:
@@ -258,6 +332,104 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("markdown", "json"),
         default="markdown",
         help="Output format for provider docs metadata.",
+    )
+
+    world = subparsers.add_parser("world", help="Manage persisted local JSON worlds.")
+    world_subparsers = world.add_subparsers(dest="world_command", required=True)
+
+    world_list = world_subparsers.add_parser("list", help="List persisted worlds.")
+    world_list.add_argument(
+        "--state-dir", default=".worldforge/worlds", help="World state directory."
+    )
+    world_list.add_argument(
+        "--format",
+        choices=("json", "markdown"),
+        default="json",
+        help="Output format for persisted world summaries.",
+    )
+
+    world_create = world_subparsers.add_parser("create", help="Create and save a world.")
+    world_create.add_argument("name", help="World name.")
+    world_create.add_argument("--provider", default="mock", help="Provider name.")
+    world_create.add_argument(
+        "--prompt",
+        help="Optional prompt used to seed the world with deterministic checkout-safe objects.",
+    )
+    world_create.add_argument("--description", default="", help="Optional world description.")
+    world_create.add_argument(
+        "--state-dir", default=".worldforge/worlds", help="World state directory."
+    )
+    world_create.add_argument(
+        "--format",
+        choices=("json", "markdown"),
+        default="json",
+        help="Output format for the saved world summary.",
+    )
+
+    world_show = world_subparsers.add_parser("show", help="Show a persisted world.")
+    world_show.add_argument("world_id", help="World identifier.")
+    world_show.add_argument(
+        "--state-dir", default=".worldforge/worlds", help="World state directory."
+    )
+    world_show.add_argument(
+        "--format",
+        choices=("json", "markdown"),
+        default="json",
+        help="Output format for the world.",
+    )
+
+    world_history = world_subparsers.add_parser("history", help="Show persisted world history.")
+    world_history.add_argument("world_id", help="World identifier.")
+    world_history.add_argument(
+        "--state-dir", default=".worldforge/worlds", help="World state directory."
+    )
+    world_history.add_argument(
+        "--format",
+        choices=("json", "markdown"),
+        default="json",
+        help="Output format for history entries.",
+    )
+
+    world_export = world_subparsers.add_parser("export", help="Export a persisted world as JSON.")
+    world_export.add_argument("world_id", help="World identifier.")
+    world_export.add_argument("--output", help="Optional output path for exported JSON.")
+    world_export.add_argument(
+        "--state-dir", default=".worldforge/worlds", help="World state directory."
+    )
+
+    world_import = world_subparsers.add_parser(
+        "import", help="Import and save exported world JSON."
+    )
+    world_import.add_argument("input", help="Path to exported world JSON.")
+    world_import.add_argument("--new-id", action="store_true", help="Assign a fresh world id.")
+    world_import.add_argument("--name", help="Optional replacement world name.")
+    world_import.add_argument(
+        "--state-dir", default=".worldforge/worlds", help="World state directory."
+    )
+    world_import.add_argument(
+        "--format",
+        choices=("json", "markdown"),
+        default="json",
+        help="Output format for the imported world summary.",
+    )
+
+    world_fork = world_subparsers.add_parser("fork", help="Fork a world from a history entry.")
+    world_fork.add_argument("world_id", help="Source world identifier.")
+    world_fork.add_argument(
+        "--history-index",
+        type=int,
+        default=0,
+        help="History entry index to fork from.",
+    )
+    world_fork.add_argument("--name", help="Optional forked world name.")
+    world_fork.add_argument(
+        "--state-dir", default=".worldforge/worlds", help="World state directory."
+    )
+    world_fork.add_argument(
+        "--format",
+        choices=("json", "markdown"),
+        default="json",
+        help="Output format for the forked world summary.",
     )
 
     doctor = subparsers.add_parser("doctor", help="Inspect the local WorldForge environment.")
@@ -480,6 +652,114 @@ def _cmd_provider(args: argparse.Namespace, forge: WorldForge) -> int | None:
     return handler(args, forge)
 
 
+def _cmd_world_list(args: argparse.Namespace, forge: WorldForge) -> int:
+    worlds = [_world_summary(forge.load_world(world_id)) for world_id in forge.list_worlds()]
+    if args.format == "markdown":
+        _print_world_list_markdown(worlds)
+    else:
+        _print_json(worlds)
+    return 0
+
+
+def _cmd_world_create(args: argparse.Namespace, forge: WorldForge) -> int:
+    if args.prompt:
+        world = forge.create_world_from_prompt(args.prompt, provider=args.provider, name=args.name)
+        if args.description:
+            world.description = args.description
+    else:
+        world = forge.create_world(args.name, provider=args.provider, description=args.description)
+    forge.save_world(world)
+    if args.format == "markdown":
+        _print_world_summary_markdown(world)
+    else:
+        _print_json(_world_summary(world))
+    return 0
+
+
+def _cmd_world_show(args: argparse.Namespace, forge: WorldForge) -> int:
+    world = forge.load_world(args.world_id)
+    if args.format == "markdown":
+        _print_world_summary_markdown(world)
+    else:
+        _print_json(world.to_dict())
+    return 0
+
+
+def _cmd_world_history(args: argparse.Namespace, forge: WorldForge) -> int:
+    world = forge.load_world(args.world_id)
+    entries = _world_history_payload(world)
+    if args.format == "markdown":
+        _print_world_history_markdown(world, entries)
+    else:
+        _print_json({"world_id": world.id, "history": entries})
+    return 0
+
+
+def _cmd_world_export(args: argparse.Namespace, forge: WorldForge) -> int:
+    payload = forge.export_world(args.world_id)
+    if args.output:
+        target = Path(args.output).expanduser().resolve()
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(f"{payload}\n", encoding="utf-8")
+        except OSError as exc:
+            raise WorldForgeError(f"Failed to write exported world to {target}: {exc}") from exc
+        _print_json({"world_id": args.world_id, "output_path": str(target)})
+    else:
+        _print_json(json.loads(payload))
+    return 0
+
+
+def _cmd_world_import(args: argparse.Namespace, forge: WorldForge) -> int:
+    source = Path(args.input).expanduser().resolve()
+    try:
+        payload = source.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise WorldForgeError(f"Failed to read imported world from {source}: {exc}") from exc
+    world = forge.import_world(payload, new_id=args.new_id, name=args.name)
+    forge.save_world(world)
+    if args.format == "markdown":
+        _print_world_summary_markdown(world)
+    else:
+        summary = _world_summary(world)
+        summary["source_path"] = str(source)
+        _print_json(summary)
+    return 0
+
+
+def _cmd_world_fork(args: argparse.Namespace, forge: WorldForge) -> int:
+    world = forge.fork_world(
+        args.world_id,
+        history_index=args.history_index,
+        name=args.name,
+    )
+    forge.save_world(world)
+    if args.format == "markdown":
+        _print_world_summary_markdown(world)
+    else:
+        summary = _world_summary(world)
+        summary["source_world_id"] = args.world_id
+        summary["history_index"] = args.history_index
+        _print_json(summary)
+    return 0
+
+
+def _cmd_world(args: argparse.Namespace, forge: WorldForge) -> int | None:
+    world_dispatch = {
+        "list": _cmd_world_list,
+        "create": _cmd_world_create,
+        "show": _cmd_world_show,
+        "history": _cmd_world_history,
+        "export": _cmd_world_export,
+        "import": _cmd_world_import,
+        "fork": _cmd_world_fork,
+    }
+    handler = world_dispatch.get(args.world_command)
+    if handler is None:
+        return None
+    return handler(args, forge)
+
+
 def _cmd_doctor(args: argparse.Namespace, forge: WorldForge) -> int:
     _print_json(
         forge.doctor(
@@ -579,6 +859,7 @@ _ForgeHandler = Callable[[argparse.Namespace, WorldForge], "int | None"]
 _FORGE_COMMANDS: dict[str, _ForgeHandler] = {
     "providers": _cmd_providers,
     "provider": _cmd_provider,
+    "world": _cmd_world,
     "doctor": _cmd_doctor,
     "generate": _cmd_generate,
     "transfer": _cmd_transfer,

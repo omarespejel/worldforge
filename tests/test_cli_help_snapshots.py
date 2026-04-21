@@ -41,6 +41,59 @@ options:
   --format {markdown,json}
                         Output format for provider docs metadata.
 """,
+    ("world", "--help"): """\
+usage: worldforge world [-h] {list,create,show,history,export,import,fork} ...
+
+positional arguments:
+  {list,create,show,history,export,import,fork}
+    list                List persisted worlds.
+    create              Create and save a world.
+    show                Show a persisted world.
+    history             Show persisted world history.
+    export              Export a persisted world as JSON.
+    import              Import and save exported world JSON.
+    fork                Fork a world from a history entry.
+
+options:
+  -h, --help            show this help message and exit
+""",
+    ("world", "create", "--help"): """\
+usage: worldforge world create [-h] [--provider PROVIDER] [--prompt PROMPT]
+                               [--description DESCRIPTION]
+                               [--state-dir STATE_DIR]
+                               [--format {json,markdown}]
+                               name
+
+positional arguments:
+  name                  World name.
+
+options:
+  -h, --help            show this help message and exit
+  --provider PROVIDER   Provider name.
+  --prompt PROMPT       Optional prompt used to seed the world with
+                        deterministic checkout-safe objects.
+  --description DESCRIPTION
+                        Optional world description.
+  --state-dir STATE_DIR
+                        World state directory.
+  --format {json,markdown}
+                        Output format for the saved world summary.
+""",
+    ("world", "history", "--help"): """\
+usage: worldforge world history [-h] [--state-dir STATE_DIR]
+                                [--format {json,markdown}]
+                                world_id
+
+positional arguments:
+  world_id              World identifier.
+
+options:
+  -h, --help            show this help message and exit
+  --state-dir STATE_DIR
+                        World state directory.
+  --format {json,markdown}
+                        Output format for history entries.
+""",
     ("harness", "--help"): """\
 usage: worldforge harness [-h] [--flow {leworldmodel,lerobot,diagnostics}]
                           [--state-dir STATE_DIR] [--list]
@@ -138,6 +191,7 @@ def test_top_level_help_lists_command_surface(monkeypatch, capsys) -> None:
         "examples",
         "providers",
         "provider",
+        "world",
         "doctor",
         "generate",
         "transfer",
@@ -149,6 +203,8 @@ def test_top_level_help_lists_command_surface(monkeypatch, capsys) -> None:
         assert command in output
     for common_command in (
         "worldforge examples",
+        "worldforge world create lab --provider mock",
+        "worldforge world history <world-id>",
         "worldforge provider list",
         "worldforge provider docs",
         "worldforge provider info mock",

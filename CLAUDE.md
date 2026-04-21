@@ -65,6 +65,7 @@ Run from repository root.
 | Package contract | `bash scripts/test_package.sh` | wheel installs and tests pass in isolated venv |
 | Full local gate | `uv lock --check && uv run ruff check src tests examples scripts && uv run ruff format --check src tests examples scripts && uv run python scripts/generate_provider_docs.py --check && uv run pytest && uv run pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90 && bash scripts/test_package.sh` | release-quality local validation |
 | CLI smoke | `uv run worldforge doctor` | `mock` registered; optional providers report missing/unregistered when env absent |
+| World CLI persistence | `uv run worldforge world create lab --provider mock && uv run worldforge world list` | local JSON world is saved and listed through the validated persistence API |
 | Examples index | `uv run worldforge examples` | runnable command list prints |
 | Harness | `uv run --extra harness worldforge-harness` | Textual extra only |
 | Build | `uv build` | wheel and sdist under `dist/` |

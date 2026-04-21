@@ -59,6 +59,17 @@ uv run worldforge provider health
 World state is persisted as local JSON under `.worldforge/worlds` by default or under the
 `state_dir` passed to `WorldForge`.
 
+The same local store is available from the CLI for checkout jobs and operator handoffs:
+
+```bash
+uv run worldforge world create lab --provider mock
+uv run worldforge world list
+uv run worldforge world history <world-id>
+uv run worldforge world export <world-id> --output world.json
+uv run worldforge world import world.json --new-id --name lab-copy
+uv run worldforge world fork <world-id> --history-index 0 --name lab-start
+```
+
 This store is suitable for local development, tests, examples, and single-writer workflows. It is
 not a concurrent database. Services that need multi-writer persistence should store exported world
 payloads in their own database and apply their own locking, backup, and retention policy.

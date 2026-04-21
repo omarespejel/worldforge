@@ -121,6 +121,10 @@ print(doctor.healthy_provider_count, doctor.provider_count)
 ```bash
 uv run worldforge examples                                              # runnable scripts index
 uv run worldforge doctor                                                # provider health
+uv run worldforge world create lab --provider mock                      # save a local world
+uv run worldforge world list                                            # persisted worlds
+uv run worldforge world history <world-id>                              # persisted history
+uv run worldforge world export <world-id> --output world.json           # portable state JSON
 uv run worldforge provider list                                         # registered providers
 uv run worldforge provider info mock                                    # capability surface
 uv run worldforge predict kitchen --provider mock --x 0.3 --y 0.8 --z 0.0 --steps 2
@@ -285,8 +289,9 @@ runnable index.
   controllers, checkpoints, or datasets in base dependencies.
 - Embodiment-specific action translation is host-owned. Policy providers preserve raw actions; the
   caller converts them into executable `Action` objects.
-- Local JSON persistence is single-writer, deterministic. Services needing locking, transactions,
-  or migrations own that layer.
+- Local JSON persistence is single-writer and available through both Python APIs and
+  `worldforge world` CLI commands. Services needing locking, transactions, or migrations own that
+  layer.
 - Built-in evaluation suites are deterministic contract harnesses. They are not physical-fidelity,
   media-quality, or real-world safety claims.
 - Scaffold adapters (`jepa`, `genie`, `jepa-wms`) are placeholders, not real integrations.

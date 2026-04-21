@@ -99,6 +99,10 @@ Discover and run examples:
 
 ```bash
 uv run worldforge examples
+uv run worldforge world create lab --provider mock
+uv run worldforge world list
+uv run worldforge world history <world-id>
+uv run worldforge world export <world-id> --output world.json
 uv run worldforge provider docs
 uv run --extra harness worldforge-harness
 uv run worldforge-demo-leworldmodel
@@ -198,7 +202,8 @@ rm -f "$tmp_req"
 - `ProviderMetricsSink.request_count` counts emitted provider events, not necessarily logical
   user-level operations; retry events increment both `request_count` and `retry_count`.
 - World persistence is local JSON under `.worldforge/worlds` by default and is not a concurrent
-  multi-writer store.
+  multi-writer store. Use `worldforge world ...` for CLI create/list/show/history/export/import/fork
+  flows, and keep service-grade durability host-owned.
 - World IDs are file stems for local JSON persistence. Reject path separators, traversal-shaped
   values, and other non-file-safe IDs before loading, importing, or saving world state.
 - Persisted history is part of the state contract: history entries must have non-negative steps,

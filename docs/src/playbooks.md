@@ -133,6 +133,21 @@ If it fails:
 
 Use this for local jobs, demos, tests, and single-writer workflows.
 
+CLI:
+
+```bash
+uv run worldforge world create lab --provider mock
+uv run worldforge world create seeded-lab --provider mock --prompt "A kitchen with a mug"
+uv run worldforge world list
+uv run worldforge world show <world-id>
+uv run worldforge world history <world-id>
+uv run worldforge world export <world-id> --output world.json
+uv run worldforge world import world.json --new-id --name lab-copy
+uv run worldforge world fork <world-id> --history-index 0 --name lab-start
+```
+
+Python:
+
 ```python
 from worldforge import WorldForge
 
@@ -149,6 +164,8 @@ Success signal:
 
 - world IDs are file-safe local identifiers.
 - saved JSON validates before it replaces the destination file.
+- the CLI create/import/fork commands save through the same validation path as Python
+  `save_world(...)`.
 - imported state rejects malformed scene objects, invalid history, negative steps, and traversal
   shaped IDs.
 
