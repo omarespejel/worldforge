@@ -320,6 +320,13 @@ def test_build_inputs_rejects_non_rollout_horizon() -> None:
         )
 
 
+def test_infer_cache_dir_from_checkpoint() -> None:
+    checkpoint = Path("/tmp/stable-wm/pusht/lewm_object.ckpt")
+    assert leworldmodel._infer_cache_dir_from_checkpoint(checkpoint, "pusht/lewm") == Path(
+        "/tmp/stable-wm"
+    )
+
+
 def test_smoke_main_prints_provider_result(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -332,7 +339,7 @@ def test_smoke_main_prints_provider_result(
             self.device = device
 
         def score_actions(self, *, info: object, action_candidates: object) -> SimpleNamespace:
-            assert info == {"pixels": "pixels"}
+            assert info == {"pixels": "pixels", "goal": "goal", "action": "action"}
             assert action_candidates == ["actions"]
             return SimpleNamespace(to_dict=lambda: {"best_index": 0, "scores": [0.1]})
 
@@ -347,7 +354,7 @@ def test_smoke_main_prints_provider_result(
     monkeypatch.setattr(
         leworldmodel,
         "_build_inputs",
-        lambda **_kwargs: ({"pixels": "pixels"}, ["actions"]),
+        lambda **_kwargs: ({"pixels": "pixels", "goal": "goal", "action": "action"}, ["actions"]),
     )
     monkeypatch.setattr(leworldmodel, "LeWorldModelProvider", FakeProvider)
     monkeypatch.setattr(
@@ -359,6 +366,7 @@ def test_smoke_main_prints_provider_result(
             str(tmp_path),
             "--device",
             "cpu",
+            "--json-only",
         ],
     )
 
@@ -370,3 +378,134 @@ def test_smoke_main_prints_provider_result(
         "health": {"healthy": True, "name": "leworldmodel"},
         "result": {"best_index": 0, "scores": [0.1]},
     }
+
+
+def test_smoke_main_prints_visual_pipeline_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    checkpoint = tmp_path / "pusht" / "lewm_object.ckpt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("checkpoint", encoding="utf-8")
+
+    class FakeProvider:
+        def __init__(self, *, policy: str, cache_dir: str, device: str) -> None:
+            assert policy == "pusht/lewm"
+            assert cache_dir == str(tmp_path)
+            assert device == "cpu"
+
+        def score_actions(self, *, info: object, action_candidates: object) -> SimpleNamespace:
+            assert info == {
+                "pixels": {"shape": (1, 1, 3, 3, 224, 224)},
+                "goal": {"shape": (1, 1, 3, 3, 224, 224)},
+                "action": {"shape": (1, 1, 3, 10)},
+            }
+            assert action_candidates == ["actions"]
+            return SimpleNamespace(
+                to_dict=lambda: {
+                    "best_index": 1,
+                    "best_score": 0.1,
+                    "lower_is_better": True,
+                    "metadata": {"score_type": "cost"},
+                    "scores": [0.3, 0.1],
+                }
+            )
+
+        def health(self) -> SimpleNamespace:
+            return SimpleNamespace(
+                to_dict=lambda: {
+                    "details": "configured for policy pusht/lewm",
+                    "healthy": True,
+                    "latency_ms": 0.1,
+                    "name": "leworldmodel",
+                }
+            )
+
+    monkeypatch.setattr(
+        leworldmodel,
+        "_build_inputs",
+        lambda **_kwargs: (
+            {
+                "pixels": {"shape": (1, 1, 3, 3, 224, 224)},
+                "goal": {"shape": (1, 1, 3, 3, 224, 224)},
+                "action": {"shape": (1, 1, 3, 10)},
+            },
+            ["actions"],
+        ),
+    )
+    monkeypatch.setattr(leworldmodel, "LeWorldModelProvider", FakeProvider)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "lewm-real",
+            "--checkpoint",
+            str(checkpoint),
+            "--device",
+            "cpu",
+        ],
+    )
+
+    assert leworldmodel.main() == 0
+
+    output = capsys.readouterr().out
+    assert "WorldForge LeWorldModel real checkpoint inference" in output
+    assert "Mode: real upstream checkpoint inference" in output
+    assert "[1/6] Resolve checkpoint and runtime settings" in output
+    assert "[3/6] Preflight optional runtime dependencies" in output
+    assert "[5/6] Run score_actions through the real checkpoint" in output
+    assert "Candidate scores" in output
+    assert "#1" in output
+    assert "BEST" in output
+    assert "Use --json-only" in output
+
+
+def test_smoke_main_reports_missing_runtime_before_tensor_build(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    checkpoint = tmp_path / "pusht" / "lewm_object.ckpt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("checkpoint", encoding="utf-8")
+
+    class FakeProvider:
+        def __init__(self, *, policy: str, cache_dir: str, device: str) -> None:
+            assert policy == "pusht/lewm"
+            assert cache_dir == str(tmp_path)
+            assert device == "cpu"
+
+        def health(self) -> SimpleNamespace:
+            return SimpleNamespace(
+                to_dict=lambda: {
+                    "details": "missing optional dependency torch",
+                    "healthy": False,
+                    "latency_ms": 0.1,
+                    "name": "leworldmodel",
+                }
+            )
+
+    def fail_build_inputs(**_kwargs: object) -> tuple[object, object]:
+        raise AssertionError("_build_inputs should not run before dependency preflight")
+
+    monkeypatch.setattr(leworldmodel, "_build_inputs", fail_build_inputs)
+    monkeypatch.setattr(leworldmodel, "LeWorldModelProvider", FakeProvider)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "lewm-real",
+            "--checkpoint",
+            str(checkpoint),
+            "--device",
+            "cpu",
+        ],
+    )
+
+    assert leworldmodel.main() == 1
+
+    message = capsys.readouterr().out
+    assert "LeWorldModel runtime preflight failed: missing optional dependency torch" in message
+    assert "scripts/lewm-real --checkpoint" in message
+    assert 'uv run --python 3.10 --with "stable-worldmodel[train,env]' in message

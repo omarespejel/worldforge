@@ -148,12 +148,12 @@ include those IDs in surrounding application logs.
   configured policy exists under `$STABLEWM_HOME` or `LEWORLDMODEL_CACHE_DIR`.
 - To smoke-test a real LeWorldModel checkpoint, run the packaged uv command with upstream
   dependencies:
-  `uv run --python 3.10 --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" worldforge-smoke-leworldmodel
-  --stablewm-home ~/.stable-wm --policy pusht/lewm`.
+  `scripts/lewm-real --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt --device cpu`.
   This is the real inference smoke: it requires an extracted object checkpoint such as
   `~/.stable-wm/pusht/lewm_object.ckpt`, builds task-shaped tensors, and calls the upstream
-  `stable_worldmodel.policy.AutoCostModel` path through
-  `LeWorldModelProvider`.
+  `stable_worldmodel.policy.AutoCostModel` path through `LeWorldModelProvider`. The wrapper runs
+  the required upstream runtime through `uv run --python 3.10 --with ...`, prints a staged pipeline
+  log by default, and supports `--json-only` for automation.
 - If you have Hugging Face LeWM `config.json` and `weights.pt` assets rather than an extracted
   `*_object.ckpt` archive, build the object checkpoint first with
   `uv run --python 3.10 --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" --with huggingface_hub
@@ -164,7 +164,7 @@ include those IDs in surrounding application logs.
   `uv run worldforge-demo-leworldmodel`. It uses the real `LeWorldModelProvider` interface
   with an injected deterministic cost runtime and exercises score planning, execution,
   persistence, and reload. It is not a real upstream-checkpoint inference run; use
-  `worldforge-smoke-leworldmodel` for that path. The demo should report
+  `lewm-real` or `worldforge-smoke-leworldmodel` for that path. The demo should report
   `uses_leworldmodel_provider: true`, `uses_worldforge_score_planning: true`, and
   `uses_real_upstream_checkpoint: false`.
 - To demonstrate LeRobot policy-plus-score planning without optional dependencies, run

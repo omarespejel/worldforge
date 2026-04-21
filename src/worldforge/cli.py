@@ -110,9 +110,7 @@ EXAMPLE_COMMANDS: tuple[dict[str, str], ...] = (
         "surface": "optional runtime smoke",
         "requires": "host-owned stable-worldmodel, torch, datasets, and LeWM checkpoint assets",
         "command": (
-            'uv run --python 3.10 --with "stable-worldmodel[train,env] @ '
-            'git+https://github.com/galilai-group/stable-worldmodel.git" '
-            '--with "datasets>=2.21" worldforge-smoke-leworldmodel'
+            "scripts/lewm-real --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt --device cpu"
         ),
         "description": (
             "Exercise the real LeWorldModel checkpoint path from a host environment that owns "

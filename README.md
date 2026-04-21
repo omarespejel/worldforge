@@ -266,12 +266,8 @@ uv run --extra harness worldforge-harness --flow diagnostics
 Real-checkpoint live smoke (host-provided dependencies and assets):
 
 ```bash
-uv run --python 3.10 \
-  --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
-  --with "datasets>=2.21" \
-  worldforge-smoke-leworldmodel \
-  --stablewm-home ~/.stable-wm \
-  --policy pusht/lewm \
+scripts/lewm-real \
+  --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt \
   --device cpu
 ```
 

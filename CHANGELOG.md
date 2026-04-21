@@ -43,6 +43,9 @@ releases may still include breaking changes when the public API needs to tighten
 
 ### Added
 
+- Added `lewm-real`, a short `uv run` alias for real LeWorldModel checkpoint inference. The command
+  now accepts `--checkpoint`, prints a staged pipeline log by default, and preserves machine-readable
+  output with `--json-only`.
 - Added the `worldforge world` CLI command group for local JSON persistence workflows, including
   create, list, show, history, export, import, and fork commands backed by the existing validated
   `WorldForge` persistence API.

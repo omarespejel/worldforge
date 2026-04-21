@@ -124,14 +124,16 @@ checkpoint.
 Real-checkpoint smoke:
 
 ```bash
-uv run --python 3.10 \
-  --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
-  --with "datasets>=2.21" \
-  worldforge-smoke-leworldmodel \
-  --stablewm-home ~/.stable-wm \
-  --policy pusht/lewm \
+scripts/lewm-real \
+  --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt \
   --device cpu
 ```
+
+`scripts/lewm-real` is the complete uv-backed task: it installs the host-owned upstream runtime in
+uv's ephemeral environment, then runs the short `lewm-real` console alias. It prints a staged
+pipeline log by default: checkpoint resolution, runtime preflight, tensor construction, model
+scoring, and the ranked candidate scores. Pass `--json-only` when a script needs the
+machine-readable payload.
 
 The smoke requires an extracted object checkpoint such as
 `~/.stable-wm/pusht/lewm_object.ckpt`. If you have Hugging Face LeWM `config.json` and

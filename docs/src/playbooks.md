@@ -288,14 +288,16 @@ uv run --extra harness worldforge-harness --flow diagnostics
 Real LeWorldModel checkpoint:
 
 ```bash
-uv run --python 3.10 \
-  --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
-  --with "datasets>=2.21" \
-  worldforge-smoke-leworldmodel \
-  --stablewm-home ~/.stable-wm \
-  --policy pusht/lewm \
+scripts/lewm-real \
+  --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt \
   --device cpu
 ```
+
+The wrapper runs `uv run --python 3.10` with the upstream `stable-worldmodel` and `datasets`
+runtime requirements, then invokes the packaged `lewm-real` alias. The live smoke prints a
+step-by-step pipeline log by default and exits non-zero before inference if the checkpoint,
+optional runtime, or provider health check is missing. Use `--json-only` for the machine-readable
+result payload.
 
 GR00T and LeRobot live smokes:
 

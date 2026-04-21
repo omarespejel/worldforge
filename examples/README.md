@@ -53,7 +53,7 @@ comparison flows.
 
 | Example | Surface | Command |
 | --- | --- | --- |
-| `leworldmodel-real-checkpoint-smoke` | real checkpoint smoke | `uv run --python 3.10 --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" worldforge-smoke-leworldmodel` |
+| `leworldmodel-real-checkpoint-smoke` | real checkpoint smoke | `scripts/lewm-real --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt --device cpu` |
 
 ## Runtime Boundary
 

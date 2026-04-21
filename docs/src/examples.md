@@ -66,7 +66,7 @@ checkpoint inference.
 
 | Example | Command | Runtime boundary |
 | --- | --- | --- |
-| `leworldmodel-real-checkpoint-smoke` | `uv run --python 3.10 --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" worldforge-smoke-leworldmodel` | Requires host-owned `stable_worldmodel`, torch, datasets, and LeWM checkpoint assets. |
+| `leworldmodel-real-checkpoint-smoke` | `scripts/lewm-real --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt --device cpu` | Requires host-owned `stable_worldmodel`, torch, datasets, and LeWM checkpoint assets. |
 
 ## Operational Commands
 
