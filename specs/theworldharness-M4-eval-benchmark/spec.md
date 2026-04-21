@@ -1,7 +1,7 @@
 # Milestone M4 — Eval + Benchmark
 
 ## Status
-Draft · 2026-04-21
+Implemented · 2026-04-21
 
 ## Outcome (one sentence)
 A user of TheWorldHarness can run any built-in evaluation suite or benchmark against any registered provider from the TUI, watch honest live progress, and land the result in `RunInspectorScreen` with JSON / Markdown / CSV export that matches the `worldforge` CLI byte-for-byte.

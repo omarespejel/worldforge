@@ -26,6 +26,7 @@ def test_harness_themes_registered_with_dark_default(tmp_path) -> None:
         async with app.run_test(size=(130, 42)):
             assert "worldforge-dark" in app.available_themes
             assert "worldforge-light" in app.available_themes
+            assert "worldforge-high-contrast" in app.available_themes
             assert app.theme == "worldforge-dark"
 
     asyncio.run(scenario())
@@ -43,6 +44,9 @@ def test_harness_theme_toggle_cycles_between_registered_themes(tmp_path) -> None
             await pilot.press("ctrl+t")
             await pilot.pause()
             assert app.theme == "worldforge-light"
+            await pilot.press("ctrl+t")
+            await pilot.pause()
+            assert app.theme == "worldforge-high-contrast"
             await pilot.press("ctrl+t")
             await pilot.pause()
             assert app.theme == "worldforge-dark"
@@ -921,3 +925,236 @@ def test_confirm_delete_returns_true_on_enter(tmp_path) -> None:
 
     asyncio.run(scenario())
     assert outcome == [True]
+
+
+# ---------------------------------------------------------------------------
+# M3-M5 — Providers, eval, benchmark, recents
+# ---------------------------------------------------------------------------
+
+
+def test_providers_screen_runs_real_mock_predict(tmp_path) -> None:
+    pytest.importorskip("textual")
+
+    from textual.widgets import DataTable
+
+    from worldforge.harness.tui import ProvidersScreen, TheWorldHarnessApp
+    from worldforge.models import CAPABILITY_NAMES
+
+    async def scenario() -> None:
+        app = TheWorldHarnessApp(state_dir=tmp_path, initial_screen="providers")
+        async with app.run_test(size=(130, 42)) as pilot:
+            await pilot.pause()
+            assert isinstance(app.screen, ProvidersScreen)
+            table = app.screen.query_one("#providers-table", DataTable)
+            assert table.row_count == 1
+            assert len(table.columns) == len(CAPABILITY_NAMES) + 1
+            await pilot.press("p")
+            for _ in range(8):
+                await pilot.pause()
+                if app.screen.running_operation == "done":
+                    break
+            assert app.screen.running_operation == "done"
+            assert app.screen._last_call_summary["mock"]["phase"] == "success"
+
+    asyncio.run(scenario())
+
+
+def test_providers_register_modal_adds_mock_variant(tmp_path) -> None:
+    pytest.importorskip("textual")
+
+    from textual.widgets import DataTable, Input
+
+    from worldforge.harness.tui import ProvidersScreen, RegisterProviderModal, TheWorldHarnessApp
+
+    async def scenario() -> None:
+        app = TheWorldHarnessApp(state_dir=tmp_path, initial_screen="providers")
+        async with app.run_test(size=(130, 42)) as pilot:
+            await pilot.pause()
+            assert isinstance(app.screen, ProvidersScreen)
+            await pilot.press("r")
+            await pilot.pause()
+            assert isinstance(app.screen, RegisterProviderModal)
+            app.screen.query_one("#register-provider-name", Input).value = "mock-alt"
+            await pilot.click("#register-provider-submit")
+            for _ in range(4):
+                await pilot.pause()
+            assert isinstance(app.screen, ProvidersScreen)
+            table = app.screen.query_one("#providers-table", DataTable)
+            assert table.row_count == 2
+            assert app.current_provider == "mock-alt"
+
+    asyncio.run(scenario())
+
+
+def test_eval_screen_planning_against_mock_writes_report(tmp_path) -> None:
+    pytest.importorskip("textual")
+
+    from worldforge.harness.tui import EvalScreen, RunInspectorScreen, TheWorldHarnessApp
+
+    async def scenario() -> None:
+        app = TheWorldHarnessApp(state_dir=tmp_path, initial_screen="eval")
+        async with app.run_test(size=(130, 42)) as pilot:
+            await pilot.pause()
+            assert isinstance(app.screen, EvalScreen)
+            await pilot.press("r")
+            for _ in range(12):
+                await pilot.pause()
+                if isinstance(app.screen, RunInspectorScreen):
+                    break
+            assert isinstance(app.screen, RunInspectorScreen)
+            assert app.screen.last_run is not None
+            assert app.screen.last_run.kind == "eval"
+            assert app.screen.last_run.report_path is not None
+            assert app.screen.last_run.report_path.exists()
+
+    asyncio.run(scenario())
+
+
+def test_benchmark_screen_streams_progress_and_writes_report(tmp_path) -> None:
+    pytest.importorskip("textual")
+
+    from textual.widgets import Input
+
+    from worldforge.harness.tui import BenchmarkScreen, RunInspectorScreen, TheWorldHarnessApp
+
+    async def scenario() -> None:
+        app = TheWorldHarnessApp(state_dir=tmp_path, initial_screen="benchmark")
+        async with app.run_test(size=(130, 42)) as pilot:
+            await pilot.pause()
+            assert isinstance(app.screen, BenchmarkScreen)
+            app.screen.query_one("#benchmark-iterations", Input).value = "2"
+            await pilot.press("r")
+            for _ in range(12):
+                await pilot.pause()
+                if isinstance(app.screen, RunInspectorScreen):
+                    break
+            assert isinstance(app.screen, RunInspectorScreen)
+            assert app.screen.last_run is not None
+            assert app.screen.last_run.kind == "benchmark"
+            assert app.screen.last_run.report_path is not None
+            assert app.screen.last_run.report_path.exists()
+
+    asyncio.run(scenario())
+
+
+def test_home_recent_lists_worlds_and_reports(tmp_path) -> None:
+    pytest.importorskip("textual")
+
+    from textual.widgets import Static
+
+    from worldforge import WorldForge
+    from worldforge.harness.flows import eval_run_artifacts, write_report
+    from worldforge.harness.tui import TheWorldHarnessApp
+
+    _seed_world(tmp_path, name="recent-lab", world_id="recent-lab")
+    forge = WorldForge(state_dir=tmp_path)
+    artifacts, _report = eval_run_artifacts(forge, "planning", "mock")
+    report_path = write_report(forge, "eval-planning", artifacts)
+
+    async def scenario() -> None:
+        app = TheWorldHarnessApp(state_dir=tmp_path)
+        async with app.run_test(size=(130, 42)) as pilot:
+            await pilot.pause()
+            recent = app.screen.query_one("#home-recent", Static)
+            text = recent.render().plain  # type: ignore[union-attr]
+            assert "recent-lab" in text
+            assert report_path.name in text
+
+    asyncio.run(scenario())
+
+
+def test_dynamic_command_provider_finds_world_provider_and_run(tmp_path) -> None:
+    pytest.importorskip("textual")
+
+    from worldforge import WorldForge
+    from worldforge.harness.flows import eval_run_artifacts, write_report
+    from worldforge.harness.tui import TheWorldHarnessApp, WorldForgeCommandProvider
+
+    _seed_world(tmp_path, name="palette-lab", world_id="palette-lab")
+    forge = WorldForge(state_dir=tmp_path)
+    artifacts, _report = eval_run_artifacts(forge, "planning", "mock")
+    report_path = write_report(forge, "eval-planning", artifacts)
+
+    async def scenario() -> None:
+        app = TheWorldHarnessApp(state_dir=tmp_path)
+        async with app.run_test(size=(130, 42)):
+            provider = WorldForgeCommandProvider(app.screen)
+            await provider.startup()
+            world_hits = [hit async for hit in provider.search("palette")]
+            provider_hits = [hit async for hit in provider.search("mock")]
+            run_hits = [hit async for hit in provider.search(report_path.name[:12])]
+            assert any("World: palette-lab" == hit.text for hit in world_hits)
+            assert any("Provider: mock" == hit.text for hit in provider_hits)
+            assert any(hit.text and hit.text.startswith("Run: ") for hit in run_hits)
+
+    asyncio.run(scenario())
+
+
+def test_app_routes_new_harness_screens_and_palette_callbacks(tmp_path) -> None:
+    pytest.importorskip("textual")
+
+    from worldforge import WorldForge
+    from worldforge.harness.flows import eval_run_artifacts, write_report
+    from worldforge.harness.tui import (
+        EvalScreen,
+        HelpScreen,
+        ProvidersScreen,
+        RunInspectorScreen,
+        TheWorldHarnessApp,
+        WorldsScreen,
+    )
+
+    _seed_world(tmp_path, name="route-lab", world_id="route-lab")
+    forge = WorldForge(state_dir=tmp_path)
+    artifacts, _report = eval_run_artifacts(forge, "planning", "mock")
+    report_path = write_report(forge, "eval-planning", artifacts)
+
+    async def scenario() -> None:
+        app = TheWorldHarnessApp(state_dir=tmp_path)
+        async with app.run_test(size=(130, 42)) as pilot:
+            await pilot.pause()
+            app.action_switch_screen("providers")
+            await pilot.pause()
+            assert isinstance(app.screen, ProvidersScreen)
+            app.action_switch_screen("eval")
+            await pilot.pause()
+            assert isinstance(app.screen, EvalScreen)
+            app._open_world_from_palette("route-lab")
+            await pilot.pause()
+            assert isinstance(app.screen, WorldsScreen)
+            assert app.screen.selected_world == "route-lab"
+            app._open_provider_from_palette("mock")
+            await pilot.pause()
+            assert isinstance(app.screen, ProvidersScreen)
+            assert app.current_provider == "mock"
+            app._open_report_path(report_path)
+            await pilot.pause()
+            assert isinstance(app.screen, RunInspectorScreen)
+            assert app.screen.last_run is not None
+            assert app.screen.last_run.kind == "eval"
+            app.action_show_help()
+            await pilot.pause()
+            assert isinstance(app.screen, HelpScreen)
+            app.action_switch_screen("home")
+            await pilot.pause()
+            assert not isinstance(app.screen, HelpScreen)
+
+    asyncio.run(scenario())
+
+
+def test_run_flow_command_waits_for_run_inspector_mount(tmp_path) -> None:
+    pytest.importorskip("textual")
+
+    from worldforge.harness.tui import RunInspectorScreen, TheWorldHarnessApp
+
+    async def scenario() -> None:
+        app = TheWorldHarnessApp(state_dir=tmp_path, step_delay=0.0)
+        async with app.run_test(size=(130, 42)) as pilot:
+            await pilot.pause()
+            command = app._make_run_flow_command("leworldmodel")
+            await command()
+            assert isinstance(app.screen, RunInspectorScreen)
+            assert app.screen.last_run is not None
+            assert app.screen.last_run.flow.id == "leworldmodel"
+
+    asyncio.run(scenario())

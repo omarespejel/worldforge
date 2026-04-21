@@ -1,7 +1,20 @@
 from __future__ import annotations
 
+import json
+
+import pytest
+
+from worldforge import WorldForge, WorldForgeError
+from worldforge.evaluation import EvaluationSuite
 from worldforge.harness import available_flows, flow_index, run_flow
-from worldforge.harness.flows import flow_to_dicts
+from worldforge.harness.flows import (
+    benchmark_run_artifacts,
+    eval_run_artifacts,
+    flow_to_dicts,
+    recent_report_paths,
+    report_run_from_path,
+    write_report,
+)
 
 
 def test_harness_flow_metadata_is_available_without_textual() -> None:
@@ -55,3 +68,49 @@ def test_harness_runs_diagnostics_flow(tmp_path) -> None:
     ]
     assert run.summary["benchmark_event_count"] >= 10
     assert "benchmark_operations: predict, reason, generate, transfer, embed" in run.transcript
+
+
+def test_eval_run_artifacts_match_canonical_renderer(tmp_path) -> None:
+    forge = WorldForge(state_dir=tmp_path)
+    artifacts, report = eval_run_artifacts(forge, "planning", "mock")
+
+    direct = EvaluationSuite.from_builtin("planning").run_report("mock", forge=forge)
+    assert artifacts["json"] == direct.to_json()
+    assert artifacts["markdown"] == report.to_markdown()
+    assert json.loads(artifacts["json"])["suite_id"] == "planning"
+
+
+def test_benchmark_run_artifacts_invokes_sample_callback(tmp_path) -> None:
+    forge = WorldForge(state_dir=tmp_path)
+    samples = []
+    artifacts, report = benchmark_run_artifacts(
+        forge,
+        "mock",
+        operations=("predict",),
+        iterations=3,
+        on_sample=samples.append,
+    )
+
+    assert len(samples) == 3
+    assert report.results[0].operation == "predict"
+    assert json.loads(artifacts["json"])["results"][0]["iterations"] == 3
+
+
+def test_write_report_and_recent_report_round_trip(tmp_path) -> None:
+    forge = WorldForge(state_dir=tmp_path)
+    artifacts, _report = eval_run_artifacts(forge, "planning", "mock")
+
+    path = write_report(forge, "eval-planning", artifacts)
+
+    assert path.exists()
+    assert path.parent == (forge.state_dir / "reports").resolve()
+    assert recent_report_paths(forge.state_dir) == (path,)
+    run = report_run_from_path(path, state_dir=forge.state_dir)
+    assert run.kind == "eval"
+    assert run.report_path == path
+
+
+def test_eval_capability_mismatch_propagates(tmp_path) -> None:
+    forge = WorldForge(state_dir=tmp_path)
+    with pytest.raises(WorldForgeError, match="missing required capabilities"):
+        eval_run_artifacts(forge, "generation", "leworldmodel")

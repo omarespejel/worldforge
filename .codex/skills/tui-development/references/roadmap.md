@@ -271,9 +271,9 @@ the milestone "done" with the date.
 | M0 — Theme + chrome reset | [spec](../../../../specs/theworldharness-M0-theme-chrome/spec.md) | [plan](../../../../specs/theworldharness-M0-theme-chrome/plan.md) | [tasks](../../../../specs/theworldharness-M0-theme-chrome/tasks.md) | done · 2026-04-21 |
 | M1 — Screen architecture | [spec](../../../../specs/theworldharness-M1-screen-architecture/spec.md) | [plan](../../../../specs/theworldharness-M1-screen-architecture/plan.md) | [tasks](../../../../specs/theworldharness-M1-screen-architecture/tasks.md) | done · 2026-04-21 |
 | M2 — Worlds CRUD | [spec](../../../../specs/theworldharness-M2-worlds-crud/spec.md) | [plan](../../../../specs/theworldharness-M2-worlds-crud/plan.md) | [tasks](../../../../specs/theworldharness-M2-worlds-crud/tasks.md) | done · 2026-04-21 |
-| M3 — Live providers | [spec](../../../../specs/theworldharness-M3-live-providers/spec.md) | [plan](../../../../specs/theworldharness-M3-live-providers/plan.md) | [tasks](../../../../specs/theworldharness-M3-live-providers/tasks.md) | not started |
-| M4 — Eval + Benchmark | [spec](../../../../specs/theworldharness-M4-eval-benchmark/spec.md) | [plan](../../../../specs/theworldharness-M4-eval-benchmark/plan.md) | [tasks](../../../../specs/theworldharness-M4-eval-benchmark/tasks.md) | not started |
-| M5 — Polish + showcase | [spec](../../../../specs/theworldharness-M5-polish-showcase/spec.md) | [plan](../../../../specs/theworldharness-M5-polish-showcase/plan.md) | [tasks](../../../../specs/theworldharness-M5-polish-showcase/tasks.md) | not started |
+| M3 — Live providers | [spec](../../../../specs/theworldharness-M3-live-providers/spec.md) | [plan](../../../../specs/theworldharness-M3-live-providers/plan.md) | [tasks](../../../../specs/theworldharness-M3-live-providers/tasks.md) | done · 2026-04-21 |
+| M4 — Eval + Benchmark | [spec](../../../../specs/theworldharness-M4-eval-benchmark/spec.md) | [plan](../../../../specs/theworldharness-M4-eval-benchmark/plan.md) | [tasks](../../../../specs/theworldharness-M4-eval-benchmark/tasks.md) | done · 2026-04-21 |
+| M5 — Polish + showcase | [spec](../../../../specs/theworldharness-M5-polish-showcase/spec.md) | [plan](../../../../specs/theworldharness-M5-polish-showcase/plan.md) | [tasks](../../../../specs/theworldharness-M5-polish-showcase/tasks.md) | done · 2026-04-21 |
 
 The summaries below are the load-bearing intent of each milestone; the
 linked spec triad is the source of truth for scope, acceptance, and
@@ -328,7 +328,7 @@ task breakdown.
 ### M5 — Polish + showcase
 
 - High-contrast theme, command palette dynamic provider for worlds /
-  providers / runs, recent-items list on `HomeScreen`, snapshot test
+  providers / runs, recent-items list on `HomeScreen`, screenshot export
   matrix at common terminal sizes (`100×30`, `120×40`, `160×50`),
   README screenshot refresh.
 - Outcome: the harness is a credible "front face of the project" —

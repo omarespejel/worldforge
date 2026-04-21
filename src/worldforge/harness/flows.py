@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
-from worldforge.benchmark import ProviderBenchmarkHarness
+from worldforge.benchmark import BenchmarkReport, ProviderBenchmarkHarness
 from worldforge.demos import lerobot_e2e, leworldmodel_e2e
+from worldforge.evaluation import EvaluationReport, EvaluationSuite
 from worldforge.framework import WorldForge
 from worldforge.harness.models import HarnessFlow, HarnessMetric, HarnessRun, HarnessStep
 from worldforge.models import JSONDict
@@ -162,6 +166,249 @@ def run_flow(flow_id: str, *, state_dir: Path | None = None) -> HarnessRun:
         metrics=_metrics_for(flow_id, summary),
         transcript=_transcript_for(flow_id, summary),
     )
+
+
+def eval_run_artifacts(
+    forge: WorldForge,
+    suite_id: str,
+    providers: str | Sequence[str],
+    *,
+    world=None,
+) -> tuple[dict[str, str], EvaluationReport]:
+    """Run an evaluation suite and return canonical report artifacts.
+
+    This helper is intentionally Textual-free. The TUI and tests both call it so
+    the strings shown in TheWorldHarness stay byte-identical to the CLI report
+    renderers.
+    """
+
+    suite = EvaluationSuite.from_builtin(suite_id)
+    report = suite.run_report(providers=providers, world=world, forge=forge)
+    return report.artifacts(), report
+
+
+def benchmark_run_artifacts(
+    forge: WorldForge,
+    providers: str | Sequence[str],
+    *,
+    operations: Sequence[str] | None = None,
+    iterations: int = 5,
+    concurrency: int = 1,
+    on_sample: Callable[[JSONDict], None] | None = None,
+) -> tuple[dict[str, str], BenchmarkReport]:
+    """Run the benchmark harness and return canonical report artifacts."""
+
+    report = ProviderBenchmarkHarness(forge=forge).run(
+        providers,
+        operations=operations,
+        iterations=iterations,
+        concurrency=concurrency,
+        on_sample=on_sample,
+    )
+    return (
+        {
+            "json": report.to_json(),
+            "markdown": report.to_markdown(),
+            "csv": report.to_csv(),
+        },
+        report,
+    )
+
+
+def write_report(forge: WorldForge, kind: str, artifacts: dict[str, str]) -> Path:
+    """Persist a canonical JSON report under ``<state-dir>/reports``."""
+
+    if "json" not in artifacts:
+        raise ValueError("report artifacts must include a json entry")
+    reports_dir = forge.state_dir / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    run_id = uuid4().hex[:8]
+    safe_kind = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in kind).strip("-")
+    path = reports_dir / f"{safe_kind}-{timestamp}-{run_id}.json"
+    path.write_text(artifacts["json"], encoding="utf-8")
+    return path.resolve()
+
+
+def report_run_from_path(path: Path, *, state_dir: Path) -> HarnessRun:
+    """Build a ``HarnessRun`` for a saved eval or benchmark JSON report."""
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if "suite_id" in payload:
+        return _eval_run_from_payload(payload, path=path, state_dir=state_dir)
+    if "results" in payload:
+        return _benchmark_run_from_payload(payload, path=path, state_dir=state_dir)
+    raise ValueError(f"unsupported harness report payload at {path}")
+
+
+def recent_report_paths(state_dir: Path, *, limit: int = 5) -> tuple[Path, ...]:
+    """Return recent preserved report files from ``<state-dir>/reports``."""
+
+    reports_dir = state_dir / "reports"
+    if not reports_dir.exists():
+        return ()
+    paths = sorted(
+        (path for path in reports_dir.glob("*.json") if path.is_file()),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    return tuple(paths[:limit])
+
+
+def _eval_run_from_payload(payload: JSONDict, *, path: Path, state_dir: Path) -> HarnessRun:
+    suite_id = str(payload.get("suite_id", "evaluation"))
+    suite_name = str(payload.get("suite", suite_id))
+    results = list(payload.get("results", []))
+    summaries = list(payload.get("provider_summaries", []))
+    passed = sum(1 for result in results if result.get("passed"))
+    total = len(results)
+    flow = HarnessFlow(
+        id=f"eval-{suite_id}",
+        title=f"Evaluation: {suite_name}",
+        short_title=f"Eval {suite_id}",
+        focus="evaluation report",
+        provider=", ".join(str(summary.get("provider")) for summary in summaries) or "provider",
+        capability="evaluation",
+        command=f"worldforge eval --suite {suite_id}",
+        accent="",
+        summary=f"{passed}/{total} scenarios passed.",
+    )
+    return HarnessRun(
+        flow=flow,
+        state_dir=state_dir,
+        summary=payload,
+        steps=(
+            HarnessStep(
+                "Load evaluation report",
+                "Read preserved JSON from the harness reports directory.",
+                f"{path.name}",
+                str(path),
+            ),
+            HarnessStep(
+                "Inspect verdict",
+                "Summarise deterministic adapter-suite results.",
+                f"{passed}/{total} scenarios passed.",
+            ),
+        ),
+        metrics=tuple(
+            HarnessMetric(
+                str(summary.get("provider", "provider")),
+                f"{summary.get('passed_scenario_count', 0)}/{summary.get('scenario_count', 0)}",
+                f"average_score={float(summary.get('average_score', 0.0)):.2f}",
+            )
+            for summary in summaries
+        )
+        or (HarnessMetric("Scenarios", f"{passed}/{total}", "evaluation results"),),
+        transcript=(
+            "kind: eval",
+            f"suite: {suite_name} ({suite_id})",
+            f"report_path: {path}",
+            f"passed: {passed}/{total}",
+        ),
+        kind="eval",
+        report_path=path,
+        artifacts={
+            "json": json.dumps(payload, indent=2, sort_keys=True),
+            "markdown": _markdown_from_eval_payload(payload),
+            "csv": _csv_placeholder("eval", path),
+        },
+    )
+
+
+def _benchmark_run_from_payload(payload: JSONDict, *, path: Path, state_dir: Path) -> HarnessRun:
+    results = list(payload.get("results", []))
+    flow = HarnessFlow(
+        id="benchmark-report",
+        title="Benchmark Report",
+        short_title="Benchmark",
+        focus="latency / retry / throughput",
+        provider=", ".join(sorted({str(result.get("provider")) for result in results}))
+        or "provider",
+        capability="benchmark",
+        command="worldforge benchmark",
+        accent="",
+        summary=f"{len(results)} benchmark rows.",
+    )
+    metrics = tuple(
+        HarnessMetric(
+            f"{result.get('provider')}.{result.get('operation')}",
+            f"{float(result.get('average_latency_ms') or 0.0):.2f} ms",
+            f"ok={result.get('success_count')}/{result.get('iterations')} "
+            f"p95={float(result.get('p95_latency_ms') or 0.0):.2f} ms",
+        )
+        for result in results
+    )
+    return HarnessRun(
+        flow=flow,
+        state_dir=state_dir,
+        summary=payload,
+        steps=(
+            HarnessStep(
+                "Load benchmark report",
+                "Read preserved JSON from the harness reports directory.",
+                path.name,
+                str(path),
+            ),
+            HarnessStep(
+                "Inspect benchmark rows",
+                "Summarise latency, retry, and throughput results.",
+                f"{len(results)} operation rows.",
+            ),
+        ),
+        metrics=metrics or (HarnessMetric("Rows", "0", "benchmark results"),),
+        transcript=(
+            "kind: benchmark",
+            f"report_path: {path}",
+            f"rows: {len(results)}",
+        ),
+        kind="benchmark",
+        report_path=path,
+        artifacts={
+            "json": json.dumps(payload, indent=2, sort_keys=True),
+            "markdown": _markdown_from_benchmark_payload(payload),
+            "csv": _csv_placeholder("benchmark", path),
+        },
+    )
+
+
+def _markdown_from_eval_payload(payload: JSONDict) -> str:
+    lines = [
+        "# Evaluation Report",
+        "",
+        f"Suite: {payload.get('suite')} ({payload.get('suite_id')})",
+        "",
+        "| provider | average_score | passed | scenarios |",
+        "| --- | ---: | ---: | ---: |",
+    ]
+    for summary in payload.get("provider_summaries", []):
+        lines.append(
+            f"| {summary.get('provider')} | {float(summary.get('average_score', 0.0)):.2f} | "
+            f"{summary.get('passed_scenario_count', 0)}/{summary.get('scenario_count', 0)} | "
+            f"{summary.get('scenario_count', 0)} |"
+        )
+    return "\n".join(lines)
+
+
+def _markdown_from_benchmark_payload(payload: JSONDict) -> str:
+    lines = [
+        "# Benchmark Report",
+        "",
+        "| provider | operation | ok | retries | avg_ms | p95_ms | throughput/s |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for result in payload.get("results", []):
+        lines.append(
+            f"| {result.get('provider')} | {result.get('operation')} | "
+            f"{result.get('success_count')}/{result.get('iterations')} | "
+            f"{result.get('retry_count')} | {float(result.get('average_latency_ms') or 0.0):.2f} | "
+            f"{float(result.get('p95_latency_ms') or 0.0):.2f} | "
+            f"{float(result.get('throughput_per_second') or 0.0):.2f} |"
+        )
+    return "\n".join(lines)
+
+
+def _csv_placeholder(kind: str, path: Path) -> str:
+    return f"kind,path\n{kind},{path}\n"
 
 
 def _steps_for(flow_id: str, summary: JSONDict) -> tuple[HarnessStep, ...]:

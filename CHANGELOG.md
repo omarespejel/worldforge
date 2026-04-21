@@ -9,6 +9,16 @@ releases may still include breaking changes when the public API needs to tighten
 
 ### Harness
 
+- Added the M3-M5 TheWorldHarness surfaces: `ProvidersScreen` with a capability matrix and a
+  cancellable real `mock.predict` run; `EvalScreen` and `BenchmarkScreen` with preserved JSON
+  reports; Run Inspector report previews; Home recent worlds/runs; dynamic `Ctrl+P` entries for
+  worlds, providers, and saved reports.
+- Added the `worldforge-high-contrast` theme to the existing theme cycle and documented the three
+  shipped themes.
+- Added local harness guard scripts that reject raw hex literals in widget CSS and network-egress
+  calls under `src/worldforge/harness/`.
+- Added a Textual screenshot export matrix for the main harness screens at `100x30`, `120x40`,
+  and `160x50`, plus a deterministic README screenshot regeneration script.
 - Reskinned TheWorldHarness with registered `worldforge-dark` and `worldforge-light` themes,
   retiring the hard-coded hex literals in `src/worldforge/harness/tui.py` in favour of semantic
   tokens (`$accent`, `$success`, `$warning`, `$error`, `$panel`, `$boost`, `$surface`, plus the
@@ -24,8 +34,8 @@ releases may still include breaking changes when the public API needs to tighten
   passed.
 - Added the static command palette layer via `App.get_system_commands` (`Ctrl+P`): "Jump:
   Home", "Jump: Run Inspector", "Open Help", one "Run flow: <title>" entry per registered
-  flow, "Switch theme", and the stock Quit. The dynamic provider for worlds, providers, and
-  recent runs is reserved for a later milestone.
+  flow, "Switch theme", and the stock Quit. Dynamic entries now index worlds, providers, and
+  recent runs.
 - Added `?` to open a modal `HelpScreen` that lists every binding declared on the screen below
   it, plus chord bindings `g h` / `g r` for jump-to-Home and jump-to-Run-Inspector.
 - Updated the `Header` breadcrumb to reflect the active screen, deepening to the selected flow

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from worldforge.models import JSONDict
 
@@ -80,6 +81,9 @@ class HarnessRun:
     steps: tuple[HarnessStep, ...]
     metrics: tuple[HarnessMetric, ...]
     transcript: tuple[str, ...]
+    kind: Literal["flow", "eval", "benchmark"] = "flow"
+    report_path: Path | None = None
+    artifacts: dict[str, str] | None = None
 
     def to_dict(self) -> JSONDict:
         return {
@@ -89,4 +93,19 @@ class HarnessRun:
             "steps": [step.to_dict() for step in self.steps],
             "metrics": [metric.to_dict() for metric in self.metrics],
             "transcript": list(self.transcript),
+            "kind": self.kind,
+            "report_path": str(self.report_path) if self.report_path is not None else None,
+            "artifacts": dict(self.artifacts or {}),
         }
+
+    @property
+    def is_eval_run(self) -> bool:
+        """Return whether this run captures an evaluation report."""
+
+        return self.kind == "eval"
+
+    @property
+    def is_benchmark_run(self) -> bool:
+        """Return whether this run captures a benchmark report."""
+
+        return self.kind == "benchmark"

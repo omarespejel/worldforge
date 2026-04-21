@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import queue
+import statistics
+import time
 from collections.abc import Iterable
 from contextlib import suppress
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from rich.align import Align
 from rich.console import Group, RenderableType
@@ -16,6 +19,8 @@ from rich.text import Text
 from textual import events, on, work
 from textual.app import App, ComposeResult, SystemCommand
 from textual.binding import Binding
+from textual.command import DiscoveryHit, Hit
+from textual.command import Provider as CommandProvider
 from textual.containers import Container, Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual.message import Message
@@ -29,10 +34,13 @@ from textual.widgets import (
     Header,
     Input,
     OptionList,
+    ProgressBar,
+    RichLog,
     Select,
     Static,
 )
 from textual.widgets.option_list import Option
+from textual.worker import get_current_worker
 
 from worldforge import (
     Action,
@@ -43,15 +51,27 @@ from worldforge import (
     WorldForge,
     WorldForgeError,
     WorldStateError,
+    list_eval_suites,
 )
+from worldforge.benchmark import BENCHMARKABLE_OPERATIONS
 from worldforge.framework import _validate_storage_id
-from worldforge.harness.flows import available_flows, run_flow
-from worldforge.harness.models import HarnessFlow, HarnessRun, HarnessStep
+from worldforge.harness.flows import (
+    available_flows,
+    benchmark_run_artifacts,
+    eval_run_artifacts,
+    recent_report_paths,
+    report_run_from_path,
+    run_flow,
+    write_report,
+)
+from worldforge.harness.models import HarnessFlow, HarnessMetric, HarnessRun, HarnessStep
 from worldforge.harness.theme import (
     FLOW_CAPABILITY_FALLBACKS,
     THEME_NAME_DARK,
+    THEME_NAME_HIGH_CONTRAST,
     THEME_NAME_LIGHT,
     WORLDFORGE_DARK_PALETTE,
+    WORLDFORGE_HIGH_CONTRAST_PALETTE,
     WORLDFORGE_LIGHT_PALETTE,
 )
 from worldforge.harness.worlds_view import (
@@ -62,8 +82,11 @@ from worldforge.harness.worlds_view import (
     is_dirty,
     validate_id_or_reason,
 )
+from worldforge.models import CAPABILITY_NAMES, JSONDict, ProviderEvent
+from worldforge.providers.base import ProviderError
+from worldforge.providers.mock import MockProvider
 
-InitialScreen = Literal["home", "run-inspector", "worlds"]
+InitialScreen = Literal["home", "run-inspector", "worlds", "providers", "eval", "benchmark"]
 
 
 def _delete_world_file(state_dir: Path, world_id: str) -> None:
@@ -334,6 +357,122 @@ class TranscriptPane(Static, _ThemedRenderer):
         self.update(Panel(Group(*lines), title="Run Transcript", border_style=accent))
 
 
+class ExportPane(Static, _ThemedRenderer):  # pragma: no cover - exercised by Pilot tests.
+    """Preview report artifacts without re-running the underlying workflow."""
+
+    report_format: reactive[str] = reactive("markdown", init=False)
+
+    def __init__(self, *, artifacts: dict[str, str] | None = None, widget_id: str | None = None):
+        super().__init__(id=widget_id)
+        self._artifacts = dict(artifacts or {})
+
+    def set_artifacts(self, artifacts: dict[str, str]) -> None:
+        self._artifacts = dict(artifacts)
+        self._refresh()
+
+    def watch_report_format(self, _old: str, _new: str) -> None:
+        self._refresh()
+
+    def _refresh(self) -> None:
+        panel = self._color("panel")
+        accent = self._color("accent")
+        if not self._artifacts:
+            self.update(
+                Panel(
+                    Align.center(Text("No report captured yet.", style="dim"), vertical="middle"),
+                    title="Export Preview",
+                    border_style=panel,
+                )
+            )
+            return
+        text = self._artifacts.get(self.report_format) or self._artifacts.get("markdown", "")
+        if len(text) > 5000:
+            text = f"{text[:5000]}\n... truncated preview ..."
+        self.update(
+            Panel(
+                Text(text),
+                title=f"Export Preview / {self.report_format}",
+                border_style=accent,
+            )
+        )
+
+
+class ProviderEventReceived(Message):
+    """Provider event forwarded from a worker thread."""
+
+    def __init__(self, event: ProviderEvent) -> None:
+        super().__init__()
+        self.event = event
+
+
+class RunCompleted(Message):
+    """A live provider run completed."""
+
+    def __init__(self, *, provider: str, latency_ms: float) -> None:
+        super().__init__()
+        self.provider = provider
+        self.latency_ms = latency_ms
+
+
+class RunCancelled(Message):
+    """A worker cancellation became visible to the UI."""
+
+    def __init__(self, *, provider: str) -> None:
+        super().__init__()
+        self.provider = provider
+
+
+class ReportExported(Message):
+    """A preserved eval or benchmark report was written to disk."""
+
+    def __init__(self, *, path: Path, kind: str) -> None:
+        super().__init__()
+        self.path = path
+        self.kind = kind
+
+
+class CapabilityMismatch(Message):
+    """Evaluation or benchmark capability mismatch surfaced from a worker."""
+
+    def __init__(self, error: WorldForgeError) -> None:
+        super().__init__()
+        self.error = error
+
+
+def _format_provider_event(event: ProviderEvent) -> Text:
+    phase_styles = {
+        "success": "bold green",
+        "failure": "bold red",
+        "retry": "bold yellow",
+        "cancelled": "bold yellow",
+    }
+    duration = f"{event.duration_ms:.1f} ms" if event.duration_ms is not None else "n/a"
+    timestamp = time.strftime("%H:%M:%S")
+    text = Text()
+    text.append(f"{timestamp} ", style="dim")
+    text.append(f"{event.phase:<9}", style=phase_styles.get(event.phase, "bold"))
+    text.append(f" {event.provider}.{event.operation} ")
+    text.append(f"({duration})", style="dim")
+    return text
+
+
+def _provider_event_failure(provider: str, operation: str, exc: Exception) -> ProviderEvent:
+    return ProviderEvent(
+        provider=provider,
+        operation=operation,
+        phase="failure",
+        message=str(exc),
+    )
+
+
+def _event_summary(event: ProviderEvent) -> dict[str, Any]:
+    return {
+        "phase": event.phase,
+        "latency_ms": event.duration_ms,
+        "retries": max(0, event.attempt - 1),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Jump cards & messages (Home screen)
 # ---------------------------------------------------------------------------
@@ -504,12 +643,14 @@ class HomeScreen(Screen):
 
     def on_mount(self) -> None:
         self._update_chrome()
+        self._refresh_recent()
         first_card = _maybe_query(self, "#jump-create-world", JumpCard)
         if first_card is not None:
             first_card.focus()
 
     def on_screen_resume(self) -> None:
         self._update_chrome()
+        self._refresh_recent()
 
     def _update_chrome(self) -> None:
         breadcrumb = _maybe_query(self, "#breadcrumb", Breadcrumb)
@@ -527,12 +668,48 @@ class HomeScreen(Screen):
         if event.target == "worlds":
             self.app.action_switch_screen("worlds")
             return
-        routing = {
-            "providers": ("M3", "Live provider streaming lands in M3 — see roadmap §8."),
-            "eval": ("M4", "Eval and benchmark land in M4 — see roadmap §8."),
-        }
-        milestone, message = routing.get(event.target, ("?", "Target not yet routed."))
-        self.app.push_screen(PlaceholderScreen(target_milestone=milestone, next_action=message))
+        if event.target == "providers":
+            self.app.action_switch_screen("providers")
+            return
+        if event.target == "eval":
+            self.app.action_switch_screen("eval")
+            return
+        self.app.push_screen(
+            PlaceholderScreen(target_milestone="?", next_action="Target not yet routed.")
+        )
+
+    def _refresh_recent(self) -> None:
+        target = _maybe_query(self, "#home-recent", Static)
+        if target is None or not hasattr(self.app, "_get_forge"):
+            return
+        forge = self.app._get_forge()  # type: ignore[attr-defined]
+        world_ids = forge.list_worlds()
+        world_ids = sorted(
+            world_ids,
+            key=lambda world_id: (
+                (forge.state_dir / f"{world_id}.json").stat().st_mtime
+                if (forge.state_dir / f"{world_id}.json").exists()
+                else 0
+            ),
+            reverse=True,
+        )[:5]
+        reports = recent_report_paths(forge.state_dir, limit=5)
+        if not world_ids and not reports:
+            target.update(
+                "No recent worlds or runs — press [b]n[/] to create a world "
+                "or [b]e[/] to run an eval."
+            )
+            return
+        lines = ["Recent"]
+        if world_ids:
+            lines.append("Worlds: " + ", ".join(world_ids))
+        else:
+            lines.append("Worlds: none yet")
+        if reports:
+            lines.append("Runs: " + ", ".join(path.name for path in reports))
+        else:
+            lines.append("Runs: none yet")
+        target.update("\n".join(lines))
 
 
 class RunInspectorScreen(Screen):
@@ -609,8 +786,10 @@ class RunInspectorScreen(Screen):
         initial_flow_id: str = "leworldmodel",
         state_dir: Path | None = None,
         step_delay: float = 0.18,
+        run: HarnessRun | None = None,
     ) -> None:
         super().__init__()
+        self._fixed_run = run
         self.flows = {flow.id: flow for flow in available_flows()}
         resolved_id = initial_flow_id if initial_flow_id in self.flows else "leworldmodel"
         self.set_reactive(RunInspectorScreen.selected_flow_id, resolved_id)
@@ -620,12 +799,26 @@ class RunInspectorScreen(Screen):
         )
         self.state_dir = state_dir
         self.step_delay = step_delay
+        if run is not None:
+            self.set_reactive(RunInspectorScreen.last_run, run)
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Horizontal(id="chrome"):
             yield Breadcrumb(id="breadcrumb")
             yield ProviderStatusPill(id="provider-pill")
+        if self._fixed_run is not None and self._fixed_run.kind != "flow":
+            with Container(id="root"):
+                with Horizontal(id="body"):
+                    with Vertical(id="timeline"):
+                        yield InspectorPane(id="inspector")
+                        yield TranscriptPane(id="transcript")
+                    yield ExportPane(
+                        artifacts=self._fixed_run.artifacts or {},
+                        widget_id="export-preview",
+                    )
+            yield Footer()
+            return
         with Container(id="root"):
             yield HeroPane(id="hero")
             with Horizontal(id="body"):
@@ -705,6 +898,14 @@ class RunInspectorScreen(Screen):
         self._refresh_static()
 
     def _update_chrome(self) -> None:
+        if self._fixed_run is not None and self._fixed_run.kind != "flow":
+            breadcrumb = _maybe_query(self, "#breadcrumb", Breadcrumb)
+            if breadcrumb is not None:
+                breadcrumb.path = ("worldforge", "run-inspector", self._fixed_run.flow.short_title)
+            pill = _maybe_query(self, "#provider-pill", ProviderStatusPill)
+            if pill is not None:
+                pill.label = self._fixed_run.flow.capability
+            return
         flow = self.flows[self.selected_flow_id]
         breadcrumb = _maybe_query(self, "#breadcrumb", Breadcrumb)
         if breadcrumb is not None:
@@ -719,6 +920,17 @@ class RunInspectorScreen(Screen):
         return f"{flow.provider}{suffix}"
 
     def _refresh_static(self) -> None:
+        if self._fixed_run is not None and self._fixed_run.kind != "flow":
+            inspector = _maybe_query(self, "#inspector", InspectorPane)
+            transcript = _maybe_query(self, "#transcript", TranscriptPane)
+            export = _maybe_query(self, "#export-preview", ExportPane)
+            if inspector is not None:
+                inspector.render_run(self._fixed_run)
+            if transcript is not None:
+                transcript.render_run(self._fixed_run)
+            if export is not None:
+                export.set_artifacts(self._fixed_run.artifacts or {})
+            return
         selected = self.flows[self.selected_flow_id]
         hero = _maybe_query(self, "#hero", HeroPane)
         if hero is None:
@@ -2005,8 +2217,901 @@ class WorldEditScreen(Screen):
 
 
 # ---------------------------------------------------------------------------
+# M3/M4 — Providers, eval, and benchmark screens
+# ---------------------------------------------------------------------------
+
+
+class RegisterProviderModal(  # pragma: no cover - exercised by Pilot tests.
+    ModalScreen[MockProvider | None]
+):
+    """Register a deterministic mock provider variant for local testing."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel", show=True)]
+
+    DEFAULT_CSS = """
+    RegisterProviderModal {
+        align: center middle;
+    }
+
+    RegisterProviderModal > #register-provider-card {
+        width: 64;
+        height: auto;
+        padding: 1 2;
+        border: round $accent;
+        background: $surface;
+    }
+
+    RegisterProviderModal .field-label {
+        color: $text-muted;
+        height: 1;
+    }
+
+    RegisterProviderModal Input {
+        margin-bottom: 1;
+    }
+
+    RegisterProviderModal #register-provider-actions {
+        height: auto;
+        align: right middle;
+        padding-top: 1;
+    }
+
+    RegisterProviderModal Button {
+        margin-left: 1;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Container(id="register-provider-card"):
+            yield Static("Register deterministic provider", id="register-provider-title")
+            yield Static("Provider id", classes="field-label")
+            yield Input(placeholder="mock-lab", id="register-provider-name")
+            yield Static(
+                "Registers a MockProvider variant. Live optional runtimes remain host-owned.",
+                id="register-provider-note",
+            )
+            with Horizontal(id="register-provider-actions"):
+                yield Button("Cancel", id="register-provider-cancel", variant="default")
+                yield Button("Register", id="register-provider-submit", variant="primary")
+
+    def on_mount(self) -> None:
+        name = _maybe_query(self, "#register-provider-name", Input)
+        if name is not None:
+            name.focus()
+
+    @on(Button.Pressed, "#register-provider-submit")
+    @on(Input.Submitted, "#register-provider-name")
+    def _submit(self) -> None:
+        value = self.query_one("#register-provider-name", Input).value.strip()
+        if not value:
+            self.app.notify("Provider id must be non-empty.", severity="error", title="Provider")
+            return
+        self.dismiss(MockProvider(name=value))
+
+    @on(Button.Pressed, "#register-provider-cancel")
+    def _cancel_button(self) -> None:
+        self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class ProvidersScreen(Screen):  # pragma: no cover - exercised by Pilot tests.
+    """Capability matrix and live ``mock.predict`` execution surface."""
+
+    BINDINGS = [
+        Binding("enter", "select_provider", "Use", show=True),
+        Binding("p", "run_predict", "Predict", show=True),
+        Binding("r", "register_provider", "Register", show=True),
+        Binding("escape", "cancel_or_back", "Cancel/Back", show=True),
+    ]
+
+    DEFAULT_CSS = """
+    ProvidersScreen {
+        background: $background;
+        color: $foreground;
+    }
+
+    #providers-root {
+        height: 1fr;
+        padding: 1 2;
+    }
+
+    #providers-body {
+        height: 1fr;
+    }
+
+    #providers-table-wrap {
+        width: 2fr;
+        margin-right: 1;
+        border: round $panel;
+        background: $surface;
+    }
+
+    #providers-table {
+        height: 1fr;
+        background: $surface;
+    }
+
+    #providers-empty {
+        padding: 1 2;
+        color: $text-muted;
+    }
+
+    #providers-empty.hidden {
+        display: none;
+    }
+
+    #providers-detail {
+        width: 1fr;
+        padding: 1 2;
+        border: round $panel;
+        background: $surface;
+    }
+
+    #providers-log {
+        height: 10;
+        margin-top: 1;
+        border: round $panel;
+        background: $surface;
+    }
+
+    #providers-actions {
+        height: 3;
+        margin-top: 1;
+        align: right middle;
+    }
+
+    #providers-actions Button {
+        margin-left: 1;
+    }
+    """
+
+    current_row_provider: reactive[str | None] = reactive(None, init=False)
+    running_operation: reactive[str] = reactive("idle", init=False)
+
+    def __init__(self, *, forge: WorldForge) -> None:
+        super().__init__()
+        self._forge = forge
+        self._provider_names: list[str] = []
+        self._last_call_summary: dict[str, dict[str, Any]] = {}
+
+    def compose(self) -> ComposeResult:
+        yield Header(show_clock=True)
+        with Horizontal(id="chrome"):
+            yield Breadcrumb(id="breadcrumb")
+            yield ProviderStatusPill(id="provider-pill")
+        with Container(id="providers-root"):
+            with Horizontal(id="providers-body"):
+                with Container(id="providers-table-wrap"):
+                    yield DataTable(zebra_stripes=True, cursor_type="row", id="providers-table")
+                    yield Static(
+                        "No providers registered — set env vars or run with provider mock.",
+                        id="providers-empty",
+                        classes="hidden",
+                    )
+                yield Static("Select a provider.", id="providers-detail")
+            yield RichLog(highlight=True, markup=True, max_lines=5000, id="providers-log")
+            with Horizontal(id="providers-actions"):
+                yield Button("Run predict", id="provider-run", variant="primary")
+                yield Button("Cancel", id="provider-cancel", variant="warning")
+                yield Button("Register", id="provider-register", variant="default")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self._update_chrome()
+        self._build_table()
+
+    def on_screen_resume(self) -> None:
+        self._update_chrome()
+
+    def _update_chrome(self) -> None:
+        breadcrumb = _maybe_query(self, "#breadcrumb", Breadcrumb)
+        if breadcrumb is not None:
+            breadcrumb.path = ("worldforge", "providers")
+        pill = _maybe_query(self, "#provider-pill", ProviderStatusPill)
+        if pill is not None:
+            provider = getattr(self.app, "current_provider", "mock")
+            pill.label = f"{provider} · predict"
+
+    def _build_table(self) -> None:
+        table = _maybe_query(self, "#providers-table", DataTable)
+        empty = _maybe_query(self, "#providers-empty", Static)
+        if table is None:
+            return
+        table.clear(columns=True)
+        table.add_columns("provider", *CAPABILITY_NAMES)
+        infos = self._forge.list_providers()
+        self._provider_names = [info.name for info in infos]
+        for info in infos:
+            profile = self._forge.provider_profile(info.name)
+            cells = [
+                self._capability_cell(
+                    info.capabilities.supports(name), profile.implementation_status
+                )
+                for name in CAPABILITY_NAMES
+            ]
+            table.add_row(info.name, *cells, key=info.name)
+        if infos:
+            table.remove_class("hidden")
+            if empty is not None:
+                empty.add_class("hidden")
+            table.focus()
+            self.current_row_provider = infos[0].name
+        else:
+            table.add_class("hidden")
+            if empty is not None:
+                empty.remove_class("hidden")
+            self.current_row_provider = None
+        self._refresh_detail()
+
+    @staticmethod
+    def _capability_cell(enabled: bool, implementation_status: str) -> str:
+        if not enabled:
+            return ""
+        return "○" if implementation_status == "scaffold" else "●"
+
+    @on(DataTable.RowHighlighted, "#providers-table")
+    def _on_provider_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        key = event.row_key.value if event.row_key else None
+        if isinstance(key, str):
+            self.current_row_provider = key
+
+    def watch_current_row_provider(self, _old: str | None, _new: str | None) -> None:
+        self._refresh_detail()
+
+    def _refresh_detail(self) -> None:
+        detail = _maybe_query(self, "#providers-detail", Static)
+        if detail is None:
+            return
+        provider = self.current_row_provider
+        if provider is None:
+            detail.update("No provider selected.")
+            return
+        profile = self._forge.provider_profile(provider)
+        health = self._forge.provider_health(provider)
+        summary = self._last_call_summary.get(provider, {})
+        env_vars = ", ".join(profile.required_env_vars) if profile.required_env_vars else "none"
+        last = (
+            f"{summary.get('phase')} "
+            f"{float(summary.get('latency_ms') or 0.0):.2f} ms "
+            f"retries={summary.get('retries', 0)}"
+            if summary
+            else "No run captured — press p to run mock.predict."
+        )
+        detail.update(
+            "\n".join(
+                [
+                    f"Provider: {provider}",
+                    f"Status: {profile.implementation_status}",
+                    f"Capabilities: {', '.join(profile.supported_tasks) or 'none'}",
+                    f"Health: {'healthy' if health.healthy else 'unhealthy'} ({health.details})",
+                    f"Latency: {health.latency_ms:.2f} ms",
+                    f"Required env vars: {env_vars}",
+                    f"Last call: {last}",
+                ]
+            )
+        )
+
+    def action_select_provider(self) -> None:
+        if self.current_row_provider is None:
+            return
+        self.app.current_provider = self.current_row_provider  # type: ignore[attr-defined]
+        self._update_chrome()
+        self.app.notify(
+            f"Current provider: {self.current_row_provider}",
+            severity="information",
+            title="Provider",
+        )
+
+    def action_run_predict(self) -> None:
+        provider = getattr(self.app, "current_provider", "mock")
+        if provider not in self._provider_names:
+            provider = self.current_row_provider or "mock"
+        self._run_predict(str(provider))
+
+    @on(Button.Pressed, "#provider-run")
+    def _run_button(self) -> None:
+        self.action_run_predict()
+
+    @on(Button.Pressed, "#provider-cancel")
+    def _cancel_button(self) -> None:
+        self.action_cancel_or_back()
+
+    @on(Button.Pressed, "#provider-register")
+    def _register_button(self) -> None:
+        self.action_register_provider()
+
+    def action_cancel_or_back(self) -> None:
+        if self.running_operation == "running":
+            self.workers.cancel_group(self, "provider")
+            self.running_operation = "cancelled"
+            provider = getattr(self.app, "current_provider", self.current_row_provider or "mock")
+            self.post_message(RunCancelled(provider=str(provider)))
+            return
+        self.app.action_switch_screen("home")
+
+    def action_register_provider(self) -> None:
+        self.app.push_screen(RegisterProviderModal(), self._handle_registered_provider)
+
+    def _handle_registered_provider(self, provider: MockProvider | None) -> None:
+        if provider is None:
+            return
+        self._forge.register_provider(provider)
+        self.app.current_provider = provider.name  # type: ignore[attr-defined]
+        self._build_table()
+        self.app.notify(f"Registered provider '{provider.name}'.", title="Provider")
+
+    @work(thread=True, group="provider", exclusive=True, name="provider.predict")
+    def _run_predict(self, provider_name: str) -> None:
+        worker = get_current_worker()
+        self.app.call_from_thread(setattr, self, "running_operation", "running")
+        self.app.call_from_thread(self._clear_provider_events)
+        try:
+            world = self._forge.create_world("scratch", provider=provider_name)
+            prediction = world.predict(Action("noop"), steps=1, provider=provider_name)
+        except (ProviderError, WorldForgeError) as exc:
+            self.app.call_from_thread(
+                self.post_message,
+                ProviderEventReceived(_provider_event_failure(provider_name, "predict", exc)),
+            )
+            self.app.call_from_thread(setattr, self, "running_operation", "error")
+            return
+        if worker.is_cancelled:
+            self.app.call_from_thread(self.post_message, RunCancelled(provider=provider_name))
+            return
+        self.app.call_from_thread(self._drain_provider_events)
+        self.app.call_from_thread(
+            self.post_message,
+            RunCompleted(provider=provider_name, latency_ms=prediction.latency_ms),
+        )
+
+    def _clear_provider_events(self) -> None:
+        if hasattr(self.app, "drain_provider_events"):
+            self.app.drain_provider_events()  # type: ignore[attr-defined]
+
+    def _drain_provider_events(self) -> None:
+        events = (
+            self.app.drain_provider_events()  # type: ignore[attr-defined]
+            if hasattr(self.app, "drain_provider_events")
+            else ()
+        )
+        for event in events:
+            self.post_message(ProviderEventReceived(event))
+
+    def on_provider_event_received(self, event: ProviderEventReceived) -> None:
+        event.stop()
+        log = _maybe_query(self, "#providers-log", RichLog)
+        if log is not None:
+            log.write(_format_provider_event(event.event))
+        self._last_call_summary[event.event.provider] = _event_summary(event.event)
+        self._refresh_detail()
+
+    def on_run_completed(self, event: RunCompleted) -> None:
+        event.stop()
+        self.running_operation = "done"
+        self._last_call_summary[event.provider] = {
+            "phase": "success",
+            "latency_ms": event.latency_ms,
+            "retries": 0,
+        }
+        self._refresh_detail()
+        self.app.notify(
+            f"{event.provider}.predict completed in {event.latency_ms:.2f} ms.",
+            title="Provider",
+        )
+
+    def on_run_cancelled(self, event: RunCancelled) -> None:
+        event.stop()
+        self.running_operation = "cancelled"
+        log = _maybe_query(self, "#providers-log", RichLog)
+        if log is not None:
+            log.write(Text("cancelled provider run", style="bold yellow"))
+        self.app.notify("Cancelled provider run.", severity="warning", title="Provider")
+
+
+class EvalScreen(Screen):  # pragma: no cover - exercised by Pilot tests.
+    """Run built-in deterministic evaluation suites from the TUI."""
+
+    BINDINGS = [
+        Binding("r", "run_eval", "Run", show=True),
+        Binding("escape", "cancel_or_back", "Cancel/Back", show=True),
+    ]
+
+    DEFAULT_CSS = """
+    EvalScreen {
+        background: $background;
+        color: $foreground;
+    }
+
+    #eval-root {
+        height: 1fr;
+        padding: 1 2;
+    }
+
+    #eval-form {
+        width: 34;
+        margin-right: 1;
+        padding: 1 2;
+        border: round $panel;
+        background: $surface;
+    }
+
+    #eval-output {
+        width: 1fr;
+    }
+
+    #eval-log {
+        height: 10;
+        border: round $panel;
+        background: $surface;
+    }
+
+    #eval-verdict {
+        height: auto;
+        padding: 1 2;
+        margin-bottom: 1;
+        border: round $panel;
+        background: $surface;
+    }
+
+    EvalScreen Select, EvalScreen Button {
+        margin-bottom: 1;
+    }
+    """
+
+    running: reactive[bool] = reactive(False, init=False)
+
+    def __init__(self, *, forge: WorldForge) -> None:
+        super().__init__()
+        self._forge = forge
+
+    def compose(self) -> ComposeResult:
+        yield Header(show_clock=True)
+        with Horizontal(id="chrome"):
+            yield Breadcrumb(id="breadcrumb")
+            yield ProviderStatusPill(id="provider-pill")
+        with Horizontal(id="eval-root"):
+            with Vertical(id="eval-form"):
+                yield Static("Suite")
+                yield Select(
+                    [(suite, suite) for suite in list_eval_suites()],
+                    value="planning",
+                    allow_blank=False,
+                    id="eval-suite",
+                )
+                yield Static("Provider")
+                yield Select(
+                    [(provider, provider) for provider in self._forge.providers()],
+                    value=getattr(self.app, "current_provider", "mock"),
+                    allow_blank=False,
+                    id="eval-provider",
+                )
+                yield Button("Run eval", id="eval-run", variant="primary")
+            with Vertical(id="eval-output"):
+                yield Static("No suite run yet — press r to execute.", id="eval-verdict")
+                yield RichLog(highlight=True, markup=True, max_lines=5000, id="eval-log")
+                yield ExportPane(widget_id="eval-export")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self._update_chrome()
+
+    def _update_chrome(self) -> None:
+        breadcrumb = _maybe_query(self, "#breadcrumb", Breadcrumb)
+        if breadcrumb is not None:
+            breadcrumb.path = ("worldforge", "eval")
+        pill = _maybe_query(self, "#provider-pill", ProviderStatusPill)
+        if pill is not None:
+            pill.label = f"{getattr(self.app, 'current_provider', 'mock')} · eval"
+
+    @on(Button.Pressed, "#eval-run")
+    def _run_button(self) -> None:
+        self.action_run_eval()
+
+    def action_run_eval(self) -> None:
+        suite = self.query_one("#eval-suite", Select).value
+        provider = self.query_one("#eval-provider", Select).value
+        if isinstance(suite, str) and isinstance(provider, str):
+            self._run_eval(suite, provider)
+
+    def action_cancel_or_back(self) -> None:
+        if self.running:
+            self.workers.cancel_group(self, "eval")
+            self.running = False
+            self.app.notify("Cancelled eval run.", severity="warning", title="Eval")
+            return
+        self.app.action_switch_screen("home")
+
+    @work(thread=True, group="eval", exclusive=True, name="eval.run")
+    def _run_eval(self, suite_id: str, provider: str) -> None:
+        self.app.call_from_thread(setattr, self, "running", True)
+        self.app.call_from_thread(self._write_eval_log, f"running {suite_id} x {provider}")
+        try:
+            artifacts, report = eval_run_artifacts(self._forge, suite_id, provider)
+            path = write_report(self._forge, f"eval-{suite_id}", artifacts)
+        except WorldForgeError as exc:
+            self.app.call_from_thread(self.post_message, CapabilityMismatch(exc))
+            self.app.call_from_thread(setattr, self, "running", False)
+            return
+        if get_current_worker().is_cancelled:
+            self.app.call_from_thread(setattr, self, "running", False)
+            return
+        run = self._run_from_eval_report(suite_id, artifacts, report.to_dict(), path)
+        self.app.call_from_thread(self._complete_report_run, run, artifacts, path, "eval")
+
+    def _write_eval_log(self, line: str | Text) -> None:
+        log = _maybe_query(self, "#eval-log", RichLog)
+        if log is not None:
+            log.write(line)
+
+    def _run_from_eval_report(
+        self,
+        suite_id: str,
+        artifacts: dict[str, str],
+        payload: dict[str, Any],
+        path: Path,
+    ) -> HarnessRun:
+        passed = sum(1 for result in payload.get("results", []) if result.get("passed"))
+        total = len(payload.get("results", []))
+        flow = HarnessFlow(
+            id=f"eval-{suite_id}",
+            title=f"Evaluation: {payload.get('suite', suite_id)}",
+            short_title=f"Eval {suite_id}",
+            focus="evaluation",
+            provider=", ".join(
+                summary.get("provider", "provider")
+                for summary in payload.get("provider_summaries", [])
+            )
+            or "provider",
+            capability="eval",
+            command=f"worldforge eval --suite {suite_id}",
+            accent="",
+            summary=f"{passed}/{total} scenarios passed.",
+        )
+        return HarnessRun(
+            flow=flow,
+            state_dir=self._forge.state_dir,
+            summary=payload,
+            steps=(
+                HarnessStep(
+                    "Run evaluation", "Execute built-in suite.", f"{passed}/{total} passed."
+                ),
+            ),
+            metrics=tuple(
+                HarnessMetric(
+                    summary.get("provider", "provider"),
+                    f"{summary.get('passed_scenario_count', 0)}/{summary.get('scenario_count', 0)}",
+                    f"average_score={float(summary.get('average_score', 0.0)):.2f}",
+                )
+                for summary in payload.get("provider_summaries", [])
+            ),
+            transcript=("kind: eval", f"suite: {suite_id}", f"report_path: {path}"),
+            kind="eval",
+            report_path=path,
+            artifacts=artifacts,
+        )
+
+    def _complete_report_run(
+        self,
+        run: HarnessRun,
+        artifacts: dict[str, str],
+        path: Path,
+        kind: str,
+    ) -> None:
+        self.running = False
+        export = _maybe_query(self, "#eval-export", ExportPane) or _maybe_query(
+            self, "#benchmark-export", ExportPane
+        )
+        if export is not None:
+            export.set_artifacts(artifacts)
+        verdict = _maybe_query(self, "#eval-verdict", Static)
+        if verdict is not None:
+            verdict.update(f"Report saved: {path}")
+        self.post_message(ReportExported(path=path, kind=kind))
+        self.app.push_screen(RunInspectorScreen(state_dir=self._forge.state_dir, run=run))
+
+    def on_capability_mismatch(self, event: CapabilityMismatch) -> None:
+        event.stop()
+        self.app.notify(str(event.error), severity="error", title="Capability mismatch")
+        log = _maybe_query(self, "#eval-log", RichLog)
+        if log is not None:
+            log.write(Text(str(event.error), style="bold red"))
+
+
+class BenchmarkScreen(Screen):  # pragma: no cover - exercised by Pilot tests.
+    """Run capability-aware provider benchmarks from the TUI."""
+
+    BINDINGS = [
+        Binding("r", "run_benchmark", "Run", show=True),
+        Binding("escape", "cancel_or_back", "Cancel/Back", show=True),
+    ]
+
+    DEFAULT_CSS = """
+    BenchmarkScreen {
+        background: $background;
+        color: $foreground;
+    }
+
+    #benchmark-root {
+        height: 1fr;
+        padding: 1 2;
+    }
+
+    #benchmark-form {
+        width: 34;
+        margin-right: 1;
+        padding: 1 2;
+        border: round $panel;
+        background: $surface;
+    }
+
+    #benchmark-output {
+        width: 1fr;
+    }
+
+    #benchmark-log {
+        height: 10;
+        border: round $panel;
+        background: $surface;
+    }
+
+    #benchmark-stats {
+        height: auto;
+        padding: 1 2;
+        margin-bottom: 1;
+        border: round $panel;
+        background: $surface;
+    }
+
+    BenchmarkScreen Select, BenchmarkScreen Input, BenchmarkScreen Button {
+        margin-bottom: 1;
+    }
+    """
+
+    running: reactive[bool] = reactive(False, init=False)
+
+    def __init__(self, *, forge: WorldForge) -> None:
+        super().__init__()
+        self._forge = forge
+        self._samples: list[float] = []
+
+    def compose(self) -> ComposeResult:
+        provider = getattr(self.app, "current_provider", "mock")
+        yield Header(show_clock=True)
+        with Horizontal(id="chrome"):
+            yield Breadcrumb(id="breadcrumb")
+            yield ProviderStatusPill(id="provider-pill")
+        with Horizontal(id="benchmark-root"):
+            with Vertical(id="benchmark-form"):
+                yield Static("Provider")
+                yield Select(
+                    [(name, name) for name in self._forge.providers()],
+                    value=provider,
+                    allow_blank=False,
+                    id="benchmark-provider",
+                )
+                yield Static("Operation")
+                yield Select(
+                    [(operation, operation) for operation in BENCHMARKABLE_OPERATIONS],
+                    value="predict",
+                    allow_blank=False,
+                    id="benchmark-operation",
+                )
+                yield Static("Iterations")
+                yield Input(value="5", id="benchmark-iterations")
+                yield Button("Run benchmark", id="benchmark-run", variant="primary")
+            with Vertical(id="benchmark-output"):
+                yield Static("No benchmark run yet — press r to execute.", id="benchmark-stats")
+                yield ProgressBar(total=5, id="benchmark-progress")
+                yield RichLog(highlight=True, markup=True, max_lines=5000, id="benchmark-log")
+                yield ExportPane(widget_id="benchmark-export")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self._update_chrome()
+
+    def _update_chrome(self) -> None:
+        breadcrumb = _maybe_query(self, "#breadcrumb", Breadcrumb)
+        if breadcrumb is not None:
+            breadcrumb.path = ("worldforge", "benchmark")
+        pill = _maybe_query(self, "#provider-pill", ProviderStatusPill)
+        if pill is not None:
+            pill.label = f"{getattr(self.app, 'current_provider', 'mock')} · benchmark"
+
+    @on(Button.Pressed, "#benchmark-run")
+    def _run_button(self) -> None:
+        self.action_run_benchmark()
+
+    def action_run_benchmark(self) -> None:
+        provider = self.query_one("#benchmark-provider", Select).value
+        operation = self.query_one("#benchmark-operation", Select).value
+        try:
+            iterations = int(self.query_one("#benchmark-iterations", Input).value or "5")
+        except ValueError:
+            self.app.notify("Iterations must be an integer.", severity="error", title="Benchmark")
+            return
+        if isinstance(provider, str) and isinstance(operation, str):
+            progress = _maybe_query(self, "#benchmark-progress", ProgressBar)
+            if progress is not None:
+                progress.total = iterations
+                progress.progress = 0
+            self._samples = []
+            self._run_benchmark(provider, operation, iterations)
+
+    def action_cancel_or_back(self) -> None:
+        if self.running:
+            self.workers.cancel_group(self, "benchmark")
+            self.running = False
+            self.app.notify("Cancelled benchmark run.", severity="warning", title="Benchmark")
+            return
+        self.app.action_switch_screen("home")
+
+    @work(thread=True, group="benchmark", exclusive=True, name="benchmark.run")
+    def _run_benchmark(self, provider: str, operation: str, iterations: int) -> None:
+        self.app.call_from_thread(setattr, self, "running", True)
+
+        def on_sample(sample: JSONDict) -> None:
+            self.app.call_from_thread(self._record_benchmark_sample, sample, iterations)
+
+        try:
+            artifacts, report = benchmark_run_artifacts(
+                self._forge,
+                provider,
+                operations=(operation,),
+                iterations=iterations,
+                concurrency=1,
+                on_sample=on_sample,
+            )
+            path = write_report(self._forge, "benchmark", artifacts)
+        except WorldForgeError as exc:
+            self.app.call_from_thread(self.post_message, CapabilityMismatch(exc))
+            self.app.call_from_thread(setattr, self, "running", False)
+            return
+        if get_current_worker().is_cancelled:
+            self.app.call_from_thread(setattr, self, "running", False)
+            return
+        run = self._run_from_benchmark_report(artifacts, report.to_dict(), path)
+        self.app.call_from_thread(self._complete_report_run, run, artifacts, path)
+
+    def _record_benchmark_sample(self, sample: JSONDict, total: int) -> None:
+        latency = float(sample.get("latency_ms") or 0.0)
+        self._samples.append(latency)
+        progress = _maybe_query(self, "#benchmark-progress", ProgressBar)
+        if progress is not None:
+            progress.progress = min(len(self._samples), total)
+        log = _maybe_query(self, "#benchmark-log", RichLog)
+        if log is not None:
+            log.write(
+                f"{sample.get('provider')}.{sample.get('operation')} "
+                f"#{sample.get('iteration')} {latency:.2f} ms"
+            )
+        median = statistics.median(self._samples)
+        p95 = sorted(self._samples)[max(0, int((len(self._samples) - 1) * 0.95))]
+        stats = _maybe_query(self, "#benchmark-stats", Static)
+        if stats is not None:
+            stats.update(
+                f"Samples: {len(self._samples)}/{total}  median={median:.2f} ms  p95={p95:.2f} ms"
+            )
+
+    def _run_from_benchmark_report(
+        self,
+        artifacts: dict[str, str],
+        payload: dict[str, Any],
+        path: Path,
+    ) -> HarnessRun:
+        results = payload.get("results", [])
+        flow = HarnessFlow(
+            id="benchmark",
+            title="Benchmark Report",
+            short_title="Benchmark",
+            focus="latency / retry / throughput",
+            provider=", ".join(sorted({result.get("provider", "provider") for result in results}))
+            or "provider",
+            capability="benchmark",
+            command="worldforge benchmark",
+            accent="",
+            summary=f"{len(results)} benchmark rows.",
+        )
+        return HarnessRun(
+            flow=flow,
+            state_dir=self._forge.state_dir,
+            summary=payload,
+            steps=(
+                HarnessStep(
+                    "Run benchmark", "Execute provider operations.", f"{len(results)} rows."
+                ),
+            ),
+            metrics=tuple(
+                HarnessMetric(
+                    f"{result.get('provider')}.{result.get('operation')}",
+                    f"{float(result.get('average_latency_ms') or 0.0):.2f} ms",
+                    f"ok={result.get('success_count')}/{result.get('iterations')}",
+                )
+                for result in results
+            ),
+            transcript=("kind: benchmark", f"report_path: {path}", f"rows: {len(results)}"),
+            kind="benchmark",
+            report_path=path,
+            artifacts=artifacts,
+        )
+
+    def _complete_report_run(
+        self,
+        run: HarnessRun,
+        artifacts: dict[str, str],
+        path: Path,
+    ) -> None:
+        self.running = False
+        export = _maybe_query(self, "#benchmark-export", ExportPane)
+        if export is not None:
+            export.set_artifacts(artifacts)
+        stats = _maybe_query(self, "#benchmark-stats", Static)
+        if stats is not None:
+            stats.update(f"Report saved: {path}")
+        self.post_message(ReportExported(path=path, kind="benchmark"))
+        self.app.push_screen(RunInspectorScreen(state_dir=self._forge.state_dir, run=run))
+
+    def on_capability_mismatch(self, event: CapabilityMismatch) -> None:
+        event.stop()
+        self.app.notify(str(event.error), severity="error", title="Benchmark")
+        log = _maybe_query(self, "#benchmark-log", RichLog)
+        if log is not None:
+            log.write(Text(str(event.error), style="bold red"))
+
+
+# ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
+
+
+class WorldForgeCommandProvider(  # pragma: no cover - exercised by Pilot/provider tests.
+    CommandProvider
+):
+    """Dynamic command palette entries for worlds, providers, and saved runs."""
+
+    async def discover(self):
+        for title, help_text, callback in self._items():
+            yield DiscoveryHit(title, callback, help=help_text)
+
+    async def search(self, query: str):
+        matcher = self.matcher(query)
+        for title, help_text, callback in self._items():
+            score = matcher.match(title)
+            if score > 0:
+                yield Hit(score, matcher.highlight(title), callback, text=title, help=help_text)
+
+    def _items(self) -> list[tuple[str, str, Any]]:
+        app = self.app
+        if not hasattr(app, "_get_forge"):
+            return []
+        forge = app._get_forge()  # type: ignore[attr-defined]
+        items: list[tuple[str, str, Any]] = []
+        for world_id in forge.list_worlds():
+            items.append(
+                (
+                    f"World: {world_id}",
+                    "Open the Worlds screen",
+                    lambda world_id=world_id: app._open_world_from_palette(world_id),  # type: ignore[attr-defined]
+                )
+            )
+        for provider in forge.providers():
+            items.append(
+                (
+                    f"Provider: {provider}",
+                    "Open the Providers screen",
+                    lambda provider=provider: app._open_provider_from_palette(provider),  # type: ignore[attr-defined]
+                )
+            )
+        for path in recent_report_paths(forge.state_dir, limit=50):
+            items.append(
+                (
+                    f"Run: {path.name}",
+                    "Open the preserved report",
+                    lambda path=path: app._open_report_path(path),  # type: ignore[attr-defined]
+                )
+            )
+        return items
 
 
 class TheWorldHarnessApp(App[None]):
@@ -2014,6 +3119,7 @@ class TheWorldHarnessApp(App[None]):
 
     TITLE = "TheWorldHarness"
     SUB_TITLE = "WorldForge visual integration harness"
+    COMMANDS = App.COMMANDS | {WorldForgeCommandProvider}
     BINDINGS = [
         Binding("?", "show_help", "Help", show=True),
         Binding("q", "quit", "Quit", show=True),
@@ -2021,11 +3127,17 @@ class TheWorldHarnessApp(App[None]):
         Binding("g,h", "switch_screen('home')", "Jump: Home", show=False),
         Binding("g,r", "switch_screen('run-inspector')", "Jump: Run Inspector", show=False),
         Binding("g,w", "switch_screen('worlds')", "Jump: Worlds", show=False),
+        Binding("g,p", "switch_screen('providers')", "Jump: Providers", show=False),
+        Binding("g,e", "switch_screen('eval')", "Jump: Eval", show=False),
+        Binding("g,b", "switch_screen('benchmark')", "Jump: Benchmark", show=False),
     ]
     SCREENS = {
         "home": HomeScreen,
         "run-inspector": RunInspectorScreen,
         "worlds": WorldsScreen,
+        "providers": ProvidersScreen,
+        "eval": EvalScreen,
+        "benchmark": BenchmarkScreen,
     }
     CSS = """
     Header {
@@ -2052,6 +3164,8 @@ class TheWorldHarnessApp(App[None]):
     }
     """
 
+    current_provider: reactive[str] = reactive("mock", init=False)
+
     def __init__(
         self,
         *,
@@ -2070,6 +3184,7 @@ class TheWorldHarnessApp(App[None]):
         # picks a temp path). Sharing one forge across screens preserves the
         # single-writer contract documented in ``CLAUDE.md``.
         self._forge: WorldForge | None = None
+        self._provider_event_queue: queue.Queue[ProviderEvent] = queue.Queue()
 
     # The harness keeps its own screen factories so we can pass per-instance
     # construction args (state_dir, step_delay, initial flow) into screens
@@ -2086,15 +3201,45 @@ class TheWorldHarnessApp(App[None]):
 
     def _get_forge(self) -> WorldForge:
         if self._forge is None:
-            self._forge = WorldForge(state_dir=self._state_dir)
+            self._forge = WorldForge(
+                state_dir=self._state_dir,
+                event_handler=self._record_provider_event,
+            )
         return self._forge
 
     def _make_worlds(self) -> WorldsScreen:
         return WorldsScreen(forge=self._get_forge())
 
+    def _make_providers(self) -> ProvidersScreen:
+        return ProvidersScreen(forge=self._get_forge())
+
+    def _make_eval(self) -> EvalScreen:
+        return EvalScreen(forge=self._get_forge())
+
+    def _make_benchmark(self) -> BenchmarkScreen:
+        return BenchmarkScreen(forge=self._get_forge())
+
+    def _record_provider_event(self, event: ProviderEvent) -> None:
+        self._provider_event_queue.put(event)
+
+    def drain_provider_events(self) -> tuple[ProviderEvent, ...]:
+        events: list[ProviderEvent] = []
+        while True:
+            try:
+                events.append(self._provider_event_queue.get_nowait())
+            except queue.Empty:
+                return tuple(events)
+
     async def on_mount(self) -> None:
         self.register_theme(_build_theme(THEME_NAME_DARK, WORLDFORGE_DARK_PALETTE, dark=True))
         self.register_theme(_build_theme(THEME_NAME_LIGHT, WORLDFORGE_LIGHT_PALETTE, dark=False))
+        self.register_theme(
+            _build_theme(
+                THEME_NAME_HIGH_CONTRAST,
+                WORLDFORGE_HIGH_CONTRAST_PALETTE,
+                dark=True,
+            )
+        )
         self.theme = THEME_NAME_DARK
         # Replace the stock default screen with the harness landing screen
         # (Home unless the CLI passed --flow or --initial-screen). Awaiting
@@ -2104,6 +3249,12 @@ class TheWorldHarnessApp(App[None]):
             await self.push_screen(self._make_run_inspector())
         elif self._initial_screen == "worlds":
             await self.push_screen(self._make_worlds())
+        elif self._initial_screen == "providers":
+            await self.push_screen(self._make_providers())
+        elif self._initial_screen == "eval":
+            await self.push_screen(self._make_eval())
+        elif self._initial_screen == "benchmark":
+            await self.push_screen(self._make_benchmark())
         else:
             await self.push_screen(self._make_home())
 
@@ -2111,8 +3262,13 @@ class TheWorldHarnessApp(App[None]):
         self.push_screen(HelpScreen(source_screen=self.screen))
 
     def action_toggle_theme(self) -> None:
-        """Cycle between the two registered worldforge themes."""
-        self.theme = THEME_NAME_LIGHT if self.theme == THEME_NAME_DARK else THEME_NAME_DARK
+        """Cycle between the registered worldforge themes."""
+        order = (THEME_NAME_DARK, THEME_NAME_LIGHT, THEME_NAME_HIGH_CONTRAST)
+        try:
+            index = order.index(self.theme)
+        except ValueError:
+            index = 0
+        self.theme = order[(index + 1) % len(order)]
 
     def action_switch_screen(self, screen_name: str) -> None:
         """Switch to ``screen_name`` if not already the active screen.
@@ -2133,8 +3289,42 @@ class TheWorldHarnessApp(App[None]):
             self.switch_screen(self._make_home())
         elif screen_name == "worlds":
             self.switch_screen(self._make_worlds())
+        elif screen_name == "providers":
+            self.switch_screen(self._make_providers())
+        elif screen_name == "eval":
+            self.switch_screen(self._make_eval())
+        elif screen_name == "benchmark":
+            self.switch_screen(self._make_benchmark())
         else:  # pragma: no cover - defensive
             self.switch_screen(screen_name)
+
+    def _make_screen_for_name(  # pragma: no cover - exercised through Textual callbacks.
+        self, screen_name: str
+    ) -> Screen | str:
+        if screen_name == "run-inspector":
+            return self._make_run_inspector()
+        if screen_name == "home":
+            return self._make_home()
+        if screen_name == "worlds":
+            return self._make_worlds()
+        if screen_name == "providers":
+            return self._make_providers()
+        if screen_name == "eval":
+            return self._make_eval()
+        if screen_name == "benchmark":
+            return self._make_benchmark()
+        return screen_name
+
+    async def _switch_screen_and_wait(  # pragma: no cover - exercised through command callbacks.
+        self, screen_name: str
+    ) -> Screen:
+        while isinstance(self.screen, ModalScreen):
+            await self.pop_screen()
+        target_cls = self.SCREENS.get(screen_name)
+        if target_cls is not None and isinstance(self.screen, target_cls):
+            return self.screen
+        await self.switch_screen(self._make_screen_for_name(screen_name))
+        return self.screen
 
     def get_system_commands(self, screen: Screen) -> Iterable[SystemCommand]:
         # Yield the stock Textual commands first (theme, quit) so they stay
@@ -2156,6 +3346,21 @@ class TheWorldHarnessApp(App[None]):
             lambda: self.action_switch_screen("worlds"),
         )
         yield SystemCommand(
+            "Jump: Providers",
+            "Open the Providers screen",
+            lambda: self.action_switch_screen("providers"),
+        )
+        yield SystemCommand(
+            "Run eval suite",
+            "Open the Eval screen",
+            lambda: self.action_switch_screen("eval"),
+        )
+        yield SystemCommand(
+            "Run benchmark",
+            "Open the Benchmark screen",
+            lambda: self.action_switch_screen("benchmark"),
+        )
+        yield SystemCommand(
             "New world",
             "Open the Worlds screen and start a new world",
             self._command_new_world,
@@ -2173,14 +3378,13 @@ class TheWorldHarnessApp(App[None]):
             )
         yield SystemCommand(
             "Switch theme",
-            "Toggle between worldforge-dark and worldforge-light",
+            "Cycle worldforge-dark, worldforge-light, and worldforge-high-contrast",
             self.action_toggle_theme,
         )
 
     def _make_run_flow_command(self, flow_id: str):
         async def _run() -> None:
-            self.action_switch_screen("run-inspector")
-            screen = self.screen
+            screen = await self._switch_screen_and_wait("run-inspector")
             if isinstance(screen, RunInspectorScreen):
                 screen.action_select_flow(flow_id)
                 await screen.action_run_selected()
@@ -2192,3 +3396,22 @@ class TheWorldHarnessApp(App[None]):
         screen = self.screen
         if isinstance(screen, WorldsScreen):
             screen.action_new_world()
+
+    def _open_world_from_palette(self, world_id: str) -> None:
+        self.action_switch_screen("worlds")
+        screen = self.screen
+        if isinstance(screen, WorldsScreen):
+            screen.selected_world = world_id
+
+    def _open_provider_from_palette(self, provider: str) -> None:
+        self.current_provider = provider
+        self.action_switch_screen("providers")
+        screen = self.screen
+        if isinstance(screen, ProvidersScreen):
+            screen.current_row_provider = provider
+
+    def _open_report_path(self, path: Path) -> None:
+        run = report_run_from_path(path, state_dir=self._get_forge().state_dir)
+        while isinstance(self.screen, ModalScreen):
+            self.pop_screen()
+        self.switch_screen(RunInspectorScreen(state_dir=self._get_forge().state_dir, run=run))

@@ -176,6 +176,13 @@ boundaries.
 
 - Deterministic evaluation suites and capability-aware benchmark reports for adapter comparison.
 
+`harness/`
+
+- Optional Textual front face for the same APIs: worlds CRUD, provider capability inspection,
+  live provider events, evaluation, benchmark, and preserved report inspection.
+- `tui.py` is the only Textual import surface; `flows.py`, `models.py`, and helper modules remain
+  importable without the `harness` extra.
+
 ## End-to-End Pipeline
 
 The shortest accurate pipeline is:

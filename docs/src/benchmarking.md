@@ -58,6 +58,16 @@ uv run worldforge benchmark --provider mock --operation generate --format json
 uv run worldforge benchmark --provider mock --operation embed --format markdown
 ```
 
+The same provider-operation runner is available from TheWorldHarness:
+
+```bash
+uv run --extra harness worldforge-harness --flow benchmark
+```
+
+The TUI streams per-sample latency while the run is active, then writes the canonical JSON report
+under `.worldforge/reports/` and opens it in the Run Inspector. Treat those reports like CLI
+benchmark artifacts: cite numbers only when the JSON behind them is preserved.
+
 Use a budget file when a benchmark run is part of a release gate, regression check, or public
 claim. Budget selectors can pin a provider and operation, or omit either field to apply the
 threshold to every matching result:

@@ -15,6 +15,8 @@ Textual is optional. The base package keeps `httpx` as its only runtime dependen
 uv run --extra harness worldforge-harness
 uv run --extra harness worldforge-harness --flow lerobot
 uv run --extra harness worldforge-harness --flow diagnostics
+uv run --extra harness worldforge-harness --flow eval
+uv run --extra harness worldforge-harness --flow benchmark
 uv run worldforge harness --list
 uv run worldforge harness --list --format json
 ```
@@ -46,20 +48,30 @@ dependencies at package import time.
 
 ## What The Interface Shows
 
-Each flow is rendered from the same structured `HarnessRun` object used in tests:
+The harness now exposes the main WorldForge surfaces directly:
 
-- Timeline: ordered execution stages, boundary details, and produced artifacts.
-- Inspector: compact metrics for the current run.
-- Transcript: deterministic key-value output suitable for comparing runs.
-- Flow rail: selectable integration references with keyboard shortcuts.
+- Home: jump cards plus recent worlds and preserved reports.
+- Worlds: create, edit, save, fork, delete, and preview local JSON worlds through `WorldForge`.
+- Providers: registered-provider capability matrix, health details, and cancellable `mock.predict`.
+- Eval: built-in deterministic suites with capability errors surfaced as hard toasts.
+- Benchmark: provider-operation latency, retry, and throughput runs with live samples.
+- Run Inspector: timeline, metrics, transcript, and export preview for flows and reports.
 
-The diagnostics flow maps directly to the non-TUI commands:
+Flow and report views are rendered from the same structured `HarnessRun` object used in tests.
+The provider, eval, and benchmark screens call the same Python APIs as the CLI; report artifacts
+use the canonical JSON / Markdown / CSV renderers.
+
+The diagnostics, eval, and benchmark screens map directly to non-TUI commands:
 
 ```bash
 uv run worldforge doctor
 uv run worldforge provider list
 uv run worldforge benchmark --provider mock --iterations 2 --format json
+uv run worldforge eval --suite planning --provider mock --format json
 ```
+
+Completed eval and benchmark runs write JSON under `.worldforge/reports/` relative to the active
+state directory. The Home screen and `Ctrl+P` index those files as recent runs.
 
 ## Interface Contract
 
@@ -82,10 +94,38 @@ provider health, benchmark latency, benchmark throughput, and provider event pha
 - `1`: select LeWorldModel score planning.
 - `2`: select LeRobot policy-plus-score planning.
 - `3`: select provider diagnostics and benchmark comparison.
+- `g w`: jump to Worlds.
+- `g p`: jump to Providers.
+- `g e`: jump to Eval.
+- `g b`: jump to Benchmark.
+- `Ctrl+P`: search static commands plus worlds, providers, and recent report files.
+- `Ctrl+T`: cycle `worldforge-dark`, `worldforge-light`, and `worldforge-high-contrast`.
 - `q`: quit.
 
 Each run reveals stages through a timeline, then fills the inspector and transcript panes from the
 same structured `HarnessRun` data used by tests.
+
+## Themes
+
+The harness registers three themes:
+
+- `worldforge-dark`: default dark workspace.
+- `worldforge-light`: light-terminal variant.
+- `worldforge-high-contrast`: higher-contrast variant for dense screens and reduced-colour
+  terminals.
+
+Widget CSS uses semantic tokens only; raw colour values live in `worldforge.harness.theme`.
+
+## Screenshot Refresh
+
+The README image is regenerated from a deterministic harness state. The tracked refresh command is:
+
+```bash
+scripts/regen-harness-screenshot.sh
+```
+
+It seeds a local screenshot state directory, drives the providers screen through Textual's test
+harness, exports SVG, and renders the README PNG with `rsvg-convert`.
 
 ## Roadmap
 
@@ -102,7 +142,7 @@ example of how to compose WorldForge from Python. The work is broken into six mi
 | [M2 — Worlds CRUD](https://github.com/AbdelStark/worldforge/tree/main/specs/theworldharness-M2-worlds-crud) | Create / edit / save / fork / delete worlds entirely from the TUI through the public `WorldForge` API. |
 | [M3 — Live providers](https://github.com/AbdelStark/worldforge/tree/main/specs/theworldharness-M3-live-providers) | `ProvidersScreen` with capability matrix and one real provider call streamed through a worker; `Esc` cancels. |
 | [M4 — Eval + Benchmark](https://github.com/AbdelStark/worldforge/tree/main/specs/theworldharness-M4-eval-benchmark) | `EvalScreen` and `BenchmarkScreen`; capability mismatch as a hard toast; reports preserved to disk and exportable. |
-| [M5 — Polish + showcase](https://github.com/AbdelStark/worldforge/tree/main/specs/theworldharness-M5-polish-showcase) | High-contrast theme, dynamic command-palette provider, recent items, snapshot test matrix, README screenshot refresh. |
+| [M5 — Polish + showcase](https://github.com/AbdelStark/worldforge/tree/main/specs/theworldharness-M5-polish-showcase) | High-contrast theme, dynamic command-palette provider, recent items, screenshot export matrix, README screenshot refresh. |
 
 The intent and design language behind these milestones live in the contributor-facing roadmap
 spec at `.codex/skills/tui-development/references/roadmap.md`.

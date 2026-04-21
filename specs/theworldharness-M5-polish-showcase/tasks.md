@@ -27,11 +27,11 @@ Each task is a single PR-sized unit. Order matters: a later task may assume an e
 - Acceptance: maps to spec.md acceptance "HomeScreen 'Recent' section renders two sub-lists" and the non-functional "Empty states … follow roadmap §2.4".
 - Tests: Pilot tests for (a) populated case — assert both lists render five rows from the fixture and a row activation dispatches the right message, (b) empty case — assert the documented empty-state copy renders.
 
-## T5 — Snapshot test matrix at `100×30`, `120×40`, `160×50`
-- Files: `tests/test_harness_snapshots.py` (new); `tests/snapshots/` (new directory of committed SVGs); `tests/fixtures/harness/` extension if needed; possibly `pyproject.toml` if `pytest-textual-snapshot` is not already a dev dependency (stop-and-ask if a dependency change is needed — CLAUDE.md `<gated>`).
-- Change: add a parametrised snapshot test over `(screen, size)` covering `HomeScreen`, `WorldsScreen`, `ProvidersScreen`, `EvalScreen`, `BenchmarkScreen`, `RunInspectorScreen`, `DiagnosticsScreen` at `(100, 30)`, `(120, 40)`, `(160, 50)`. Pin terminal size, disable animations in test mode, await `pilot.pause()` before assertion.
-- Acceptance: maps to spec.md acceptance "Snapshot matrix runs in CI at `100×30`, `120×40`, `160×50` for HomeScreen, WorldsScreen, ProvidersScreen, EvalScreen, BenchmarkScreen, RunInspectorScreen" (DiagnosticsScreen also covered for completeness).
-- Tests: the snapshot tests *are* the artefact; CI executes them under `uv run --extra harness pytest`. PR diffs of `tests/snapshots/*.svg` are reviewed by maintainers.
+## T5 — Screenshot export matrix at `100×30`, `120×40`, `160×50`
+- Files: `tests/test_harness_snapshots.py` (new); `tests/fixtures/harness/` extension if needed.
+- Change: add a parametrised screenshot export test over `(screen, size)` covering `HomeScreen`, `WorldsScreen`, `ProvidersScreen`, `EvalScreen`, `BenchmarkScreen`, `RunInspectorScreen`, and the diagnostics flow at `(100, 30)`, `(120, 40)`, `(160, 50)`. Pin terminal size, disable animations in test mode, await `pilot.pause()` before assertion, and reject broken SVG output.
+- Acceptance: maps to spec.md acceptance "Screenshot export matrix runs in CI at `100×30`, `120×40`, `160×50` for HomeScreen, WorldsScreen, ProvidersScreen, EvalScreen, BenchmarkScreen, RunInspectorScreen, and the diagnostics flow".
+- Tests: the screenshot export tests are the artefact; CI executes them under `uv run --extra harness pytest` without adding a new dev dependency.
 
 ## T6 — README screenshot regeneration script
 - Files: `scripts/regen-harness-screenshot.sh` (new); `docs/assets/img/theworldharness-tui-screenshot-1.png` (regenerated); `README.md` (only if the image filename changes — otherwise unchanged).
@@ -40,24 +40,24 @@ Each task is a single PR-sized unit. Order matters: a later task may assume an e
 - Tests: smoke-only — running the script under CI is out of scope (binary capture in CI is brittle). The script's deterministic behaviour is verifiable manually; PR review confirms the image matches what `worldforge-harness` produces.
 
 ## T7 — Polish pass on empty states and focus rings
-- Files: `src/worldforge/harness/tui.py`; possibly TCSS adjustments in the same file; `tests/test_harness_snapshots.py` regenerated SVGs as needed.
-- Change: walk every snapshot from T5 and fix any empty-state regression (missing centred-Static next-action copy per roadmap §2.4) and any focus-ring inconsistency (roadmap §2.2). Tighten padding or border on screens that read poorly at `100×30`. No functional changes outside polish.
+- Files: `src/worldforge/harness/tui.py`; possibly TCSS adjustments in the same file; `tests/test_harness_snapshots.py` as needed.
+- Change: walk every screenshot export case from T5 and fix any empty-state regression (missing centred-Static next-action copy per roadmap §2.4) and any focus-ring inconsistency (roadmap §2.2). Tighten padding or border on screens that read poorly at `100×30`. No functional changes outside polish.
 - Acceptance: maps to the spec.md user story "I can capture each as a screenshot … without manual cropping or contrast tweaks" and the non-functional "Empty states … follow roadmap §2.4".
-- Tests: snapshot diffs from T5 reviewed and committed. Pilot tests for empty states extended where copy changed.
+- Tests: screenshot export matrix and Pilot tests for empty states pass.
 
 ## T8 — Doc and changelog updates
 - Files: `docs/src/theworldharness.md`; `CHANGELOG.md`; `.codex/skills/tui-development/references/roadmap.md`.
-- Change: append a "Themes" subsection (three variants and the cycle binding) and a one-line note that `Ctrl+P` indexes worlds, providers, and recent runs to the harness doc. Add a CHANGELOG entry under the next release listing high-contrast theme, dynamic command palette, HomeScreen recent items, snapshot matrix, screenshot refresh — tool-neutral copy. Mark roadmap §8 M5 "done · {date}".
+- Change: append a "Themes" subsection (three variants and the cycle binding) and a one-line note that `Ctrl+P` indexes worlds, providers, and recent runs to the harness doc. Add a CHANGELOG entry under the next release listing high-contrast theme, dynamic command palette, HomeScreen recent items, screenshot export matrix, screenshot refresh — tool-neutral copy. Mark roadmap §8 M5 "done · {date}".
 - Acceptance: maps to spec.md user story "I see a current screenshot of the harness that matches what I get when I run `uv run --extra harness worldforge-harness`" (the doc points users at the matching state) and to the SKILL.md procedure step 7 ("Update `references/roadmap.md` if the change resolves a milestone").
 - Tests: docs check (`uv run python scripts/generate_provider_docs.py --check`) must stay green; coverage gate at `--extra harness` stays at or above 90%.
 
 ## Definition of done
 - [ ] All tasks T1–T8 merged to main on independent PRs (or grouped where dependencies are tight, e.g., T3 + T4 share a fixture).
-- [ ] `uv run --extra harness pytest` passes locally and in CI, including the new snapshot matrix.
+- [ ] `uv run --extra harness pytest` passes locally and in CI, including the new screenshot export matrix.
 - [ ] `uv run --extra harness pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90` stays green.
 - [ ] `uv run ruff check src tests examples scripts` and `uv run ruff format --check src tests examples scripts` are clean.
 - [ ] `bash scripts/test_package.sh` passes (no new file path missed by hatch include rules).
-- [ ] `tests/snapshots/` SVGs are reviewable in PR diffs.
+- [ ] `tests/test_harness_snapshots.py` covers every main screen at the three showcase terminal sizes.
 - [ ] `README.md` line 30 image renders the regenerated screenshot.
 - [ ] `docs/src/theworldharness.md` documents the three themes and the dynamic palette.
 - [ ] `CHANGELOG.md` carries a tool-neutral entry for the milestone.

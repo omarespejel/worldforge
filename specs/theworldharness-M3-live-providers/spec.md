@@ -1,7 +1,7 @@
 # Milestone M3 — Live providers
 
 ## Status
-Draft · 2026-04-21
+Implemented · 2026-04-21
 
 ## Outcome (one sentence)
 A user can pick a registered provider from `ProvidersScreen`, trigger a real `mock.predict` call against a real `World`, watch `ProviderEvent`s stream into a `RichLog` in real time, and cancel the in-flight call with `Esc` — with the cancellation observable in the UI rather than silently dropped.

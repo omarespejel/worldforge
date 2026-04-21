@@ -91,3 +91,31 @@ def test_launch_harness_passes_run_inspector_when_flow_supplied(monkeypatch) -> 
     assert rc == 0
     assert captured["initial_screen"] == "run-inspector"
     assert captured["initial_flow_id"] == "lerobot"
+
+
+def test_launch_harness_passes_eval_and_benchmark_screens(monkeypatch) -> None:
+    import pytest as _pytest
+
+    _pytest.importorskip("rich")
+    _pytest.importorskip("textual")
+
+    captured: list[dict[str, object]] = []
+
+    class _StubApp:
+        def __init__(self, **kwargs: object) -> None:
+            captured.append(dict(kwargs))
+
+        def run(self) -> None:
+            return None
+
+    import worldforge.harness.tui as tui
+
+    monkeypatch.setattr(tui, "TheWorldHarnessApp", _StubApp)
+
+    from worldforge.harness.cli import launch_harness
+
+    assert launch_harness(flow_id="eval", state_dir=None, animate=True) == 0
+    assert launch_harness(flow_id="benchmark", state_dir=None, animate=True) == 0
+    assert captured[0]["initial_screen"] == "eval"
+    assert captured[1]["initial_screen"] == "benchmark"
+    assert captured[0]["initial_flow_id"] == "leworldmodel"

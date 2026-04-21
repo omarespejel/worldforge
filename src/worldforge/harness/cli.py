@@ -17,12 +17,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--flow",
-        choices=[flow.id for flow in available_flows()],
+        choices=[flow.id for flow in available_flows()] + ["eval", "benchmark"],
         default=None,
         help=(
-            "Harness flow to open. When omitted the harness opens on the Home screen; "
-            "when supplied the harness opens directly on the Run Inspector screen with "
-            "the flow pre-selected."
+            "Harness flow or screen to open. When omitted the harness opens on the Home screen; "
+            "eval and benchmark open those screens directly."
         ),
     )
     parser.add_argument(
@@ -91,8 +90,12 @@ def launch_harness(
             return 2
         raise
 
-    initial_screen = "run-inspector" if flow_id is not None else "home"
-    resolved_flow_id = flow_id if flow_id is not None else "leworldmodel"
+    if flow_id in {"eval", "benchmark"}:
+        initial_screen = flow_id
+        resolved_flow_id = "leworldmodel"
+    else:
+        initial_screen = "run-inspector" if flow_id is not None else "home"
+        resolved_flow_id = flow_id if flow_id is not None else "leworldmodel"
     app = TheWorldHarnessApp(
         initial_flow_id=resolved_flow_id,
         initial_screen=initial_screen,

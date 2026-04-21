@@ -32,6 +32,12 @@ uv run worldforge eval --suite transfer --provider mock
 
 Repeat `--provider` to compare multiple registered providers in one report.
 
+The same built-in suites are available from TheWorldHarness. Launch
+`uv run --extra harness worldforge-harness --flow eval`, pick a suite and provider, and the TUI
+writes the canonical JSON report under `.worldforge/reports/` before opening the Run Inspector.
+Capability mismatches remain `WorldForgeError` failures; the TUI surfaces the message instead of
+silently skipping the suite.
+
 ## Report formats
 
 - Markdown: provider summary table plus scenario-level detail table

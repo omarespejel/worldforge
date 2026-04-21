@@ -761,6 +761,13 @@ class _BenchmarkSample:
     def succeeded(self) -> bool:
         return self.error is None
 
+    def to_dict(self) -> JSONDict:
+        return {
+            "latency_ms": self.latency_ms,
+            "error": self.error,
+            "succeeded": self.succeeded,
+        }
+
 
 class ProviderBenchmarkHarness:
     """Run latency, retry, and throughput benchmarks across registered providers."""
@@ -898,6 +905,7 @@ class ProviderBenchmarkHarness:
         iterations: int,
         concurrency: int,
         inputs: BenchmarkInputs,
+        on_sample: Callable[[JSONDict], None] | None = None,
     ) -> BenchmarkResult:
         started = perf_counter()
         samples: list[_BenchmarkSample] = []
@@ -908,7 +916,17 @@ class ProviderBenchmarkHarness:
                     for _ in range(iterations)
                 ]
                 for future in as_completed(futures):
-                    samples.append(future.result())
+                    sample = future.result()
+                    samples.append(sample)
+                    if on_sample is not None:
+                        on_sample(
+                            {
+                                "provider": provider,
+                                "operation": operation,
+                                "iteration": len(samples),
+                                **sample.to_dict(),
+                            }
+                        )
 
             provider_metrics = [
                 metric.to_dict() for metric in metrics.snapshot() if metric.provider == provider
@@ -957,6 +975,7 @@ class ProviderBenchmarkHarness:
         iterations: int = 5,
         concurrency: int = 1,
         inputs: BenchmarkInputs | None = None,
+        on_sample: Callable[[JSONDict], None] | None = None,
     ) -> BenchmarkReport:
         provider_names = [providers] if isinstance(providers, str) else list(providers)
         if not provider_names:
@@ -1004,6 +1023,7 @@ class ProviderBenchmarkHarness:
                         iterations=iterations,
                         concurrency=concurrency,
                         inputs=benchmark_inputs,
+                        on_sample=on_sample,
                     )
                 )
 
@@ -1018,6 +1038,7 @@ def run_benchmark(
     iterations: int = 5,
     concurrency: int = 1,
     inputs: BenchmarkInputs | None = None,
+    on_sample: Callable[[JSONDict], None] | None = None,
 ) -> BenchmarkReport:
     """Convenience wrapper around ProviderBenchmarkHarness.run()."""
 
@@ -1027,6 +1048,7 @@ def run_benchmark(
         iterations=iterations,
         concurrency=concurrency,
         inputs=inputs,
+        on_sample=on_sample,
     )
 
 

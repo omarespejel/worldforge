@@ -1,8 +1,9 @@
 """Color palette for TheWorldHarness themes.
 
-This module defines the raw color tokens used by ``worldforge-dark`` and
-``worldforge-light``. It is deliberately Textual-free so the harness extra
-boundary stays intact (only ``tui.py`` is allowed to import Textual). The
+This module defines the raw color tokens used by ``worldforge-dark``,
+``worldforge-light``, and ``worldforge-high-contrast``. It is deliberately
+Textual-free so the harness extra boundary stays intact (only ``tui.py`` is
+allowed to import Textual). The
 ``tui`` module reads these mappings to construct ``textual.theme.Theme``
 instances at runtime.
 
@@ -48,8 +49,24 @@ WORLDFORGE_LIGHT_PALETTE: Final[dict[str, str]] = {
     "muted": "#5b635c",
 }
 
+WORLDFORGE_HIGH_CONTRAST_PALETTE: Final[dict[str, str]] = {
+    "primary": "#00e676",
+    "secondary": "#80cbc4",
+    "accent": "#ffea00",
+    "warning": "#ffab00",
+    "error": "#ff5252",
+    "success": "#00e676",
+    "foreground": "#f8f8f2",
+    "background": "#000000",
+    "surface": "#111111",
+    "panel": "#f8f8f2",
+    "boost": "#222222",
+    "muted": "#cfcfcf",
+}
+
 THEME_NAME_DARK: Final[str] = "worldforge-dark"
 THEME_NAME_LIGHT: Final[str] = "worldforge-light"
+THEME_NAME_HIGH_CONTRAST: Final[str] = "worldforge-high-contrast"
 
 # Per-flow capability label fallbacks. Source of truth lives on
 # ``HarnessFlow.capability``; this map is only used as a defensive default if

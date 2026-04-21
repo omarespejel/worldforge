@@ -228,6 +228,25 @@ Success signal:
 If a score changes, first check provider capability, test fixture changes, input data, and retry
 events. Do not rewrite claims around a one-off run without preserving the run artifact.
 
+### 6a. Preserve Harness Reports
+
+TheWorldHarness Eval and Benchmark screens preserve completed reports automatically under the
+active state directory:
+
+```text
+.worldforge/reports/eval-<suite>-<timestamp>-<run-id>.json
+.worldforge/reports/benchmark-<timestamp>-<run-id>.json
+```
+
+The JSON is written through the same renderer used by the `worldforge eval` and `worldforge
+benchmark` commands. Markdown and CSV previews in the TUI are regenerated from the same report
+object, so a screenshot and the saved JSON point at the same numbers. Use the path printed in the
+success toast whenever a benchmark or evaluation result is cited in a PR, release note, paper, or
+slide.
+
+First triage step for a surprising number: open the saved JSON, confirm the provider and
+operation/suite, then rerun the matching CLI command with the same provider and operation.
+
 ## 7. Handle Remote Media Artifacts
 
 Use this for Cosmos, Runway, or any future media adapter.
