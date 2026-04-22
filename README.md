@@ -26,10 +26,9 @@ diagnostics, and a CLI.
 
 </div>
 
-## Real Robotics Showcase: LeRobot + LeWorldModel
+## Robotics Showcase: LeRobot + LeWorldModel
 
-WorldForge's front-door robotics demo composes a real Hugging Face LeRobot policy with a real
-LeWorldModel checkpoint. LeRobot proposes PushT action candidates, WorldForge bridges those
+WorldForge's front-door robotics demo composes a [Hugging Face LeRobot](https://github.com/huggingface/lerobot) policy with a [LeWorldModel](https://github.com/lucas-maes/le-wm) checkpoint. LeRobot proposes PushT action candidates, WorldForge bridges those
 policy actions into LeWorldModel-native candidate tensors, LeWorldModel scores the candidates,
 and WorldForge selects and mock-replays the lowest-cost action chunk.
 
