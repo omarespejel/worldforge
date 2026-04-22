@@ -345,8 +345,9 @@ This showcase runs real LeRobot policy inference and real LeWorldModel checkpoin
 `World.plan(policy_provider="lerobot", score_provider="leworldmodel")`. The default path uses the
 PushT diffusion policy (`lerobot/diffusion_pusht`), the `~/.stable-wm/pusht/lewm_object.ckpt`
 LeWorldModel object checkpoint, a packaged PushT observation builder, and a packaged action-candidate
-bridge. It prints a visual seven-step pipeline, tensor shapes, ranked candidate costs, provider
-events, latency metrics, mock-world execution, and writes `/tmp/worldforge-robotics-showcase/real-run.json`.
+bridge. It prints a visual seven-step pipeline, text pipeline diagram, tensor shapes, runtime bars,
+score summary, ranked candidate costs, candidate target table, tabletop replay map, provider events,
+mock-world execution, and writes `/tmp/worldforge-robotics-showcase/real-run.json`.
 
 Use the lower-level configurable runner when you bring a different embodiment or task bridge:
 

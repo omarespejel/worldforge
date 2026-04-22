@@ -460,16 +460,16 @@ def _event_dicts(events: list[ProviderEvent]) -> list[dict[str, Any]]:
 
 
 def _print_header(*, color: bool) -> None:
-    print(
-        _paint(
-            "WorldForge real robotics policy+world-model inference",
-            "cyan",
-            enabled=color,
-            bold=True,
-        )
-    )
-    print("=" * 59)
+    title = "WorldForge real robotics policy+world-model inference"
+    print(_paint(title, "cyan", enabled=color, bold=True))
+    print("=" * len(title))
     print("Mode: real LeRobot policy inference plus real LeWorldModel checkpoint scoring.")
+    print(
+        "Run contract: "
+        f"{_paint('REAL', 'green', enabled=color, bold=True)} policy + "
+        f"{_paint('REAL', 'green', enabled=color, bold=True)} score + "
+        f"{_paint('LOCAL', 'yellow', enabled=color, bold=True)} mock replay"
+    )
     print("\nWhat this demonstrates")
     print("----------------------")
     print("  - loads a host-owned LeRobot policy checkpoint")
@@ -488,6 +488,21 @@ def _print_header(*, color: bool) -> None:
         "  observation -> LeRobot policy -> action candidates -> tensor bridge -> "
         "LeWorldModel costs -> WorldForge plan -> mock execution"
     )
+    print("\nPipeline map")
+    print("------------")
+    print("  +-------------------+      +-------------------+      +----------------------+")
+    print("  | PushT observation | ---> | LeRobot policy    | ---> | action candidates    |")
+    print("  +-------------------+      +-------------------+      +----------+-----------+")
+    print("             |                                                    |")
+    print("             v                                                    v")
+    print("  +-------------------+      +-------------------+      +----------------------+")
+    print("  | LeWM score tensors| ---> | LeWorldModel cost | ---> | WorldForge planner   |")
+    print("  +-------------------+      +-------------------+      +----------+-----------+")
+    print("                                                                  |")
+    print("                                                                  v")
+    print("                                                        +----------------------+")
+    print("                                                        | local mock replay    |")
+    print("                                                        +----------------------+")
 
 
 def _log_step(
@@ -520,6 +535,208 @@ def _print_provider_events(events: list[dict[str, Any]]) -> None:
             f"  {event.get('provider')}.{event.get('operation')} "
             f"{event.get('phase')} duration={duration_text} {metadata_text}".rstrip()
         )
+
+
+def _section(title: str) -> None:
+    print(f"\n{title}")
+    print("-" * len(title))
+
+
+def _float_or_none(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    number = float(value)
+    if number != number or number in (float("inf"), float("-inf")):
+        return None
+    return number
+
+
+def _provider_latency_ms(
+    events: list[dict[str, Any]],
+    provider: str,
+    operation: str,
+) -> float | None:
+    for event in reversed(events):
+        if event.get("provider") == provider and event.get("operation") == operation:
+            return _float_or_none(event.get("duration_ms"))
+    return None
+
+
+def _bar(value: float, maximum: float, *, width: int = 30) -> str:
+    if maximum <= 0.0 or value <= 0.0:
+        fill = 0
+    else:
+        fill = max(1, min(width, round((value / maximum) * width)))
+    return f"|{'#' * fill:<{width}}|"
+
+
+def _print_runtime_profile(
+    *,
+    events: list[dict[str, Any]],
+    plan_latency_ms: float,
+    total_latency_ms: float,
+    color: bool,
+) -> None:
+    rows = [
+        ("LeRobot policy", _provider_latency_ms(events, "lerobot", "policy")),
+        ("LeWorldModel score", _provider_latency_ms(events, "leworldmodel", "score")),
+        ("WorldForge plan", plan_latency_ms),
+        ("End-to-end run", total_latency_ms),
+    ]
+    maximum = max((value or 0.0) for _label, value in rows)
+    _section("Runtime profile")
+    for label, value in rows:
+        if value is None:
+            print(f"  {label:<20} {'n/a':>10}  {_bar(0.0, maximum)}")
+            continue
+        bar_color = "green" if label == "LeWorldModel score" else "cyan"
+        bar = _paint(_bar(value, maximum), bar_color, enabled=color)
+        print(f"  {label:<20} {value:>9.2f} ms  {bar}")
+
+
+def _print_score_summary(stats: dict[str, Any]) -> None:
+    if not stats:
+        return
+    _section("Score summary")
+    rows = [
+        ("min", stats.get("score_min")),
+        ("median", stats.get("score_median")),
+        ("mean", stats.get("score_mean")),
+        ("max", stats.get("score_max")),
+        ("range", stats.get("score_range")),
+        ("gap to runner-up", stats.get("gap_to_runner_up")),
+    ]
+    for label, value in rows:
+        number = _float_or_none(value)
+        text = "n/a" if number is None else f"{number:.6f}"
+        print(f"  {label:<18} {text}")
+
+
+def _action_target(action: object) -> dict[str, float] | None:
+    if not isinstance(action, dict):
+        return None
+    parameters = action.get("parameters")
+    if not isinstance(parameters, dict):
+        return None
+    target = parameters.get("target")
+    if not isinstance(target, dict):
+        return None
+    x = _float_or_none(target.get("x"))
+    y = _float_or_none(target.get("y"))
+    z = _float_or_none(target.get("z"))
+    if x is None or y is None or z is None:
+        return None
+    return {"x": x, "y": y, "z": z}
+
+
+def _candidate_targets(policy_result: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates = policy_result.get("action_candidates")
+    if not isinstance(candidates, list):
+        return []
+    targets: list[dict[str, Any]] = []
+    for index, candidate in enumerate(candidates):
+        if not isinstance(candidate, list) or not candidate:
+            continue
+        target = _action_target(candidate[0])
+        if target is None:
+            continue
+        targets.append({"index": index, **target})
+    return targets
+
+
+def _score_by_index(score_result: dict[str, Any]) -> dict[int, float]:
+    scores = score_result.get("scores")
+    if not isinstance(scores, list):
+        return {}
+    score_map: dict[int, float] = {}
+    for index, score in enumerate(scores):
+        number = _float_or_none(score)
+        if number is not None:
+            score_map[index] = number
+    return score_map
+
+
+def _print_candidate_targets(
+    *,
+    policy_result: dict[str, Any],
+    score_result: dict[str, Any],
+    color: bool,
+) -> list[dict[str, Any]]:
+    targets = _candidate_targets(policy_result)
+    if not targets:
+        return []
+    scores = _score_by_index(score_result)
+    best_index = score_result.get("best_index")
+    _section("Candidate targets")
+    print(f"  {'candidate':<10} {'x':>8} {'y':>8} {'z':>8} {'score':>12}  status")
+    for target in targets:
+        index = int(target["index"])
+        score = scores.get(index)
+        marker = "SELECTED" if index == best_index else ""
+        status = _paint(marker, "green", enabled=color, bold=True) if marker else ""
+        score_text = "n/a" if score is None else f"{score:.6f}"
+        print(
+            f"  #{index:<9} {target['x']:>8.3f} {target['y']:>8.3f} "
+            f"{target['z']:>8.3f} {score_text:>12}  {status}"
+        )
+    return targets
+
+
+def _position_from_summary(summary: dict[str, Any] | None) -> dict[str, float] | None:
+    if not isinstance(summary, dict):
+        return None
+    position = summary.get("final_block_position")
+    if not isinstance(position, dict):
+        return None
+    x = _float_or_none(position.get("x"))
+    y = _float_or_none(position.get("y"))
+    z = _float_or_none(position.get("z"))
+    if x is None or y is None or z is None:
+        return None
+    return {"x": x, "y": y, "z": z}
+
+
+def _print_tabletop_replay(
+    *,
+    targets: list[dict[str, Any]],
+    score_result: dict[str, Any],
+    execution_summary: dict[str, Any] | None,
+) -> None:
+    if not targets:
+        return
+    width = 25
+    height = 11
+    grid = [[" " for _column in range(width)] for _row in range(height)]
+
+    def place(x: float, y: float, marker: str) -> None:
+        column = max(0, min(width - 1, round(x * (width - 1))))
+        row = max(0, min(height - 1, round((1.0 - y) * (height - 1))))
+        existing = grid[row][column]
+        grid[row][column] = marker if existing == " " else "*"
+
+    place(0.0, 0.5, "S")
+    place(0.5, 0.5, "G")
+    for target in targets:
+        place(float(target["x"]), float(target["y"]), str(int(target["index"]) % 10))
+    final_position = _position_from_summary(execution_summary)
+    if final_position is not None:
+        place(final_position["x"], final_position["y"], "F")
+
+    _section("Tabletop replay")
+    print("  legend: S=start, G=goal, 0-9=candidate, F=mock final, *=overlap")
+    best_index = score_result.get("best_index")
+    if isinstance(best_index, int):
+        print(f"  selected candidate: #{best_index}")
+    print("  y=1.00 +" + "-" * width + "+")
+    for row_index, row in enumerate(grid):
+        label = "       |"
+        if row_index == height // 2:
+            label = "  y=0.50 |"
+        elif row_index == height - 1:
+            label = "  y=0.00 |"
+        print(f"{label}{''.join(row)}|")
+    print("         +" + "-" * width + "+")
+    print("          x=0.00       x=0.50       x=1.00")
 
 
 def _runtime_command(*, checkpoint: Path, policy_path: str, device: str) -> str:
@@ -962,6 +1179,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     score_shapes = _input_shape_summary(score_info, score_action_candidates)
     score_shape_values = _input_shapes(score_info, score_action_candidates)
     input_stats = _input_stats(score_shape_values)
+    event_payload = _event_dicts(provider_events)
+    candidate_targets = _candidate_targets(policy_result)
     payload = {
         "mode": "real_lerobot_policy_plus_real_leworldmodel_score",
         "task": args.task,
@@ -984,7 +1203,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "score_result": score_result,
         "score_stats": score_stats,
         "execution": execution_summary,
-        "provider_events": _event_dicts(provider_events),
+        "provider_events": event_payload,
+        "visualization": {
+            "candidate_targets": candidate_targets,
+            "selected_candidate": score_result.get("best_index"),
+        },
         "metrics": {
             "plan_latency_ms": plan_latency_ms,
             "total_latency_ms": total_latency_ms,
@@ -1001,10 +1224,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"  {label:<22} {shape}")
     print(f"  {'tensor elements':<22} {input_stats['total_tensor_elements']}")
     print(f"  {'approx float32 MB':<22} {input_stats['approx_float32_mb']}")
+    _print_runtime_profile(
+        events=event_payload,
+        plan_latency_ms=plan_latency_ms,
+        total_latency_ms=total_latency_ms,
+        color=color_enabled,
+    )
+    _print_score_summary(score_stats)
     print("\nCandidate cost landscape")
     print("------------------------")
     for line in _score_chart(score_result, color=color_enabled):
         print(line)
+    printed_targets = _print_candidate_targets(
+        policy_result=policy_result,
+        score_result=score_result,
+        color=color_enabled,
+    )
+    _print_tabletop_replay(
+        targets=printed_targets,
+        score_result=score_result,
+        execution_summary=execution_summary,
+    )
     print("\nSelected plan")
     print("-------------")
     print(f"  selected candidate     #{score_result.get('best_index')}")
@@ -1013,7 +1253,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if execution_summary is not None:
         print(f"  mock final step        {execution_summary['final_step']}")
         print(f"  mock final block       {execution_summary['final_block_position']}")
-    _print_provider_events(_event_dicts(provider_events))
+    _print_provider_events(event_payload)
     if json_output_path is not None:
         print("\nArtifacts")
         print("---------")

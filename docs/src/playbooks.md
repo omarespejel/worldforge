@@ -331,7 +331,8 @@ scripts/robotics-showcase
 ```
 
 The showcase wrapper installs the host-owned optional runtime set for this process, runs the
-packaged PushT bridge, prints a visual seven-step pipeline, and writes the full JSON summary under
+packaged PushT bridge, prints a visual seven-step pipeline with a text diagram, runtime bars, score
+summary, candidate table, and tabletop replay map, then writes the full JSON summary under
 `/tmp/worldforge-robotics-showcase/real-run.json`. It filters common macOS native-library duplicate
 class warnings from the user-facing output; set `WORLDFORGE_SHOW_RUNTIME_WARNINGS=1` to see raw
 third-party stderr.

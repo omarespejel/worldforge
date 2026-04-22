@@ -446,6 +446,8 @@ def test_main_runs_policy_score_plan_with_fake_real_runtimes(
     assert payload["plan"]["metadata"]["score_provider"] == "leworldmodel"
     assert payload["inputs"]["score_action_candidates_shape"] == [1, 2, 2, 2]
     assert payload["execution"]["actions_applied"] == 2
+    assert payload["visualization"]["selected_candidate"] == 1
+    assert payload["visualization"]["candidate_targets"][1]["index"] == 1
 
 
 def test_main_visual_static_candidate_path_skips_execution(
@@ -499,9 +501,16 @@ def test_main_visual_static_candidate_path_skips_execution(
 
     output = capsys.readouterr().out
     assert "WorldForge real robotics policy+world-model inference" in output
+    assert "Pipeline map" in output
+    assert "Runtime profile" in output
+    assert "Score summary" in output
     assert "Candidate cost landscape" in output
+    assert "Candidate targets" in output
+    assert "Tabletop replay" in output
     assert "Skip local mock execution" in output
-    assert json.loads(json_output.read_text())["execution"] is None
+    payload = json.loads(json_output.read_text())
+    assert payload["execution"] is None
+    assert payload["visualization"]["candidate_targets"][0]["index"] == 0
 
 
 def test_main_preflight_failure_prints_runtime_command(

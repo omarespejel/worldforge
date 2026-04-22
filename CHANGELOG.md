@@ -52,6 +52,9 @@ releases may still include breaking changes when the public API needs to tighten
 - Added `scripts/robotics-showcase` and `worldforge-robotics-showcase`, a one-command PushT real
   robotics entrypoint that packages the LeRobot observation, LeWorldModel score tensor, translator,
   and action-candidate bridge defaults for the LeRobot + LeWorldModel showcase.
+- Expanded the real robotics showcase output with an ASCII pipeline map, runtime bars, score
+  summary, candidate target table, and tabletop replay diagram while keeping the machine-readable
+  JSON path available.
 - Added the `worldforge world` CLI command group for local JSON persistence workflows, including
   create, list, show, history, export, import, and fork commands backed by the existing validated
   `WorldForge` persistence API.
