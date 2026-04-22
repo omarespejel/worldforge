@@ -54,7 +54,7 @@ comparison flows.
 | Example | Surface | Command |
 | --- | --- | --- |
 | `leworldmodel-real-checkpoint-smoke` | real checkpoint smoke | `scripts/lewm-real --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt --device cpu` |
-| `lerobot-leworldmodel-real-robotics` | real policy plus real world-model scoring | `scripts/lewm-lerobot-real --policy-path lerobot/diffusion_pusht --policy-type diffusion --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt --mode select_action --observation-module /path/to/pusht_obs.py:build_observation --score-info-npz /path/to/lewm_score_tensors.npz --candidate-builder /path/to/pusht_lewm_bridge.py:build_action_candidates` |
+| `lerobot-leworldmodel-real-robotics` | real policy plus real world-model scoring | `scripts/robotics-showcase` |
 
 The explicit command behind the wrapper is:
 
@@ -70,8 +70,15 @@ uv run --python 3.10 \
 It runs real checkpoint scoring over deterministic synthetic PushT-shaped tensors and prints a
 visual pipeline, tensor shapes, latency metrics, provider events, and ranked candidate costs.
 
-The real robotics wrapper composes LeRobot and LeWorldModel through WorldForge policy-plus-score
-planning:
+The real robotics showcase composes LeRobot and LeWorldModel through WorldForge policy-plus-score
+planning with a packaged PushT bridge:
+
+```bash
+scripts/robotics-showcase
+```
+
+Use the lower-level runner when bringing a different task observation, score tensor source, or
+candidate bridge:
 
 ```bash
 scripts/lewm-lerobot-real \
@@ -86,9 +93,9 @@ scripts/lewm-lerobot-real \
   --candidate-builder /path/to/pusht_lewm_bridge.py:build_action_candidates
 ```
 
-Use it only with task-aligned inputs: the LeRobot policy, observation, LeWorldModel score tensors,
-and candidate bridge must describe the same robotics task. The wrapper runs real model inference,
-then executes the selected WorldForge action chunk in the local mock world for reporting.
+Use custom hooks only with task-aligned inputs: the LeRobot policy, observation, LeWorldModel score
+tensors, and candidate bridge must describe the same robotics task. The wrapper runs real model
+inference, then executes the selected WorldForge action chunk in the local mock world for reporting.
 
 ## Runtime Boundary
 

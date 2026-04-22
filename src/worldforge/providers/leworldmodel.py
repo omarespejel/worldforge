@@ -159,7 +159,7 @@ class LeWorldModelProvider(BaseProvider):
         except ImportError as exc:
             raise ProviderError(
                 "Provider 'leworldmodel' requires optional dependency torch. "
-                "Install stable-worldmodel[env] in the host environment."
+                "Run the documented host-owned uv wrapper with stable-worldmodel[train]."
             ) from exc
 
     def _load_model(self) -> Any:

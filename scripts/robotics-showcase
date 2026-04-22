@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+filter_runtime_warnings() {
+  awk '
+    /objc\[[0-9]+\]: Class .* is implemented in both/ { next }
+    /This may cause spurious casting failures/ { next }
+    /pygame\/pkgdata.py:.*pkg_resources is deprecated/ { next }
+    /^[[:space:]]*from pkg_resources import resource_stream, resource_exists/ { next }
+    /gymnasium\/spaces\/box.py:.*Casting input x to numpy array/ { next }
+    /^[[:space:]]*gym\.logger\.warn\("Casting input x to numpy array\."\)/ { next }
+    /WARNING:lerobot\.configs\.policies:Device '\''cuda'\'' is not available\. Switching to '\''mps'\''\./ { next }
+    /WARNING:root:Unexpected key\(s\) when loading model:/ { next }
+    { print; fflush() }
+  '
+}
+
+cd "$repo_root"
+export PYGAME_HIDE_SUPPORT_PROMPT="${PYGAME_HIDE_SUPPORT_PROMPT:-1}"
+
+if [[ "${WORLDFORGE_SHOW_RUNTIME_WARNINGS:-}" == "1" ]]; then
+  exec uv run --python 3.10 \
+    --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
+    --with "datasets>=2.21" \
+    --with "lerobot" \
+    --with "pygame" \
+    --with "opencv-python" \
+    --with "pymunk" \
+    --with "gymnasium" \
+    --with "shapely" \
+    worldforge-robotics-showcase "$@"
+fi
+
+exec uv run --python 3.10 \
+  --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
+  --with "datasets>=2.21" \
+  --with "lerobot" \
+  --with "pygame" \
+  --with "opencv-python" \
+  --with "pymunk" \
+  --with "gymnasium" \
+  --with "shapely" \
+  worldforge-robotics-showcase "$@" 2> >(filter_runtime_warnings >&2)

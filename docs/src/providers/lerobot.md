@@ -191,24 +191,16 @@ PyTorch tensors, or host preprocessing.
 Real LeRobot + LeWorldModel robotics showcase:
 
 ```bash
-scripts/lewm-lerobot-real \
-  --policy-path lerobot/diffusion_pusht \
-  --policy-type diffusion \
-  --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt \
-  --device cpu \
-  --mode select_action \
-  --observation-module /path/to/pusht_obs.py:build_observation \
-  --score-info-npz /path/to/lewm_score_tensors.npz \
-  --translator worldforge.smoke.lerobot_leworldmodel:translate_pusht_xy_actions \
-  --candidate-builder /path/to/pusht_lewm_bridge.py:build_action_candidates
+scripts/robotics-showcase
 ```
 
 This is the real-checkpoint counterpart to `worldforge-demo-lerobot` for a PushT-style robotics
-builder story. LeRobot proposes action candidates, a host bridge converts those candidates into
-LeWorldModel-native candidate tensors, LeWorldModel ranks them by cost, and WorldForge selects a
-plan through `World.plan(..., planning_mode="policy+score")`. The built-in PushT translator is for
-human-readable WorldForge actions and mock execution; the candidate bridge owns the checkpoint
-tensor semantics.
+builder story. LeRobot proposes action candidates, the packaged PushT bridge converts those
+candidates into LeWorldModel-native candidate tensors, LeWorldModel ranks them by cost, and
+WorldForge selects a plan through `World.plan(..., planning_mode="policy+score")`. The visible
+WorldForge actions and mock execution are for replay/reporting. Hardware control, safety checks,
+and robot-controller integration remain host-owned. Use `scripts/lewm-lerobot-real --help` when
+bringing a different observation source, translator, or candidate bridge.
 
 ## Failure Modes
 
@@ -230,8 +222,9 @@ tensor semantics.
 - `tests/test_lerobot_e2e_demo.py` covers the full checkout-safe demo.
 - `tests/test_lerobot_smoke_script.py` covers smoke-script input loading, callable resolution, and
   validation without requiring LeRobot or a GPU.
-- `tests/test_lerobot_leworldmodel_smoke_script.py` covers the combined real-runtime runner with
-  fake injected providers, dynamic candidate bridge behavior, and JSON output.
+- `tests/test_lerobot_leworldmodel_smoke_script.py` and `tests/test_robotics_showcase.py` cover
+  the combined real-runtime runner, packaged showcase defaults, dynamic candidate bridge behavior,
+  and JSON output.
 
 ## Primary References
 

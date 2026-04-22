@@ -323,6 +323,34 @@ terminal output.
 Real robotics policy + world-model showcase:
 
 ```bash
+scripts/robotics-showcase
+```
+
+Equivalent explicit `uv` command:
+
+```bash
+uv run --python 3.10 \
+  --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
+  --with "datasets>=2.21" \
+  --with "lerobot" \
+  --with "pygame" \
+  --with "opencv-python" \
+  --with "pymunk" \
+  --with "gymnasium" \
+  --with "shapely" \
+  worldforge-robotics-showcase
+```
+
+This showcase runs real LeRobot policy inference and real LeWorldModel checkpoint scoring through
+`World.plan(policy_provider="lerobot", score_provider="leworldmodel")`. The default path uses the
+PushT diffusion policy (`lerobot/diffusion_pusht`), the `~/.stable-wm/pusht/lewm_object.ckpt`
+LeWorldModel object checkpoint, a packaged PushT observation builder, and a packaged action-candidate
+bridge. It prints a visual seven-step pipeline, tensor shapes, ranked candidate costs, provider
+events, latency metrics, mock-world execution, and writes `/tmp/worldforge-robotics-showcase/real-run.json`.
+
+Use the lower-level configurable runner when you bring a different embodiment or task bridge:
+
+```bash
 scripts/lewm-lerobot-real \
   --policy-path lerobot/diffusion_pusht \
   --policy-type diffusion \
@@ -332,13 +360,10 @@ scripts/lewm-lerobot-real \
   --observation-module /path/to/pusht_obs.py:build_observation \
   --score-info-npz /path/to/lewm_score_tensors.npz \
   --translator worldforge.smoke.lerobot_leworldmodel:translate_pusht_xy_actions \
-  --candidate-builder /path/to/pusht_lewm_bridge.py:build_action_candidates \
-  --expected-action-dim 10 \
-  --expected-horizon 4 \
-  --json-output robotics-e2e.json
+  --candidate-builder /path/to/pusht_lewm_bridge.py:build_action_candidates
 ```
 
-Equivalent explicit `uv` command:
+Equivalent explicit `uv` command for the lower-level runner:
 
 ```bash
 uv run --python 3.10 \
@@ -357,11 +382,8 @@ uv run --python 3.10 \
     --candidate-builder /path/to/pusht_lewm_bridge.py:build_action_candidates
 ```
 
-This path runs real LeRobot policy inference and real LeWorldModel checkpoint scoring through
-`World.plan(policy_provider="lerobot", score_provider="leworldmodel")`. It is meaningful only when
-the policy, observation, score tensors, and candidate bridge describe the same task. The built-in
-PushT translator turns raw `x, y` action candidates into visible WorldForge `move_to` actions for the
-report; the candidate builder must provide the checkpoint-native LeWorldModel action tensor. The
+Both real robotics paths are simulation/replay planning flows. Hardware control, safety checks,
+robot-controller integration, and task-specific preprocessing remain host-owned. The lower-level
 runner fails instead of padding or projecting mismatched action spaces.
 
 See [examples/](./examples) and [`uv run worldforge examples`](./docs/src/examples.md) for the full

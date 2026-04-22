@@ -129,20 +129,12 @@ EXAMPLE_COMMANDS: tuple[dict[str, str], ...] = (
         "surface": "policy provider, score provider, planning, mock execution",
         "requires": (
             "host-owned LeRobot, stable-worldmodel, torch, datasets, policy checkpoint, "
-            "LeWM checkpoint, observation builder, and candidate bridge"
+            "LeWM checkpoint, and PushT simulation dependencies"
         ),
-        "command": (
-            "scripts/lewm-lerobot-real --policy-path lerobot/diffusion_pusht "
-            "--policy-type diffusion "
-            "--checkpoint ~/.stable-wm/pusht/lewm_object.ckpt "
-            "--mode select_action "
-            "--observation-module /path/to/pusht_obs.py:build_observation "
-            "--score-info-npz /path/to/lewm_score_tensors.npz "
-            "--candidate-builder /path/to/pusht_lewm_bridge.py:build_action_candidates"
-        ),
+        "command": "scripts/robotics-showcase",
         "description": (
             "Compose real LeRobot policy inference with real LeWorldModel checkpoint scoring "
-            "through WorldForge policy-plus-score planning."
+            "through a packaged PushT bridge and WorldForge policy-plus-score planning."
         ),
     },
 )

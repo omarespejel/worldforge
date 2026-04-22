@@ -169,22 +169,16 @@ uv run --python 3.10 \
 Real LeRobot + LeWorldModel robotics showcase:
 
 ```bash
-scripts/lewm-lerobot-real \
-  --policy-path lerobot/diffusion_pusht \
-  --policy-type diffusion \
-  --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt \
-  --device cpu \
-  --mode select_action \
-  --observation-module /path/to/pusht_obs.py:build_observation \
-  --score-info-npz /path/to/lewm_score_tensors.npz \
-  --translator worldforge.smoke.lerobot_leworldmodel:translate_pusht_xy_actions \
-  --candidate-builder /path/to/pusht_lewm_bridge.py:build_action_candidates
+scripts/robotics-showcase
 ```
 
-This runner uses `LeWorldModelProvider` as the score half of a real policy-plus-score plan. It
-requires task-aligned `pixels`, `goal`, `action`, and `action_candidates` tensors; WorldForge does
-not infer LeWorldModel preprocessing from LeRobot output. If the policy action chunk is not already
-checkpoint-compatible, provide a task-specific `--candidate-builder`.
+This showcase uses `LeWorldModelProvider` as the score half of a real policy-plus-score plan. It
+loads the default PushT LeRobot policy, reads the default `pusht/lewm` object checkpoint, builds
+PushT score tensors through the upstream environment, and ranks packaged action candidates through
+WorldForge. For a non-PushT task, use `scripts/lewm-lerobot-real --help` and provide task-aligned
+`pixels`, `goal`, `action`, and `action_candidates` tensors. WorldForge does not infer LeWorldModel
+preprocessing from LeRobot output. If the policy action chunk is not already checkpoint-compatible,
+provide a task-specific `--candidate-builder`.
 
 ## Failure Modes
 
@@ -204,8 +198,9 @@ checkpoint-compatible, provide a task-specific `--candidate-builder`.
 - `tests/test_leworldmodel_e2e_demo.py` covers the checkout-safe end-to-end demo.
 - `tests/test_leworldmodel_smoke_script.py` and `tests/test_leworldmodel_uv_tasks.py` cover smoke
   command parsing and checkpoint-builder behavior without requiring a real checkpoint.
-- `tests/test_lerobot_leworldmodel_smoke_script.py` covers the combined LeRobot + LeWorldModel
-  runner without requiring optional runtimes.
+- `tests/test_lerobot_leworldmodel_smoke_script.py` and `tests/test_robotics_showcase.py` cover
+  the combined LeRobot + LeWorldModel runner and showcase defaults without requiring optional
+  runtimes.
 
 ## Primary References
 

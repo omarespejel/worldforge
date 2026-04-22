@@ -179,24 +179,19 @@ include those IDs in surrounding application logs.
   `uv run worldforge-demo-lerobot`. It uses the real `LeRobotPolicyProvider` interface with an
   injected deterministic policy runtime and exercises policy selection, score ranking, execution,
   persistence, and reload. It is not a real LeRobot checkpoint inference run.
-- To smoke-test a real LeRobot policy plus real LeWorldModel scoring flow, run:
+- To run the prominent real LeRobot policy plus real LeWorldModel scoring showcase, run:
 
   ```bash
-  scripts/lewm-lerobot-real \
-    --policy-path lerobot/diffusion_pusht \
-    --policy-type diffusion \
-    --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt \
-    --mode select_action \
-    --observation-module /path/to/pusht_obs.py:build_observation \
-    --score-info-npz /path/to/lewm_score_tensors.npz \
-    --candidate-builder /path/to/pusht_lewm_bridge.py:build_action_candidates
+  scripts/robotics-showcase
   ```
 
-  This runner uses `World.plan(policy_provider="lerobot", score_provider="leworldmodel")`,
-  prints a visual policy-to-world-model trace, writes optional JSON artifacts, and mock-executes
-  the selected WorldForge action chunk. The host must provide task-aligned observation
-  preprocessing and a candidate bridge; WorldForge does not pad or reinterpret mismatched action
-  spaces.
+  This command uses `World.plan(policy_provider="lerobot", score_provider="leworldmodel")`, a
+  packaged PushT observation/score/candidate bridge, and host-owned optional dependencies installed
+  only for the process. It prints a visual policy-to-world-model trace, writes
+  `/tmp/worldforge-robotics-showcase/real-run.json`, and mock-executes the selected WorldForge
+  action chunk. For a different task or embodiment, use `scripts/lewm-lerobot-real --help` and
+  provide task-aligned observation preprocessing and a candidate bridge; WorldForge does not pad or
+  reinterpret mismatched action spaces.
 - To smoke-test a real GR00T policy server, install or check out NVIDIA Isaac-GR00T, prepare a
   host-specific observation factory and action translator, then run
   `python scripts/smoke_gr00t_policy.py --gr00t-root /path/to/Isaac-GR00T --start-server ...`.

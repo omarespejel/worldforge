@@ -18,6 +18,7 @@ def test_leworldmodel_uv_commands_are_packaged_console_scripts() -> None:
     assert (
         'worldforge-smoke-lerobot-leworldmodel = "worldforge.smoke.lerobot_leworldmodel:main"'
     ) in pyproject
+    assert ('worldforge-robotics-showcase = "worldforge.smoke.robotics_showcase:main"') in pyproject
     assert 'lewm-real = "worldforge.smoke.leworldmodel:main"' in pyproject
     assert 'lewm-lerobot-real = "worldforge.smoke.lerobot_leworldmodel:main"' in pyproject
     task = root / "scripts" / "lewm-real"
@@ -36,6 +37,18 @@ def test_leworldmodel_uv_commands_are_packaged_console_scripts() -> None:
     assert '"datasets>=2.21"' in robotics_task_text
     assert '"lerobot"' in robotics_task_text
     assert 'lewm-lerobot-real "$@"' in robotics_task_text
+    showcase_task = root / "scripts" / "robotics-showcase"
+    assert showcase_task.exists()
+    assert showcase_task.stat().st_mode & 0o111
+    showcase_task_text = showcase_task.read_text()
+    assert "stable-worldmodel[train]" in showcase_task_text
+    assert "stable-worldmodel[env]" not in showcase_task_text
+    assert '"pygame"' in showcase_task_text
+    assert '"opencv-python"' in showcase_task_text
+    assert '"pymunk"' in showcase_task_text
+    assert '"gymnasium"' in showcase_task_text
+    assert '"shapely"' in showcase_task_text
+    assert 'worldforge-robotics-showcase "$@"' in showcase_task_text
 
 
 def test_leworldmodel_console_script_targets_are_importable() -> None:
@@ -47,6 +60,7 @@ def test_leworldmodel_console_script_targets_are_importable() -> None:
         "worldforge.smoke.leworldmodel:main",
         "worldforge.smoke.lerobot_leworldmodel:main",
         "worldforge.smoke.lerobot_leworldmodel:main",
+        "worldforge.smoke.robotics_showcase:main",
     ]
 
     for target in targets:

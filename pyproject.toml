@@ -51,6 +51,7 @@ worldforge-demo-lerobot = "worldforge.demos.lerobot_e2e:main"
 worldforge-build-leworldmodel-checkpoint = "worldforge.smoke.leworldmodel_checkpoint:main"
 worldforge-smoke-leworldmodel = "worldforge.smoke.leworldmodel:main"
 worldforge-smoke-lerobot-leworldmodel = "worldforge.smoke.lerobot_leworldmodel:main"
+worldforge-robotics-showcase = "worldforge.smoke.robotics_showcase:main"
 lewm-real = "worldforge.smoke.leworldmodel:main"
 lewm-lerobot-real = "worldforge.smoke.lerobot_leworldmodel:main"
 

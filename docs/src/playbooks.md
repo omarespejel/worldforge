@@ -327,6 +327,19 @@ preprocessing or robot execution.
 Real LeRobot policy plus real LeWorldModel scoring:
 
 ```bash
+scripts/robotics-showcase
+```
+
+The showcase wrapper installs the host-owned optional runtime set for this process, runs the
+packaged PushT bridge, prints a visual seven-step pipeline, and writes the full JSON summary under
+`/tmp/worldforge-robotics-showcase/real-run.json`. It filters common macOS native-library duplicate
+class warnings from the user-facing output; set `WORLDFORGE_SHOW_RUNTIME_WARNINGS=1` to see raw
+third-party stderr.
+
+Use the lower-level runner when replacing the task observation, score tensors, translator, or
+candidate bridge:
+
+```bash
 scripts/lewm-lerobot-real \
   --policy-path lerobot/diffusion_pusht \
   --policy-type diffusion \
@@ -348,6 +361,21 @@ uv run --python 3.10 \
   --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
   --with "datasets>=2.21" \
   --with "lerobot" \
+  --with "pygame" \
+  --with "opencv-python" \
+  --with "pymunk" \
+  --with "gymnasium" \
+  --with "shapely" \
+  worldforge-robotics-showcase
+```
+
+Equivalent explicit `uv` command for the lower-level runner:
+
+```bash
+uv run --python 3.10 \
+  --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
+  --with "datasets>=2.21" \
+  --with "lerobot" \
   lewm-lerobot-real \
     --policy-path lerobot/diffusion_pusht \
     --policy-type diffusion \
@@ -361,11 +389,12 @@ uv run --python 3.10 \
 ```
 
 This flow demonstrates robotics-builder composition: LeRobot proposes policy action candidates,
-LeWorldModel ranks checkpoint-native candidate tensors, and WorldForge selects and mock-executes
-the lowest-cost chunk through `World.plan(..., planning_mode="policy+score")`. The task bridge is
-not optional for a meaningful run. If the LeRobot raw action dimension or horizon does not match
-the LeWorldModel checkpoint contract, provide a task-specific candidate builder instead of padding
-or projecting actions.
+LeWorldModel ranks checkpoint-native candidate tensors, and WorldForge selects and mock-executes the
+lowest-cost chunk through `World.plan(..., planning_mode="policy+score")`. The packaged
+`scripts/robotics-showcase` command owns the PushT demonstration bridge; any other task still needs
+a host-owned observation builder and candidate bridge. If the LeRobot raw action dimension or horizon
+does not match the LeWorldModel checkpoint contract, provide a task-specific bridge instead of
+padding or projecting actions.
 
 GR00T and LeRobot live smokes:
 

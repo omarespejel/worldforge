@@ -49,6 +49,9 @@ releases may still include breaking changes when the public API needs to tighten
 - Added `lewm-lerobot-real` and `worldforge-smoke-lerobot-leworldmodel`, a host-owned real
   robotics smoke/showcase that composes LeRobot policy inference with LeWorldModel checkpoint
   scoring through WorldForge policy-plus-score planning, including visual logs and JSON output.
+- Added `scripts/robotics-showcase` and `worldforge-robotics-showcase`, a one-command PushT real
+  robotics entrypoint that packages the LeRobot observation, LeWorldModel score tensor, translator,
+  and action-candidate bridge defaults for the LeRobot + LeWorldModel showcase.
 - Added the `worldforge world` CLI command group for local JSON persistence workflows, including
   create, list, show, history, export, import, and fork commands backed by the existing validated
   `WorldForge` persistence API.

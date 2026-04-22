@@ -52,6 +52,11 @@ evaluation harnesses, and testable prototypes.
 - `src/worldforge/smoke/lerobot_leworldmodel.py`: optional host-owned real robotics showcase that
   composes a LeRobot policy checkpoint with a LeWorldModel score checkpoint through
   `World.plan(..., planning_mode="policy+score")`.
+- `src/worldforge/smoke/robotics_showcase.py`: one-command PushT real robotics showcase that wires
+  the packaged PushT observation, score, translator, and candidate bridge defaults into
+  `lewm-lerobot-real`.
+- `src/worldforge/smoke/pusht_showcase_inputs.py`: packaged PushT showcase hooks for building the
+  LeRobot observation, LeWorldModel score tensors, and checkpoint-native action candidates.
 - `src/worldforge/smoke/leworldmodel_checkpoint.py`: optional host-owned builder for creating the
   LeWorldModel `*_object.ckpt` file expected by `AutoCostModel` from Hugging Face LeWM assets.
 - `examples/leworldmodel_e2e_demo.py`: checkout-safe end-to-end LeWorldModel provider-surface
@@ -114,6 +119,7 @@ uv run worldforge provider docs
 uv run --extra harness worldforge-harness
 uv run worldforge-demo-leworldmodel
 uv run worldforge-demo-lerobot
+scripts/robotics-showcase
 scripts/lewm-lerobot-real --help
 uv run worldforge benchmark --provider mock --operation generate --budget-file benchmark-budget.json
 uv run worldforge benchmark --provider mock --operation embed --input-file benchmark-inputs.json
@@ -240,6 +246,10 @@ rm -f "$tmp_req"
 - Policy+score planning uses `policy_provider="gr00t"` or `policy_provider="lerobot"` plus
   `score_provider="leworldmodel"` or another score provider; score tensors remain
   host-preprocessed and provider-native.
+- `scripts/robotics-showcase` is the prominent PushT real robotics entrypoint. It installs the
+  optional host-owned runtime packages for the process, uses packaged PushT hooks, and filters
+  common macOS native-library warning noise. Set `WORLDFORGE_SHOW_RUNTIME_WARNINGS=1` to see raw
+  third-party stderr.
 - `lewm-lerobot-real` is an optional real policy-plus-score smoke. It requires a task-aligned
   LeRobot policy, observation builder, LeWorldModel score tensors, and candidate bridge. Do not
   pad, project, or otherwise reinterpret mismatched action spaces inside WorldForge.

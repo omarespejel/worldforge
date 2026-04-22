@@ -674,9 +674,9 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if not args.policy_path:
         parser.error(
             "real LeRobot+LeWorldModel flow requires --policy-path or LEROBOT_POLICY_PATH."
