@@ -333,21 +333,24 @@ uv run --python 3.10 \
   --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
   --with "datasets>=2.21" \
   --with "lerobot" \
+  --with "textual>=8.2,<9" \
   --with "pygame" \
   --with "opencv-python" \
   --with "pymunk" \
   --with "gymnasium" \
   --with "shapely" \
-  worldforge-robotics-showcase
+  worldforge-robotics-showcase --tui
 ```
 
 This showcase runs real LeRobot policy inference and real LeWorldModel checkpoint scoring through
 `World.plan(policy_provider="lerobot", score_provider="leworldmodel")`. The default path uses the
 PushT diffusion policy (`lerobot/diffusion_pusht`), the `~/.stable-wm/pusht/lewm_object.ckpt`
 LeWorldModel object checkpoint, a packaged PushT observation builder, and a packaged action-candidate
-bridge. It prints a visual seven-step pipeline, text pipeline diagram, tensor shapes, runtime bars,
-score summary, ranked candidate costs, candidate target table, tabletop replay map, provider events,
-mock-world execution, and writes `/tmp/worldforge-robotics-showcase/real-run.json`.
+bridge. By default, `scripts/robotics-showcase` runs inference quietly and opens a Textual visual
+report with pipeline stages, runtime bars, tensor metrics, candidate costs, provider events, and a
+fixed tabletop replay map. It writes `/tmp/worldforge-robotics-showcase/real-run.json`; pass
+`--no-tui` for the plain terminal report, `--json-only` for automation, or `--health-only` for a
+dependency preflight.
 
 Use the lower-level configurable runner when you bring a different embodiment or task bridge:
 

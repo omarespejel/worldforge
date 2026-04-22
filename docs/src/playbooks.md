@@ -331,11 +331,12 @@ scripts/robotics-showcase
 ```
 
 The showcase wrapper installs the host-owned optional runtime set for this process, runs the
-packaged PushT bridge, prints a visual seven-step pipeline with a text diagram, runtime bars, score
-summary, candidate table, and tabletop replay map, then writes the full JSON summary under
-`/tmp/worldforge-robotics-showcase/real-run.json`. It filters common macOS native-library duplicate
-class warnings from the user-facing output; set `WORLDFORGE_SHOW_RUNTIME_WARNINGS=1` to see raw
-third-party stderr.
+packaged PushT bridge, opens a Textual visual report with the policy-to-score pipeline, runtime
+bars, tensor metrics, candidate ranking, provider events, and tabletop replay map, then writes the
+full JSON summary under `/tmp/worldforge-robotics-showcase/real-run.json`. Pass `--no-tui` for the
+plain terminal report, `--json-only` for automation, or `--health-only` for a dependency preflight.
+It filters common macOS native-library duplicate class warnings from the user-facing output; set
+`WORLDFORGE_SHOW_RUNTIME_WARNINGS=1` to see raw third-party stderr.
 
 Use the lower-level runner when replacing the task observation, score tensors, translator, or
 candidate bridge:
@@ -362,12 +363,13 @@ uv run --python 3.10 \
   --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
   --with "datasets>=2.21" \
   --with "lerobot" \
+  --with "textual>=8.2,<9" \
   --with "pygame" \
   --with "opencv-python" \
   --with "pymunk" \
   --with "gymnasium" \
   --with "shapely" \
-  worldforge-robotics-showcase
+  worldforge-robotics-showcase --tui
 ```
 
 Equivalent explicit `uv` command for the lower-level runner:

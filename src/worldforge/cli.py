@@ -134,7 +134,8 @@ EXAMPLE_COMMANDS: tuple[dict[str, str], ...] = (
         "command": "scripts/robotics-showcase",
         "description": (
             "Compose real LeRobot policy inference with real LeWorldModel checkpoint scoring "
-            "through a packaged PushT bridge and WorldForge policy-plus-score planning."
+            "through a packaged PushT bridge and WorldForge policy-plus-score planning; opens "
+            "a Textual visual report by default."
         ),
     },
 )

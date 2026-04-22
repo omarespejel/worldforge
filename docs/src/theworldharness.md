@@ -7,6 +7,12 @@ execution, persistence, diagnostics, benchmarks, and event inspection fit togeth
 It is a local tool. It does not require optional ML runtimes unless a selected flow explicitly
 does, and the current flows use deterministic checkout-safe paths.
 
+The real robotics showcase also uses the Textual surface, but it is launched through
+`scripts/robotics-showcase` rather than the checkout-safe harness flow. That command runs the real
+LeRobot policy plus real LeWorldModel checkpoint path first, then opens a standalone report with the
+pipeline, runtime metrics, candidate cost landscape, provider events, and tabletop replay. Pass
+`--no-tui` to keep the plain terminal report.
+
 ## Install Boundary
 
 Textual is optional. The base package keeps `httpx` as its only runtime dependency.

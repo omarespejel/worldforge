@@ -40,6 +40,9 @@ releases may still include breaking changes when the public API needs to tighten
   it, plus chord bindings `g h` / `g r` for jump-to-Home and jump-to-Run-Inspector.
 - Updated the `Header` breadcrumb to reflect the active screen, deepening to the selected flow
   on the Run Inspector (`worldforge › run-inspector › <flow>`).
+- Added a standalone Textual report for `scripts/robotics-showcase` that renders the real
+  LeRobot-plus-LeWorldModel run as a pipeline trace with metric bars, candidate ranking, provider
+  events, and a fixed tabletop replay.
 
 ### Added
 
@@ -55,6 +58,9 @@ releases may still include breaking changes when the public API needs to tighten
 - Expanded the real robotics showcase output with an ASCII pipeline map, runtime bars, score
   summary, candidate target table, and tabletop replay diagram while keeping the machine-readable
   JSON path available.
+- Made `scripts/robotics-showcase` launch the Textual visual report by default while preserving
+  `--no-tui`, `--json-only`, and `--health-only` for plain terminal, automation, and preflight
+  runs.
 - Added the `worldforge world` CLI command group for local JSON persistence workflows, including
   create, list, show, history, export, import, and fork commands backed by the existing validated
   `WorldForge` persistence API.

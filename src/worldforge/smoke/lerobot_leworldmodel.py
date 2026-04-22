@@ -704,39 +704,50 @@ def _print_tabletop_replay(
 ) -> None:
     if not targets:
         return
-    width = 25
-    height = 11
-    grid = [[" " for _column in range(width)] for _row in range(height)]
+    width = 42
+    height = 13
+    cells: dict[tuple[int, int], set[str]] = {}
 
     def place(x: float, y: float, marker: str) -> None:
         column = max(0, min(width - 1, round(x * (width - 1))))
         row = max(0, min(height - 1, round((1.0 - y) * (height - 1))))
-        existing = grid[row][column]
-        grid[row][column] = marker if existing == " " else "*"
+        cells.setdefault((row, column), set()).add(marker)
 
     place(0.0, 0.5, "S")
     place(0.5, 0.5, "G")
+    best_index = score_result.get("best_index")
     for target in targets:
-        place(float(target["x"]), float(target["y"]), str(int(target["index"]) % 10))
+        index = int(target["index"])
+        marker = "T" if index == best_index else str(index % 10)
+        place(float(target["x"]), float(target["y"]), marker)
     final_position = _position_from_summary(execution_summary)
     if final_position is not None:
         place(final_position["x"], final_position["y"], "F")
 
     _section("Tabletop replay")
-    print("  legend: S=start, G=goal, 0-9=candidate, F=mock final, *=overlap")
-    best_index = score_result.get("best_index")
+    print("  legend: S=start, G=goal, T=selected target, F=mock final, X=selected+final")
     if isinstance(best_index, int):
         print(f"  selected candidate: #{best_index}")
-    print("  y=1.00 +" + "-" * width + "+")
-    for row_index, row in enumerate(grid):
-        label = "       |"
-        if row_index == height // 2:
-            label = "  y=0.50 |"
-        elif row_index == height - 1:
-            label = "  y=0.00 |"
-        print(f"{label}{''.join(row)}|")
-    print("         +" + "-" * width + "+")
-    print("          x=0.00       x=0.50       x=1.00")
+    print("  +" + "-" * width + "+")
+    for row in range(height):
+        chars: list[str] = []
+        for column in range(width):
+            markers = cells.get((row, column), set())
+            if not markers:
+                chars.append(" ")
+            elif "F" in markers and "T" in markers:
+                chars.append("X")
+            elif "F" in markers:
+                chars.append("F")
+            elif "T" in markers:
+                chars.append("T")
+            elif len(markers) > 1:
+                chars.append("*")
+            else:
+                chars.append(next(iter(markers)))
+        print(f"  |{''.join(chars)}|")
+    print("  +" + "-" * width + "+")
+    print("  x=0.00             x=0.50             x=1.00")
 
 
 def _runtime_command(*, checkpoint: Path, policy_path: str, device: str) -> str:

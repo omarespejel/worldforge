@@ -71,7 +71,9 @@ It runs real checkpoint scoring over deterministic synthetic PushT-shaped tensor
 visual pipeline, tensor shapes, latency metrics, provider events, and ranked candidate costs.
 
 The real robotics showcase composes LeRobot and LeWorldModel through WorldForge policy-plus-score
-planning with a packaged PushT bridge:
+planning with a packaged PushT bridge. The wrapper opens a Textual report by default and writes the
+same run summary to `/tmp/worldforge-robotics-showcase/real-run.json`; use `--no-tui` for the plain
+terminal report.
 
 ```bash
 scripts/robotics-showcase

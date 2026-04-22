@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
+import json
 import os
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 from . import lerobot_leworldmodel
 from .lerobot_leworldmodel import (
@@ -97,6 +101,17 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--json-only", action="store_true")
     parser.add_argument(
+        "--tui",
+        action="store_true",
+        help="Run inference quietly, then open a Textual visual report.",
+    )
+    parser.add_argument(
+        "--no-tui",
+        action="store_false",
+        dest="tui",
+        help="Force the plain terminal report.",
+    )
+    parser.add_argument(
         "--color",
         choices=("auto", "always", "never"),
         default="auto",
@@ -163,11 +178,42 @@ def _forward_args(args: argparse.Namespace) -> list[str]:
     return forwarded
 
 
+def _run_tui_report(forwarded: list[str], *, summary_path: Path | None) -> int:
+    captured = io.StringIO()
+    json_forwarded = list(forwarded)
+    if "--json-only" not in json_forwarded:
+        json_forwarded.append("--json-only")
+    with contextlib.redirect_stdout(captured):
+        exit_code = lerobot_leworldmodel.main(json_forwarded)
+    output = captured.getvalue()
+    if exit_code != 0:
+        print(output, end="")
+        return exit_code
+    try:
+        summary = json.loads(output)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"robotics showcase TUI could not parse run summary JSON: {exc}") from exc
+    if not isinstance(summary, dict):
+        raise SystemExit("robotics showcase TUI expected the run summary to be a JSON object.")
+    return _launch_tui(summary, summary_path=summary_path)
+
+
+def _launch_tui(summary: dict[str, Any], *, summary_path: Path | None) -> int:
+    from worldforge.harness.cli import launch_robotics_showcase_report
+
+    return launch_robotics_showcase_report(summary=summary, summary_path=summary_path)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args, extra = parser.parse_known_args(argv)
     forwarded = _forward_args(args)
     forwarded.extend(extra)
+    if args.tui and not args.json_only and not args.health_only:
+        return _run_tui_report(
+            forwarded,
+            summary_path=None if args.no_json_output else args.json_output,
+        )
     return lerobot_leworldmodel.main(forwarded)
 
 

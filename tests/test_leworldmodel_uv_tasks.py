@@ -43,12 +43,16 @@ def test_leworldmodel_uv_commands_are_packaged_console_scripts() -> None:
     showcase_task_text = showcase_task.read_text()
     assert "stable-worldmodel[train]" in showcase_task_text
     assert "stable-worldmodel[env]" not in showcase_task_text
+    assert '"textual>=8.2,<9"' in showcase_task_text
     assert '"pygame"' in showcase_task_text
     assert '"opencv-python"' in showcase_task_text
     assert '"pymunk"' in showcase_task_text
     assert '"gymnasium"' in showcase_task_text
     assert '"shapely"' in showcase_task_text
-    assert 'worldforge-robotics-showcase "$@"' in showcase_task_text
+    assert "showcase_args=(--tui" in showcase_task_text
+    assert 'runtime_args+=(--with "textual>=8.2,<9")' in showcase_task_text
+    assert "--no-tui" in showcase_task_text
+    assert 'worldforge-robotics-showcase "${showcase_args[@]}"' in showcase_task_text
 
 
 def test_leworldmodel_console_script_targets_are_importable() -> None:

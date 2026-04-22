@@ -54,6 +54,70 @@ def test_harness_theme_toggle_cycles_between_registered_themes(tmp_path) -> None
     asyncio.run(scenario())
 
 
+def test_robotics_showcase_app_renders_visual_report(tmp_path) -> None:
+    pytest.importorskip("textual")
+
+    from worldforge.harness.tui import (
+        RoboticsCandidatePane,
+        RoboticsEventPane,
+        RoboticsShowcaseApp,
+        RoboticsTabletopPane,
+    )
+
+    summary = {
+        "checkpoint_display": "~/.stable-wm/pusht/lewm_object.ckpt",
+        "inputs": {
+            "policy_path": "lerobot/diffusion_pusht",
+            "approx_float32_mb": 3.446,
+            "total_tensor_elements": 903318,
+        },
+        "score_result": {
+            "best_index": 2,
+            "best_score": 9.331253051757812,
+            "scores": [17.086671829223633, 12.75649642944336, 9.331253051757812],
+        },
+        "execution": {
+            "final_block_position": {"x": 0.375, "y": 0.375, "z": 0.0},
+        },
+        "provider_events": [
+            {
+                "provider": "lerobot",
+                "operation": "policy",
+                "phase": "success",
+                "duration_ms": 5211.61,
+            },
+            {
+                "provider": "leworldmodel",
+                "operation": "score",
+                "phase": "success",
+                "duration_ms": 67.77,
+            },
+        ],
+        "visualization": {
+            "selected_candidate": 2,
+            "candidate_targets": [
+                {"index": 0, "x": 0.75, "y": 0.75, "z": 0.0},
+                {"index": 1, "x": 0.625, "y": 0.625, "z": 0.0},
+                {"index": 2, "x": 0.375, "y": 0.375, "z": 0.0},
+            ],
+        },
+        "metrics": {"plan_latency_ms": 5279.53, "total_latency_ms": 9597.51},
+    }
+
+    async def scenario() -> None:
+        app = RoboticsShowcaseApp(summary=summary, summary_path=tmp_path / "summary.json")
+        async with app.run_test(size=(150, 48)) as pilot:
+            await pilot.pause()
+            assert app.query_one(RoboticsCandidatePane) is not None
+            assert app.query_one(RoboticsTabletopPane) is not None
+            assert app.query_one(RoboticsEventPane) is not None
+            await pilot.press("ctrl+t")
+            await pilot.pause()
+            assert app.theme == "worldforge-light"
+
+    asyncio.run(scenario())
+
+
 def test_harness_breadcrumb_reflects_selected_flow(tmp_path) -> None:
     pytest.importorskip("textual")
 

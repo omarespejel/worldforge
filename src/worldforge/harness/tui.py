@@ -11,6 +11,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any, Literal
 
+from rich import box
 from rich.align import Align
 from rich.console import Group, RenderableType
 from rich.panel import Panel
@@ -21,7 +22,7 @@ from textual.app import App, ComposeResult, SystemCommand
 from textual.binding import Binding
 from textual.command import DiscoveryHit, Hit
 from textual.command import Provider as CommandProvider
-from textual.containers import Container, Horizontal, Vertical
+from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.message import Message
 from textual.reactive import reactive
@@ -3041,6 +3042,460 @@ class BenchmarkScreen(Screen):  # pragma: no cover - exercised by Pilot tests.
         log = _maybe_query(self, "#benchmark-log", RichLog)
         if log is not None:
             log.write(Text(str(event.error), style="bold red"))
+
+
+# ---------------------------------------------------------------------------
+# Real Robotics Showcase Report
+# ---------------------------------------------------------------------------
+
+
+def _robotics_number(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    number = float(value)
+    if number != number or number in (float("inf"), float("-inf")):
+        return None
+    return number
+
+
+def _robotics_nested(payload: dict[str, object], *keys: str) -> object:
+    current: object = payload
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def _robotics_candidate_targets(payload: dict[str, object]) -> list[dict[str, object]]:
+    value = _robotics_nested(payload, "visualization", "candidate_targets")
+    return [dict(item) for item in value] if isinstance(value, list) else []
+
+
+def _robotics_scores(payload: dict[str, object]) -> list[float]:
+    value = _robotics_nested(payload, "score_result", "scores")
+    if not isinstance(value, list):
+        return []
+    scores: list[float] = []
+    for item in value:
+        number = _robotics_number(item)
+        if number is not None:
+            scores.append(number)
+    return scores
+
+
+def _robotics_selected_index(payload: dict[str, object]) -> int | None:
+    value = _robotics_nested(payload, "score_result", "best_index")
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _robotics_event_duration(
+    payload: dict[str, object],
+    *,
+    provider: str,
+    operation: str,
+) -> float | None:
+    events = payload.get("provider_events")
+    if not isinstance(events, list):
+        return None
+    for event in reversed(events):
+        if not isinstance(event, dict):
+            continue
+        if event.get("provider") == provider and event.get("operation") == operation:
+            return _robotics_number(event.get("duration_ms"))
+    return None
+
+
+def _robotics_final_position(payload: dict[str, object]) -> dict[str, float] | None:
+    position = _robotics_nested(payload, "execution", "final_block_position")
+    if not isinstance(position, dict):
+        return None
+    x = _robotics_number(position.get("x"))
+    y = _robotics_number(position.get("y"))
+    z = _robotics_number(position.get("z"))
+    if x is None or y is None or z is None:
+        return None
+    return {"x": x, "y": y, "z": z}
+
+
+def _robotics_color(token: str) -> str:
+    return {
+        "accent": "cyan",
+        "success": "green",
+        "warning": "yellow",
+        "muted": "bright_black",
+        "panel": "blue",
+    }.get(token, "white")
+
+
+class RoboticsHeroPane(Static, _ThemedRenderer):
+    """Top-level real robotics showcase identity and run contract."""
+
+    def __init__(self, summary: dict[str, object], summary_path: Path | None) -> None:
+        super().__init__()
+        self.summary = summary
+        self.summary_path = summary_path
+
+    def on_mount(self) -> None:
+        policy_path = _robotics_nested(self.summary, "inputs", "policy_path") or "unknown"
+        checkpoint = self.summary.get("checkpoint_display") or self.summary.get("checkpoint")
+        selected = _robotics_selected_index(self.summary)
+        best_score = _robotics_nested(self.summary, "score_result", "best_score")
+        score_text = (
+            f"{float(best_score):.6f}" if _robotics_number(best_score) is not None else "n/a"
+        )
+        artifact = str(self.summary_path or self.summary.get("checkpoint_display") or "summary")
+        title = Text("WorldForge Robotics Showcase", style=f"bold {_robotics_color('accent')}")
+        subtitle = Text("real LeRobot policy + real LeWorldModel checkpoint scoring", style="dim")
+        contract = Text()
+        contract.append("REAL policy", style=f"bold {_robotics_color('success')}")
+        contract.append("  +  ")
+        contract.append("REAL score", style=f"bold {_robotics_color('success')}")
+        contract.append("  +  ")
+        contract.append("LOCAL mock replay", style=f"bold {_robotics_color('warning')}")
+        body = Table.grid(expand=True)
+        body.add_column(ratio=1)
+        body.add_column(justify="right", ratio=1)
+        body.add_row(Text("policy", style="dim"), Text(str(policy_path), style="bold"))
+        body.add_row(Text("checkpoint", style="dim"), Text(str(checkpoint), style="bold"))
+        body.add_row(
+            Text("selected candidate", style="dim"),
+            Text(f"#{selected} / score {score_text}", style=f"bold {_robotics_color('success')}"),
+        )
+        body.add_row(Text("artifact", style="dim"), Text(artifact, style=_robotics_color("muted")))
+        self.update(
+            Panel(
+                Group(title, subtitle, Text(""), contract, Text(""), body),
+                title="REAL ROBOTICS POLICY + WORLD MODEL",
+                border_style=_robotics_color("accent"),
+            )
+        )
+
+
+class RoboticsPipelinePane(Static, _ThemedRenderer):
+    """Visual pipeline graph for the real policy+score run."""
+
+    def __init__(self, summary: dict[str, object]) -> None:
+        super().__init__()
+        self.summary = summary
+
+    def on_mount(self) -> None:
+        accent = _robotics_color("accent")
+        success = _robotics_color("success")
+        warning = _robotics_color("warning")
+        rows = [
+            ("1", "PushT observation", "packaged host-preprocessed task state", success),
+            ("2", "LeRobot policy", "select_action from lerobot/diffusion_pusht", accent),
+            ("3", "Candidate bridge", "3 checkpoint-native action tensors", accent),
+            ("4", "LeWorldModel cost", "lower cost wins", success),
+            ("5", "WorldForge planner", "policy+score candidate selection", accent),
+            ("6", "Mock replay", "local execution only, no hardware control", warning),
+        ]
+        table = Table.grid(expand=True, padding=(0, 2))
+        table.add_column(justify="right", no_wrap=True)
+        table.add_column(no_wrap=True)
+        table.add_column(ratio=2)
+        for index, label, detail, color in rows:
+            table.add_row(
+                Text(f"{index}.", style=f"bold {color}"), Text(label, style="bold"), detail
+            )
+            if index != rows[-1][0]:
+                table.add_row("", Text("|", style=color), Text("v", style=color))
+        self.update(Panel(table, title="Pipeline Flow", border_style=accent))
+
+
+class RoboticsMetricsPane(Static, _ThemedRenderer):
+    """Runtime bars and tensor contract summary."""
+
+    def __init__(self, summary: dict[str, object]) -> None:
+        super().__init__()
+        self.summary = summary
+
+    @staticmethod
+    def _bar(value: float, maximum: float, *, width: int = 18) -> str:
+        fill = 0 if maximum <= 0 else max(1, min(width, round((value / maximum) * width)))
+        return f"{'#' * fill:<{width}}"
+
+    def on_mount(self) -> None:
+        policy_ms = _robotics_event_duration(self.summary, provider="lerobot", operation="policy")
+        score_ms = _robotics_event_duration(
+            self.summary, provider="leworldmodel", operation="score"
+        )
+        plan_ms = _robotics_number(_robotics_nested(self.summary, "metrics", "plan_latency_ms"))
+        total_ms = _robotics_number(_robotics_nested(self.summary, "metrics", "total_latency_ms"))
+        rows = [
+            ("policy", policy_ms, _robotics_color("accent")),
+            ("score", score_ms, _robotics_color("success")),
+            ("plan", plan_ms, _robotics_color("accent")),
+            ("total", total_ms, _robotics_color("warning")),
+        ]
+        maximum = max((value or 0.0) for _label, value, _color in rows)
+        table = Table.grid(expand=True, padding=(0, 2))
+        table.add_column(no_wrap=True)
+        table.add_column(justify="right", no_wrap=True)
+        table.add_column(ratio=1)
+        for label, value, color in rows:
+            if value is None:
+                table.add_row(label, "n/a", "")
+                continue
+            table.add_row(
+                Text(label, style="dim"),
+                Text(f"{value:.2f} ms", style=f"bold {color}"),
+                Text(self._bar(value, maximum), style=color),
+            )
+        tensor_mb = _robotics_nested(self.summary, "inputs", "approx_float32_mb")
+        total_elements = _robotics_nested(self.summary, "inputs", "total_tensor_elements")
+        table.add_row("", "", "")
+        table.add_row(Text("tensor MB", style="dim"), Text(str(tensor_mb), style="bold"), "")
+        table.add_row(Text("elements", style="dim"), Text(str(total_elements), style="bold"), "")
+        self.update(
+            Panel(table, title="Runtime + Tensor Contract", border_style=_robotics_color("accent"))
+        )
+
+
+class RoboticsCandidatePane(Static, _ThemedRenderer):
+    """Candidate scores, targets, and selection status."""
+
+    def __init__(self, summary: dict[str, object]) -> None:
+        super().__init__()
+        self.summary = summary
+
+    def on_mount(self) -> None:
+        targets = _robotics_candidate_targets(self.summary)
+        scores = _robotics_scores(self.summary)
+        selected = _robotics_selected_index(self.summary)
+        table = Table(
+            expand=True,
+            show_header=True,
+            header_style=f"bold {_robotics_color('accent')}",
+            box=box.SIMPLE_HEAVY,
+        )
+        table.add_column("candidate", justify="right", no_wrap=True)
+        table.add_column("target", no_wrap=True)
+        table.add_column("cost", justify="right", no_wrap=True)
+        table.add_column("status", no_wrap=True)
+        for target in targets:
+            index = int(target.get("index", -1))
+            score = scores[index] if 0 <= index < len(scores) else None
+            x = _robotics_number(target.get("x")) or 0.0
+            y = _robotics_number(target.get("y")) or 0.0
+            z = _robotics_number(target.get("z")) or 0.0
+            status = "SELECTED" if index == selected else ""
+            style = f"bold {_robotics_color('success')}" if index == selected else ""
+            table.add_row(
+                f"#{index}",
+                f"x={x:.3f} y={y:.3f} z={z:.3f}",
+                "n/a" if score is None else f"{score:.6f}",
+                Text(status, style=style),
+                style=style,
+            )
+        self.update(
+            Panel(table, title="Candidate Ranking", border_style=_robotics_color("success"))
+        )
+
+
+class RoboticsTabletopPane(Static, _ThemedRenderer):
+    """Compact tabletop map with stable marker semantics."""
+
+    def __init__(self, summary: dict[str, object]) -> None:
+        super().__init__()
+        self.summary = summary
+
+    def _map_lines(self) -> list[str]:
+        targets = _robotics_candidate_targets(self.summary)
+        selected = _robotics_selected_index(self.summary)
+        final_position = _robotics_final_position(self.summary)
+        width = 36
+        height = 9
+        cells: dict[tuple[int, int], set[str]] = {}
+
+        def place(x: float, y: float, marker: str) -> None:
+            column = max(0, min(width - 1, round(x * (width - 1))))
+            row = max(0, min(height - 1, round((1.0 - y) * (height - 1))))
+            cells.setdefault((row, column), set()).add(marker)
+
+        place(0.0, 0.5, "S")
+        place(0.5, 0.5, "G")
+        for target in targets:
+            index = int(target.get("index", -1))
+            x = _robotics_number(target.get("x"))
+            y = _robotics_number(target.get("y"))
+            if x is None or y is None:
+                continue
+            marker = "T" if index == selected else str(index % 10)
+            place(x, y, marker)
+        if final_position is not None:
+            place(final_position["x"], final_position["y"], "F")
+
+        lines = ["+" + "-" * width + "+"]
+        for row in range(height):
+            characters: list[str] = []
+            for column in range(width):
+                markers = cells.get((row, column), set())
+                if not markers:
+                    characters.append(" ")
+                elif "F" in markers and "T" in markers:
+                    characters.append("X")
+                elif "F" in markers:
+                    characters.append("F")
+                elif "T" in markers:
+                    characters.append("T")
+                elif len(markers) > 1:
+                    characters.append("*")
+                else:
+                    characters.append(next(iter(markers)))
+            lines.append("|" + "".join(characters) + "|")
+        lines.append("+" + "-" * width + "+")
+        lines.append("x=0.00             x=0.50             x=1.00")
+        return lines
+
+    def on_mount(self) -> None:
+        legend = Text("S start  G goal  T selected target  F final  X selected+final", style="dim")
+        selected = _robotics_selected_index(self.summary)
+        map_text = Text("\n".join(self._map_lines()), style=f"bold {_robotics_color('success')}")
+        subtitle = Text(
+            f"selected candidate: #{selected}", style=f"bold {_robotics_color('success')}"
+        )
+        self.update(
+            Panel(
+                Group(subtitle, legend, map_text),
+                title="Tabletop Replay",
+                border_style=_robotics_color("warning"),
+            )
+        )
+
+
+class RoboticsEventPane(Static, _ThemedRenderer):
+    """Provider events emitted by the completed real run."""
+
+    def __init__(self, summary: dict[str, object]) -> None:
+        super().__init__()
+        self.summary = summary
+
+    def on_mount(self) -> None:
+        events = self.summary.get("provider_events")
+        table = Table(
+            expand=True, show_header=True, header_style=f"bold {_robotics_color('accent')}"
+        )
+        table.add_column("provider")
+        table.add_column("operation")
+        table.add_column("phase")
+        table.add_column("duration", justify="right")
+        if isinstance(events, list):
+            for event in events:
+                if not isinstance(event, dict):
+                    continue
+                duration = _robotics_number(event.get("duration_ms"))
+                table.add_row(
+                    str(event.get("provider")),
+                    str(event.get("operation")),
+                    str(event.get("phase")),
+                    "n/a" if duration is None else f"{duration:.2f} ms",
+                )
+        self.update(Panel(table, title="Provider Event Log", border_style=_robotics_color("panel")))
+
+
+class RoboticsShowcaseApp(App[None]):
+    """Standalone Textual report for the real robotics showcase."""
+
+    TITLE = "WorldForge Robotics Showcase"
+    SUB_TITLE = "Real LeRobot policy + LeWorldModel scoring"
+    BINDINGS = [
+        Binding("q", "quit", "Quit", show=True),
+        Binding("ctrl+t", "toggle_theme", "Theme", show=True),
+    ]
+    CSS = """
+    Header {
+        background: $surface;
+        color: $foreground;
+    }
+
+    Footer {
+        background: $surface;
+        color: $foreground;
+    }
+
+    #robotics-body {
+        height: 1fr;
+        padding: 1 2;
+        background: $surface;
+    }
+
+    RoboticsHeroPane {
+        height: 10;
+        margin-bottom: 1;
+    }
+
+    #robotics-main {
+        height: 12;
+        margin-bottom: 1;
+    }
+
+    RoboticsPipelinePane {
+        width: 2fr;
+        margin-right: 1;
+    }
+
+    RoboticsMetricsPane {
+        width: 1fr;
+    }
+
+    #robotics-bottom {
+        height: 16;
+        margin-bottom: 1;
+    }
+
+    RoboticsCandidatePane {
+        width: 1fr;
+        margin-right: 1;
+    }
+
+    RoboticsTabletopPane {
+        width: 1fr;
+    }
+
+    RoboticsEventPane {
+        height: 8;
+    }
+    """
+
+    def __init__(self, *, summary: dict[str, object], summary_path: Path | None = None) -> None:
+        super().__init__()
+        self.summary = summary
+        self.summary_path = summary_path
+        self.register_theme(_build_theme(THEME_NAME_DARK, WORLDFORGE_DARK_PALETTE, dark=True))
+        self.register_theme(_build_theme(THEME_NAME_LIGHT, WORLDFORGE_LIGHT_PALETTE, dark=False))
+        self.register_theme(
+            _build_theme(
+                THEME_NAME_HIGH_CONTRAST,
+                WORLDFORGE_HIGH_CONTRAST_PALETTE,
+                dark=True,
+            )
+        )
+        self.theme = THEME_NAME_DARK
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with VerticalScroll(id="robotics-body"):
+            yield RoboticsHeroPane(self.summary, self.summary_path)
+            with Horizontal(id="robotics-main"):
+                yield RoboticsPipelinePane(self.summary)
+                yield RoboticsMetricsPane(self.summary)
+            with Horizontal(id="robotics-bottom"):
+                yield RoboticsCandidatePane(self.summary)
+                yield RoboticsTabletopPane(self.summary)
+            yield RoboticsEventPane(self.summary)
+        yield Footer()
+
+    def action_toggle_theme(self) -> None:
+        order = (THEME_NAME_DARK, THEME_NAME_LIGHT, THEME_NAME_HIGH_CONTRAST)
+        try:
+            index = order.index(self.theme)
+        except ValueError:
+            index = 0
+        self.theme = order[(index + 1) % len(order)]
 
 
 # ---------------------------------------------------------------------------

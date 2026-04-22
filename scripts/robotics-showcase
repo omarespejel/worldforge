@@ -17,29 +17,53 @@ filter_runtime_warnings() {
   '
 }
 
+should_launch_tui() {
+  for arg in "$@"; do
+    case "$arg" in
+      --help|-h|--json-only|--health-only|--no-tui)
+        return 1
+        ;;
+    esac
+  done
+  return 0
+}
+
+has_tui_arg() {
+  for arg in "$@"; do
+    case "$arg" in
+      --tui)
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
 cd "$repo_root"
 export PYGAME_HIDE_SUPPORT_PROMPT="${PYGAME_HIDE_SUPPORT_PROMPT:-1}"
 
-if [[ "${WORLDFORGE_SHOW_RUNTIME_WARNINGS:-}" == "1" ]]; then
-  exec uv run --python 3.10 \
-    --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
-    --with "datasets>=2.21" \
-    --with "lerobot" \
-    --with "pygame" \
-    --with "opencv-python" \
-    --with "pymunk" \
-    --with "gymnasium" \
-    --with "shapely" \
-    worldforge-robotics-showcase "$@"
+showcase_args=("$@")
+runtime_args=(
+  --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git"
+  --with "datasets>=2.21"
+  --with "lerobot"
+  --with "pygame"
+  --with "opencv-python"
+  --with "pymunk"
+  --with "gymnasium"
+  --with "shapely"
+)
+
+if should_launch_tui "$@"; then
+  runtime_args+=(--with "textual>=8.2,<9")
+  if ! has_tui_arg "$@"; then
+    showcase_args=(--tui "$@")
+  fi
 fi
 
-exec uv run --python 3.10 \
-  --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
-  --with "datasets>=2.21" \
-  --with "lerobot" \
-  --with "pygame" \
-  --with "opencv-python" \
-  --with "pymunk" \
-  --with "gymnasium" \
-  --with "shapely" \
-  worldforge-robotics-showcase "$@" 2> >(filter_runtime_warnings >&2)
+if [[ "${WORLDFORGE_SHOW_RUNTIME_WARNINGS:-}" == "1" ]]; then
+  exec uv run --python 3.10 "${runtime_args[@]}" worldforge-robotics-showcase "${showcase_args[@]}"
+fi
+
+exec uv run --python 3.10 "${runtime_args[@]}" worldforge-robotics-showcase "${showcase_args[@]}" \
+  2> >(filter_runtime_warnings >&2)

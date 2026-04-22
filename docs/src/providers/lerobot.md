@@ -197,10 +197,11 @@ scripts/robotics-showcase
 This is the real-checkpoint counterpart to `worldforge-demo-lerobot` for a PushT-style robotics
 builder story. LeRobot proposes action candidates, the packaged PushT bridge converts those
 candidates into LeWorldModel-native candidate tensors, LeWorldModel ranks them by cost, and
-WorldForge selects a plan through `World.plan(..., planning_mode="policy+score")`. The visible
-WorldForge actions and mock execution are for replay/reporting. Hardware control, safety checks,
-and robot-controller integration remain host-owned. Use `scripts/lewm-lerobot-real --help` when
-bringing a different observation source, translator, or candidate bridge.
+WorldForge selects a plan through `World.plan(..., planning_mode="policy+score")`. The wrapper opens
+a Textual report by default; pass `--no-tui` for the plain terminal report. The visible WorldForge
+actions and mock execution are for replay/reporting. Hardware control, safety checks, and
+robot-controller integration remain host-owned. Use `scripts/lewm-lerobot-real --help` when bringing
+a different observation source, translator, or candidate bridge.
 
 ## Failure Modes
 

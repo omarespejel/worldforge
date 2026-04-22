@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -143,6 +144,58 @@ class FakeTorch:
         return FakeTensor([value.tolist() for value in values])
 
 
+def _showcase_summary() -> dict[str, Any]:
+    return {
+        "mode": "real_lerobot_policy_plus_real_leworldmodel_score",
+        "checkpoint_display": "~/.stable-wm/pusht/lewm_object.ckpt",
+        "health": {
+            "lerobot": {"healthy": True},
+            "leworldmodel": {"healthy": True},
+        },
+        "inputs": {
+            "policy_path": "lerobot/diffusion_pusht",
+            "approx_float32_mb": 3.446,
+            "total_tensor_elements": 903318,
+        },
+        "score_result": {
+            "best_index": 2,
+            "best_score": 9.331253051757812,
+            "scores": [17.086671829223633, 12.75649642944336, 9.331253051757812],
+        },
+        "execution": {
+            "actions_applied": 1,
+            "final_step": 1,
+            "final_block_position": {"x": 0.375, "y": 0.375, "z": 0.0},
+        },
+        "provider_events": [
+            {
+                "provider": "lerobot",
+                "operation": "policy",
+                "phase": "success",
+                "duration_ms": 5211.61,
+            },
+            {
+                "provider": "leworldmodel",
+                "operation": "score",
+                "phase": "success",
+                "duration_ms": 67.77,
+            },
+        ],
+        "visualization": {
+            "selected_candidate": 2,
+            "candidate_targets": [
+                {"index": 0, "x": 0.75, "y": 0.75, "z": 0.0},
+                {"index": 1, "x": 0.625, "y": 0.625, "z": 0.0},
+                {"index": 2, "x": 0.375, "y": 0.375, "z": 0.0},
+            ],
+        },
+        "metrics": {
+            "plan_latency_ms": 5279.53,
+            "total_latency_ms": 9597.51,
+        },
+    }
+
+
 def test_robotics_showcase_forwards_packaged_pusht_defaults(
     monkeypatch,
     tmp_path: Path,
@@ -228,3 +281,41 @@ def test_robotics_showcase_uses_tmp_json_output_by_default(monkeypatch) -> None:
     assert forwarded[forwarded.index("--json-output") + 1] == str(
         robotics_showcase.DEFAULT_JSON_OUTPUT
     )
+
+
+def test_robotics_showcase_tui_mode_captures_json_and_launches_report(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_low_level_main(argv: list[str]) -> int:
+        captured["argv"] = argv
+        print(json.dumps(_showcase_summary()))
+        return 0
+
+    def fake_launch(summary: dict[str, Any], *, summary_path: Path | None) -> int:
+        captured["summary"] = summary
+        captured["summary_path"] = summary_path
+        return 0
+
+    monkeypatch.setattr(robotics_showcase.lerobot_leworldmodel, "main", fake_low_level_main)
+    monkeypatch.setattr(robotics_showcase, "_launch_tui", fake_launch)
+
+    json_path = tmp_path / "summary.json"
+    assert (
+        robotics_showcase.main(
+            [
+                "--checkpoint",
+                "/tmp/pusht/lewm_object.ckpt",
+                "--json-output",
+                str(json_path),
+                "--tui",
+            ]
+        )
+        == 0
+    )
+
+    assert "--json-only" in captured["argv"]
+    assert captured["summary"]["score_result"]["best_index"] == 2
+    assert captured["summary_path"] == json_path
