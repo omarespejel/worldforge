@@ -133,7 +133,7 @@ Equivalent explicit `uv` command:
 
 ```bash
 uv run --python 3.10 \
-  --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
+  --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
   --with "datasets>=2.21" \
   lewm-real \
     --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt \
@@ -158,7 +158,7 @@ The smoke requires an extracted object checkpoint such as
 
 ```bash
 uv run --python 3.10 \
-  --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
+  --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
   --with "datasets>=2.21" \
   --with huggingface_hub \
   worldforge-build-leworldmodel-checkpoint \

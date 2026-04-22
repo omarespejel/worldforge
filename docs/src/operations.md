@@ -150,7 +150,7 @@ include those IDs in surrounding application logs.
 - For expired Runway artifact URLs, regenerate or persist downloaded outputs immediately after
   task completion.
 - For LeWorldModel failures, run `worldforge provider health leworldmodel`, verify
-  `stable-worldmodel[env]` and `torch` are installed in the host environment, then confirm the
+  `stable-worldmodel[train]` and `torch` are installed in the host environment, then confirm the
   configured policy exists under `$STABLEWM_HOME` or `LEWORLDMODEL_CACHE_DIR`.
 - To smoke-test a real LeWorldModel checkpoint, run the packaged uv command with upstream
   dependencies:
@@ -164,7 +164,7 @@ include those IDs in surrounding application logs.
   the same run data.
 - If you have Hugging Face LeWM `config.json` and `weights.pt` assets rather than an extracted
   `*_object.ckpt` archive, build the object checkpoint first with
-  `uv run --python 3.10 --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" --with huggingface_hub
+  `uv run --python 3.10 --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" --with huggingface_hub
   worldforge-build-leworldmodel-checkpoint --stablewm-home ~/.stable-wm --policy pusht/lewm`.
   The builder downloads assets to `~/.cache/worldforge/leworldmodel` by default and writes the
   object checkpoint under `$STABLEWM_HOME`.

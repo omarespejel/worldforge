@@ -62,7 +62,7 @@ evaluation harnesses, and testable prototypes.
 - `scripts/scaffold_provider.py`: safe scaffold generator for new provider adapter files,
   fixture placeholders, tests, and docs stubs.
 - `scripts/smoke_leworldmodel.py`: compatibility wrapper for
-  `uv run --python 3.10 --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" worldforge-smoke-leworldmodel`.
+  `uv run --python 3.10 --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" worldforge-smoke-leworldmodel`.
 - `scripts/smoke_gr00t_policy.py`: optional live GR00T PolicyClient smoke for host environments
   with Isaac-GR00T or a reachable policy server.
 - `scripts/smoke_lerobot_policy.py`: optional live LeRobot `PreTrainedPolicy` smoke for host
@@ -74,7 +74,7 @@ evaluation harnesses, and testable prototypes.
 - Packaging/build: `hatchling`, `uv`, `uv.lock`.
 - Runtime dependency: `httpx`.
 - Optional TheWorldHarness runtime: `textual`, supplied only by the `harness` extra.
-- Optional LeWorldModel runtime: `stable-worldmodel[env]` and `torch`, supplied by the host
+- Optional LeWorldModel runtime: `stable-worldmodel[train]` and `torch`, supplied by the host
   environment only when using `leworldmodel`.
 - Optional GR00T runtime: `gr00t.policy.server_client.PolicyClient`, CUDA/TensorRT/checkpoints,
   and robot-specific dependencies supplied by the host environment only when using `gr00t`.
@@ -244,7 +244,7 @@ rm -f "$tmp_req"
   LeRobot policy, observation builder, LeWorldModel score tensors, and candidate bridge. Do not
   pad, project, or otherwise reinterpret mismatched action spaces inside WorldForge.
 - `worldforge-smoke-leworldmodel` is an optional real-checkpoint smoke. Run it through
-  `uv run --python 3.10 --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" ...`;
+  `uv run --python 3.10 --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" ...`;
   do not add those dependencies to WorldForge's base package. The upstream default storage root is
   `~/.stable-wm`; object checkpoints must already be extracted there or supplied through
   `--cache-dir`.
