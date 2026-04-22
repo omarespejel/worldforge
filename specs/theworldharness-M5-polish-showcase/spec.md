@@ -16,7 +16,8 @@ The milestone tightens three loose ends that only become visible once the functi
 - Dynamic command palette `Provider` subclass (`textual.command.Provider`) yielding fuzzy-searchable items for: every world from `WorldForge.list_worlds`, every provider from `PROVIDER_CATALOG` plus injected providers, recent run JSON files under `.worldforge/reports/`. Selecting an item jumps to the right screen with the item pre-selected.
 - HomeScreen "Recent" section (roadmap §4.1): last 5 worlds touched (sorted by `last_touched` from the persistence API), last 5 runs (sorted by mtime under `.worldforge/reports/`).
 - Screenshot export matrix (roadmap §7): every main screen — `HomeScreen`, `WorldsScreen`, `ProvidersScreen`, `EvalScreen`, `BenchmarkScreen`, `RunInspectorScreen`, and diagnostics flow — exported at `100×30`, `120×40`, `160×50` through Textual's built-in SVG exporter.
-- README screenshot refresh: regenerate `docs/assets/img/theworldharness-tui-screenshot-1.png` (referenced from `README.md` line 30) from a deterministic, reproducible harness state.
+- README screenshot refresh: replace the old single front-door image with a 2x2 grid of named
+  `docs/assets/img/theworldharness-*.png` captures from reproducible harness states.
 - Polish pass on empty states (roadmap §2.4) and focus rings (roadmap §2.2) wherever the screenshot matrix surfaces a gap.
 
 ## Out of scope (explicit)
@@ -45,7 +46,9 @@ The milestone tightens three loose ends that only become visible once the functi
 - [ ] Palette query latency stays under 1 frame (16 ms) at 100 worlds + 50 providers + 50 reports on the test fixture; cached scanner output is invalidated on the relevant message events.
 - [ ] HomeScreen "Recent" section renders two sub-lists: last 5 worlds (by `last_touched` from the persistence API) and last 5 runs (by mtime under `.worldforge/reports/`). Each row maps to a single keystroke or click that opens the item.
 - [ ] Screenshot export matrix runs in CI at `100×30`, `120×40`, `160×50` for `HomeScreen`, `WorldsScreen`, `ProvidersScreen`, `EvalScreen`, `BenchmarkScreen`, `RunInspectorScreen`, and the diagnostics flow.
-- [ ] README screenshot is regenerated from a deterministic harness state. The exact command (or script) used to regenerate it is recorded in the spec or in a tracked script under `scripts/` so the next refresh is reproducible.
+- [ ] README screenshot grid is regenerated from deterministic harness states. The exact command
+      (or script) used to regenerate the primary capture is recorded in the spec or in a tracked
+      script under `scripts/` so the next refresh is reproducible.
 - [ ] No new runtime dependency added to the `harness` extra in `pyproject.toml`. Coverage gate at `--extra harness` stays at or above 90%.
 - [ ] No `httpx.post`, `requests.post`, socket write, or other network egress is introduced anywhere under `src/worldforge/harness/` for telemetry or analytics purposes.
 

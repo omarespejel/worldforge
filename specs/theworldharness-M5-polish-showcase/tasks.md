@@ -34,9 +34,9 @@ Each task is a single PR-sized unit. Order matters: a later task may assume an e
 - Tests: the screenshot export tests are the artefact; CI executes them under `uv run --extra harness pytest` without adding a new dev dependency.
 
 ## T6 — README screenshot regeneration script
-- Files: `scripts/regen-harness-screenshot.sh` (new); `docs/assets/img/theworldharness-tui-screenshot-1.png` (regenerated); `README.md` (only if the image filename changes — otherwise unchanged).
-- Change: add a tracked, deterministic regeneration script that launches `uv run --extra harness worldforge-harness` against a fixed fixture state-dir, navigates to a chosen showcase screen, and produces the PNG referenced from `README.md` line 30. Replace the existing PNG with the new capture.
-- Acceptance: maps to spec.md acceptance "README screenshot is regenerated from a deterministic harness state. The exact command (or script) used to regenerate it is recorded".
+- Files: `scripts/regen-harness-screenshot.sh` (new); `docs/assets/img/theworldharness-home-launchpad.png`; `docs/assets/img/theworldharness-run-inspector-score-planning.png`; `docs/assets/img/theworldharness-world-editor.png`; `docs/assets/img/theworldharness-provider-help-overlay.png`; `README.md`.
+- Change: add a tracked, deterministic regeneration script that launches `uv run --extra harness worldforge-harness` against a fixed fixture state-dir, navigates to a chosen showcase screen, and produces the primary run-inspector PNG. Replace the old single README image with a 2x2 grid of named captures.
+- Acceptance: maps to spec.md acceptance "README screenshot grid is regenerated from deterministic harness states. The exact command (or script) used to regenerate the primary capture is recorded".
 - Tests: smoke-only — running the script under CI is out of scope (binary capture in CI is brittle). The script's deterministic behaviour is verifiable manually; PR review confirms the image matches what `worldforge-harness` produces.
 
 ## T7 — Polish pass on empty states and focus rings
@@ -58,7 +58,7 @@ Each task is a single PR-sized unit. Order matters: a later task may assume an e
 - [ ] `uv run ruff check src tests examples scripts` and `uv run ruff format --check src tests examples scripts` are clean.
 - [ ] `bash scripts/test_package.sh` passes (no new file path missed by hatch include rules).
 - [ ] `tests/test_harness_snapshots.py` covers every main screen at the three showcase terminal sizes.
-- [ ] `README.md` line 30 image renders the regenerated screenshot.
+- [ ] `README.md` renders the regenerated 2x2 screenshot grid.
 - [ ] `docs/src/theworldharness.md` documents the three themes and the dynamic palette.
 - [ ] `CHANGELOG.md` carries a tool-neutral entry for the milestone.
 - [ ] `.codex/skills/tui-development/references/roadmap.md` §8 M5 is marked "done · {date}".

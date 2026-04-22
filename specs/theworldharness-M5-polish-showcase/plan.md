@@ -17,7 +17,7 @@
 - Add `RecentItems` widget (new) on `HomeScreen`, composed of two `Static` lists (recent worlds, recent runs) with row-level click and key activation. Reads through cached helpers; no direct disk access from the widget.
 - Register `worldforge-high-contrast` `Theme` (new) alongside the M0 themes. The variant overrides existing semantic tokens; it does not introduce hex literals in widget CSS.
 - Add snapshot test helpers and per-screen × per-size fixtures under `tests/test_harness_snapshots.py` (new). One `pytest.mark.parametrize` over `(screen, size)` keeps the matrix declarative and the SVG paths consistent.
-- Add `scripts/regen-harness-screenshot.sh` (new), a small wrapper around `uv run --extra harness worldforge-harness` plus a deterministic state-dir fixture, to regenerate `docs/assets/img/theworldharness-tui-screenshot-1.png`. Tracked so the next refresh is one command.
+- Add `scripts/regen-harness-screenshot.sh` (new), a small wrapper around `uv run --extra harness worldforge-harness` plus a deterministic state-dir fixture, to regenerate the primary README capture at `docs/assets/img/theworldharness-run-inspector-score-planning.png`. Tracked so the next refresh is one command.
 - Extend the existing `TheWorldHarnessApp.get_system_commands` (M1) to surface the high-contrast theme switch action under a stable label. No replacement of the M1 static commands.
 
 ## Module touch list
@@ -29,8 +29,11 @@
 | `tests/snapshots/` | New SVG outputs committed; reviewed in PRs. | Pinned terminal sizes, animations disabled. |
 | `tests/test_harness_tui.py` | Extend with Pilot tests for palette dynamic items, theme cycle including high-contrast, recent-items activation. | Existing flow tests remain; M5 adds new ones rather than replacing. |
 | `tests/fixtures/harness/` (new, if needed) | Deterministic fixture state (worlds, providers, reports) for the snapshot matrix and palette tests. | Tracked, deterministic; no host-specific paths. |
-| `README.md` | Update the screenshot at line 30 (file replacement); no copy changes unless the screenshot URL filename changes. | Tool-neutral, maintainer-style. |
-| `docs/assets/img/theworldharness-tui-screenshot-1.png` | Regenerated. | Deterministic; reproducible from `scripts/regen-harness-screenshot.sh`. |
+| `README.md` | Replace the old single screenshot with the 2x2 harness showcase grid. | Tool-neutral, maintainer-style. |
+| `docs/assets/img/theworldharness-home-launchpad.png` | New README grid capture. | Home navigation surface. |
+| `docs/assets/img/theworldharness-run-inspector-score-planning.png` | New README grid capture. | Deterministic primary capture; reproducible from `scripts/regen-harness-screenshot.sh`. |
+| `docs/assets/img/theworldharness-world-editor.png` | New README grid capture. | Persistence and world editing surface. |
+| `docs/assets/img/theworldharness-provider-help-overlay.png` | New README grid capture. | Provider bindings and diagnostics surface. |
 | `docs/src/theworldharness.md` | Append a short "Themes" section listing the three variants and the cycle binding; append a one-line note that `Ctrl+P` indexes worlds, providers, and recent runs. | Public behaviour change → doc update. |
 | `scripts/regen-harness-screenshot.sh` (new) | Reproducible regen for the README image. | Documented in the spec; tracked. |
 | `CHANGELOG.md` | Entry under the next version: high-contrast theme, dynamic command palette, HomeScreen recent items, snapshot matrix, screenshot refresh. | Tool-neutral copy. |

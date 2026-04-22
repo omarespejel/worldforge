@@ -26,9 +26,34 @@ diagnostics, and a CLI.
 
 </div>
 
-<p align="center">
-  <img src="./docs/assets/img/theworldharness-tui-screenshot-1.png" alt="TheWorldHarness TUI inspecting provider traces" width="860" />
-</p>
+<div align="center">
+<table>
+  <tr>
+    <td width="50%">
+      <img src="./docs/assets/img/theworldharness-home-launchpad.png" alt="TheWorldHarness home screen with keyboard-first launch targets" width="100%" />
+      <br />
+      <sub><strong>Home:</strong> keyboard-first launchpad for worlds, providers, evals, and help.</sub>
+    </td>
+    <td width="50%">
+      <img src="./docs/assets/img/theworldharness-run-inspector-score-planning.png" alt="TheWorldHarness run inspector showing a score-planning flow" width="100%" />
+      <br />
+      <sub><strong>Run inspector:</strong> flow trace with scored plans, metrics, and transcript.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="./docs/assets/img/theworldharness-world-editor.png" alt="TheWorldHarness world editor with saved state preview" width="100%" />
+      <br />
+      <sub><strong>World editor:</strong> persisted scene state, objects, provider, and preview in one place.</sub>
+    </td>
+    <td width="50%">
+      <img src="./docs/assets/img/theworldharness-provider-help-overlay.png" alt="TheWorldHarness provider screen with bindings help overlay" width="100%" />
+      <br />
+      <sub><strong>Provider help:</strong> discoverable bindings over live provider diagnostics.</sub>
+    </td>
+  </tr>
+</table>
+</div>
 
 ---
 

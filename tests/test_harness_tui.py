@@ -1137,3 +1137,36 @@ def test_run_flow_command_waits_for_run_inspector_mount(tmp_path) -> None:
             assert app.screen.last_run.flow.id == "leworldmodel"
 
     asyncio.run(scenario())
+
+
+def test_run_flow_command_replaces_report_inspector_view(tmp_path) -> None:
+    pytest.importorskip("textual")
+
+    from dataclasses import replace
+
+    from worldforge.harness.flows import run_flow
+    from worldforge.harness.tui import RunInspectorScreen, TheWorldHarnessApp
+
+    async def scenario() -> None:
+        app = TheWorldHarnessApp(state_dir=tmp_path, step_delay=0.0)
+        report_run = replace(
+            run_flow("leworldmodel", state_dir=tmp_path),
+            kind="benchmark",
+            report_path=tmp_path / "benchmark.json",
+            artifacts={"json": "{}"},
+        )
+        async with app.run_test(size=(130, 42)) as pilot:
+            await app.push_screen(RunInspectorScreen(state_dir=tmp_path, run=report_run))
+            await pilot.pause()
+            assert isinstance(app.screen, RunInspectorScreen)
+            assert not app.screen.can_run_flows
+
+            command = app._make_run_flow_command("leworldmodel")
+            await command()
+
+            assert isinstance(app.screen, RunInspectorScreen)
+            assert app.screen.can_run_flows
+            assert app.screen.last_run is not None
+            assert app.screen.last_run.flow.id == "leworldmodel"
+
+    asyncio.run(scenario())

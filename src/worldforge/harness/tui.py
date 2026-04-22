@@ -839,6 +839,12 @@ class RunInspectorScreen(Screen):
             if select is not None and select.value != flow_id:
                 select.value = flow_id
 
+    @property
+    def can_run_flows(self) -> bool:
+        """Return whether this screen has the interactive flow controls mounted."""
+
+        return self._fixed_run is None or self._fixed_run.kind == "flow"
+
     def watch_selected_flow_id(self, _old: str, new: str) -> None:
         if new not in self.flows:
             return
@@ -3259,6 +3265,12 @@ class TheWorldHarnessApp(App[None]):
             self.pop_screen()
         target_cls = self.SCREENS.get(screen_name)
         if target_cls is None or isinstance(self.screen, target_cls):
+            if (
+                screen_name == "run-inspector"
+                and isinstance(self.screen, RunInspectorScreen)
+                and not self.screen.can_run_flows
+            ):
+                self.switch_screen(self._make_run_inspector())
             return
         if screen_name == "run-inspector":
             self.switch_screen(self._make_run_inspector())
@@ -3299,6 +3311,12 @@ class TheWorldHarnessApp(App[None]):
             await self.pop_screen()
         target_cls = self.SCREENS.get(screen_name)
         if target_cls is not None and isinstance(self.screen, target_cls):
+            if (
+                screen_name == "run-inspector"
+                and isinstance(self.screen, RunInspectorScreen)
+                and not self.screen.can_run_flows
+            ):
+                await self.switch_screen(self._make_run_inspector())
             return self.screen
         await self.switch_screen(self._make_screen_for_name(screen_name))
         return self.screen
