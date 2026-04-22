@@ -198,6 +198,9 @@ releases may still include breaking changes when the public API needs to tighten
 
 - Added `AGENTS.md` with repository identity, architecture, commands, conventions, constraints,
   and gotchas for contributors.
+- Promoted the real LeRobot-plus-LeWorldModel robotics showcase to the top of the README with
+  screenshots, a one-command entrypoint, and a dedicated walkthrough covering the pipeline,
+  runtime boundaries, artifacts, and customization path.
 - Added user and operator playbooks for checkout validation, provider capability selection,
   provider diagnostics, adapter promotion, local persistence recovery, remote artifacts, optional
   runtime smokes, benchmarks, incident triage, and release gates.

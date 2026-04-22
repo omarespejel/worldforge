@@ -3,6 +3,7 @@
 - [Introduction](./introduction.md)
 - [Quick Start](./quickstart.md)
 - [Examples And CLI Commands](./examples.md)
+- [Real Robotics Showcase](./robotics-showcase.md)
 - [TheWorldHarness](./theworldharness.md)
 - [World Model Taxonomy](./world-model-taxonomy.md)
 - [Architecture](./architecture.md)

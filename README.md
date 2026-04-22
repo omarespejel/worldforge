@@ -26,6 +26,58 @@ diagnostics, and a CLI.
 
 </div>
 
+## Real Robotics Showcase: LeRobot + LeWorldModel
+
+WorldForge's front-door robotics demo composes a real Hugging Face LeRobot policy with a real
+LeWorldModel checkpoint. LeRobot proposes PushT action candidates, WorldForge bridges those
+policy actions into LeWorldModel-native candidate tensors, LeWorldModel scores the candidates,
+and WorldForge selects and mock-replays the lowest-cost action chunk.
+
+This is simulation/replay planning. It demonstrates policy inference, score-model inference,
+typed provider composition, candidate ranking, event capture, and visual replay. Hardware control,
+safety checks, robot-controller integration, and task-specific preprocessing stay host-owned.
+
+<div align="center">
+<table>
+  <tr>
+    <td width="50%">
+      <img src="./docs/assets/img/robotics-showcase-lerobot-leworldmodel-2.png" alt="WorldForge robotics showcase TUI with pipeline flow, runtime metrics, and tensor contract" width="100%" />
+      <br />
+      <sub><strong>Pipeline:</strong> real policy, real score checkpoint, WorldForge planner, local mock replay.</sub>
+    </td>
+    <td width="50%">
+      <img src="./docs/assets/img/robotics-showcase-lerobot-leworldmodel-1.png" alt="WorldForge robotics showcase TUI with robot-arm illustration, candidate ranking, and tabletop replay" width="100%" />
+      <br />
+      <sub><strong>Decision:</strong> candidate ranking, robot-arm illustration, and fixed tabletop replay.</sub>
+    </td>
+  </tr>
+</table>
+</div>
+
+```bash
+scripts/robotics-showcase
+```
+
+The command launches a staged Textual report by default and writes the same run data to
+`/tmp/worldforge-robotics-showcase/real-run.json`. Use `--tui-stage-delay 0.1` for a faster reveal,
+`--no-tui-animation` to skip sleeps and arm motion, `--no-tui` for the plain terminal report, or
+`--json-only` for automation.
+
+Read the full walkthrough: [Real Robotics Showcase](./docs/src/robotics-showcase.md).
+
+<details>
+<summary><strong>TheWorldHarness TUI</strong> - checkout-safe visual harness for worlds, providers, evals, benchmarks, and packaged flows</summary>
+
+TheWorldHarness is the optional Textual workspace for inspecting WorldForge flows without installing
+robotics or model runtimes. It runs checkout-safe demos, provider diagnostics, benchmark comparison,
+world editing, and saved report previews through the `harness` extra.
+
+```bash
+uv run --extra harness worldforge-harness
+uv run --extra harness worldforge-harness --flow lerobot
+uv run --extra harness worldforge-harness --flow diagnostics
+```
+
 <div align="center">
 <table>
   <tr>
@@ -54,6 +106,10 @@ diagnostics, and a CLI.
   </tr>
 </table>
 </div>
+
+More detail: [TheWorldHarness docs](./docs/src/theworldharness.md).
+
+</details>
 
 ---
 
@@ -270,15 +326,18 @@ before adding a new adapter.
 
 ## Demos
 
-Packaged demos run against injected deterministic runtimes. No checkpoints, credentials, or GPU
-required:
+Start with the real robotics showcase at the top of this README when you want the full
+LeRobot-plus-LeWorldModel story. Use the commands below for narrower checks.
+
+Checkout-safe demos use injected deterministic runtimes. No checkpoints, credentials, GPU, torch,
+LeRobot, or LeWorldModel install is required:
 
 ```bash
 uv run worldforge-demo-leworldmodel          # score-based planning demo
 uv run worldforge-demo-lerobot               # policy + score planning demo
 ```
 
-Visual TUI (optional `harness` extra):
+The visual harness uses the optional `harness` extra and stays checkout-safe:
 
 ```bash
 uv run --extra harness worldforge-harness
@@ -287,112 +346,20 @@ uv run --extra harness worldforge-harness --flow lerobot
 uv run --extra harness worldforge-harness --flow diagnostics
 ```
 
-| Flow | Exercises |
-| --- | --- |
-| `leworldmodel` | Score-provider planning with LeWorldModel-shaped costs, path selection, execution, persistence, reload, events. |
-| `lerobot` | Policy-plus-score planning with LeRobot-shaped action chunks, translation, ranking, execution, persistence, reload, events. |
-| `diagnostics` | Provider catalog diagnostics and a mock-provider benchmark across predict, reason, generate, transfer, embed. |
-
-Real-checkpoint live smoke (host-provided dependencies and assets):
+For real LeWorldModel checkpoint scoring without LeRobot, run:
 
 ```bash
-scripts/lewm-real \
-  --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt \
-  --device cpu
+scripts/lewm-real --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt --device cpu
 ```
 
-Equivalent explicit `uv` command:
+That smoke path loads the host-owned LeWorldModel runtime and checkpoint, validates tensor
+contracts, scores candidates, and prints pipeline, latency, event, and cost-landscape output. It
+uses deterministic synthetic PushT-shaped tensors, so it is real checkpoint scoring but not
+task-specific image preprocessing or robot execution.
 
-```bash
-uv run --python 3.10 \
-  --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
-  --with "datasets>=2.21" \
-  lewm-real \
-    --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt \
-    --device cpu
-```
-
-This path runs real upstream checkpoint inference through `LeWorldModelProvider.score_actions`.
-The demo prints a visual pipeline, tensor shapes, latency metrics, provider events, and a ranked
-candidate cost landscape. It uses deterministic synthetic PushT-shaped tensors, so it demonstrates
-checkpoint loading, provider health, tensor contract validation, scoring, and candidate ranking;
-it is not task-specific image preprocessing, robot execution, or the injected checkout-safe demo.
-Pass `--json-output lewm-real-summary.json` to preserve the same run data while keeping the visual
-terminal output.
-
-Real robotics policy + world-model showcase:
-
-```bash
-scripts/robotics-showcase
-```
-
-Equivalent explicit `uv` command:
-
-```bash
-uv run --python 3.10 \
-  --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
-  --with "datasets>=2.21" \
-  --with "lerobot" \
-  --with "textual>=8.2,<9" \
-  --with "pygame" \
-  --with "opencv-python" \
-  --with "pymunk" \
-  --with "gymnasium" \
-  --with "shapely" \
-  worldforge-robotics-showcase --tui
-```
-
-This showcase runs real LeRobot policy inference and real LeWorldModel checkpoint scoring through
-`World.plan(policy_provider="lerobot", score_provider="leworldmodel")`. The default path uses the
-PushT diffusion policy (`lerobot/diffusion_pusht`), the `~/.stable-wm/pusht/lewm_object.ckpt`
-LeWorldModel object checkpoint, a packaged PushT observation builder, and a packaged action-candidate
-bridge. By default, `scripts/robotics-showcase` runs inference quietly and opens a Textual visual
-report with a staged reveal, pipeline trace, runtime bars, tensor metrics, an illustrative animated
-robot-arm replay, full-width candidate costs, provider events, and a fixed tabletop replay map. It
-writes `/tmp/worldforge-robotics-showcase/real-run.json`; pass `--tui-stage-delay 0.1` to speed up
-the reveal, `--no-tui-animation` to disable sleeps and arm motion, `--no-tui` for the plain terminal
-report, `--json-only` for automation, or `--health-only` for a dependency preflight.
-
-Use the lower-level configurable runner when you bring a different embodiment or task bridge:
-
-```bash
-scripts/lewm-lerobot-real \
-  --policy-path lerobot/diffusion_pusht \
-  --policy-type diffusion \
-  --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt \
-  --device cpu \
-  --mode select_action \
-  --observation-module /path/to/pusht_obs.py:build_observation \
-  --score-info-npz /path/to/lewm_score_tensors.npz \
-  --translator worldforge.smoke.lerobot_leworldmodel:translate_pusht_xy_actions \
-  --candidate-builder /path/to/pusht_lewm_bridge.py:build_action_candidates
-```
-
-Equivalent explicit `uv` command for the lower-level runner:
-
-```bash
-uv run --python 3.10 \
-  --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
-  --with "datasets>=2.21" \
-  --with "lerobot" \
-  lewm-lerobot-real \
-    --policy-path lerobot/diffusion_pusht \
-    --policy-type diffusion \
-    --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt \
-    --device cpu \
-    --mode select_action \
-    --observation-module /path/to/pusht_obs.py:build_observation \
-    --score-info-npz /path/to/lewm_score_tensors.npz \
-    --translator worldforge.smoke.lerobot_leworldmodel:translate_pusht_xy_actions \
-    --candidate-builder /path/to/pusht_lewm_bridge.py:build_action_candidates
-```
-
-Both real robotics paths are simulation/replay planning flows. Hardware control, safety checks,
-robot-controller integration, and task-specific preprocessing remain host-owned. The lower-level
-runner fails instead of padding or projecting mismatched action spaces.
-
-See [examples/](./examples) and [`uv run worldforge examples`](./docs/src/examples.md) for the full
-runnable index.
+See [examples/](./examples), [`uv run worldforge examples`](./docs/src/examples.md), and the
+[robotics showcase walkthrough](./docs/src/robotics-showcase.md) for the full runnable index and
+optional-runtime details.
 
 ## Who It's For
 
