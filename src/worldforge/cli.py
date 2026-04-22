@@ -119,7 +119,8 @@ EXAMPLE_COMMANDS: tuple[dict[str, str], ...] = (
         ),
         "description": (
             "Exercise the real LeWorldModel checkpoint path from a host environment that owns "
-            "the optional runtime and assets."
+            "the optional runtime and assets; prints visual pipeline, tensor, latency, event, "
+            "and candidate-cost output."
         ),
     },
 )

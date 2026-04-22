@@ -55,6 +55,20 @@ comparison flows.
 | --- | --- | --- |
 | `leworldmodel-real-checkpoint-smoke` | real checkpoint smoke | `scripts/lewm-real --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt --device cpu` |
 
+The explicit command behind the wrapper is:
+
+```bash
+uv run --python 3.10 \
+  --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
+  --with "datasets>=2.21" \
+  lewm-real \
+    --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt \
+    --device cpu
+```
+
+It runs real checkpoint scoring over deterministic synthetic PushT-shaped tensors and prints a
+visual pipeline, tensor shapes, latency metrics, provider events, and ranked candidate costs.
+
 ## Runtime Boundary
 
 The packaged demos use real WorldForge provider surfaces with injected deterministic runtimes. They

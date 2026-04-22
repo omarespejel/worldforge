@@ -302,11 +302,27 @@ scripts/lewm-real \
   --device cpu
 ```
 
+Equivalent explicit `uv` command:
+
+```bash
+uv run --python 3.10 \
+  --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
+  --with "datasets>=2.21" \
+  lewm-real \
+    --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt \
+    --device cpu
+```
+
 The wrapper runs `uv run --python 3.10` with the upstream `stable-worldmodel` and `datasets`
-runtime requirements, then invokes the packaged `lewm-real` alias. The live smoke prints a
-step-by-step pipeline log by default and exits non-zero before inference if the checkpoint,
-optional runtime, or provider health check is missing. Use `--json-only` for the machine-readable
-result payload.
+runtime requirements, then invokes the packaged `lewm-real` alias. The live smoke prints what the
+run demonstrates, a visual pipeline, tensor shapes, latency metrics, provider events, and a ranked
+candidate cost landscape. It exits non-zero before inference if the checkpoint, optional runtime,
+or provider health check is missing. Use `--json-only` for the machine-readable result payload, or
+`--json-output lewm-real-summary.json` to write the same run data while keeping the visual output.
+
+The live smoke uses deterministic synthetic PushT-shaped tensors. It proves the checkpoint loads
+and scores candidates through the WorldForge provider contract; it does not prove task-specific
+preprocessing or robot execution.
 
 GR00T and LeRobot live smokes:
 

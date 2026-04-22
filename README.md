@@ -301,6 +301,25 @@ scripts/lewm-real \
   --device cpu
 ```
 
+Equivalent explicit `uv` command:
+
+```bash
+uv run --python 3.10 \
+  --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
+  --with "datasets>=2.21" \
+  lewm-real \
+    --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt \
+    --device cpu
+```
+
+This path runs real upstream checkpoint inference through `LeWorldModelProvider.score_actions`.
+The demo prints a visual pipeline, tensor shapes, latency metrics, provider events, and a ranked
+candidate cost landscape. It uses deterministic synthetic PushT-shaped tensors, so it demonstrates
+checkpoint loading, provider health, tensor contract validation, scoring, and candidate ranking;
+it is not task-specific image preprocessing, robot execution, or the injected checkout-safe demo.
+Pass `--json-output lewm-real-summary.json` to preserve the same run data while keeping the visual
+terminal output.
+
 See [examples/](./examples) and [`uv run worldforge examples`](./docs/src/examples.md) for the full
 runnable index.
 

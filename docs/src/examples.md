@@ -66,7 +66,7 @@ checkpoint inference.
 
 | Example | Command | Runtime boundary |
 | --- | --- | --- |
-| `leworldmodel-real-checkpoint-smoke` | `scripts/lewm-real --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt --device cpu` | Requires host-owned `stable_worldmodel`, torch, datasets, and LeWM checkpoint assets. |
+| `leworldmodel-real-checkpoint-smoke` | `scripts/lewm-real --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt --device cpu` | Requires host-owned `stable_worldmodel`, torch, datasets, and LeWM checkpoint assets; prints visual pipeline, tensor, latency, event, and candidate-cost output. |
 
 ## Operational Commands
 

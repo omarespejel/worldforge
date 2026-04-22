@@ -8,6 +8,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
+from worldforge.models import ProviderEvent
 from worldforge.smoke import leworldmodel, leworldmodel_checkpoint
 
 
@@ -333,10 +334,18 @@ def test_smoke_main_prints_provider_result(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     class FakeProvider:
-        def __init__(self, *, policy: str, cache_dir: str, device: str) -> None:
+        def __init__(
+            self,
+            *,
+            policy: str,
+            cache_dir: str,
+            device: str,
+            event_handler: object | None = None,
+        ) -> None:
             self.policy = policy
             self.cache_dir = cache_dir
             self.device = device
+            assert event_handler is not None
 
         def score_actions(self, *, info: object, action_candidates: object) -> SimpleNamespace:
             assert info == {"pixels": "pixels", "goal": "goal", "action": "action"}
@@ -373,11 +382,13 @@ def test_smoke_main_prints_provider_result(
     assert leworldmodel.main() == 0
 
     output = json.loads(capsys.readouterr().out)
-    assert output == {
-        "checkpoint": str(tmp_path / "pusht/lewm_object.ckpt"),
-        "health": {"healthy": True, "name": "leworldmodel"},
-        "result": {"best_index": 0, "scores": [0.1]},
-    }
+    assert output["checkpoint"] == str(tmp_path / "pusht/lewm_object.ckpt")
+    assert output["health"] == {"healthy": True, "name": "leworldmodel"}
+    assert output["result"] == {"best_index": 0, "scores": [0.1]}
+    assert output["inputs"]["seed"] == 7
+    assert output["inputs"]["total_tensor_elements"] == 0
+    assert output["metrics"]["score_latency_ms"] >= 0.0
+    assert output["provider_events"] == []
 
 
 def test_smoke_main_prints_visual_pipeline_by_default(
@@ -388,12 +399,21 @@ def test_smoke_main_prints_visual_pipeline_by_default(
     checkpoint = tmp_path / "pusht" / "lewm_object.ckpt"
     checkpoint.parent.mkdir(parents=True)
     checkpoint.write_text("checkpoint", encoding="utf-8")
+    json_output = tmp_path / "lewm-real-summary.json"
 
     class FakeProvider:
-        def __init__(self, *, policy: str, cache_dir: str, device: str) -> None:
+        def __init__(
+            self,
+            *,
+            policy: str,
+            cache_dir: str,
+            device: str,
+            event_handler: object | None = None,
+        ) -> None:
             assert policy == "pusht/lewm"
             assert cache_dir == str(tmp_path)
             assert device == "cpu"
+            self.event_handler = event_handler
 
         def score_actions(self, *, info: object, action_candidates: object) -> SimpleNamespace:
             assert info == {
@@ -402,6 +422,16 @@ def test_smoke_main_prints_visual_pipeline_by_default(
                 "action": {"shape": (1, 1, 3, 10)},
             }
             assert action_candidates == ["actions"]
+            assert self.event_handler is not None
+            self.event_handler(
+                ProviderEvent(
+                    provider="leworldmodel",
+                    operation="score",
+                    phase="success",
+                    duration_ms=12.5,
+                    metadata={"best_index": 1, "candidate_count": 2, "policy": "pusht/lewm"},
+                )
+            )
             return SimpleNamespace(
                 to_dict=lambda: {
                     "best_index": 1,
@@ -444,6 +474,10 @@ def test_smoke_main_prints_visual_pipeline_by_default(
             str(checkpoint),
             "--device",
             "cpu",
+            "--json-output",
+            str(json_output),
+            "--color",
+            "always",
         ],
     )
 
@@ -451,14 +485,25 @@ def test_smoke_main_prints_visual_pipeline_by_default(
 
     output = capsys.readouterr().out
     assert "WorldForge LeWorldModel real checkpoint inference" in output
+    assert "\033[" in output
     assert "Mode: real upstream checkpoint inference" in output
+    assert "What this demonstrates" in output
+    assert "Pipeline" in output
     assert "[1/6] Resolve checkpoint and runtime settings" in output
     assert "[3/6] Preflight optional runtime dependencies" in output
     assert "[5/6] Run score_actions through the real checkpoint" in output
-    assert "Candidate scores" in output
+    assert "Candidate cost landscape" in output
+    assert "Inference metrics" in output
+    assert "Provider event log" in output
+    assert "Artifacts" in output
     assert "#1" in output
     assert "BEST" in output
     assert "Use --json-only" in output
+    payload = json.loads(json_output.read_text(encoding="utf-8"))
+    assert payload["inputs"]["seed"] == 7
+    assert payload["inputs"]["total_tensor_elements"] == 903198
+    assert payload["metrics"]["gap_to_runner_up"] == pytest.approx(0.2)
+    assert payload["provider_events"][0]["phase"] == "success"
 
 
 def test_smoke_main_reports_missing_runtime_before_tensor_build(
@@ -471,10 +516,18 @@ def test_smoke_main_reports_missing_runtime_before_tensor_build(
     checkpoint.write_text("checkpoint", encoding="utf-8")
 
     class FakeProvider:
-        def __init__(self, *, policy: str, cache_dir: str, device: str) -> None:
+        def __init__(
+            self,
+            *,
+            policy: str,
+            cache_dir: str,
+            device: str,
+            event_handler: object | None = None,
+        ) -> None:
             assert policy == "pusht/lewm"
             assert cache_dir == str(tmp_path)
             assert device == "cpu"
+            assert event_handler is not None
 
         def health(self) -> SimpleNamespace:
             return SimpleNamespace(

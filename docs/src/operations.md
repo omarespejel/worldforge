@@ -158,8 +158,10 @@ include those IDs in surrounding application logs.
   This is the real inference smoke: it requires an extracted object checkpoint such as
   `~/.stable-wm/pusht/lewm_object.ckpt`, builds task-shaped tensors, and calls the upstream
   `stable_worldmodel.policy.AutoCostModel` path through `LeWorldModelProvider`. The wrapper runs
-  the required upstream runtime through `uv run --python 3.10 --with ...`, prints a staged pipeline
-  log by default, and supports `--json-only` for automation.
+  the required upstream runtime through `uv run --python 3.10 --with ...`, prints a visual
+  pipeline, tensor shapes, latency metrics, provider events, and ranked candidate costs by
+  default, and supports `--json-only` for automation or `--json-output <path>` for preserving
+  the same run data.
 - If you have Hugging Face LeWM `config.json` and `weights.pt` assets rather than an extracted
   `*_object.ckpt` archive, build the object checkpoint first with
   `uv run --python 3.10 --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" --with huggingface_hub
