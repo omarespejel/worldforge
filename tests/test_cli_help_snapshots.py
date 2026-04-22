@@ -171,6 +171,7 @@ WORLD_HELP_COMMANDS: tuple[tuple[str, str], ...] = (
     ("add-object", "Add an object to a persisted world."),
     ("update-object", "Patch an object in a persisted world."),
     ("remove-object", "Remove an object from a persisted world."),
+    ("delete", "Delete a persisted world."),
     ("predict", "Predict and save the next state for a persisted world."),
     ("export", "Export a persisted world as JSON."),
     ("import", "Import and save exported world JSON."),

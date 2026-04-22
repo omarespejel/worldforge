@@ -33,6 +33,28 @@ Provider capability filters are strict. Valid capability names are `predict`, `g
 `reason`, `embed`, `plan`, `transfer`, `score`, and `policy`; unknown names raise
 `WorldForgeError` instead of producing an empty result by typo.
 
+## Persistence
+
+```python
+from worldforge import WorldForge
+
+forge = WorldForge(state_dir=".worldforge/worlds")
+world = forge.create_world("lab", provider="mock")
+world_id = forge.save_world(world)
+
+payload = forge.export_world(world_id)
+copy = forge.import_world(payload, new_id=True, name="lab-copy")
+copy_id = forge.save_world(copy)
+
+forge.delete_world(world_id)
+print(forge.list_worlds(), copy_id)
+```
+
+`save_world(...)`, `load_world(...)`, `import_world(...)`, `fork_world(...)`, and
+`delete_world(...)` all validate world identifiers before touching the filesystem. Delete removes
+only the local JSON file for a file-safe world id; missing worlds raise `WorldStateError` instead
+of being treated as successful no-ops.
+
 ## Observability
 
 ```python

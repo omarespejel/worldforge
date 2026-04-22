@@ -80,6 +80,7 @@ uv run worldforge world list
 uv run worldforge world objects <world-id>
 uv run worldforge world history <world-id>
 uv run worldforge world export <world-id> --output world.json
+uv run worldforge world delete <world-id>
 uv run worldforge provider list
 uv run worldforge provider docs
 uv run worldforge provider info mock

@@ -819,27 +819,6 @@ def test_edit_object_modal_invalid_position_blocks_save(tmp_path) -> None:
     asyncio.run(scenario())
 
 
-def test_delete_world_file_helper_validates_and_unlinks(tmp_path) -> None:
-    pytest.importorskip("textual")
-
-    import pytest as _pytest
-
-    from worldforge import WorldForge, WorldForgeError, WorldStateError
-    from worldforge.harness.tui import _delete_world_file
-
-    forge = WorldForge(state_dir=tmp_path)
-    world = forge.create_world("lab", provider="mock")
-    forge.save_world(world)
-    _delete_world_file(tmp_path, world.id)
-    assert forge.list_worlds() == []
-
-    with _pytest.raises(WorldForgeError):
-        _delete_world_file(tmp_path, "../escape")
-
-    with _pytest.raises(WorldStateError):
-        _delete_world_file(tmp_path, world.id)  # already gone
-
-
 def test_worlds_close_dirty_requires_confirm(tmp_path) -> None:
     pytest.importorskip("textual")
 

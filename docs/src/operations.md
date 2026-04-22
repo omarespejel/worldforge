@@ -72,6 +72,7 @@ uv run worldforge world history <world-id>
 uv run worldforge world export <world-id> --output world.json
 uv run worldforge world import world.json --new-id --name lab-copy
 uv run worldforge world fork <world-id> --history-index 0 --name lab-start
+uv run worldforge world delete <world-id>
 ```
 
 This store is suitable for local development, tests, examples, and single-writer workflows. It is
@@ -90,6 +91,8 @@ Supported persistence invariants:
 - CLI object mutations and persisted predictions load the world, apply typed `SceneObject`,
   `SceneObjectPatch`, or `Action` values, and write through `save_world(...)`.
 - `world predict` saves the provider-updated world unless `--dry-run` is supplied.
+- `delete_world(...)` and `world delete` validate the world id before unlinking local JSON and fail
+  loudly when the requested world is already absent.
 - Local JSON imports reject malformed scene object IDs, non-object state payloads, invalid
   metadata, invalid history, negative steps, history entries from future steps, empty history
   summaries, malformed serialized actions, and invalid historical snapshot states.

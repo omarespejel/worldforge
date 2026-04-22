@@ -54,6 +54,9 @@ releases may still include breaking changes when the public API needs to tighten
   These commands load local JSON worlds, apply typed scene/action values, and save through
   `WorldForge.save_world(...)`; `world predict --dry-run` previews provider output without
   replacing the saved file.
+- Added `WorldForge.delete_world(...)` and `worldforge world delete` so local JSON world removal
+  uses the same validated persistence boundary as save/load/import/fork. TheWorldHarness now calls
+  this public API instead of unlinking world files directly.
 - Added `worldforge examples` with Markdown and JSON output so CLI users can discover checkout
   scripts, packaged demos, and optional smoke commands without scanning repository docs.
 - Added the `worldforge-demo-lerobot` console command and packaged the LeRobot policy-plus-score

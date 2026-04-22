@@ -54,7 +54,6 @@ from worldforge import (
     list_eval_suites,
 )
 from worldforge.benchmark import BENCHMARKABLE_OPERATIONS
-from worldforge.framework import _validate_storage_id
 from worldforge.harness.flows import (
     available_flows,
     benchmark_run_artifacts,
@@ -87,28 +86,6 @@ from worldforge.providers.base import ProviderError
 from worldforge.providers.mock import MockProvider
 
 InitialScreen = Literal["home", "run-inspector", "worlds", "providers", "eval", "benchmark"]
-
-
-def _delete_world_file(state_dir: Path, world_id: str) -> None:
-    """Remove a persisted world file after re-validating its storage id.
-
-    Fallback for the gated public ``WorldForge.delete_world`` method that M2 did
-    *not* introduce (see ``specs/theworldharness-M2-worlds-crud/`` T2). The id is
-    re-validated through the public ``_validate_storage_id`` helper so any path
-    traversal, separator, or empty value raises ``WorldForgeError`` before
-    ``Path.unlink`` is called. A missing file raises ``WorldStateError`` so the
-    UI can surface it as a toast (identical to the shape the future public API
-    would use).
-    """
-
-    safe_id = _validate_storage_id(world_id, name="world_id")
-    path = state_dir / f"{safe_id}.json"
-    try:
-        path.unlink(missing_ok=False)
-    except FileNotFoundError as exc:
-        raise WorldStateError(f"World '{safe_id}' is not present at {path}.") from exc
-    except OSError as exc:
-        raise WorldStateError(f"Failed to delete world '{safe_id}' at {path}: {exc}") from exc
 
 
 def _build_theme(name: str, palette: dict[str, str], *, dark: bool) -> Theme:
@@ -1841,11 +1818,11 @@ class WorldsScreen(Screen):
     @work(thread=True, group="persistence", exclusive=True, name="delete_world")
     def _run_delete(self, world_id: str) -> None:
         try:
-            _delete_world_file(self._forge.state_dir, world_id)
+            deleted_id = self._forge.delete_world(world_id)
         except (WorldForgeError, WorldStateError) as exc:
             self.app.call_from_thread(self._notify_error, f"Delete failed: {exc}")
             return
-        self.app.call_from_thread(self.post_message, WorldDeleted(world_id))
+        self.app.call_from_thread(self.post_message, WorldDeleted(deleted_id))
 
     def on_world_deleted(self, event: WorldDeleted) -> None:
         event.stop()

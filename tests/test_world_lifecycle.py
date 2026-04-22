@@ -76,6 +76,32 @@ def test_world_prediction_compare_and_persistence_flow(tmp_path) -> None:
     assert loaded.object_count == 0
 
 
+def test_world_delete_validates_id_and_removes_persisted_file(tmp_path) -> None:
+    forge = WorldForge(state_dir=tmp_path)
+    world = forge.create_world("delete-me", provider="mock")
+    world_id = forge.save_world(world)
+
+    assert world_id in forge.list_worlds()
+    assert forge.delete_world(world_id) == world_id
+    assert world_id not in forge.list_worlds()
+
+    with pytest.raises(WorldStateError, match="not present"):
+        forge.delete_world(world_id)
+
+    with pytest.raises(WorldForgeError, match="file-safe identifier"):
+        forge.delete_world("../outside")
+
+
+def test_world_delete_can_remove_corrupted_local_json_by_safe_id(tmp_path) -> None:
+    forge = WorldForge(state_dir=tmp_path)
+    broken_path = tmp_path / "broken.json"
+    broken_path.write_text("{not valid json", encoding="utf-8")
+
+    assert "broken" in forge.list_worlds()
+    assert forge.delete_world("broken") == "broken"
+    assert not broken_path.exists()
+
+
 def test_prompt_seeded_world_history_and_forking(tmp_path) -> None:
     forge = WorldForge(state_dir=tmp_path)
     seeded = forge.create_world_from_prompt(

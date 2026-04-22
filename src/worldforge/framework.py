@@ -1216,6 +1216,19 @@ class WorldForge:
         except ValueError as exc:
             raise WorldStateError(f"World file '{path}' is invalid: {exc}") from exc
 
+    def delete_world(self, world_id: str) -> str:
+        """Delete a persisted world file after validating its storage identifier."""
+
+        safe_id = _validate_storage_id(world_id, name="world_id")
+        path = self.state_dir / f"{safe_id}.json"
+        try:
+            path.unlink(missing_ok=False)
+        except FileNotFoundError as exc:
+            raise WorldStateError(f"World '{safe_id}' is not present at {path}.") from exc
+        except OSError as exc:
+            raise WorldStateError(f"Failed to delete world '{safe_id}' at {path}: {exc}") from exc
+        return safe_id
+
     def list_worlds(self) -> list[str]:
         return sorted(path.stem for path in self.state_dir.glob("*.json"))
 

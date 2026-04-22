@@ -209,6 +209,7 @@ Expanded:
    - create_world(...) starts from empty typed state
    - create_world_from_prompt(...) creates a deterministic local seed scene
    - load_world(...) restores local JSON state after validation
+   - delete_world(...) validates the world id before removing local JSON state
 
 3. Workflow call
    - world.predict(...) requires a provider with predict=True
@@ -641,7 +642,7 @@ Persistence is intentionally host-owned beyond local JSON state.
 WorldForge today
   local JSON files
   single-writer assumption
-  import/export validation
+  import/export/delete validation
 
 Host application owns
   locks

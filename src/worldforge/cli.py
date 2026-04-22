@@ -43,6 +43,7 @@ CLI_EPILOG = """Common commands:
   worldforge world list
   worldforge world objects <world-id>
   worldforge world history <world-id>
+  worldforge world delete <world-id>
   worldforge provider list
   worldforge provider docs
   worldforge provider info mock
@@ -264,6 +265,13 @@ def _print_world_prediction_markdown(payload: dict[str, object]) -> None:
     print(f"- confidence: {float(payload['confidence']):.4f}")
     print(f"- step: {payload['world']['step']}")
     print(f"- objects: {payload['world']['object_count']}")
+
+
+def _print_world_delete_markdown(payload: dict[str, object]) -> None:
+    print(f"# Deleted World: {payload['world_id']}")
+    print()
+    print(f"- state_dir: {payload['state_dir']}")
+    print("- deleted: true")
 
 
 def _print_world_history_markdown(world, entries: list[dict[str, object]]) -> None:
@@ -578,6 +586,18 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("json", "markdown"),
         default="json",
         help="Output format for the removed object.",
+    )
+
+    world_delete = world_subparsers.add_parser("delete", help="Delete a persisted world.")
+    world_delete.add_argument("world_id", help="World identifier.")
+    world_delete.add_argument(
+        "--state-dir", default=".worldforge/worlds", help="World state directory."
+    )
+    world_delete.add_argument(
+        "--format",
+        choices=("json", "markdown"),
+        default="json",
+        help="Output format for the deletion result.",
     )
 
     world_predict = world_subparsers.add_parser(
@@ -1013,6 +1033,20 @@ def _cmd_world_remove_object(args: argparse.Namespace, forge: WorldForge) -> int
     return 0
 
 
+def _cmd_world_delete(args: argparse.Namespace, forge: WorldForge) -> int:
+    deleted_id = forge.delete_world(args.world_id)
+    payload = {
+        "world_id": deleted_id,
+        "deleted": True,
+        "state_dir": str(forge.state_dir),
+    }
+    if args.format == "markdown":
+        _print_world_delete_markdown(payload)
+    else:
+        _print_json(payload)
+    return 0
+
+
 def _cmd_world_predict(args: argparse.Namespace, forge: WorldForge) -> int:
     world = forge.load_world(args.world_id)
     action = Action.move_to(
@@ -1101,6 +1135,7 @@ def _cmd_world(args: argparse.Namespace, forge: WorldForge) -> int | None:
         "add-object": _cmd_world_add_object,
         "update-object": _cmd_world_update_object,
         "remove-object": _cmd_world_remove_object,
+        "delete": _cmd_world_delete,
         "predict": _cmd_world_predict,
         "export": _cmd_world_export,
         "import": _cmd_world_import,

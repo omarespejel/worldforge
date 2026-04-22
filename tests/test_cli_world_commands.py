@@ -87,6 +87,29 @@ def test_world_cli_edits_persisted_scene_objects(tmp_path, monkeypatch, capsys) 
     assert removed["world"]["object_count"] == 0
 
 
+def test_world_cli_deletes_persisted_world(tmp_path, monkeypatch, capsys) -> None:
+    created = json.loads(_run_world_cli(tmp_path, monkeypatch, capsys, "create", "lab"))
+    world_id = created["id"]
+
+    deleted = json.loads(_run_world_cli(tmp_path, monkeypatch, capsys, "delete", world_id))
+    assert deleted["world_id"] == world_id
+    assert deleted["deleted"] is True
+    assert deleted["state_dir"] == str(tmp_path)
+
+    worlds = json.loads(_run_world_cli(tmp_path, monkeypatch, capsys, "list"))
+    assert worlds == []
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["worldforge", "world", "delete", world_id, "--state-dir", str(tmp_path)],
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        main()
+    assert excinfo.value.code == 2
+    assert f"World '{world_id}' is not present" in capsys.readouterr().err
+
+
 def test_world_cli_prediction_saves_or_dry_runs_persisted_world(
     tmp_path,
     monkeypatch,

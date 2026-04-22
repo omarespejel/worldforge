@@ -130,6 +130,7 @@ uv run worldforge world list                                            # persis
 uv run worldforge world objects <world-id>                              # scene objects
 uv run worldforge world history <world-id>                              # persisted history
 uv run worldforge world export <world-id> --output world.json           # portable state JSON
+uv run worldforge world delete <world-id>                               # remove local JSON state
 uv run worldforge provider list                                         # registered providers
 uv run worldforge provider info mock                                    # capability surface
 uv run worldforge predict kitchen --provider mock --x 0.3 --y 0.8 --z 0.0 --steps 2
