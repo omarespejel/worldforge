@@ -332,10 +332,12 @@ scripts/robotics-showcase
 
 The showcase wrapper installs the host-owned optional runtime set for this process, runs the
 packaged PushT bridge, opens a Textual visual report with the policy-to-score pipeline, runtime
-bars, tensor metrics, candidate ranking, provider events, and tabletop replay map, then writes the
-full JSON summary under `/tmp/worldforge-robotics-showcase/real-run.json`. Pass `--no-tui` for the
-plain terminal report, `--json-only` for automation, or `--health-only` for a dependency preflight.
-It filters common macOS native-library duplicate class warnings from the user-facing output; set
+bars, tensor metrics, staged reveal messages, an illustrative animated robot-arm replay, full-width
+candidate ranking, provider events, and tabletop replay map, then writes the full JSON summary under
+`/tmp/worldforge-robotics-showcase/real-run.json`. Pass `--tui-stage-delay <seconds>` to tune the
+reveal pace, `--no-tui-animation` to disable sleeps and arm motion, `--no-tui` for the plain
+terminal report, `--json-only` for automation, or `--health-only` for a dependency preflight. It
+filters common macOS native-library duplicate class warnings from the user-facing output; set
 `WORLDFORGE_SHOW_RUNTIME_WARNINGS=1` to see raw third-party stderr.
 
 Use the lower-level runner when replacing the task observation, score tensors, translator, or

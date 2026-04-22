@@ -175,7 +175,9 @@ scripts/robotics-showcase
 This showcase uses `LeWorldModelProvider` as the score half of a real policy-plus-score plan. It
 loads the default PushT LeRobot policy, reads the default `pusht/lewm` object checkpoint, builds
 PushT score tensors through the upstream environment, ranks packaged action candidates through
-WorldForge, and opens a Textual report by default. Pass `--no-tui` for the plain terminal report.
+WorldForge, and opens a staged Textual report by default. Pass `--tui-stage-delay <seconds>` to tune
+the reveal pace, `--no-tui-animation` to disable sleeps and arm motion, or `--no-tui` for the plain
+terminal report.
 For a non-PushT task, use `scripts/lewm-lerobot-real --help` and provide task-aligned `pixels`,
 `goal`, `action`, and `action_candidates` tensors. WorldForge does not infer LeWorldModel
 preprocessing from LeRobot output. If the policy action chunk is not already checkpoint-compatible,

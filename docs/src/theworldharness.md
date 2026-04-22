@@ -10,8 +10,9 @@ does, and the current flows use deterministic checkout-safe paths.
 The real robotics showcase also uses the Textual surface, but it is launched through
 `scripts/robotics-showcase` rather than the checkout-safe harness flow. That command runs the real
 LeRobot policy plus real LeWorldModel checkpoint path first, then opens a standalone report with the
-pipeline, runtime metrics, candidate cost landscape, provider events, and tabletop replay. Pass
-`--no-tui` to keep the plain terminal report.
+pipeline, runtime metrics, staged reveal, illustrative robot-arm animation, candidate cost
+landscape, provider events, and tabletop replay. Pass `--tui-stage-delay <seconds>` to tune the
+reveal pace or `--no-tui` to keep the plain terminal report.
 
 ## Install Boundary
 

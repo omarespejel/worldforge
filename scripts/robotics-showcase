@@ -39,8 +39,23 @@ has_tui_arg() {
   return 1
 }
 
+is_help_request() {
+  for arg in "$@"; do
+    case "$arg" in
+      --help|-h)
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
 cd "$repo_root"
 export PYGAME_HIDE_SUPPORT_PROMPT="${PYGAME_HIDE_SUPPORT_PROMPT:-1}"
+
+if is_help_request "$@"; then
+  exec uv run --python 3.10 worldforge-robotics-showcase "$@"
+fi
 
 showcase_args=("$@")
 runtime_args=(

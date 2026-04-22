@@ -43,6 +43,9 @@ releases may still include breaking changes when the public API needs to tighten
 - Added a standalone Textual report for `scripts/robotics-showcase` that renders the real
   LeRobot-plus-LeWorldModel run as a pipeline trace with metric bars, candidate ranking, provider
   events, and a fixed tabletop replay.
+- Improved the robotics showcase report layout into a vertical, scrollable story with full-width
+  candidate ranking, full-width tabletop replay, staged reveal delays, and an illustrative animated
+  robot-arm replay.
 
 ### Added
 
@@ -61,6 +64,8 @@ releases may still include breaking changes when the public API needs to tighten
 - Made `scripts/robotics-showcase` launch the Textual visual report by default while preserving
   `--no-tui`, `--json-only`, and `--health-only` for plain terminal, automation, and preflight
   runs.
+- Added `--tui-stage-delay` and `--no-tui-animation` to control the robotics showcase reveal pace
+  and animation.
 - Added the `worldforge world` CLI command group for local JSON persistence workflows, including
   create, list, show, history, export, import, and fork commands backed by the existing validated
   `WorldForge` persistence API.

@@ -72,8 +72,9 @@ visual pipeline, tensor shapes, latency metrics, provider events, and ranked can
 
 The real robotics showcase composes LeRobot and LeWorldModel through WorldForge policy-plus-score
 planning with a packaged PushT bridge. The wrapper opens a Textual report by default and writes the
-same run summary to `/tmp/worldforge-robotics-showcase/real-run.json`; use `--no-tui` for the plain
-terminal report.
+same run summary to `/tmp/worldforge-robotics-showcase/real-run.json`. The report reveals each stage
+in sequence, includes an illustrative animated robot-arm replay, and gives candidate ranking plus
+tabletop replay their own full-width sections. Use `--no-tui` for the plain terminal report.
 
 ```bash
 scripts/robotics-showcase

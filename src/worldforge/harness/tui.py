@@ -3214,7 +3214,7 @@ class RoboticsMetricsPane(Static, _ThemedRenderer):
         self.summary = summary
 
     @staticmethod
-    def _bar(value: float, maximum: float, *, width: int = 18) -> str:
+    def _bar(value: float, maximum: float, *, width: int = 34) -> str:
         fill = 0 if maximum <= 0 else max(1, min(width, round((value / maximum) * width)))
         return f"{'#' * fill:<{width}}"
 
@@ -3307,8 +3307,8 @@ class RoboticsTabletopPane(Static, _ThemedRenderer):
         targets = _robotics_candidate_targets(self.summary)
         selected = _robotics_selected_index(self.summary)
         final_position = _robotics_final_position(self.summary)
-        width = 36
-        height = 9
+        width = 62
+        height = 12
         cells: dict[tuple[int, int], set[str]] = {}
 
         def place(x: float, y: float, marker: str) -> None:
@@ -3348,7 +3348,7 @@ class RoboticsTabletopPane(Static, _ThemedRenderer):
                     characters.append(next(iter(markers)))
             lines.append("|" + "".join(characters) + "|")
         lines.append("+" + "-" * width + "+")
-        lines.append("x=0.00             x=0.50             x=1.00")
+        lines.append("x=0.00                         x=0.50                         x=1.00")
         return lines
 
     def on_mount(self) -> None:
@@ -3367,6 +3367,111 @@ class RoboticsTabletopPane(Static, _ThemedRenderer):
         )
 
 
+class RoboticsArmPane(Static, _ThemedRenderer):
+    """Illustrative animated robot-arm replay for the selected candidate."""
+
+    def __init__(self, summary: dict[str, object], *, animate: bool = True) -> None:
+        super().__init__()
+        self.summary = summary
+        self.animate = animate
+        self._frame_index = 0
+
+    def on_mount(self) -> None:
+        self._render_frame()
+        if self.animate:
+            self.set_interval(0.32, self._advance)
+
+    def _advance(self) -> None:
+        self._frame_index = (self._frame_index + 1) % len(self._frames())
+        self._render_frame()
+
+    def _selected_target(self) -> dict[str, object] | None:
+        selected = _robotics_selected_index(self.summary)
+        for target in _robotics_candidate_targets(self.summary):
+            if target.get("index") == selected:
+                return target
+        return None
+
+    def _target_line(self) -> str:
+        selected = _robotics_selected_index(self.summary)
+        target = self._selected_target()
+        if target is None:
+            return f"selected candidate #{selected}"
+        x = _robotics_number(target.get("x")) or 0.0
+        y = _robotics_number(target.get("y")) or 0.0
+        z = _robotics_number(target.get("z")) or 0.0
+        return f"selected candidate #{selected}: target x={x:.3f} y={y:.3f} z={z:.3f}"
+
+    def _frames(self) -> list[list[str]]:
+        return [
+            [
+                "                                    target",
+                "                                      T",
+                "                                      |",
+                "base [###]o====o----[]",
+                "        shoulder elbow gripper",
+                "        replay frame 1/4",
+            ],
+            [
+                "                                    target",
+                "                                      T",
+                "                                     /",
+                "base [###]o======o-----[]",
+                "        shoulder  elbow gripper",
+                "        replay frame 2/4",
+            ],
+            [
+                "                                    target",
+                "                                      T",
+                "                                    /",
+                "base [###]o========o------[]",
+                "        shoulder   elbow gripper",
+                "        replay frame 3/4",
+            ],
+            [
+                "                                    target",
+                "                                      T",
+                "                                      |",
+                "base [###]o==========o========[]",
+                "        shoulder    elbow     gripper",
+                "        replay frame 4/4",
+            ],
+        ]
+
+    def _render_frame(self) -> None:
+        title = Text("Illustrative Arm Replay", style=f"bold {_robotics_color('accent')}")
+        subtitle = Text("simulation/replay only; no hardware command is emitted", style="dim")
+        target = Text(self._target_line(), style=f"bold {_robotics_color('success')}")
+        frame = Text("\n".join(self._frames()[self._frame_index]), style=_robotics_color("accent"))
+        final_position = _robotics_final_position(self.summary)
+        final = "mock final unavailable"
+        if final_position is not None:
+            final = (
+                "mock final "
+                f"x={final_position['x']:.3f} "
+                f"y={final_position['y']:.3f} "
+                f"z={final_position['z']:.3f}"
+            )
+        details = Table.grid(expand=True)
+        details.add_column(no_wrap=True)
+        details.add_column()
+        details.add_row(Text("action chunk", style="dim"), Text("1 selected WorldForge action"))
+        details.add_row(Text("replay target", style="dim"), target)
+        details.add_row(Text("result", style="dim"), Text(final, style="bold"))
+        details.add_row(Text("boundary", style="dim"), Text("local mock execution only"))
+        body = Table.grid(expand=True, padding=(0, 3))
+        body.add_column(ratio=1)
+        body.add_column(ratio=1)
+        body.add_row(frame, details)
+        self.update(
+            Panel(
+                Group(title, subtitle, Text(""), body),
+                title="Robot Arm Visualization",
+                border_style=_robotics_color("accent"),
+            )
+        )
+
+
 class RoboticsEventPane(Static, _ThemedRenderer):
     """Provider events emitted by the completed real run."""
 
@@ -3379,10 +3484,10 @@ class RoboticsEventPane(Static, _ThemedRenderer):
         table = Table(
             expand=True, show_header=True, header_style=f"bold {_robotics_color('accent')}"
         )
-        table.add_column("provider")
-        table.add_column("operation")
-        table.add_column("phase")
-        table.add_column("duration", justify="right")
+        table.add_column("provider", no_wrap=True)
+        table.add_column("operation", no_wrap=True)
+        table.add_column("phase", no_wrap=True)
+        table.add_column("duration", justify="right", no_wrap=True)
         if isinstance(events, list):
             for event in events:
                 if not isinstance(event, dict):
@@ -3395,6 +3500,22 @@ class RoboticsEventPane(Static, _ThemedRenderer):
                     "n/a" if duration is None else f"{duration:.2f} ms",
                 )
         self.update(Panel(table, title="Provider Event Log", border_style=_robotics_color("panel")))
+
+
+class RoboticsProgressPane(Static, _ThemedRenderer):
+    """Staged reveal status for the standalone showcase report."""
+
+    def on_mount(self) -> None:
+        self.set_message("Preparing visual replay from completed real inference summary...")
+
+    def set_message(self, message: str) -> None:
+        self.update(
+            Panel(
+                Text(message, style=f"bold {_robotics_color('accent')}"),
+                title="Replay Sequencer",
+                border_style=_robotics_color("accent"),
+            )
+        )
 
 
 class RoboticsShowcaseApp(App[None]):
@@ -3428,43 +3549,55 @@ class RoboticsShowcaseApp(App[None]):
         margin-bottom: 1;
     }
 
-    #robotics-main {
-        height: 12;
+    RoboticsProgressPane {
+        height: 5;
         margin-bottom: 1;
     }
 
     RoboticsPipelinePane {
-        width: 2fr;
-        margin-right: 1;
+        height: 13;
+        margin-bottom: 1;
     }
 
     RoboticsMetricsPane {
-        width: 1fr;
+        height: 12;
+        margin-bottom: 1;
     }
 
-    #robotics-bottom {
-        height: 16;
+    RoboticsArmPane {
+        height: 15;
         margin-bottom: 1;
     }
 
     RoboticsCandidatePane {
-        width: 1fr;
-        margin-right: 1;
+        height: 10;
+        margin-bottom: 1;
     }
 
     RoboticsTabletopPane {
-        width: 1fr;
+        height: 17;
+        margin-bottom: 1;
     }
 
     RoboticsEventPane {
-        height: 8;
+        height: 10;
+        margin-bottom: 1;
     }
     """
 
-    def __init__(self, *, summary: dict[str, object], summary_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        summary: dict[str, object],
+        summary_path: Path | None = None,
+        stage_delay: float = 0.35,
+        animate_arm: bool = True,
+    ) -> None:
         super().__init__()
         self.summary = summary
         self.summary_path = summary_path
+        self.stage_delay = max(0.0, stage_delay)
+        self.animate_arm = animate_arm
         self.register_theme(_build_theme(THEME_NAME_DARK, WORLDFORGE_DARK_PALETTE, dark=True))
         self.register_theme(_build_theme(THEME_NAME_LIGHT, WORLDFORGE_LIGHT_PALETTE, dark=False))
         self.register_theme(
@@ -3479,15 +3612,52 @@ class RoboticsShowcaseApp(App[None]):
     def compose(self) -> ComposeResult:
         yield Header()
         with VerticalScroll(id="robotics-body"):
-            yield RoboticsHeroPane(self.summary, self.summary_path)
-            with Horizontal(id="robotics-main"):
+            if self.stage_delay <= 0:
+                yield RoboticsHeroPane(self.summary, self.summary_path)
                 yield RoboticsPipelinePane(self.summary)
                 yield RoboticsMetricsPane(self.summary)
-            with Horizontal(id="robotics-bottom"):
+                yield RoboticsArmPane(self.summary, animate=self.animate_arm)
                 yield RoboticsCandidatePane(self.summary)
                 yield RoboticsTabletopPane(self.summary)
-            yield RoboticsEventPane(self.summary)
+                yield RoboticsEventPane(self.summary)
+            else:
+                yield RoboticsProgressPane()
         yield Footer()
+
+    async def on_mount(self) -> None:
+        if self.stage_delay > 0:
+            self.run_worker(self._reveal_report(), name="robotics.reveal", group="robotics")
+
+    async def _reveal_report(self) -> None:
+        body = self.query_one("#robotics-body", VerticalScroll)
+        progress = self.query_one(RoboticsProgressPane)
+        stages: list[tuple[str, Static]] = [
+            (
+                "Loaded real policy + score summary.",
+                RoboticsHeroPane(self.summary, self.summary_path),
+            ),
+            ("Tracing the policy-to-world-model pipeline.", RoboticsPipelinePane(self.summary)),
+            ("Rendering latency and tensor contract metrics.", RoboticsMetricsPane(self.summary)),
+            (
+                "Animating the selected action chunk as an illustrative arm replay.",
+                RoboticsArmPane(self.summary, animate=self.animate_arm),
+            ),
+            (
+                "Ranking LeRobot action candidates by LeWorldModel cost.",
+                RoboticsCandidatePane(self.summary),
+            ),
+            (
+                "Drawing the tabletop replay with stable markers.",
+                RoboticsTabletopPane(self.summary),
+            ),
+            ("Attaching provider event log.", RoboticsEventPane(self.summary)),
+        ]
+        await asyncio.sleep(self.stage_delay)
+        for message, widget in stages:
+            progress.set_message(message)
+            await body.mount(widget)
+            await asyncio.sleep(self.stage_delay)
+        await progress.remove()
 
     def action_toggle_theme(self) -> None:
         order = (THEME_NAME_DARK, THEME_NAME_LIGHT, THEME_NAME_HIGH_CONTRAST)

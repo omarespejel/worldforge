@@ -347,10 +347,11 @@ This showcase runs real LeRobot policy inference and real LeWorldModel checkpoin
 PushT diffusion policy (`lerobot/diffusion_pusht`), the `~/.stable-wm/pusht/lewm_object.ckpt`
 LeWorldModel object checkpoint, a packaged PushT observation builder, and a packaged action-candidate
 bridge. By default, `scripts/robotics-showcase` runs inference quietly and opens a Textual visual
-report with pipeline stages, runtime bars, tensor metrics, candidate costs, provider events, and a
-fixed tabletop replay map. It writes `/tmp/worldforge-robotics-showcase/real-run.json`; pass
-`--no-tui` for the plain terminal report, `--json-only` for automation, or `--health-only` for a
-dependency preflight.
+report with a staged reveal, pipeline trace, runtime bars, tensor metrics, an illustrative animated
+robot-arm replay, full-width candidate costs, provider events, and a fixed tabletop replay map. It
+writes `/tmp/worldforge-robotics-showcase/real-run.json`; pass `--tui-stage-delay 0.1` to speed up
+the reveal, `--no-tui-animation` to disable sleeps and arm motion, `--no-tui` for the plain terminal
+report, `--json-only` for automation, or `--health-only` for a dependency preflight.
 
 Use the lower-level configurable runner when you bring a different embodiment or task bridge:
 

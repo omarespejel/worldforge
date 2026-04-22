@@ -112,6 +112,17 @@ def _parser() -> argparse.ArgumentParser:
         help="Force the plain terminal report.",
     )
     parser.add_argument(
+        "--tui-stage-delay",
+        type=float,
+        default=0.35,
+        help="Seconds between staged Textual report reveals. Defaults to 0.35.",
+    )
+    parser.add_argument(
+        "--no-tui-animation",
+        action="store_true",
+        help="Disable staged Textual reveal delays and the illustrative arm animation.",
+    )
+    parser.add_argument(
         "--color",
         choices=("auto", "always", "never"),
         default="auto",
@@ -178,7 +189,13 @@ def _forward_args(args: argparse.Namespace) -> list[str]:
     return forwarded
 
 
-def _run_tui_report(forwarded: list[str], *, summary_path: Path | None) -> int:
+def _run_tui_report(
+    forwarded: list[str],
+    *,
+    summary_path: Path | None,
+    stage_delay: float,
+    animate_arm: bool,
+) -> int:
     captured = io.StringIO()
     json_forwarded = list(forwarded)
     if "--json-only" not in json_forwarded:
@@ -195,13 +212,29 @@ def _run_tui_report(forwarded: list[str], *, summary_path: Path | None) -> int:
         raise SystemExit(f"robotics showcase TUI could not parse run summary JSON: {exc}") from exc
     if not isinstance(summary, dict):
         raise SystemExit("robotics showcase TUI expected the run summary to be a JSON object.")
-    return _launch_tui(summary, summary_path=summary_path)
+    return _launch_tui(
+        summary,
+        summary_path=summary_path,
+        stage_delay=stage_delay,
+        animate_arm=animate_arm,
+    )
 
 
-def _launch_tui(summary: dict[str, Any], *, summary_path: Path | None) -> int:
+def _launch_tui(
+    summary: dict[str, Any],
+    *,
+    summary_path: Path | None,
+    stage_delay: float,
+    animate_arm: bool,
+) -> int:
     from worldforge.harness.cli import launch_robotics_showcase_report
 
-    return launch_robotics_showcase_report(summary=summary, summary_path=summary_path)
+    return launch_robotics_showcase_report(
+        summary=summary,
+        summary_path=summary_path,
+        stage_delay=stage_delay,
+        animate_arm=animate_arm,
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -210,9 +243,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     forwarded = _forward_args(args)
     forwarded.extend(extra)
     if args.tui and not args.json_only and not args.health_only:
+        stage_delay = 0.0 if args.no_tui_animation else max(0.0, args.tui_stage_delay)
         return _run_tui_report(
             forwarded,
             summary_path=None if args.no_json_output else args.json_output,
+            stage_delay=stage_delay,
+            animate_arm=not args.no_tui_animation,
         )
     return lerobot_leworldmodel.main(forwarded)
 

@@ -294,9 +294,17 @@ def test_robotics_showcase_tui_mode_captures_json_and_launches_report(
         print(json.dumps(_showcase_summary()))
         return 0
 
-    def fake_launch(summary: dict[str, Any], *, summary_path: Path | None) -> int:
+    def fake_launch(
+        summary: dict[str, Any],
+        *,
+        summary_path: Path | None,
+        stage_delay: float,
+        animate_arm: bool,
+    ) -> int:
         captured["summary"] = summary
         captured["summary_path"] = summary_path
+        captured["stage_delay"] = stage_delay
+        captured["animate_arm"] = animate_arm
         return 0
 
     monkeypatch.setattr(robotics_showcase.lerobot_leworldmodel, "main", fake_low_level_main)
@@ -310,6 +318,8 @@ def test_robotics_showcase_tui_mode_captures_json_and_launches_report(
                 "/tmp/pusht/lewm_object.ckpt",
                 "--json-output",
                 str(json_path),
+                "--tui-stage-delay",
+                "0.2",
                 "--tui",
             ]
         )
@@ -319,3 +329,5 @@ def test_robotics_showcase_tui_mode_captures_json_and_launches_report(
     assert "--json-only" in captured["argv"]
     assert captured["summary"]["score_result"]["best_index"] == 2
     assert captured["summary_path"] == json_path
+    assert captured["stage_delay"] == 0.2
+    assert captured["animate_arm"] is True

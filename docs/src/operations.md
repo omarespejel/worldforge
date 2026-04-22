@@ -188,11 +188,13 @@ include those IDs in surrounding application logs.
   This command uses `World.plan(policy_provider="lerobot", score_provider="leworldmodel")`, a
   packaged PushT observation/score/candidate bridge, and host-owned optional dependencies installed
   only for the process. By default it opens a Textual visual report for the policy-to-world-model
-  trace, writes `/tmp/worldforge-robotics-showcase/real-run.json`, and mock-executes the selected
-  WorldForge action chunk. Pass `--no-tui` for the plain terminal report or `--json-only` for the
-  machine-readable summary. For a different task or embodiment, use `scripts/lewm-lerobot-real
-  --help` and provide task-aligned observation preprocessing and a candidate bridge; WorldForge does
-  not pad or reinterpret mismatched action spaces.
+  trace, staged reveal, illustrative arm animation, candidate ranking, tabletop replay, and provider
+  events. It writes `/tmp/worldforge-robotics-showcase/real-run.json` and mock-executes the selected
+  WorldForge action chunk. Pass `--tui-stage-delay <seconds>` to tune the reveal pace,
+  `--no-tui-animation` to disable sleeps and arm motion, `--no-tui` for the plain terminal report,
+  or `--json-only` for the machine-readable summary. For a different task or embodiment, use
+  `scripts/lewm-lerobot-real --help` and provide task-aligned observation preprocessing and a
+  candidate bridge; WorldForge does not pad or reinterpret mismatched action spaces.
 - To smoke-test a real GR00T policy server, install or check out NVIDIA Isaac-GR00T, prepare a
   host-specific observation factory and action translator, then run
   `python scripts/smoke_gr00t_policy.py --gr00t-root /path/to/Isaac-GR00T --start-server ...`.

@@ -54,17 +54,8 @@ def test_harness_theme_toggle_cycles_between_registered_themes(tmp_path) -> None
     asyncio.run(scenario())
 
 
-def test_robotics_showcase_app_renders_visual_report(tmp_path) -> None:
-    pytest.importorskip("textual")
-
-    from worldforge.harness.tui import (
-        RoboticsCandidatePane,
-        RoboticsEventPane,
-        RoboticsShowcaseApp,
-        RoboticsTabletopPane,
-    )
-
-    summary = {
+def _robotics_summary() -> dict[str, object]:
+    return {
         "checkpoint_display": "~/.stable-wm/pusht/lewm_object.ckpt",
         "inputs": {
             "policy_path": "lerobot/diffusion_pusht",
@@ -104,16 +95,91 @@ def test_robotics_showcase_app_renders_visual_report(tmp_path) -> None:
         "metrics": {"plan_latency_ms": 5279.53, "total_latency_ms": 9597.51},
     }
 
+
+def test_robotics_showcase_app_renders_visual_report(tmp_path) -> None:
+    pytest.importorskip("textual")
+
+    from worldforge.harness.tui import (
+        RoboticsArmPane,
+        RoboticsCandidatePane,
+        RoboticsEventPane,
+        RoboticsShowcaseApp,
+        RoboticsTabletopPane,
+    )
+
+    summary = _robotics_summary()
+
     async def scenario() -> None:
-        app = RoboticsShowcaseApp(summary=summary, summary_path=tmp_path / "summary.json")
+        app = RoboticsShowcaseApp(
+            summary=summary,
+            summary_path=tmp_path / "summary.json",
+            stage_delay=0.0,
+            animate_arm=False,
+        )
         async with app.run_test(size=(150, 48)) as pilot:
             await pilot.pause()
+            assert app.query_one(RoboticsArmPane) is not None
             assert app.query_one(RoboticsCandidatePane) is not None
             assert app.query_one(RoboticsTabletopPane) is not None
             assert app.query_one(RoboticsEventPane) is not None
             await pilot.press("ctrl+t")
             await pilot.pause()
             assert app.theme == "worldforge-light"
+
+    asyncio.run(scenario())
+
+
+def test_robotics_showcase_app_stages_visual_report(tmp_path) -> None:
+    pytest.importorskip("textual")
+
+    from textual.css.query import NoMatches
+
+    from worldforge.harness.tui import (
+        RoboticsArmPane,
+        RoboticsCandidatePane,
+        RoboticsEventPane,
+        RoboticsProgressPane,
+        RoboticsShowcaseApp,
+        RoboticsTabletopPane,
+    )
+
+    async def scenario() -> None:
+        app = RoboticsShowcaseApp(
+            summary=_robotics_summary(),
+            summary_path=tmp_path / "summary.json",
+            stage_delay=0.001,
+            animate_arm=True,
+        )
+        async with app.run_test(size=(150, 48)) as pilot:
+            await pilot.pause(0.05)
+            assert app.query_one(RoboticsArmPane) is not None
+            assert app.query_one(RoboticsCandidatePane) is not None
+            assert app.query_one(RoboticsTabletopPane) is not None
+            assert app.query_one(RoboticsEventPane) is not None
+            with pytest.raises(NoMatches):
+                app.query_one(RoboticsProgressPane)
+
+    asyncio.run(scenario())
+
+
+def test_robotics_arm_pane_advances_frame(tmp_path) -> None:
+    pytest.importorskip("textual")
+
+    from worldforge.harness.tui import RoboticsArmPane, RoboticsShowcaseApp
+
+    async def scenario() -> None:
+        app = RoboticsShowcaseApp(
+            summary=_robotics_summary(),
+            summary_path=tmp_path / "summary.json",
+            stage_delay=0.0,
+            animate_arm=True,
+        )
+        async with app.run_test(size=(150, 48)) as pilot:
+            await pilot.pause()
+            arm = app.query_one(RoboticsArmPane)
+            assert arm._frame_index == 0
+            arm._advance()
+            assert arm._frame_index == 1
 
     asyncio.run(scenario())
 

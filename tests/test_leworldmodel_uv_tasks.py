@@ -49,6 +49,7 @@ def test_leworldmodel_uv_commands_are_packaged_console_scripts() -> None:
     assert '"pymunk"' in showcase_task_text
     assert '"gymnasium"' in showcase_task_text
     assert '"shapely"' in showcase_task_text
+    assert "is_help_request" in showcase_task_text
     assert "showcase_args=(--tui" in showcase_task_text
     assert 'runtime_args+=(--with "textual>=8.2,<9")' in showcase_task_text
     assert "--no-tui" in showcase_task_text
