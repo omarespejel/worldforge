@@ -82,6 +82,62 @@ planner uses the policy output as candidate action chunks, asks the score provid
 candidates, selects the lowest-cost chunk, and applies the selected executable action to the local
 mock world.
 
+## Reading The Tabletop Replay
+
+The tabletop replay is a small top-down map of the PushT workspace. Read it like a view from the
+ceiling: left/right is the normalized `x` axis, and vertical position is the task's tabletop plane.
+It is not a full physics trace or a hardware camera feed. It is a compact map of the start, goal,
+candidate targets, selected target, and final mock replay state.
+
+Example output:
+
+```text
+Tabletop replay
+---------------
+  legend: S=start, G=goal, T=selected target, F=mock final, X=selected+final
+  selected candidate: #2
+  +------------------------------------------+
+  |                                          |
+  |                                          |
+  |                                          |
+  |                               0          |
+  |                          1               |
+  |                                          |
+  |S                   G                     |
+  |                                          |
+  |               X                          |
+  |                                          |
+  |                                          |
+  |                                          |
+  |                                          |
+  +------------------------------------------+
+  x=0.00             x=0.50             x=1.00
+```
+
+Plain-language interpretation:
+
+- `S` is where the block starts in the local replay.
+- `G` is the desired goal region.
+- `0` and `1` are alternative action candidates proposed by the LeRobot policy and scored by
+  LeWorldModel.
+- `selected candidate: #2` means the planner chose candidate `#2` as the lowest-cost candidate.
+- `X` means the selected target and the mock final state landed on the same rendered cell. In this
+  example, candidate `#2` is not printed as a separate `2` because the map collapses "selected
+  target" and "final replay position" into `X`.
+- `x=0.00`, `x=0.50`, and `x=1.00` mark the left, middle, and right sides of the normalized table.
+
+The mental model is simple: imagine the policy saying, "Here are a few places I could try to push
+the object." Those possible targets appear as candidate marks. Then the world model says, "This one
+looks cheapest or most promising for the goal." WorldForge chooses that candidate, translates it
+into an executable local action, and runs a mock replay. The map shows the decision result: which
+candidate won and where the local replay ended.
+
+The replay is useful because it makes the policy-plus-score loop visible at a glance. If the chosen
+candidate is near the goal and the final mark overlaps it, the local plan is coherent for this
+toy replay. If the selected mark is far from the goal, or the final mark diverges from the selected
+target, that is a signal to inspect the candidate bridge, score tensors, action translator, or task
+preprocessing.
+
 ## Step By Step
 
 1. Resolve runtime settings.
