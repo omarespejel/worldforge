@@ -775,10 +775,28 @@ class SceneObject:
     def copy(self) -> SceneObject:
         return SceneObject.from_dict(self.to_dict())
 
+    def _bbox_translated_to(self, position: Position) -> BBox:
+        dx = position.x - self.position.x
+        dy = position.y - self.position.y
+        dz = position.z - self.position.z
+        return BBox(
+            min=Position(
+                self.bbox.min.x + dx,
+                self.bbox.min.y + dy,
+                self.bbox.min.z + dz,
+            ),
+            max=Position(
+                self.bbox.max.x + dx,
+                self.bbox.max.y + dy,
+                self.bbox.max.z + dz,
+            ),
+        )
+
     def apply_patch(self, patch: SceneObjectPatch) -> None:
         if patch.name is not None:
             self.name = patch.name
         if patch.position is not None:
+            self.bbox = self._bbox_translated_to(patch.position)
             self.position = patch.position
         if patch.graspable is not None:
             self.is_graspable = patch.graspable

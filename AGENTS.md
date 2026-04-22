@@ -214,7 +214,9 @@ rm -f "$tmp_req"
   values, and other non-file-safe IDs before loading, importing, or saving world state.
 - Persisted history is part of the state contract: history entries must have non-negative steps,
   non-empty summaries, valid snapshot states, valid serialized `Action` payloads when present, and
-  no entry step greater than the current world step.
+  no entry step greater than the current world step. Scene object add/update/remove mutations
+  should append typed history entries without advancing provider time.
+- Position patches must keep scene-object bounding boxes translated with their poses.
 - Persistence is host-owned beyond local JSON import/export; do not add a lock file, SQLite store,
   or service adapter without an explicit design.
 - Built-in evaluation suites are deterministic contract harnesses, not claims of physical or

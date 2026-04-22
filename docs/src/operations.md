@@ -89,7 +89,10 @@ Supported persistence invariants:
 - World IDs are validated as file-safe local storage identifiers before any read or write. Path
   separators, traversal-shaped IDs, empty strings, and non-string IDs are rejected.
 - CLI object mutations and persisted predictions load the world, apply typed `SceneObject`,
-  `SceneObjectPatch`, or `Action` values, and write through `save_world(...)`.
+  `SceneObjectPatch`, or `Action` values, append typed history entries, and write through
+  `save_world(...)`.
+- Position patches translate the object's bounding box with the pose so local scene edits do not
+  leave stale spatial bounds in persisted snapshots.
 - `world predict` saves the provider-updated world unless `--dry-run` is supplied.
 - `delete_world(...)` and `world delete` validate the world id before unlinking local JSON and fail
   loudly when the requested world is already absent.

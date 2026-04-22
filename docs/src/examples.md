@@ -87,3 +87,6 @@ uv run worldforge predict kitchen --provider mock --x 0.3 --y 0.8 --z 0.0 --step
 uv run worldforge eval --suite planning --provider mock --format json
 uv run worldforge benchmark --provider mock --iterations 5 --format json
 ```
+
+Object add/update/remove commands write typed mutation entries into `world history`; predictions
+append their provider action entries after the provider returns the next state.

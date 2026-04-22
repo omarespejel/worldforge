@@ -128,7 +128,7 @@ uv run worldforge world add-object <world-id> cube --x 0 --y 0.5 --z 0  # edit s
 uv run worldforge world predict <world-id> --object-id <object-id> --x 0.4 --y 0.5 --z 0
 uv run worldforge world list                                            # persisted worlds
 uv run worldforge world objects <world-id>                              # scene objects
-uv run worldforge world history <world-id>                              # persisted history
+uv run worldforge world history <world-id>                              # object edits + predictions
 uv run worldforge world export <world-id> --output world.json           # portable state JSON
 uv run worldforge world delete <world-id>                               # remove local JSON state
 uv run worldforge provider list                                         # registered providers
@@ -139,6 +139,9 @@ uv run worldforge benchmark --provider mock --iterations 5 --format json
 uv run worldforge benchmark --provider mock --operation embed --input-file benchmark-inputs.json
 uv run worldforge benchmark --provider mock --operation generate --budget-file benchmark-budget.json
 ```
+
+Scene mutations append persisted history entries with typed action payloads. Position patches keep
+the object's bounding box translated with the pose so saved snapshots stay coherent.
 
 ## Capability Model
 

@@ -57,6 +57,9 @@ releases may still include breaking changes when the public API needs to tighten
 - Added `WorldForge.delete_world(...)` and `worldforge world delete` so local JSON world removal
   uses the same validated persistence boundary as save/load/import/fork. TheWorldHarness now calls
   this public API instead of unlinking world files directly.
+- Added persisted history entries for scene object add/update/remove mutations, including typed
+  `Action` payloads and snapshots that can be restored or forked. Object position patches now
+  translate bounding boxes with the pose to keep local scene state coherent.
 - Added `worldforge examples` with Markdown and JSON output so CLI users can discover checkout
   scripts, packaged demos, and optional smoke commands without scanning repository docs.
 - Added the `worldforge-demo-lerobot` console command and packaged the LeRobot policy-plus-score

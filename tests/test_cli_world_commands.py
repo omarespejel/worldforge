@@ -79,12 +79,29 @@ def test_world_cli_edits_persisted_scene_objects(tmp_path, monkeypatch, capsys) 
     assert updated["object"]["name"] == "coffee_mug"
     assert updated["object"]["position"] == {"x": 0.25, "y": 0.8, "z": 0.05}
     assert updated["object"]["is_graspable"] is False
+    assert updated["object"]["bbox"]["min"]["x"] == pytest.approx(0.15)
+    assert updated["object"]["bbox"]["max"]["x"] == pytest.approx(0.35)
+    assert updated["object"]["bbox"]["min"]["z"] == pytest.approx(-0.05)
+    assert updated["object"]["bbox"]["max"]["z"] == pytest.approx(0.15)
 
     removed = json.loads(
         _run_world_cli(tmp_path, monkeypatch, capsys, "remove-object", world_id, "mug-1")
     )
     assert removed["removed_object"]["id"] == "mug-1"
     assert removed["world"]["object_count"] == 0
+
+    history = json.loads(_run_world_cli(tmp_path, monkeypatch, capsys, "history", world_id))
+    assert [entry["summary"] for entry in history["history"]] == [
+        "world initialized",
+        "added object mug-1",
+        "updated object mug-1",
+        "removed object mug-1",
+    ]
+    assert history["history"][1]["action"]["type"] == "add_object"
+    assert history["history"][2]["action"]["type"] == "update_object"
+    assert history["history"][2]["object_count"] == 1
+    assert history["history"][3]["action"]["type"] == "remove_object"
+    assert history["history"][3]["object_count"] == 0
 
 
 def test_world_cli_deletes_persisted_world(tmp_path, monkeypatch, capsys) -> None:
@@ -157,7 +174,7 @@ def test_world_cli_prediction_saves_or_dry_runs_persisted_world(
     )
     assert prediction["saved"] is True
     assert prediction["world"]["step"] == 2
-    assert prediction["world"]["history_length"] == 2
+    assert prediction["world"]["history_length"] == 3
 
     saved_objects = json.loads(_run_world_cli(tmp_path, monkeypatch, capsys, "objects", world_id))
     assert saved_objects["objects"][0]["position"] == {"x": 0.4, "y": 0.5, "z": 0.0}

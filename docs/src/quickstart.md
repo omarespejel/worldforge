@@ -92,6 +92,9 @@ uv run worldforge eval --suite planning --provider mock --format json
 uv run worldforge benchmark --provider mock --iterations 5 --format json
 ```
 
+`world history` includes initialization, object add/update/remove mutations, and provider
+predictions. Object position updates translate the stored bounding box with the pose.
+
 Optional visual E2E harness:
 
 ```bash

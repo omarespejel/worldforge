@@ -102,6 +102,92 @@ def test_world_delete_can_remove_corrupted_local_json_by_safe_id(tmp_path) -> No
     assert not broken_path.exists()
 
 
+def test_world_object_mutations_record_history_and_keep_bbox_coherent(tmp_path) -> None:
+    forge = WorldForge(state_dir=tmp_path)
+    world = forge.create_world("mutation-history", provider="mock")
+
+    added = world.add_object(
+        SceneObject(
+            "cube",
+            Position(0.0, 0.5, 0.0),
+            BBox(Position(-0.05, 0.45, -0.05), Position(0.05, 0.55, 0.05)),
+            id="cube-1",
+            is_graspable=True,
+        )
+    )
+    assert added.id == "cube-1"
+    assert world.history_length == 2
+
+    add_entry = world.history()[-1]
+    add_action = json.loads(add_entry.action_json or "{}")
+    assert add_entry.summary == "added object cube-1"
+    assert add_action["type"] == "add_object"
+    assert add_action["parameters"]["object"]["id"] == "cube-1"
+    assert "cube-1" in add_entry.state["scene"]["objects"]
+
+    patch = SceneObjectPatch()
+    patch.set_name("blue_cube")
+    patch.set_position(Position(0.25, 0.5, 0.1))
+    patch.set_graspable(False)
+    updated = world.update_object_patch("cube-1", patch)
+    assert updated.name == "blue_cube"
+    assert updated.bbox.min.x == pytest.approx(0.20)
+    assert updated.bbox.max.x == pytest.approx(0.30)
+    assert updated.bbox.min.z == pytest.approx(0.05)
+    assert updated.bbox.max.z == pytest.approx(0.15)
+
+    update_entry = world.history()[-1]
+    update_action = json.loads(update_entry.action_json or "{}")
+    assert update_entry.summary == "updated object cube-1"
+    assert update_action["type"] == "update_object"
+    assert update_action["parameters"]["changes"] == {
+        "name": "blue_cube",
+        "position": {"x": 0.25, "y": 0.5, "z": 0.1},
+        "is_graspable": False,
+    }
+    assert update_action["parameters"]["before"]["name"] == "cube"
+    assert update_action["parameters"]["after"]["name"] == "blue_cube"
+
+    history_length = world.history_length
+    noop = world.update_object_patch("cube-1", SceneObjectPatch())
+    assert noop.id == "cube-1"
+    assert world.history_length == history_length
+
+    checkpoint = world.history_state(1)
+    checkpoint_object = checkpoint.get_object_by_id("cube-1")
+    assert checkpoint_object is not None
+    assert checkpoint_object.name == "cube"
+    assert checkpoint_object.position == Position(0.0, 0.5, 0.0)
+
+    removed = world.remove_object_by_id("cube-1")
+    assert removed is not None
+    assert removed.id == "cube-1"
+    assert world.object_count == 0
+    assert world.history_length == 4
+
+    remove_entry = world.history()[-1]
+    remove_action = json.loads(remove_entry.action_json or "{}")
+    assert remove_entry.summary == "removed object cube-1"
+    assert remove_action["type"] == "remove_object"
+    assert remove_action["parameters"]["object_id"] == "cube-1"
+    assert "cube-1" not in remove_entry.state["scene"]["objects"]
+
+    world_id = forge.save_world(world)
+    loaded = forge.load_world(world_id)
+    assert [entry.summary for entry in loaded.history()] == [
+        "world initialized",
+        "added object cube-1",
+        "updated object cube-1",
+        "removed object cube-1",
+    ]
+
+    loaded.restore_history(1)
+    restored_object = loaded.get_object_by_id("cube-1")
+    assert restored_object is not None
+    assert restored_object.name == "cube"
+    assert loaded.history_length == 2
+
+
 def test_prompt_seeded_world_history_and_forking(tmp_path) -> None:
     forge = WorldForge(state_dir=tmp_path)
     seeded = forge.create_world_from_prompt(

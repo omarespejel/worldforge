@@ -66,7 +66,7 @@ Run from repository root.
 | Package contract | `bash scripts/test_package.sh` | wheel installs and tests pass in isolated venv |
 | Full local gate | `uv lock --check && uv run ruff check src tests examples scripts && uv run ruff format --check src tests examples scripts && uv run python scripts/generate_provider_docs.py --check && uv run pytest && uv run --extra harness pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90 && bash scripts/test_package.sh` | release-quality local validation |
 | CLI smoke | `uv run worldforge doctor` | `mock` registered; optional providers report missing/unregistered when env absent |
-| World CLI persistence | `uv run worldforge world create lab --provider mock && uv run worldforge world add-object <world-id> cube --x 0 --y 0.5 --z 0 && uv run worldforge world predict <world-id> --x 0.4 --y 0.5 --z 0 && uv run worldforge world delete <world-id>` | local JSON world is saved, edited, advanced, and removed through the validated persistence API |
+| World CLI persistence | `uv run worldforge world create lab --provider mock && uv run worldforge world add-object <world-id> cube --x 0 --y 0.5 --z 0 && uv run worldforge world history <world-id> && uv run worldforge world predict <world-id> --x 0.4 --y 0.5 --z 0 && uv run worldforge world delete <world-id>` | local JSON world is saved, edited with history, advanced, and removed through the validated persistence API |
 | Examples index | `uv run worldforge examples` | runnable command list prints |
 | Harness | `uv run --extra harness worldforge-harness` | Textual extra only |
 | Build | `uv build` | wheel and sdist under `dist/` |

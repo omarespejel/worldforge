@@ -488,6 +488,17 @@ class World:
             )
         )
 
+    @staticmethod
+    def _object_patch_payload(patch: SceneObjectPatch) -> JSONDict:
+        changes: JSONDict = {}
+        if patch.name is not None:
+            changes["name"] = patch.name
+        if patch.position is not None:
+            changes["position"] = patch.position.to_dict()
+        if patch.graspable is not None:
+            changes["is_graspable"] = patch.graspable
+        return changes
+
     def to_dict(self) -> JSONDict:
         state = self._snapshot()
         state["history"] = [entry.to_dict() for entry in self._history]
@@ -501,7 +512,12 @@ class World:
             raise WorldForgeError(f"Object id '{obj.id}' is already present in world '{self.id}'.")
         self.scene_objects[obj.id] = obj.copy()
         self.metadata["name"] = self.name
-        return self.scene_objects[obj.id]
+        added = self.scene_objects[obj.id]
+        self._record_history(
+            summary=f"added object {added.id}",
+            action=Action("add_object", {"object": added.to_dict()}),
+        )
+        return added
 
     def list_objects(self) -> list[str]:
         return [obj.name for obj in self.scene_objects.values()]
@@ -520,12 +536,43 @@ class World:
             raise WorldForgeError(
                 f"Object '{object_id}' is not present in world '{self.id}'."
             ) from exc
+        before = scene_object.copy()
+        changes = self._object_patch_payload(patch)
+        if not changes:
+            return before
         scene_object.apply_patch(patch)
-        return scene_object.copy()
+        updated = scene_object.copy()
+        self._record_history(
+            summary=f"updated object {updated.id}",
+            action=Action(
+                "update_object",
+                {
+                    "object_id": updated.id,
+                    "changes": changes,
+                    "before": before.to_dict(),
+                    "after": updated.to_dict(),
+                },
+            ),
+        )
+        return updated
 
     def remove_object_by_id(self, object_id: str) -> SceneObject | None:
         removed = self.scene_objects.pop(object_id, None)
-        return removed.copy() if removed else None
+        if removed is None:
+            return None
+        removed_copy = removed.copy()
+        self.metadata["name"] = self.name
+        self._record_history(
+            summary=f"removed object {removed_copy.id}",
+            action=Action(
+                "remove_object",
+                {
+                    "object_id": removed_copy.id,
+                    "object": removed_copy.to_dict(),
+                },
+            ),
+        )
+        return removed_copy
 
     def history(self) -> list[HistoryEntry]:
         return [HistoryEntry.from_dict(entry.to_dict()) for entry in self._history]

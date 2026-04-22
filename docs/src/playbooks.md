@@ -173,6 +173,8 @@ Success signal:
 - saved JSON validates before it replaces the destination file.
 - the CLI create/import/fork/object/predict commands save through the same validation path as Python
   `save_world(...)`.
+- object add/update/remove commands append explicit history entries with typed `Action` payloads,
+  and position updates translate object bounding boxes with the new pose.
 - `world delete` and `WorldForge.delete_world(...)` validate the world id before unlinking the local
   JSON file and raise `WorldStateError` when the file is already absent.
 - `world predict` persists the provider-updated state by default; use `--dry-run` to inspect a
