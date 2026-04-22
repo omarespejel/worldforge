@@ -46,6 +46,8 @@ releases may still include breaking changes when the public API needs to tighten
 - Improved the robotics showcase report layout into a vertical, scrollable story with full-width
   candidate ranking, full-width tabletop replay, staged reveal delays, and an illustrative animated
   robot-arm replay.
+- Added an in-report reading guide for runtime, tensor, and candidate-ranking panes plus a `?`
+  tabletop-replay help overlay for the real robotics showcase TUI.
 
 ### Added
 

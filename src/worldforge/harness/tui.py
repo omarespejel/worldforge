@@ -3130,6 +3130,56 @@ def _robotics_color(token: str) -> str:
     }.get(token, "white")
 
 
+ROBOTICS_REPORT_GUIDE_ROWS: tuple[tuple[str, str, str], ...] = (
+    (
+        "Runtime bars",
+        "policy, score, plan, and total are wall-clock milliseconds for the completed run.",
+        "Policy is the LeRobot checkpoint call; score is the LeWorldModel cost call.",
+    ),
+    (
+        "Tensor contract",
+        "tensor MB and elements describe the preprocessed score tensors sent to LeWorldModel.",
+        "They explain runtime size and shape, not physical skill or task success by themselves.",
+    ),
+    (
+        "Candidate ranking",
+        "lower cost wins; SELECTED is the action chunk WorldForge mock-replays.",
+        "The selected row should agree with the tabletop target/final marker and best_index.",
+    ),
+)
+
+ROBOTICS_TABLETOP_DIAGRAM = """Tabletop replay
+---------------
+legend: S=start, G=goal, T=selected target, F=mock final, X=selected+final
+selected candidate: #2
++------------------------------------------+
+|                                          |
+|                                          |
+|                                          |
+|                               0          |
+|                          1               |
+|                                          |
+|S                   G                     |
+|                                          |
+|               X                          |
+|                                          |
+|                                          |
+|                                          |
+|                                          |
++------------------------------------------+
+x=0.00             x=0.50             x=1.00"""
+
+ROBOTICS_TABLETOP_HELP_TEXT = (
+    "Read the tabletop replay as a top-down map of the PushT workspace. "
+    "S is the start, G is the goal, numbered marks are non-selected policy "
+    "candidates, T is the selected target, F is the mock final position, and "
+    "X means the selected target and mock final state overlap on the same rendered cell. "
+    "Mentally: LeRobot proposes possible pushes, LeWorldModel assigns costs, "
+    "WorldForge picks the lowest-cost candidate, then the local mock world replays that action. "
+    "This is a planning visualization, not a hardware camera feed or robot-control trace."
+)
+
+
 class RoboticsHeroPane(Static, _ThemedRenderer):
     """Top-level real robotics showcase identity and run contract."""
 
@@ -3204,6 +3254,38 @@ class RoboticsPipelinePane(Static, _ThemedRenderer):
             if index != rows[-1][0]:
                 table.add_row("", Text("|", style=color), Text("v", style=color))
         self.update(Panel(table, title="Pipeline Flow", border_style=accent))
+
+
+class RoboticsReportGuidePane(Static, _ThemedRenderer):
+    """Compact guide for interpreting the report panes."""
+
+    def on_mount(self) -> None:
+        table = Table(
+            expand=True,
+            show_header=True,
+            header_style=f"bold {_robotics_color('accent')}",
+            box=box.SIMPLE,
+        )
+        table.add_column("pane", no_wrap=True)
+        table.add_column("read it as", ratio=2)
+        table.add_column("watch for", ratio=2)
+        for pane, meaning, watch_for in ROBOTICS_REPORT_GUIDE_ROWS:
+            table.add_row(
+                Text(pane, style=f"bold {_robotics_color('success')}"),
+                meaning,
+                Text(watch_for, style=_robotics_color("muted")),
+            )
+        footer = Text(
+            "Press ? for the tabletop replay legend and mental model.",
+            style=f"bold {_robotics_color('warning')}",
+        )
+        self.update(
+            Panel(
+                Group(table, Text(""), footer),
+                title="Reading The Report",
+                border_style=_robotics_color("panel"),
+            )
+        )
 
 
 class RoboticsMetricsPane(Static, _ThemedRenderer):
@@ -3502,6 +3584,60 @@ class RoboticsEventPane(Static, _ThemedRenderer):
         self.update(Panel(table, title="Provider Event Log", border_style=_robotics_color("panel")))
 
 
+class RoboticsTabletopHelpScreen(ModalScreen[None]):
+    """Modal explainer for the standalone robotics tabletop replay."""
+
+    BINDINGS = [
+        Binding("escape", "dismiss", "Close", show=True),
+        Binding("q", "dismiss", "Close", show=False),
+    ]
+
+    CSS = """
+    RoboticsTabletopHelpScreen {
+        align: center middle;
+    }
+
+    RoboticsTabletopHelpScreen > #robotics-help-card {
+        width: 104;
+        height: 38;
+        background: $surface;
+        border: tall $accent;
+        padding: 1 2;
+    }
+
+    RoboticsTabletopHelpScreen #robotics-help-title {
+        height: 1;
+        text-style: bold;
+        color: $accent;
+        margin-bottom: 1;
+    }
+
+    RoboticsTabletopHelpScreen .robotics-help-section {
+        margin-bottom: 1;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="robotics-help-card"):
+            yield Static("Reading the tabletop replay", id="robotics-help-title")
+            yield Static(ROBOTICS_TABLETOP_HELP_TEXT, classes="robotics-help-section")
+            yield Static(
+                Text(ROBOTICS_TABLETOP_DIAGRAM, style=f"bold {_robotics_color('success')}"),
+                classes="robotics-help-section",
+            )
+            yield Static(
+                "ELI5: the policy suggests a few pushes, the world model scores them, "
+                "WorldForge chooses the cheapest one, and the mock world shows where that "
+                "choice ended. If T and F overlap, the map prints X.",
+                classes="robotics-help-section",
+            )
+            yield Static(
+                "Boundary: this visualizes simulation/replay planning only. It is not a "
+                "hardware command stream, safety check, or physical success proof.",
+                classes="robotics-help-section",
+            )
+
+
 class RoboticsProgressPane(Static, _ThemedRenderer):
     """Staged reveal status for the standalone showcase report."""
 
@@ -3524,6 +3660,7 @@ class RoboticsShowcaseApp(App[None]):
     TITLE = "WorldForge Robotics Showcase"
     SUB_TITLE = "Real LeRobot policy + LeWorldModel scoring"
     BINDINGS = [
+        Binding("?", "show_tabletop_help", "Help", show=True),
         Binding("q", "quit", "Quit", show=True),
         Binding("ctrl+t", "toggle_theme", "Theme", show=True),
     ]
@@ -3556,6 +3693,11 @@ class RoboticsShowcaseApp(App[None]):
 
     RoboticsPipelinePane {
         height: 13;
+        margin-bottom: 1;
+    }
+
+    RoboticsReportGuidePane {
+        height: 11;
         margin-bottom: 1;
     }
 
@@ -3615,6 +3757,7 @@ class RoboticsShowcaseApp(App[None]):
             if self.stage_delay <= 0:
                 yield RoboticsHeroPane(self.summary, self.summary_path)
                 yield RoboticsPipelinePane(self.summary)
+                yield RoboticsReportGuidePane()
                 yield RoboticsMetricsPane(self.summary)
                 yield RoboticsArmPane(self.summary, animate=self.animate_arm)
                 yield RoboticsCandidatePane(self.summary)
@@ -3637,6 +3780,10 @@ class RoboticsShowcaseApp(App[None]):
                 RoboticsHeroPane(self.summary, self.summary_path),
             ),
             ("Tracing the policy-to-world-model pipeline.", RoboticsPipelinePane(self.summary)),
+            (
+                "Explaining how to read the runtime, tensor, and candidate panes.",
+                RoboticsReportGuidePane(),
+            ),
             ("Rendering latency and tensor contract metrics.", RoboticsMetricsPane(self.summary)),
             (
                 "Animating the selected action chunk as an illustrative arm replay.",
@@ -3666,6 +3813,9 @@ class RoboticsShowcaseApp(App[None]):
         except ValueError:
             index = 0
         self.theme = order[(index + 1) % len(order)]
+
+    def action_show_tabletop_help(self) -> None:
+        self.push_screen(RoboticsTabletopHelpScreen())
 
 
 # ---------------------------------------------------------------------------

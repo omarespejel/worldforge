@@ -100,14 +100,18 @@ def test_robotics_showcase_app_renders_visual_report(tmp_path) -> None:
     pytest.importorskip("textual")
 
     from worldforge.harness.tui import (
+        ROBOTICS_REPORT_GUIDE_ROWS,
         RoboticsArmPane,
         RoboticsCandidatePane,
         RoboticsEventPane,
+        RoboticsReportGuidePane,
         RoboticsShowcaseApp,
         RoboticsTabletopPane,
     )
 
     summary = _robotics_summary()
+    assert any(row[0] == "Runtime bars" for row in ROBOTICS_REPORT_GUIDE_ROWS)
+    assert any("lower cost wins" in row[1] for row in ROBOTICS_REPORT_GUIDE_ROWS)
 
     async def scenario() -> None:
         app = RoboticsShowcaseApp(
@@ -121,10 +125,41 @@ def test_robotics_showcase_app_renders_visual_report(tmp_path) -> None:
             assert app.query_one(RoboticsArmPane) is not None
             assert app.query_one(RoboticsCandidatePane) is not None
             assert app.query_one(RoboticsTabletopPane) is not None
+            assert app.query_one(RoboticsReportGuidePane) is not None
             assert app.query_one(RoboticsEventPane) is not None
             await pilot.press("ctrl+t")
             await pilot.pause()
             assert app.theme == "worldforge-light"
+
+    asyncio.run(scenario())
+
+
+def test_robotics_showcase_help_overlay_explains_tabletop_replay(tmp_path) -> None:
+    pytest.importorskip("textual")
+
+    from worldforge.harness.tui import (
+        ROBOTICS_TABLETOP_HELP_TEXT,
+        RoboticsShowcaseApp,
+        RoboticsTabletopHelpScreen,
+    )
+
+    assert "selected target and mock final state overlap" in ROBOTICS_TABLETOP_HELP_TEXT
+    assert "not a hardware camera feed" in ROBOTICS_TABLETOP_HELP_TEXT
+
+    async def scenario() -> None:
+        app = RoboticsShowcaseApp(
+            summary=_robotics_summary(),
+            summary_path=tmp_path / "summary.json",
+            stage_delay=0.0,
+            animate_arm=False,
+        )
+        async with app.run_test(size=(150, 48)) as pilot:
+            await pilot.press("?")
+            await pilot.pause()
+            assert isinstance(app.screen, RoboticsTabletopHelpScreen)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not isinstance(app.screen, RoboticsTabletopHelpScreen)
 
     asyncio.run(scenario())
 
@@ -139,6 +174,7 @@ def test_robotics_showcase_app_stages_visual_report(tmp_path) -> None:
         RoboticsCandidatePane,
         RoboticsEventPane,
         RoboticsProgressPane,
+        RoboticsReportGuidePane,
         RoboticsShowcaseApp,
         RoboticsTabletopPane,
     )
@@ -155,6 +191,7 @@ def test_robotics_showcase_app_stages_visual_report(tmp_path) -> None:
             assert app.query_one(RoboticsArmPane) is not None
             assert app.query_one(RoboticsCandidatePane) is not None
             assert app.query_one(RoboticsTabletopPane) is not None
+            assert app.query_one(RoboticsReportGuidePane) is not None
             assert app.query_one(RoboticsEventPane) is not None
             with pytest.raises(NoMatches):
                 app.query_one(RoboticsProgressPane)

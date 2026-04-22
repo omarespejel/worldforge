@@ -82,6 +82,21 @@ planner uses the policy output as candidate action chunks, asks the score provid
 candidates, selects the lowest-cost chunk, and applies the selected executable action to the local
 mock world.
 
+## Reading The Report Panels
+
+The Textual report is meant to be read as a short evidence trail, not as a generic dashboard:
+
+| Pane | How to read it | What it means |
+| --- | --- | --- |
+| Runtime bars | `policy`, `score`, `plan`, and `total` are wall-clock milliseconds from the completed run. | `policy` is the LeRobot checkpoint call, `score` is the LeWorldModel cost call, `plan` is WorldForge orchestration, and `total` includes the surrounding showcase flow. |
+| Tensor contract | `tensor MB` and `elements` describe the preprocessed score tensors handed to LeWorldModel. | These numbers explain runtime shape and size. They are not task success, physical fidelity, or model quality scores. |
+| Candidate ranking | Lower cost is better. The `SELECTED` row is the candidate WorldForge mock-replays. | The selected row should match `best_index`, the provider event log, and the tabletop replay's selected/final marker. |
+
+Use the panes together. A coherent run should have healthy provider events, a candidate count that
+matches the score count, one selected candidate, and a tabletop replay whose selected marker agrees
+with the selected row. If those disagree, inspect the action translator, candidate bridge, score
+tensors, or task preprocessing before trusting the visualization.
+
 ## Reading The Tabletop Replay
 
 The tabletop replay is a small top-down map of the PushT workspace. Read it like a view from the
