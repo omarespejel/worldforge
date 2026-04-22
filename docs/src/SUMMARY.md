@@ -2,6 +2,7 @@
 
 - [Introduction](./introduction.md)
 - [Quick Start](./quickstart.md)
+- [CLI Reference](./cli.md)
 - [Examples And CLI Commands](./examples.md)
 - [Real Robotics Showcase](./robotics-showcase.md)
 - [TheWorldHarness](./theworldharness.md)

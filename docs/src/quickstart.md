@@ -3,7 +3,7 @@
 ## Install
 
 ```bash
-uv add worldforge
+uv add "worldforge @ git+https://github.com/AbdelStark/worldforge"
 ```
 
 For local development:
@@ -77,23 +77,18 @@ uv run worldforge world create lab --provider mock
 uv run worldforge world add-object <world-id> cube --x 0 --y 0.5 --z 0 --object-id cube-1
 uv run worldforge world predict <world-id> --object-id cube-1 --x 0.4 --y 0.5 --z 0
 uv run worldforge world list
-uv run worldforge world objects <world-id>
 uv run worldforge world history <world-id>
-uv run worldforge world export <world-id> --output world.json
-uv run worldforge world delete <world-id>
 uv run worldforge provider list
-uv run worldforge provider docs
 uv run worldforge provider info mock
-uv run worldforge providers
-uv run worldforge predict kitchen --provider mock --x 0.3 --y 0.8 --z 0.0 --steps 2
-uv run worldforge eval --suite generation --provider mock
-uv run worldforge eval --suite physics --provider mock
 uv run worldforge eval --suite planning --provider mock --format json
 uv run worldforge benchmark --provider mock --iterations 5 --format json
 ```
 
 `world history` includes initialization, object add/update/remove mutations, and provider
 predictions. Object position updates translate the stored bounding box with the pose.
+
+For the complete command map, see the [CLI Reference](./cli.md). For runnable demos and optional
+runtime smoke commands, see [Examples And CLI Commands](./examples.md).
 
 Optional visual E2E harness:
 

@@ -7,6 +7,10 @@ releases may still include breaking changes when the public API needs to tighten
 
 ## Unreleased
 
+No changes yet.
+
+## 0.4.0 - 2026-04-22
+
 ### Harness
 
 - Added the M3-M5 TheWorldHarness surfaces: `ProvidersScreen` with a capability matrix and a
@@ -128,6 +132,7 @@ releases may still include breaking changes when the public API needs to tighten
 
 ### Changed
 
+- Bumped project metadata and public citation references to `0.4.0`.
 - Validated provider capability names across public capability checks and CLI provider filters,
   so typos such as `generation` fail explicitly instead of being treated as unsupported.
 - Changed `ProviderCapabilities()` to advertise no operations by default. Providers must opt into
@@ -149,9 +154,9 @@ releases may still include breaking changes when the public API needs to tighten
 - Added dedicated provider pages for Cosmos, Runway, and LeWorldModel, and normalized the GR00T,
   LeRobot, and JEPA-WMS pages around capability surface, runtime ownership, input/output
   contracts, failure modes, and validation coverage.
-- Updated package metadata to describe WorldForge as a typed local-first physical-AI world-model
-  framework, removed the development-status classifier, and pointed documentation metadata at
-  repository docs instead of a standalone project domain.
+- Updated package metadata around WorldForge's physical-AI world-model integration layer, removed
+  the development-status classifier, and pointed documentation metadata at repository docs instead
+  of a standalone project domain.
 - Aligned `make lint` and `make format` with CI, `README.md`, and `AGENTS.md` by adding
   `scripts/` to `ruff check`, `ruff format`, and the `clean` sweep.
 
@@ -203,6 +208,8 @@ releases may still include breaking changes when the public API needs to tighten
 - Promoted the real LeRobot-plus-LeWorldModel robotics showcase to the top of the README with
   screenshots, a one-command entrypoint, and a dedicated walkthrough covering the pipeline,
   runtime boundaries, artifacts, and customization path.
+- Added a dedicated CLI reference and reduced duplicate README/provider demo prose so the public
+  front face points to one command map instead of repeating optional-runtime narratives.
 - Added user and operator playbooks for checkout validation, provider capability selection,
   provider diagnostics, adapter promotion, local persistence recovery, remote artifacts, optional
   runtime smokes, benchmarks, incident triage, and release gates.

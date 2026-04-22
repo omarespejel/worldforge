@@ -2,14 +2,15 @@
 
 # WorldForge
 
-**An integration layer for physical-AI world models.**
+**Build physical-AI workflows from world models, not one-off scripts.**
 
-Python library for wiring world-model providers, action scorers, embodied policies, and media
-generators behind a typed capability interface. Includes planning, evaluation, benchmarks,
-diagnostics, and a CLI.
+WorldForge is a Python integration layer for wiring world-model providers, action scorers, embodied
+policies, and media generators behind a typed capability interface. It includes planning,
+evaluation, benchmarks, diagnostics, local state, and a CLI.
 
 [![CI](https://img.shields.io/github/actions/workflow/status/AbdelStark/worldforge/ci.yml?branch=main&label=CI&style=for-the-badge)](https://github.com/AbdelStark/worldforge/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://github.com/AbdelStark/worldforge/blob/main/pyproject.toml)
+[![Version](https://img.shields.io/badge/version-0.4.0-3f7cac?style=for-the-badge)](./CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge)](./LICENSE)
 [![Coverage](https://img.shields.io/badge/coverage-%E2%89%A590%25-brightgreen?style=for-the-badge)](./.github/workflows/ci.yml)
 [![Typed](https://img.shields.io/badge/typed-py.typed-3f7cac?style=for-the-badge)](./src/worldforge/py.typed)
@@ -18,6 +19,7 @@ diagnostics, and a CLI.
 [![Status: pre-1.0](https://img.shields.io/badge/status-pre--1.0%20beta-orange?style=for-the-badge)](#project-status)
 
 [**Quickstart**](#quickstart) ·
+[**CLI**](./docs/src/cli.md) ·
 [**Providers**](#provider-surfaces) ·
 [**Capability Model**](#capability-model) ·
 [**Architecture**](#architecture) ·
@@ -28,9 +30,12 @@ diagnostics, and a CLI.
 
 ## Robotics Showcase: LeRobot + LeWorldModel
 
-WorldForge's front-door robotics demo composes a [Hugging Face LeRobot](https://github.com/huggingface/lerobot) policy with a [LeWorldModel](https://github.com/lucas-maes/le-wm) checkpoint. LeRobot proposes PushT action candidates, WorldForge bridges those
-policy actions into LeWorldModel-native candidate tensors, LeWorldModel scores the candidates,
-and WorldForge selects and mock-replays the lowest-cost action chunk.
+WorldForge's front-door robotics demo composes a
+[Hugging Face LeRobot](https://github.com/huggingface/lerobot) policy with a
+[LeWorldModel](https://github.com/lucas-maes/le-wm) checkpoint. LeRobot proposes PushT action
+candidates, WorldForge bridges those policy actions into LeWorldModel-native candidate tensors,
+LeWorldModel scores the candidates, and WorldForge selects and mock-replays the lowest-cost action
+chunk.
 
 This is simulation/replay planning. It demonstrates policy inference, score-model inference,
 typed provider composition, candidate ranking, event capture, and visual replay. Hardware control,
@@ -167,7 +172,16 @@ Python 3.10+. Base install depends only on `httpx`. Optional runtimes are host-o
 
 ## Quickstart
 
-### Python
+The short path is the mock provider: it runs from a clean checkout and exercises the same typed
+world, provider, planning, persistence, and diagnostics surfaces used by richer runtimes.
+
+Full references:
+[Python API](./docs/src/api/python.md) ·
+[CLI reference](./docs/src/cli.md) ·
+[Examples index](./docs/src/examples.md)
+
+<details>
+<summary><strong>Python API sample</strong></summary>
 
 ```python
 from worldforge import Action, BBox, Position, SceneObject, StructuredGoal, WorldForge
@@ -198,7 +212,10 @@ doctor = forge.doctor()
 print(doctor.healthy_provider_count, doctor.provider_count)
 ```
 
-### CLI
+</details>
+
+<details>
+<summary><strong>CLI sample</strong></summary>
 
 ```bash
 uv run worldforge examples                                              # runnable scripts index
@@ -222,6 +239,10 @@ uv run worldforge benchmark --provider mock --operation generate --budget-file b
 
 Scene mutations append persisted history entries with typed action payloads. Position patches keep
 the object's bounding box translated with the pose so saved snapshots stay coherent.
+
+Full CLI reference: [docs/src/cli.md](./docs/src/cli.md).
+
+</details>
 
 ## Capability Model
 
@@ -323,42 +344,18 @@ Read [architecture](./docs/src/architecture.md) ·
 [provider authoring guide](./docs/src/provider-authoring-guide.md)
 before adding a new adapter.
 
-## Demos
+## Command And Example Index
 
-Start with the real robotics showcase at the top of this README when you want the full
-LeRobot-plus-LeWorldModel story. Use the commands below for narrower checks.
+The README keeps the primary showcase and quickstart visible. Use the docs for the full command
+surface and runtime-specific entrypoints:
 
-Checkout-safe demos use injected deterministic runtimes. No checkpoints, credentials, GPU, torch,
-LeRobot, or LeWorldModel install is required:
-
-```bash
-uv run worldforge-demo-leworldmodel          # score-based planning demo
-uv run worldforge-demo-lerobot               # policy + score planning demo
-```
-
-The visual harness uses the optional `harness` extra and stays checkout-safe:
-
-```bash
-uv run --extra harness worldforge-harness
-uv run --extra harness worldforge-harness --flow leworldmodel
-uv run --extra harness worldforge-harness --flow lerobot
-uv run --extra harness worldforge-harness --flow diagnostics
-```
-
-For real LeWorldModel checkpoint scoring without LeRobot, run:
-
-```bash
-scripts/lewm-real --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt --device cpu
-```
-
-That smoke path loads the host-owned LeWorldModel runtime and checkpoint, validates tensor
-contracts, scores candidates, and prints pipeline, latency, event, and cost-landscape output. It
-uses deterministic synthetic PushT-shaped tensors, so it is real checkpoint scoring but not
-task-specific image preprocessing or robot execution.
-
-See [examples/](./examples), [`uv run worldforge examples`](./docs/src/examples.md), and the
-[robotics showcase walkthrough](./docs/src/robotics-showcase.md) for the full runnable index and
-optional-runtime details.
+| Need | Start here |
+| --- | --- |
+| Full CLI command map | [CLI reference](./docs/src/cli.md) |
+| Runnable example index | [Examples and CLI commands](./docs/src/examples.md) or `uv run worldforge examples` |
+| Real LeRobot + LeWorldModel showcase | [Robotics showcase walkthrough](./docs/src/robotics-showcase.md) |
+| Checkout-safe visual flows | [TheWorldHarness](./docs/src/theworldharness.md) |
+| Optional runtime operations | [Operator playbooks](./docs/src/playbooks.md#8-run-optional-runtime-smokes) |
 
 ## Who It's For
 
@@ -443,7 +440,7 @@ If you use WorldForge in academic work, a BibTeX entry is:
   author  = {AbdelStark and {WorldForge contributors}},
   year    = {2026},
   url     = {https://github.com/AbdelStark/worldforge},
-  version = {0.3.0}
+  version = {0.4.0}
 }
 ```
 

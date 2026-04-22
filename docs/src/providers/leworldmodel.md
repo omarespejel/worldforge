@@ -108,7 +108,7 @@ The selected `Plan.actions` come from `candidate_actions[best_index]`. `Plan.pre
 stays empty because a score provider ranks candidate futures without returning a WorldForge state
 rollout. Use `execute_plan(...)` with an execution provider that supports `predict`.
 
-## Demo And Smoke
+## Runtime Checks
 
 Checkout-safe provider/planner demo:
 
@@ -117,54 +117,18 @@ uv run worldforge-demo-leworldmodel
 uv run worldforge-demo-leworldmodel --json-only
 ```
 
-This injects a deterministic LeWorldModel-compatible cost runtime. It validates WorldForge's
-provider, score-planning, execution, persistence, and reload path without loading an upstream
-checkpoint.
+This uses an injected deterministic cost runtime. It validates WorldForge's provider and planning
+path without loading an upstream checkpoint.
 
 Real-checkpoint smoke:
 
 ```bash
-scripts/lewm-real \
-  --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt \
-  --device cpu
+scripts/lewm-real --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt --device cpu
 ```
 
-Equivalent explicit `uv` command:
-
-```bash
-uv run --python 3.10 \
-  --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
-  --with "datasets>=2.21" \
-  lewm-real \
-    --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt \
-    --device cpu
-```
-
-`scripts/lewm-real` is the complete uv-backed task: it installs the host-owned upstream runtime in
-uv's ephemeral environment, then runs the short `lewm-real` console alias. The live smoke prints a
-visual pipeline by default: what the run demonstrates, checkpoint resolution, runtime preflight,
-deterministic synthetic tensor construction, real `score_actions` inference, ranked candidate
-costs, score statistics, provider events, and latency metrics. Pass `--json-only` when a script
-needs only the machine-readable payload, or `--json-output lewm-real-summary.json` to keep the
-visual terminal output and also write the run data.
-
-The input tensors are synthetic PushT-shaped tensors. The smoke demonstrates checkpoint loading,
-provider health, WorldForge's LeWorldModel tensor contract, real cost-model scoring, and candidate
-ranking. It does not claim task-specific image preprocessing quality or robot execution.
-
-The smoke requires an extracted object checkpoint such as
-`~/.stable-wm/pusht/lewm_object.ckpt`. If you have Hugging Face LeWM `config.json` and
-`weights.pt` assets instead, build the object checkpoint first:
-
-```bash
-uv run --python 3.10 \
-  --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
-  --with "datasets>=2.21" \
-  --with huggingface_hub \
-  worldforge-build-leworldmodel-checkpoint \
-  --stablewm-home ~/.stable-wm \
-  --policy pusht/lewm
-```
+This loads the host-owned upstream runtime and object checkpoint, then scores synthetic
+PushT-shaped candidate tensors through `LeWorldModelProvider`. It is real checkpoint scoring, not
+task-specific preprocessing or robot execution.
 
 Real LeRobot + LeWorldModel robotics showcase:
 
@@ -172,16 +136,9 @@ Real LeRobot + LeWorldModel robotics showcase:
 scripts/robotics-showcase
 ```
 
-This showcase uses `LeWorldModelProvider` as the score half of a real policy-plus-score plan. It
-loads the default PushT LeRobot policy, reads the default `pusht/lewm` object checkpoint, builds
-PushT score tensors through the upstream environment, ranks packaged action candidates through
-WorldForge, and opens a staged Textual report by default. Pass `--tui-stage-delay <seconds>` to tune
-the reveal pace, `--no-tui-animation` to disable sleeps and arm motion, or `--no-tui` for the plain
-terminal report.
-For a non-PushT task, use `scripts/lewm-lerobot-real --help` and provide task-aligned `pixels`,
-`goal`, `action`, and `action_candidates` tensors. WorldForge does not infer LeWorldModel
-preprocessing from LeRobot output. If the policy action chunk is not already checkpoint-compatible,
-provide a task-specific `--candidate-builder`.
+This uses `LeWorldModelProvider` as the score half of the real policy-plus-score showcase. Full
+runnable context lives in [CLI Reference](../cli.md), [Examples And CLI Commands](../examples.md),
+and [Real Robotics Showcase](../robotics-showcase.md).
 
 ## Failure Modes
 

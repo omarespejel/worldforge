@@ -152,16 +152,9 @@ include those IDs in surrounding application logs.
 - For LeWorldModel failures, run `worldforge provider health leworldmodel`, verify
   `stable-worldmodel[train]` and `torch` are installed in the host environment, then confirm the
   configured policy exists under `$STABLEWM_HOME` or `LEWORLDMODEL_CACHE_DIR`.
-- To smoke-test a real LeWorldModel checkpoint, run the packaged uv command with upstream
-  dependencies:
-  `scripts/lewm-real --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt --device cpu`.
-  This is the real inference smoke: it requires an extracted object checkpoint such as
-  `~/.stable-wm/pusht/lewm_object.ckpt`, builds task-shaped tensors, and calls the upstream
-  `stable_worldmodel.policy.AutoCostModel` path through `LeWorldModelProvider`. The wrapper runs
-  the required upstream runtime through `uv run --python 3.10 --with ...`, prints a visual
-  pipeline, tensor shapes, latency metrics, provider events, and ranked candidate costs by
-  default, and supports `--json-only` for automation or `--json-output <path>` for preserving
-  the same run data.
+- To smoke-test a real LeWorldModel checkpoint, run
+  `scripts/lewm-real --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt --device cpu`. This requires
+  host-owned upstream dependencies and an extracted object checkpoint.
 - If you have Hugging Face LeWM `config.json` and `weights.pt` assets rather than an extracted
   `*_object.ckpt` archive, build the object checkpoint first with
   `uv run --python 3.10 --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" --with huggingface_hub
@@ -179,22 +172,9 @@ include those IDs in surrounding application logs.
   `uv run worldforge-demo-lerobot`. It uses the real `LeRobotPolicyProvider` interface with an
   injected deterministic policy runtime and exercises policy selection, score ranking, execution,
   persistence, and reload. It is not a real LeRobot checkpoint inference run.
-- To run the prominent real LeRobot policy plus real LeWorldModel scoring showcase, run:
-
-  ```bash
-  scripts/robotics-showcase
-  ```
-
-  This command uses `World.plan(policy_provider="lerobot", score_provider="leworldmodel")`, a
-  packaged PushT observation/score/candidate bridge, and host-owned optional dependencies installed
-  only for the process. By default it opens a Textual visual report for the policy-to-world-model
-  trace, staged reveal, illustrative arm animation, candidate ranking, tabletop replay, and provider
-  events. It writes `/tmp/worldforge-robotics-showcase/real-run.json` and mock-executes the selected
-  WorldForge action chunk. Pass `--tui-stage-delay <seconds>` to tune the reveal pace,
-  `--no-tui-animation` to disable sleeps and arm motion, `--no-tui` for the plain terminal report,
-  or `--json-only` for the machine-readable summary. For a different task or embodiment, use
-  `scripts/lewm-lerobot-real --help` and provide task-aligned observation preprocessing and a
-  candidate bridge; WorldForge does not pad or reinterpret mismatched action spaces.
+- To run the real LeRobot plus real LeWorldModel showcase, use `scripts/robotics-showcase`. It
+  launches the packaged PushT policy-plus-score bridge and opens the Textual report by default.
+  For the full walkthrough, see [Real Robotics Showcase](./robotics-showcase.md).
 - To smoke-test a real GR00T policy server, install or check out NVIDIA Isaac-GR00T, prepare a
   host-specific observation factory and action translator, then run
   `python scripts/smoke_gr00t_policy.py --gr00t-root /path/to/Isaac-GR00T --start-server ...`.

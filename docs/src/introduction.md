@@ -24,6 +24,7 @@ multi-writer persistence.
 Start with:
 
 - [Quick Start](./quickstart.md) for the Python and CLI path.
+- [CLI Reference](./cli.md) for the full command map.
 - [World Model Taxonomy](./world-model-taxonomy.md) for terminology and capability boundaries.
 - [Architecture](./architecture.md) for the provider pipeline and planning modes.
 - [User And Operator Playbooks](./playbooks.md) for checkout validation, provider diagnostics,

@@ -7,6 +7,8 @@ uv run worldforge examples
 uv run worldforge examples --format json
 ```
 
+For the full command surface, see the [CLI Reference](./cli.md).
+
 ## Visual Harness
 
 | Example | Surface | Command |

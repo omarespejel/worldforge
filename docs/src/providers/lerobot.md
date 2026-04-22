@@ -156,7 +156,7 @@ plan = world.plan(
 WorldForge serializes policy candidates into `Action.to_dict()` payloads before calling the score
 provider unless `score_action_candidates=...` supplies model-native candidates.
 
-## Demo And Smoke
+## Runtime Checks
 
 Checkout-safe end-to-end demo:
 
@@ -165,18 +165,12 @@ uv run worldforge-demo-lerobot
 uv run worldforge-demo-lerobot --json-only
 ```
 
-The demo injects a deterministic policy into the real `LeRobotPolicyProvider`. It exercises
-`select_actions`, policy-plus-score planning, execution, JSON persistence, reload, and event
-emission without requiring LeRobot, torch, or checkpoints.
+The demo injects a deterministic policy into the real `LeRobotPolicyProvider`. It validates the
+WorldForge policy-plus-score path without requiring LeRobot, torch, or checkpoints.
 
 Real policy smoke:
 
 ```bash
-uv venv --python=3.10 .venv-lerobot
-source .venv-lerobot/bin/activate
-uv pip install -e .
-uv pip install "lerobot[aloha]"
-
 python scripts/smoke_lerobot_policy.py \
   --policy-path lerobot/act_aloha_sim_transfer_cube_human \
   --observation-module /path/to/obs.py:build_observation \
@@ -184,9 +178,8 @@ python scripts/smoke_lerobot_policy.py \
   --device cpu
 ```
 
-Use `--policy-info-json` for a full policy payload, `--observation-json` for an observation-only
-payload, or `--observation-module module_or_file:function` when observations need NumPy arrays,
-PyTorch tensors, or host preprocessing.
+This requires a host-owned LeRobot install, policy checkpoint, observation source, and
+embodiment-specific action translator.
 
 Real LeRobot + LeWorldModel robotics showcase:
 
@@ -194,16 +187,9 @@ Real LeRobot + LeWorldModel robotics showcase:
 scripts/robotics-showcase
 ```
 
-This is the real-checkpoint counterpart to `worldforge-demo-lerobot` for a PushT-style robotics
-builder story. LeRobot proposes action candidates, the packaged PushT bridge converts those
-candidates into LeWorldModel-native candidate tensors, LeWorldModel ranks them by cost, and
-WorldForge selects a plan through `World.plan(..., planning_mode="policy+score")`. The wrapper opens
-a staged Textual report by default, including an illustrative animated arm replay; pass
-`--tui-stage-delay <seconds>` to tune the reveal pace, `--no-tui-animation` to disable sleeps and arm
-motion, or `--no-tui` for the plain terminal report. The visible WorldForge actions and mock
-execution are for replay/reporting. Hardware control, safety checks, and robot-controller
-integration remain host-owned. Use `scripts/lewm-lerobot-real --help` when bringing a different
-observation source, translator, or candidate bridge.
+This is the real-checkpoint counterpart to `worldforge-demo-lerobot` for the packaged PushT
+showcase. Full runnable context lives in [CLI Reference](../cli.md),
+[Examples And CLI Commands](../examples.md), and [Real Robotics Showcase](../robotics-showcase.md).
 
 ## Failure Modes
 
