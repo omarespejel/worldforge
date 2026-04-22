@@ -199,6 +199,22 @@ def test_leworldmodel_score_planning_selects_best_candidate_and_execution_provid
             score_action_candidates=payload["action_candidates"],
         )
 
+    mismatched_provider = LeWorldModelProvider(
+        name="mismatched-leworldmodel",
+        policy="pusht/lewm",
+        model_loader=lambda _policy, _cache_dir: FakeLeWorldModel([0.1, 0.2]),
+        tensor_module=FakeTorch(),
+    )
+    forge.register_provider(mismatched_provider)
+    with pytest.raises(WorldForgeError, match="returned 2 score\\(s\\) for 3 candidate"):
+        world.plan(
+            goal="mismatched score count",
+            provider="mismatched-leworldmodel",
+            candidate_actions=candidate_plans,
+            score_info=payload["info"],
+            score_action_candidates=payload["action_candidates"],
+        )
+
 
 def test_leworldmodel_provider_reports_profile_health_and_auto_registration(
     tmp_path, monkeypatch

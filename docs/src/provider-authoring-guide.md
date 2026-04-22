@@ -314,6 +314,7 @@ Required behavior:
 - [ ] `info` validates required fields such as `pixels`, `goal`, and `action`.
 - [ ] `action_candidates` validates provider-specific rank and shape.
 - [ ] Model output validates as non-empty finite scores.
+- [ ] Score count matches the executable candidate count used by `World.plan(...)`.
 - [ ] `best_index` matches provider score direction.
 - [ ] `lower_is_better` is explicit.
 - [ ] `metadata` includes policy/checkpoint/model identifiers and score semantics.

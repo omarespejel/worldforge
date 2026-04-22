@@ -166,6 +166,26 @@ uv run --python 3.10 \
   --policy pusht/lewm
 ```
 
+Real LeRobot + LeWorldModel robotics showcase:
+
+```bash
+scripts/lewm-lerobot-real \
+  --policy-path lerobot/diffusion_pusht \
+  --policy-type diffusion \
+  --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt \
+  --device cpu \
+  --mode select_action \
+  --observation-module /path/to/pusht_obs.py:build_observation \
+  --score-info-npz /path/to/lewm_score_tensors.npz \
+  --translator worldforge.smoke.lerobot_leworldmodel:translate_pusht_xy_actions \
+  --candidate-builder /path/to/pusht_lewm_bridge.py:build_action_candidates
+```
+
+This runner uses `LeWorldModelProvider` as the score half of a real policy-plus-score plan. It
+requires task-aligned `pixels`, `goal`, `action`, and `action_candidates` tensors; WorldForge does
+not infer LeWorldModel preprocessing from LeRobot output. If the policy action chunk is not already
+checkpoint-compatible, provide a task-specific `--candidate-builder`.
+
 ## Failure Modes
 
 - Missing `LEWORLDMODEL_POLICY` and `LEWM_POLICY` leaves the provider unregistered.
@@ -184,6 +204,8 @@ uv run --python 3.10 \
 - `tests/test_leworldmodel_e2e_demo.py` covers the checkout-safe end-to-end demo.
 - `tests/test_leworldmodel_smoke_script.py` and `tests/test_leworldmodel_uv_tasks.py` cover smoke
   command parsing and checkpoint-builder behavior without requiring a real checkpoint.
+- `tests/test_lerobot_leworldmodel_smoke_script.py` covers the combined LeRobot + LeWorldModel
+  runner without requiring optional runtimes.
 
 ## Primary References
 

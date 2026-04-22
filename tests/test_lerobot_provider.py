@@ -265,6 +265,31 @@ def test_lerobot_policy_plus_score_planning_selects_scored_candidate(tmp_path) -
     assert plan.metadata["score_result"]["best_index"] == 1
 
 
+def test_lerobot_policy_plus_score_planning_rejects_score_count_mismatch(tmp_path) -> None:
+    candidate_plans = [
+        [Action.move_to(0.1, 0.5, 0.0)],
+        [Action.move_to(0.6, 0.5, 0.0)],
+    ]
+    policy_provider = LeRobotPolicyProvider(
+        policy=FakeLeRobotPolicy(response=FakeTensor([[0.0, 0.5, 0.0]])),
+        action_translator=lambda *_args: candidate_plans,
+    )
+    score_provider = FakeScoreProvider([0.1, 0.2, 0.3])
+    forge = WorldForge(state_dir=tmp_path, auto_register_remote=False)
+    forge.register_provider(policy_provider)
+    forge.register_provider(score_provider)
+    world = forge.create_world("robot-workcell", provider="mock")
+
+    with pytest.raises(WorldForgeError, match="returned 3 score\\(s\\) for 2 candidate"):
+        world.plan(
+            goal="pick lowest-cost candidate",
+            provider="fake-score",
+            policy_provider="lerobot",
+            policy_info=_policy_info(),
+            score_info={"observation": [[0.0]], "goal": [[1.0]]},
+        )
+
+
 def test_lerobot_provider_reports_unconfigured_and_missing_dependency(monkeypatch) -> None:
     monkeypatch.delenv("LEROBOT_POLICY_PATH", raising=False)
     monkeypatch.delenv("LEROBOT_POLICY", raising=False)

@@ -478,7 +478,9 @@ WorldForge passes serialized policy candidates to the score provider by default.
 `score_action_candidates=...` when the scorer requires native tensors or latents. The host still
 owns the mapping between GR00T raw actions, WorldForge `Action` objects, and score-provider native
 payloads. WorldForge validates that each provider returns a typed result and that the selected
-candidate index is in range.
+candidate index is in range. Score-based planning also requires the score result length to match
+the executable candidate count, so provider-native tensors cannot silently drift from the actions
+that WorldForge can execute or report.
 
 ## Provider Capability Surface
 

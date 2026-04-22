@@ -46,6 +46,9 @@ releases may still include breaking changes when the public API needs to tighten
 - Added `lewm-real`, a short `uv run` alias for real LeWorldModel checkpoint inference. The command
   now accepts `--checkpoint`, prints a staged pipeline log by default, and preserves machine-readable
   output with `--json-only`.
+- Added `lewm-lerobot-real` and `worldforge-smoke-lerobot-leworldmodel`, a host-owned real
+  robotics smoke/showcase that composes LeRobot policy inference with LeWorldModel checkpoint
+  scoring through WorldForge policy-plus-score planning, including visual logs and JSON output.
 - Added the `worldforge world` CLI command group for local JSON persistence workflows, including
   create, list, show, history, export, import, and fork commands backed by the existing validated
   `WorldForge` persistence API.
@@ -163,6 +166,9 @@ releases may still include breaking changes when the public API needs to tighten
   of relying on a nonexistent PyPI checkpoint-preparation helper.
 - Updated the real LeWorldModel smoke instructions to use the GitHub `stable-worldmodel` source
   package and `datasets>=2.21`, matching the runtime that can load supported LeWM checkpoints.
+- Rejected score-based plans when the score provider returns a different number of scores than
+  executable candidate action plans, preventing provider-native score tensors from drifting away
+  from the actions WorldForge can execute or report.
 
 ### Security
 

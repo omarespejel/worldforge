@@ -49,6 +49,9 @@ evaluation harnesses, and testable prototypes.
   benchmark comparison.
 - `src/worldforge/smoke/`: packaged optional-runtime smoke entry points exposed through `uv run`
   console scripts.
+- `src/worldforge/smoke/lerobot_leworldmodel.py`: optional host-owned real robotics showcase that
+  composes a LeRobot policy checkpoint with a LeWorldModel score checkpoint through
+  `World.plan(..., planning_mode="policy+score")`.
 - `src/worldforge/smoke/leworldmodel_checkpoint.py`: optional host-owned builder for creating the
   LeWorldModel `*_object.ckpt` file expected by `AutoCostModel` from Hugging Face LeWM assets.
 - `examples/leworldmodel_e2e_demo.py`: checkout-safe end-to-end LeWorldModel provider-surface
@@ -111,6 +114,7 @@ uv run worldforge provider docs
 uv run --extra harness worldforge-harness
 uv run worldforge-demo-leworldmodel
 uv run worldforge-demo-lerobot
+scripts/lewm-lerobot-real --help
 uv run worldforge benchmark --provider mock --operation generate --budget-file benchmark-budget.json
 uv run worldforge benchmark --provider mock --operation embed --input-file benchmark-inputs.json
 ```
@@ -236,6 +240,9 @@ rm -f "$tmp_req"
 - Policy+score planning uses `policy_provider="gr00t"` or `policy_provider="lerobot"` plus
   `score_provider="leworldmodel"` or another score provider; score tensors remain
   host-preprocessed and provider-native.
+- `lewm-lerobot-real` is an optional real policy-plus-score smoke. It requires a task-aligned
+  LeRobot policy, observation builder, LeWorldModel score tensors, and candidate bridge. Do not
+  pad, project, or otherwise reinterpret mismatched action spaces inside WorldForge.
 - `worldforge-smoke-leworldmodel` is an optional real-checkpoint smoke. Run it through
   `uv run --python 3.10 --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" ...`;
   do not add those dependencies to WorldForge's base package. The upstream default storage root is

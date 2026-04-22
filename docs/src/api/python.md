@@ -132,7 +132,8 @@ print(plan.actions, plan.metadata["score_result"]["best_index"])
 
 Score-based plans do not ask the score provider to predict state. `Plan.predicted_states` stays
 empty, score details are stored in `Plan.metadata`, and `execute_plan(...)` uses
-`execution_provider` when the scoring provider does not implement `predict()`.
+`execution_provider` when the scoring provider does not implement `predict()`. The planner requires
+one score per candidate action plan; mismatched score counts fail before a plan is returned.
 
 ## Action Policy
 

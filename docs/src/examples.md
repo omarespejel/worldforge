@@ -67,6 +67,7 @@ checkpoint inference.
 | Example | Command | Runtime boundary |
 | --- | --- | --- |
 | `leworldmodel-real-checkpoint-smoke` | `scripts/lewm-real --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt --device cpu` | Requires host-owned `stable_worldmodel`, torch, datasets, and LeWM checkpoint assets; prints visual pipeline, tensor, latency, event, and candidate-cost output. |
+| `lerobot-leworldmodel-real-robotics` | `scripts/lewm-lerobot-real --policy-path lerobot/diffusion_pusht --policy-type diffusion --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt --mode select_action --observation-module /path/to/pusht_obs.py:build_observation --score-info-npz /path/to/lewm_score_tensors.npz --candidate-builder /path/to/pusht_lewm_bridge.py:build_action_candidates` | Requires host-owned LeRobot, `stable_worldmodel`, torch, datasets, a real policy checkpoint, LeWM checkpoint assets, task observation preprocessing, and a policy-to-LeWorldModel candidate bridge. |
 
 ## Operational Commands
 

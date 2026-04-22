@@ -320,6 +320,50 @@ it is not task-specific image preprocessing, robot execution, or the injected ch
 Pass `--json-output lewm-real-summary.json` to preserve the same run data while keeping the visual
 terminal output.
 
+Real robotics policy + world-model showcase:
+
+```bash
+scripts/lewm-lerobot-real \
+  --policy-path lerobot/diffusion_pusht \
+  --policy-type diffusion \
+  --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt \
+  --device cpu \
+  --mode select_action \
+  --observation-module /path/to/pusht_obs.py:build_observation \
+  --score-info-npz /path/to/lewm_score_tensors.npz \
+  --translator worldforge.smoke.lerobot_leworldmodel:translate_pusht_xy_actions \
+  --candidate-builder /path/to/pusht_lewm_bridge.py:build_action_candidates \
+  --expected-action-dim 10 \
+  --expected-horizon 4 \
+  --json-output robotics-e2e.json
+```
+
+Equivalent explicit `uv` command:
+
+```bash
+uv run --python 3.10 \
+  --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
+  --with "datasets>=2.21" \
+  --with "lerobot" \
+  lewm-lerobot-real \
+    --policy-path lerobot/diffusion_pusht \
+    --policy-type diffusion \
+    --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt \
+    --device cpu \
+    --mode select_action \
+    --observation-module /path/to/pusht_obs.py:build_observation \
+    --score-info-npz /path/to/lewm_score_tensors.npz \
+    --translator worldforge.smoke.lerobot_leworldmodel:translate_pusht_xy_actions \
+    --candidate-builder /path/to/pusht_lewm_bridge.py:build_action_candidates
+```
+
+This path runs real LeRobot policy inference and real LeWorldModel checkpoint scoring through
+`World.plan(policy_provider="lerobot", score_provider="leworldmodel")`. It is meaningful only when
+the policy, observation, score tensors, and candidate bridge describe the same task. The built-in
+PushT translator turns raw `x, y` action candidates into visible WorldForge `move_to` actions for the
+report; the candidate builder must provide the checkpoint-native LeWorldModel action tensor. The
+runner fails instead of padding or projecting mismatched action spaces.
+
 See [examples/](./examples) and [`uv run worldforge examples`](./docs/src/examples.md) for the full
 runnable index.
 

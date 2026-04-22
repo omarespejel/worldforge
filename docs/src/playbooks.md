@@ -324,6 +324,49 @@ The live smoke uses deterministic synthetic PushT-shaped tensors. It proves the 
 and scores candidates through the WorldForge provider contract; it does not prove task-specific
 preprocessing or robot execution.
 
+Real LeRobot policy plus real LeWorldModel scoring:
+
+```bash
+scripts/lewm-lerobot-real \
+  --policy-path lerobot/diffusion_pusht \
+  --policy-type diffusion \
+  --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt \
+  --device cpu \
+  --mode select_action \
+  --observation-module /path/to/pusht_obs.py:build_observation \
+  --score-info-npz /path/to/lewm_score_tensors.npz \
+  --translator worldforge.smoke.lerobot_leworldmodel:translate_pusht_xy_actions \
+  --candidate-builder /path/to/pusht_lewm_bridge.py:build_action_candidates \
+  --expected-action-dim 10 \
+  --expected-horizon 4
+```
+
+Equivalent explicit `uv` command:
+
+```bash
+uv run --python 3.10 \
+  --with "stable-worldmodel[train,env] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
+  --with "datasets>=2.21" \
+  --with "lerobot" \
+  lewm-lerobot-real \
+    --policy-path lerobot/diffusion_pusht \
+    --policy-type diffusion \
+    --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt \
+    --device cpu \
+    --mode select_action \
+    --observation-module /path/to/pusht_obs.py:build_observation \
+    --score-info-npz /path/to/lewm_score_tensors.npz \
+    --translator worldforge.smoke.lerobot_leworldmodel:translate_pusht_xy_actions \
+    --candidate-builder /path/to/pusht_lewm_bridge.py:build_action_candidates
+```
+
+This flow demonstrates robotics-builder composition: LeRobot proposes policy action candidates,
+LeWorldModel ranks checkpoint-native candidate tensors, and WorldForge selects and mock-executes
+the lowest-cost chunk through `World.plan(..., planning_mode="policy+score")`. The task bridge is
+not optional for a meaningful run. If the LeRobot raw action dimension or horizon does not match
+the LeWorldModel checkpoint contract, provide a task-specific candidate builder instead of padding
+or projecting actions.
+
 GR00T and LeRobot live smokes:
 
 ```bash

@@ -125,6 +125,20 @@ def _action_plans_to_score_payload(
     return [[action.to_dict() for action in candidate] for candidate in candidate_action_plans]
 
 
+def _require_score_count_matches_candidates(
+    *,
+    provider: str,
+    score_result: ActionScoreResult,
+    candidate_count: int,
+) -> None:
+    score_count = len(score_result.scores)
+    if score_count != candidate_count:
+        raise WorldForgeError(
+            f"Provider '{provider}' returned {score_count} score(s) for "
+            f"{candidate_count} candidate action plan(s)."
+        )
+
+
 def _world_file(state_dir: Path, world_id: str) -> Path:
     return state_dir / f"{_validate_storage_id(world_id, name='world_id')}.json"
 
@@ -875,6 +889,11 @@ class World:
                     info=score_info,
                     action_candidates=score_payload,
                 )
+                _require_score_count_matches_candidates(
+                    provider=selected_score_provider,
+                    score_result=score_result,
+                    candidate_count=len(candidate_action_plans),
+                )
                 if score_result.best_index >= len(candidate_action_plans):
                     raise WorldForgeError(
                         f"Provider '{selected_score_provider}' selected candidate index "
@@ -941,6 +960,11 @@ class World:
             score_result = selected_score_provider_instance.score_actions(
                 info=score_info,
                 action_candidates=score_payload,
+            )
+            _require_score_count_matches_candidates(
+                provider=selected_score_provider,
+                score_result=score_result,
+                candidate_count=len(candidate_action_plans),
             )
             if score_result.best_index >= len(candidate_action_plans):
                 raise WorldForgeError(

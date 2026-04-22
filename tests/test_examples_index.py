@@ -18,6 +18,7 @@ def test_example_index_metadata_is_task_grouped() -> None:
         "Policy plus score planning",
         "Visual harness",
         "Optional runtime smoke",
+        "Real robotics showcase",
     ]
 
 

@@ -15,7 +15,11 @@ def test_leworldmodel_uv_commands_are_packaged_console_scripts() -> None:
         'worldforge-build-leworldmodel-checkpoint = "worldforge.smoke.leworldmodel_checkpoint:main"'
     ) in pyproject
     assert 'worldforge-smoke-leworldmodel = "worldforge.smoke.leworldmodel:main"' in pyproject
+    assert (
+        'worldforge-smoke-lerobot-leworldmodel = "worldforge.smoke.lerobot_leworldmodel:main"'
+    ) in pyproject
     assert 'lewm-real = "worldforge.smoke.leworldmodel:main"' in pyproject
+    assert 'lewm-lerobot-real = "worldforge.smoke.lerobot_leworldmodel:main"' in pyproject
     task = root / "scripts" / "lewm-real"
     assert task.exists()
     assert task.stat().st_mode & 0o111
@@ -23,6 +27,15 @@ def test_leworldmodel_uv_commands_are_packaged_console_scripts() -> None:
     assert "uv run --python 3.10" in task_text
     assert "stable-worldmodel[train,env]" in task_text
     assert 'lewm-real "$@"' in task_text
+    robotics_task = root / "scripts" / "lewm-lerobot-real"
+    assert robotics_task.exists()
+    assert robotics_task.stat().st_mode & 0o111
+    robotics_task_text = robotics_task.read_text()
+    assert "uv run --python 3.10" in robotics_task_text
+    assert "stable-worldmodel[train,env]" in robotics_task_text
+    assert '"datasets>=2.21"' in robotics_task_text
+    assert '"lerobot"' in robotics_task_text
+    assert 'lewm-lerobot-real "$@"' in robotics_task_text
 
 
 def test_leworldmodel_console_script_targets_are_importable() -> None:
@@ -32,6 +45,8 @@ def test_leworldmodel_console_script_targets_are_importable() -> None:
         "worldforge.smoke.leworldmodel_checkpoint:main",
         "worldforge.smoke.leworldmodel:main",
         "worldforge.smoke.leworldmodel:main",
+        "worldforge.smoke.lerobot_leworldmodel:main",
+        "worldforge.smoke.lerobot_leworldmodel:main",
     ]
 
     for target in targets:

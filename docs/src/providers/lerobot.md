@@ -188,6 +188,28 @@ Use `--policy-info-json` for a full policy payload, `--observation-json` for an 
 payload, or `--observation-module module_or_file:function` when observations need NumPy arrays,
 PyTorch tensors, or host preprocessing.
 
+Real LeRobot + LeWorldModel robotics showcase:
+
+```bash
+scripts/lewm-lerobot-real \
+  --policy-path lerobot/diffusion_pusht \
+  --policy-type diffusion \
+  --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt \
+  --device cpu \
+  --mode select_action \
+  --observation-module /path/to/pusht_obs.py:build_observation \
+  --score-info-npz /path/to/lewm_score_tensors.npz \
+  --translator worldforge.smoke.lerobot_leworldmodel:translate_pusht_xy_actions \
+  --candidate-builder /path/to/pusht_lewm_bridge.py:build_action_candidates
+```
+
+This is the real-checkpoint counterpart to `worldforge-demo-lerobot` for a PushT-style robotics
+builder story. LeRobot proposes action candidates, a host bridge converts those candidates into
+LeWorldModel-native candidate tensors, LeWorldModel ranks them by cost, and WorldForge selects a
+plan through `World.plan(..., planning_mode="policy+score")`. The built-in PushT translator is for
+human-readable WorldForge actions and mock execution; the candidate bridge owns the checkpoint
+tensor semantics.
+
 ## Failure Modes
 
 - Missing `LEROBOT_POLICY_PATH` and `LEROBOT_POLICY` leaves the provider unregistered.
@@ -208,8 +230,11 @@ PyTorch tensors, or host preprocessing.
 - `tests/test_lerobot_e2e_demo.py` covers the full checkout-safe demo.
 - `tests/test_lerobot_smoke_script.py` covers smoke-script input loading, callable resolution, and
   validation without requiring LeRobot or a GPU.
+- `tests/test_lerobot_leworldmodel_smoke_script.py` covers the combined real-runtime runner with
+  fake injected providers, dynamic candidate bridge behavior, and JSON output.
 
 ## Primary References
 
 - [Hugging Face LeRobot code](https://github.com/huggingface/lerobot)
 - [LeRobot policy documentation](https://huggingface.co/docs/lerobot/bring_your_own_policies)
+- [LeRobot PushT diffusion policy](https://huggingface.co/lerobot/diffusion_pusht)
