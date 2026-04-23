@@ -1129,7 +1129,7 @@ class PlaceholderScreen(ModalScreen[None]):
 
 
 # ---------------------------------------------------------------------------
-# M2 — Worlds CRUD: messages
+# Worlds CRUD: messages
 # ---------------------------------------------------------------------------
 
 
@@ -1159,7 +1159,7 @@ class WorldForked(Message):
 
 
 # ---------------------------------------------------------------------------
-# M2 — Worlds CRUD: modals
+# Worlds CRUD: modals
 # ---------------------------------------------------------------------------
 
 
@@ -1475,7 +1475,7 @@ class EditObjectScreen(ModalScreen[SceneObjectSpec | None]):
 
 
 # ---------------------------------------------------------------------------
-# M2 — Worlds CRUD: screens
+# Worlds CRUD: screens
 # ---------------------------------------------------------------------------
 
 
@@ -2199,7 +2199,7 @@ class WorldEditScreen(Screen):
 
 
 # ---------------------------------------------------------------------------
-# M3/M4 — Providers, eval, and benchmark screens
+# Providers, eval, and benchmark screens
 # ---------------------------------------------------------------------------
 
 
@@ -3500,6 +3500,8 @@ class RoboticsArmPane(Static, _ThemedRenderer):
             self._timer = self.set_interval(0.32, self._advance)
 
     def on_unmount(self) -> None:
+        # Textual timers keep firing on dismounted widgets unless stopped,
+        # so cancel the one `on_mount` started before this pane goes away.
         if self._timer is not None:
             self._timer.stop()
             self._timer = None

@@ -7,7 +7,26 @@ releases may still include breaking changes when the public API needs to tighten
 
 ## Unreleased
 
-No changes yet.
+### Fixed
+
+- Cosmos and Runway now strip whitespace and treat blank environment variables as unset, matching
+  the behaviour of every other provider. A blank `COSMOS_BASE_URL`, `NVIDIA_API_KEY`,
+  `RUNWAYML_BASE_URL`, `RUNWAYML_API_SECRET`, or `RUNWAY_API_SECRET` no longer masks as
+  configured.
+
+### Changed
+
+- Dedupe repeated provider scaffolding into shared `BaseProvider._emit_operation_event` and
+  `BaseProvider._health` helpers, and move `no_grad_context` plus `prepare_model` into
+  `providers/_policy.py`. The cosmos, runway, leworldmodel, lerobot, gr00t, and jepa-wms adapters
+  are unchanged externally but significantly shorter internally.
+- Consolidate the shared `blue_cube` tabletop scenario used by the LeRobot and LeWorldModel demos
+  into `worldforge.demos.make_blue_cube` / `blue_cube_goal` / `make_candidate_plans`.
+- TheWorldHarness no longer eagerly imports `worldforge.demos.*` at module load; demo flow
+  runners import lazily so the harness cold start does not drag the optional-runtime provider
+  classes into memory.
+- `save_world` skips a redundant `json.dumps`/`json.loads` round trip; the validation call now
+  runs directly against the serialized dict.
 
 ## 0.4.0 - 2026-04-22
 

@@ -119,6 +119,9 @@ def _run_diagnostics_demo(*, state_dir: Path, emit: bool = False) -> JSONDict:
     return summary
 
 
+# Demo modules import the optional-runtime provider classes at module scope, so
+# keep these imports lazy: loading the harness should not pull LeRobot/LeWorldModel
+# adapters into the base cold-start path.
 def _run_leworldmodel_demo(**kwargs: object) -> JSONDict:
     from worldforge.demos import leworldmodel_e2e
 

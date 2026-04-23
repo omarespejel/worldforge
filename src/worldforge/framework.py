@@ -1259,6 +1259,8 @@ class WorldForge:
         path = _world_file(self.state_dir, world.id)
         tmp_path = path.with_name(f".{path.name}.{generate_id('tmp')}.tmp")
         try:
+            # Round-trip the dict through `from_state` to reject any payload that
+            # would fail to load later — cheaper than serializing to JSON first.
             state = world.to_dict()
             World.from_state(self, state)
             tmp_path.write_text(dump_json(state), encoding="utf-8")

@@ -170,6 +170,8 @@ class BaseProvider:
         message: str = "",
         metadata: JSONDict | None = None,
     ) -> None:
+        """Emit a :class:`ProviderEvent` tagged with this provider's ``name``."""
+
         self._emit_event(
             ProviderEvent(
                 provider=self.name,
@@ -188,6 +190,12 @@ class BaseProvider:
         *,
         healthy: bool,
     ) -> ProviderHealth:
+        """Build a :class:`ProviderHealth` using ``started`` as the latency origin.
+
+        The ``max(0.1, ...)`` floor keeps the serialized latency strictly positive
+        for fast-returning healthchecks (validators reject ``latency_ms <= 0``).
+        """
+
         return ProviderHealth(
             name=self.name,
             healthy=healthy,
