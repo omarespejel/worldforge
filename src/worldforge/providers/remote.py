@@ -15,7 +15,7 @@ from worldforge.models import (
     VideoClip,
 )
 
-from .base import PredictionPayload, RemoteProvider
+from .base import PredictionPayload, ProviderProfileSpec, RemoteProvider
 from .mock import MockProvider
 
 
@@ -106,19 +106,18 @@ class JepaProvider(StubRemoteProvider):
                 embed=True,
                 plan=True,
             ),
-            is_local=False,
-            description="Python adapter surface for JEPA-family models.",
-            package="worldforge",
-            implementation_status="scaffold",
-            deterministic=False,
-            supported_modalities=["world_state", "text"],
-            artifact_types=["prediction", "reasoning", "embedding"],
-            notes=[
-                "Credential-gated scaffold adapter.",
-                "Runtime path falls back to deterministic mock behavior after auth checks.",
-            ],
-            default_model="jepa-scaffold-v1",
-            supported_models=["jepa-scaffold-v1"],
+            profile=ProviderProfileSpec(
+                description="Python adapter surface for JEPA-family models.",
+                implementation_status="scaffold",
+                supported_modalities=("world_state", "text"),
+                artifact_types=("prediction", "reasoning", "embedding"),
+                notes=(
+                    "Credential-gated scaffold adapter.",
+                    "Runtime path falls back to deterministic mock behavior after auth checks.",
+                ),
+                default_model="jepa-scaffold-v1",
+                supported_models=("jepa-scaffold-v1",),
+            ),
             event_handler=event_handler,
         )
 
@@ -142,18 +141,17 @@ class GenieProvider(StubRemoteProvider):
                 reason=True,
                 plan=True,
             ),
-            is_local=False,
-            description="Python adapter surface for Genie-family models.",
-            package="worldforge",
-            implementation_status="scaffold",
-            deterministic=False,
-            supported_modalities=["world_state", "text", "video"],
-            artifact_types=["prediction", "video", "reasoning"],
-            notes=[
-                "Credential-gated scaffold adapter.",
-                "Runtime path falls back to deterministic mock behavior after auth checks.",
-            ],
-            default_model="genie-scaffold-v1",
-            supported_models=["genie-scaffold-v1"],
+            profile=ProviderProfileSpec(
+                description="Python adapter surface for Genie-family models.",
+                implementation_status="scaffold",
+                supported_modalities=("world_state", "text", "video"),
+                artifact_types=("prediction", "video", "reasoning"),
+                notes=(
+                    "Credential-gated scaffold adapter.",
+                    "Runtime path falls back to deterministic mock behavior after auth checks.",
+                ),
+                default_model="genie-scaffold-v1",
+                supported_models=("genie-scaffold-v1",),
+            ),
             event_handler=event_handler,
         )

@@ -20,7 +20,7 @@ from worldforge.models import (
 from ._config import env_value, first_env_value, optional_non_empty
 from ._policy import no_grad_context, prepare_model
 from ._tensor_validation import _is_sequence
-from .base import BaseProvider, ProviderError
+from .base import BaseProvider, ProviderError, ProviderProfileSpec
 
 LEWORLDMODEL_POLICY_ENV_VAR = "LEWORLDMODEL_POLICY"
 LEWORLDMODEL_POLICY_ENV_ALIASES = (LEWORLDMODEL_POLICY_ENV_VAR, "LEWM_POLICY")
@@ -66,7 +66,7 @@ class LeWorldModelProvider(BaseProvider):
         self._model_loader = model_loader
         self._tensor_module = tensor_module
         self._model: Any | None = None
-        supported_models = [self.policy] if self.policy else []
+        supported_models = (self.policy,) if self.policy else ()
         super().__init__(
             name=name,
             capabilities=ProviderCapabilities(
@@ -78,26 +78,29 @@ class LeWorldModelProvider(BaseProvider):
                 transfer=False,
                 score=True,
             ),
-            is_local=True,
-            description=(
-                "LeWorldModel JEPA adapter for scoring action candidates from pixel, "
-                "action, and goal tensors."
+            profile=ProviderProfileSpec(
+                is_local=True,
+                description=(
+                    "LeWorldModel JEPA adapter for scoring action candidates from pixel, "
+                    "action, and goal tensors."
+                ),
+                package="worldforge + stable_worldmodel",
+                implementation_status="beta",
+                deterministic=True,
+                requires_credentials=False,
+                required_env_vars=tuple(LEWORLDMODEL_POLICY_ENV_ALIASES),
+                supported_modalities=("pixels", "actions", "goals"),
+                artifact_types=("action_scores",),
+                notes=(
+                    "Loads checkpoints with stable_worldmodel.policy.AutoCostModel.",
+                    "Set LEWORLDMODEL_POLICY to the checkpoint run name relative to STABLEWM_HOME.",
+                    "Input tensors or nested numeric arrays must already match the checkpoint "
+                    "task.",
+                    "Scores are costs: lower values are better and best_index is the argmin.",
+                ),
+                default_model=self.policy,
+                supported_models=supported_models,
             ),
-            package="worldforge + stable_worldmodel",
-            implementation_status="beta",
-            deterministic=True,
-            requires_credentials=False,
-            required_env_vars=list(LEWORLDMODEL_POLICY_ENV_ALIASES),
-            supported_modalities=["pixels", "actions", "goals"],
-            artifact_types=["action_scores"],
-            notes=[
-                "Loads checkpoints with stable_worldmodel.policy.AutoCostModel.",
-                "Set LEWORLDMODEL_POLICY to the checkpoint run name relative to STABLEWM_HOME.",
-                "Input tensors or nested numeric arrays must already match the checkpoint task.",
-                "Scores are costs: lower values are better and best_index is the argmin.",
-            ],
-            default_model=self.policy,
-            supported_models=supported_models,
             event_handler=event_handler,
         )
 

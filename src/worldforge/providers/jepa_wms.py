@@ -31,7 +31,7 @@ from ._tensor_validation import (
     _shape,
     _tensor_shape,
 )
-from .base import BaseProvider, ProviderError
+from .base import BaseProvider, ProviderError, ProviderProfileSpec
 
 JEPA_WMS_ENV_VAR = "JEPA_WMS_MODEL_PATH"
 JEPA_WMS_MODEL_NAME_ENV_VAR = "JEPA_WMS_MODEL_NAME"
@@ -389,26 +389,29 @@ class JEPAWMSProvider(BaseProvider):
         super().__init__(
             name=name,
             capabilities=ProviderCapabilities(predict=False, score=runtime is not None),
-            is_local=True,
-            description=(
-                "JEPA-WMS candidate adapter for scoring action candidates through an "
-                "injected runtime."
+            profile=ProviderProfileSpec(
+                is_local=True,
+                description=(
+                    "JEPA-WMS candidate adapter for scoring action candidates through an "
+                    "injected runtime."
+                ),
+                package="worldforge + host-supplied jepa-wms runtime",
+                implementation_status="scaffold",
+                deterministic=True,
+                requires_credentials=False,
+                required_env_vars=(JEPA_WMS_ENV_VAR,),
+                supported_modalities=("observations", "goals", "actions") if runtime else (),
+                artifact_types=("action_scores",) if runtime else (),
+                notes=(
+                    "Candidate contract only; not exported or auto-registered.",
+                    "The optional torch-hub runtime is host-owned and lazily imported only when "
+                    "used.",
+                    "Inject runtime= in tests or use from_torch_hub(...) for host experiments.",
+                    "Runtime scores default to costs: lower values are better.",
+                ),
+                default_model=self.model_path,
+                supported_models=(self.model_path,) if self.model_path else (),
             ),
-            package="worldforge + host-supplied jepa-wms runtime",
-            implementation_status="scaffold",
-            deterministic=True,
-            requires_credentials=False,
-            required_env_vars=[JEPA_WMS_ENV_VAR],
-            supported_modalities=["observations", "goals", "actions"] if runtime else [],
-            artifact_types=["action_scores"] if runtime else [],
-            notes=[
-                "Candidate contract only; not exported or auto-registered.",
-                "The optional torch-hub runtime is host-owned and lazily imported only when used.",
-                "Inject runtime= in tests or use from_torch_hub(...) for host experiments.",
-                "Runtime scores default to costs: lower values are better.",
-            ],
-            default_model=self.model_path,
-            supported_models=[self.model_path] if self.model_path else [],
             event_handler=event_handler,
         )
 

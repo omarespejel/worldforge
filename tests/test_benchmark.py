@@ -25,7 +25,7 @@ from worldforge.benchmark import (
 )
 from worldforge.models import JSONDict
 from worldforge.providers import CosmosProvider, RunwayProvider
-from worldforge.providers.base import BaseProvider, ProviderError
+from worldforge.providers.base import BaseProvider, ProviderError, ProviderProfileSpec
 
 
 class _ScoreBenchmarkProvider(BaseProvider):
@@ -33,7 +33,7 @@ class _ScoreBenchmarkProvider(BaseProvider):
         super().__init__(
             name="scorebench",
             capabilities=ProviderCapabilities(score=True),
-            description="Injected score provider for benchmark tests.",
+            profile=ProviderProfileSpec(description="Injected score provider for benchmark tests."),
         )
         self.calls: list[dict[str, object]] = []
 
@@ -63,7 +63,9 @@ class _PolicyBenchmarkProvider(BaseProvider):
         super().__init__(
             name="policybench",
             capabilities=ProviderCapabilities(policy=True),
-            description="Injected policy provider for benchmark tests.",
+            profile=ProviderProfileSpec(
+                description="Injected policy provider for benchmark tests."
+            ),
         )
         self.calls: list[JSONDict] = []
 

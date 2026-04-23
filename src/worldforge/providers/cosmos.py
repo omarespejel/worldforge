@@ -19,7 +19,7 @@ from worldforge.models import (
 )
 
 from ._config import env_value
-from .base import ProviderError, RemoteProvider
+from .base import ProviderError, ProviderProfileSpec, RemoteProvider
 from .http_utils import asset_to_uri, parse_size, request_json_with_policy
 
 
@@ -124,25 +124,24 @@ class CosmosProvider(RemoteProvider):
                 plan=False,
                 transfer=False,
             ),
-            is_local=False,
-            description="NVIDIA Cosmos NIM adapter for text/image/video-to-world generation.",
-            package="worldforge",
-            implementation_status="beta",
-            deterministic=False,
-            supported_modalities=["text", "image", "video"],
-            artifact_types=["video"],
-            notes=[
-                "Targets the documented Cosmos NIM `/v1/infer` API.",
-                "Requires a reachable Cosmos deployment via `COSMOS_BASE_URL`.",
-                "If `NVIDIA_API_KEY` is set, it is sent as a bearer token.",
-            ],
-            default_model="Cosmos-Predict1-7B-Text2World",
-            supported_models=[
-                "Cosmos-Predict1-7B-Text2World",
-                "Cosmos-Predict1-7B-Video2World",
-            ],
-            required_env_vars=["COSMOS_BASE_URL"],
-            requires_credentials=False,
+            profile=ProviderProfileSpec(
+                description="NVIDIA Cosmos NIM adapter for text/image/video-to-world generation.",
+                implementation_status="beta",
+                supported_modalities=("text", "image", "video"),
+                artifact_types=("video",),
+                notes=(
+                    "Targets the documented Cosmos NIM `/v1/infer` API.",
+                    "Requires a reachable Cosmos deployment via `COSMOS_BASE_URL`.",
+                    "If `NVIDIA_API_KEY` is set, it is sent as a bearer token.",
+                ),
+                default_model="Cosmos-Predict1-7B-Text2World",
+                supported_models=(
+                    "Cosmos-Predict1-7B-Text2World",
+                    "Cosmos-Predict1-7B-Video2World",
+                ),
+                required_env_vars=("COSMOS_BASE_URL",),
+                requires_credentials=False,
+            ),
             request_policy=resolved_request_policy,
             event_handler=event_handler,
         )

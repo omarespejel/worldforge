@@ -21,7 +21,7 @@ from worldforge.models import (
     deterministic_floats,
 )
 
-from .base import BaseProvider, PredictionPayload, ProviderError
+from .base import BaseProvider, PredictionPayload, ProviderError, ProviderProfileSpec
 
 
 def _frame_bytes(seed: str, index: int) -> bytes:
@@ -47,18 +47,19 @@ class MockProvider(BaseProvider):
                 plan=True,
                 transfer=True,
             ),
-            is_local=True,
-            description=("Deterministic local provider for examples, tests, and contract checks."),
-            package="worldforge",
-            implementation_status="stable",
-            deterministic=True,
-            supported_modalities=["world_state", "text", "video"],
-            artifact_types=["prediction", "video", "reasoning", "embedding", "transfer"],
-            notes=[
-                "Reference implementation for adapter contract tests.",
-            ],
-            default_model="mock-deterministic-v1",
-            supported_models=["mock-deterministic-v1"],
+            profile=ProviderProfileSpec(
+                is_local=True,
+                description=(
+                    "Deterministic local provider for examples, tests, and contract checks."
+                ),
+                implementation_status="stable",
+                deterministic=True,
+                supported_modalities=("world_state", "text", "video"),
+                artifact_types=("prediction", "video", "reasoning", "embedding", "transfer"),
+                notes=("Reference implementation for adapter contract tests.",),
+                default_model="mock-deterministic-v1",
+                supported_models=("mock-deterministic-v1",),
+            ),
             event_handler=event_handler,
         )
 

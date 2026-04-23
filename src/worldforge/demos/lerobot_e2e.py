@@ -42,7 +42,7 @@ from worldforge.models import (
     ProviderEvent,
     ProviderHealth,
 )
-from worldforge.providers import BaseProvider, LeRobotPolicyProvider
+from worldforge.providers import BaseProvider, LeRobotPolicyProvider, ProviderProfileSpec
 
 from . import BLUE_CUBE_GOAL, blue_cube_goal, make_blue_cube, make_candidate_plans
 
@@ -99,11 +99,13 @@ class DemoDistanceScoreProvider(BaseProvider):
         super().__init__(
             name="demo-distance-score",
             capabilities=ProviderCapabilities(predict=False, score=True),
-            is_local=True,
-            description="Deterministic distance-to-goal score provider for the LeRobot demo.",
-            implementation_status="test",
-            deterministic=True,
-            requires_credentials=False,
+            profile=ProviderProfileSpec(
+                is_local=True,
+                description="Deterministic distance-to-goal score provider for the LeRobot demo.",
+                implementation_status="test",
+                deterministic=True,
+                requires_credentials=False,
+            ),
         )
 
     def health(self) -> ProviderHealth:

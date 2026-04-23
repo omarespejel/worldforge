@@ -20,7 +20,7 @@ from worldforge.models import (
 )
 
 from ._config import env_value, first_env_value
-from .base import ProviderError, RemoteProvider
+from .base import ProviderError, ProviderProfileSpec, RemoteProvider
 from .http_utils import (
     asset_to_uri,
     clip_to_data_uri,
@@ -226,21 +226,24 @@ class RunwayProvider(RemoteProvider):
                 plan=False,
                 transfer=True,
             ),
-            is_local=False,
-            description="Runway adapter for text/image-to-video and video-to-video generation.",
-            package="worldforge",
-            implementation_status="beta",
-            deterministic=False,
-            supported_modalities=["text", "image", "video"],
-            artifact_types=["video"],
-            notes=[
-                "Targets Runway's documented `image_to_video`, `video_to_video`, and `tasks` APIs.",
-                "Supports `RUNWAYML_API_SECRET` and the legacy alias `RUNWAY_API_SECRET`.",
-                "Downloaded task outputs should be persisted by the caller because URLs expire.",
-            ],
-            default_model="gen4.5",
-            supported_models=["gen4.5", "gen4_turbo", "veo3.1", "veo3.1_fast", "gen4_aleph"],
-            required_env_vars=["RUNWAYML_API_SECRET", "RUNWAY_API_SECRET"],
+            profile=ProviderProfileSpec(
+                description=(
+                    "Runway adapter for text/image-to-video and video-to-video generation."
+                ),
+                implementation_status="beta",
+                supported_modalities=("text", "image", "video"),
+                artifact_types=("video",),
+                notes=(
+                    "Targets Runway's documented `image_to_video`, `video_to_video`, and `tasks` "
+                    "APIs.",
+                    "Supports `RUNWAYML_API_SECRET` and the legacy alias `RUNWAY_API_SECRET`.",
+                    "Downloaded task outputs should be persisted by the caller because URLs "
+                    "expire.",
+                ),
+                default_model="gen4.5",
+                supported_models=("gen4.5", "gen4_turbo", "veo3.1", "veo3.1_fast", "gen4_aleph"),
+                required_env_vars=("RUNWAYML_API_SECRET", "RUNWAY_API_SECRET"),
+            ),
             request_policy=resolved_request_policy,
             event_handler=event_handler,
         )

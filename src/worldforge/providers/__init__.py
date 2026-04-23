@@ -7,7 +7,13 @@ from worldforge.models import (
     RetryPolicy,
 )
 
-from .base import BaseProvider, PredictionPayload, ProviderError, RemoteProvider
+from .base import (
+    BaseProvider,
+    PredictionPayload,
+    ProviderError,
+    ProviderProfileSpec,
+    RemoteProvider,
+)
 from .catalog import PROVIDER_CATALOG, ProviderCatalogEntry, create_known_providers
 from .cosmos import CosmosProvider
 from .gr00t import GrootPolicyClientProvider
@@ -31,6 +37,7 @@ __all__ = [
     "ProviderCatalogEntry",
     "ProviderError",
     "ProviderEvent",
+    "ProviderProfileSpec",
     "ProviderRequestPolicy",
     "RequestOperationPolicy",
     "RemoteProvider",

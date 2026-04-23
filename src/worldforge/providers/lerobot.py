@@ -35,7 +35,7 @@ from worldforge.models import (
 
 from ._config import env_value, first_env_value, optional_non_empty
 from ._policy import json_object, no_grad_context, normalize_policy_action_candidates, prepare_model
-from .base import BaseProvider, ProviderError
+from .base import BaseProvider, ProviderError, ProviderProfileSpec
 
 LEROBOT_POLICY_PATH_ENV_VAR = "LEROBOT_POLICY_PATH"
 LEROBOT_POLICY_PATH_ENV_ALIASES = (LEROBOT_POLICY_PATH_ENV_VAR, "LEROBOT_POLICY")
@@ -124,7 +124,7 @@ class LeRobotPolicyProvider(BaseProvider):
         self._policy_loader = policy_loader
         self._action_translator = action_translator
 
-        supported_models = [self.policy_path] if self.policy_path else []
+        supported_models = (self.policy_path,) if self.policy_path else ()
         super().__init__(
             name=name,
             capabilities=ProviderCapabilities(
@@ -137,27 +137,29 @@ class LeRobotPolicyProvider(BaseProvider):
                 score=False,
                 policy=True,
             ),
-            is_local=True,
-            description=(
-                "Hugging Face LeRobot pretrained-policy adapter for embodied action selection."
+            profile=ProviderProfileSpec(
+                is_local=True,
+                description=(
+                    "Hugging Face LeRobot pretrained-policy adapter for embodied action selection."
+                ),
+                package="worldforge + lerobot",
+                implementation_status="beta",
+                requires_credentials=False,
+                required_env_vars=tuple(LEROBOT_POLICY_PATH_ENV_ALIASES),
+                supported_modalities=("state", "images", "language", "actions"),
+                artifact_types=("action_policy",),
+                notes=(
+                    "Loads policies with lerobot.policies.PreTrainedPolicy.from_pretrained.",
+                    "Supports ACT, Diffusion, TDMPC, VQBet, Pi0, Pi0Fast, SAC, SmolVLA policies.",
+                    "Set LEROBOT_POLICY_PATH to a Hugging Face repo id or local checkpoint "
+                    "directory.",
+                    "Requires a host-supplied action_translator to map raw policy tensors to "
+                    "WorldForge Action objects; LeRobot policies are embodiment-specific.",
+                    "LeRobot is an action-policy provider, not a predictive world model.",
+                ),
+                default_model=self.policy_path,
+                supported_models=supported_models,
             ),
-            package="worldforge + lerobot",
-            implementation_status="beta",
-            deterministic=False,
-            requires_credentials=False,
-            required_env_vars=list(LEROBOT_POLICY_PATH_ENV_ALIASES),
-            supported_modalities=["state", "images", "language", "actions"],
-            artifact_types=["action_policy"],
-            notes=[
-                "Loads policies with lerobot.policies.PreTrainedPolicy.from_pretrained.",
-                "Supports ACT, Diffusion, TDMPC, VQBet, Pi0, Pi0Fast, SAC, SmolVLA policies.",
-                "Set LEROBOT_POLICY_PATH to a Hugging Face repo id or local checkpoint directory.",
-                "Requires a host-supplied action_translator to map raw policy tensors to "
-                "WorldForge Action objects; LeRobot policies are embodiment-specific.",
-                "LeRobot is an action-policy provider, not a predictive world model.",
-            ],
-            default_model=self.policy_path,
-            supported_models=supported_models,
             event_handler=event_handler,
         )
 

@@ -14,6 +14,7 @@ from worldforge.providers import (
     LeRobotPolicyProvider,
     MockProvider,
     ProviderError,
+    ProviderProfileSpec,
 )
 from worldforge.testing import assert_provider_contract
 
@@ -94,11 +95,13 @@ class FakeScoreProvider(BaseProvider):
         super().__init__(
             "fake-score",
             capabilities=ProviderCapabilities(predict=False, score=True),
-            is_local=True,
-            description="Fake score provider for LeRobot policy+score planning tests.",
-            implementation_status="test",
-            deterministic=True,
-            requires_credentials=False,
+            profile=ProviderProfileSpec(
+                is_local=True,
+                description=("Fake score provider for LeRobot policy+score planning tests."),
+                implementation_status="test",
+                deterministic=True,
+                requires_credentials=False,
+            ),
         )
 
     def health(self) -> ProviderHealth:

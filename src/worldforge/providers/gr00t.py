@@ -18,7 +18,7 @@ from worldforge.models import (
 
 from ._config import env_value, optional_bool, optional_non_empty, optional_positive_int
 from ._policy import json_object, normalize_policy_action_candidates
-from .base import BaseProvider, ProviderError
+from .base import BaseProvider, ProviderError, ProviderProfileSpec
 
 GROOT_POLICY_HOST_ENV_VAR = "GROOT_POLICY_HOST"
 GROOT_POLICY_PORT_ENV_VAR = "GROOT_POLICY_PORT"
@@ -105,26 +105,26 @@ class GrootPolicyClientProvider(BaseProvider):
                 score=False,
                 policy=True,
             ),
-            is_local=False,
-            description=(
-                "NVIDIA Isaac GR00T policy-client adapter for selecting embodied action chunks."
+            profile=ProviderProfileSpec(
+                description=(
+                    "NVIDIA Isaac GR00T policy-client adapter for selecting embodied action chunks."
+                ),
+                package="worldforge + host-supplied Isaac-GR00T runtime",
+                implementation_status="experimental",
+                requires_credentials=self.api_token is not None,
+                required_env_vars=(GROOT_POLICY_HOST_ENV_VAR,),
+                supported_modalities=("video", "state", "language", "actions"),
+                artifact_types=("action_policy",),
+                notes=(
+                    "Wraps the host-owned GR00T PolicyClient server/client API.",
+                    "Does not import gr00t unless a non-injected client is used.",
+                    "Requires an action_translator to map embodiment-specific raw actions to "
+                    "WorldForge Action objects.",
+                    "GR00T is an embodied policy provider, not a future-state world model.",
+                ),
+                default_model=self.embodiment_tag,
+                supported_models=(self.embodiment_tag,) if self.embodiment_tag else (),
             ),
-            package="worldforge + host-supplied Isaac-GR00T runtime",
-            implementation_status="experimental",
-            deterministic=False,
-            requires_credentials=self.api_token is not None,
-            required_env_vars=[GROOT_POLICY_HOST_ENV_VAR],
-            supported_modalities=["video", "state", "language", "actions"],
-            artifact_types=["action_policy"],
-            notes=[
-                "Wraps the host-owned GR00T PolicyClient server/client API.",
-                "Does not import gr00t unless a non-injected client is used.",
-                "Requires an action_translator to map embodiment-specific raw actions to "
-                "WorldForge Action objects.",
-                "GR00T is an embodied policy provider, not a future-state world model.",
-            ],
-            default_model=self.embodiment_tag,
-            supported_models=[self.embodiment_tag] if self.embodiment_tag else [],
             event_handler=event_handler,
         )
 

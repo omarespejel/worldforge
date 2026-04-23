@@ -32,6 +32,29 @@ class ProviderError(RuntimeError):
     """Raised when a provider cannot satisfy a request."""
 
 
+@dataclass(slots=True, frozen=True)
+class ProviderProfileSpec:
+    """Documentation and lifecycle metadata for a :class:`BaseProvider`.
+
+    Groups the descriptive fields that used to live as a dozen optional kwargs on
+    ``BaseProvider.__init__``. Every field is optional; concrete adapters declare
+    only what's meaningful for their runtime.
+    """
+
+    description: str = ""
+    package: str = "worldforge"
+    implementation_status: str = "experimental"
+    deterministic: bool = False
+    is_local: bool = False
+    supported_modalities: tuple[str, ...] = ()
+    artifact_types: tuple[str, ...] = ()
+    notes: tuple[str, ...] = ()
+    default_model: str | None = None
+    supported_models: tuple[str, ...] = ()
+    required_env_vars: tuple[str, ...] = ()
+    requires_credentials: bool | None = None
+
+
 @dataclass(slots=True)
 class PredictionPayload:
     """Serialized prediction data returned by providers."""
@@ -86,36 +109,35 @@ class BaseProvider:
         name: str,
         *,
         capabilities: ProviderCapabilities | None = None,
-        is_local: bool = False,
-        description: str = "",
-        package: str = "worldforge",
-        implementation_status: str = "experimental",
-        deterministic: bool = False,
-        supported_modalities: list[str] | None = None,
-        artifact_types: list[str] | None = None,
-        notes: list[str] | None = None,
-        default_model: str | None = None,
-        supported_models: list[str] | None = None,
-        required_env_vars: list[str] | None = None,
-        requires_credentials: bool | None = None,
+        profile: ProviderProfileSpec | None = None,
         request_policy: ProviderRequestPolicy | None = None,
         event_handler: Callable[[ProviderEvent], None] | None = None,
     ) -> None:
+        spec = profile or ProviderProfileSpec()
         self.name = name
         self.capabilities = capabilities or ProviderCapabilities()
-        self.is_local = is_local
-        self.description = description
-        self.package = package
-        self.implementation_status = implementation_status
-        self.deterministic = deterministic
-        self.supported_modalities = list(supported_modalities or [])
-        self.artifact_types = list(artifact_types or [])
-        self.notes = list(notes or [])
-        self.default_model = default_model
-        self.supported_models = list(supported_models or [])
-        self.required_env_vars = list(required_env_vars or ([self.env_var] if self.env_var else []))
+        self.is_local = spec.is_local
+        self.description = spec.description
+        self.package = spec.package
+        self.implementation_status = spec.implementation_status
+        self.deterministic = spec.deterministic
+        self.supported_modalities = list(spec.supported_modalities)
+        self.artifact_types = list(spec.artifact_types)
+        self.notes = list(spec.notes)
+        self.default_model = spec.default_model
+        self.supported_models = list(spec.supported_models)
+        # Use the profile's required_env_vars if given, otherwise fall back to the
+        # class-level single `env_var` declaration (kept for simple remote adapters).
+        if spec.required_env_vars:
+            self.required_env_vars = list(spec.required_env_vars)
+        elif self.env_var:
+            self.required_env_vars = [self.env_var]
+        else:
+            self.required_env_vars = []
         self.requires_credentials = (
-            requires_credentials if requires_credentials is not None else self.env_var is not None
+            spec.requires_credentials
+            if spec.requires_credentials is not None
+            else self.env_var is not None
         )
         self.request_policy = request_policy
         self.event_handler = event_handler
