@@ -10,7 +10,8 @@ evaluation, benchmarks, diagnostics, local state, and a CLI.
 
 [![CI](https://img.shields.io/github/actions/workflow/status/AbdelStark/worldforge/ci.yml?branch=main&label=CI&style=for-the-badge)](https://github.com/AbdelStark/worldforge/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://github.com/AbdelStark/worldforge/blob/main/pyproject.toml)
-[![Version](https://img.shields.io/badge/version-0.4.0-3f7cac?style=for-the-badge)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.5.0-3f7cac?style=for-the-badge)](./CHANGELOG.md)
+[![PyPI](https://img.shields.io/pypi/v/worldforge-ai?style=for-the-badge&label=pypi&color=3f7cac)](https://pypi.org/project/worldforge-ai/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge)](./LICENSE)
 [![Coverage](https://img.shields.io/badge/coverage-%E2%89%A590%25-brightgreen?style=for-the-badge)](./.github/workflows/ci.yml)
 [![Typed](https://img.shields.io/badge/typed-py.typed-3f7cac?style=for-the-badge)](./src/worldforge/py.typed)
@@ -150,7 +151,28 @@ application's responsibility.
 ### Library (recommended)
 
 ```bash
-uv add "worldforge @ git+https://github.com/AbdelStark/worldforge"
+# From PyPI (recommended)
+uv add worldforge-ai
+# or
+pip install worldforge-ai
+```
+
+The Python import path stays the same:
+
+```python
+import worldforge
+```
+
+If you want the optional Textual harness UI:
+
+```bash
+uv add "worldforge-ai[harness]"
+```
+
+### From source (bleeding edge)
+
+```bash
+uv add "worldforge-ai @ git+https://github.com/AbdelStark/worldforge"
 ```
 
 ### Repository development
@@ -440,7 +462,7 @@ If you use WorldForge in academic work, a BibTeX entry is:
   author  = {AbdelStark and {WorldForge contributors}},
   year    = {2026},
   url     = {https://github.com/AbdelStark/worldforge},
-  version = {0.4.0}
+  version = {0.5.0}
 }
 ```
 

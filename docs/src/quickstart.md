@@ -3,7 +3,19 @@
 ## Install
 
 ```bash
-uv add "worldforge @ git+https://github.com/AbdelStark/worldforge"
+uv add worldforge-ai          # or: pip install worldforge-ai
+```
+
+The import path stays `worldforge`:
+
+```python
+import worldforge
+```
+
+Textual harness UI as an optional extra:
+
+```bash
+uv add "worldforge-ai[harness]"
 ```
 
 For local development:

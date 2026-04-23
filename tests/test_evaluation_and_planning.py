@@ -13,7 +13,6 @@ from worldforge import (
     WorldForge,
     WorldForgeError,
     list_eval_suites,
-    plan,
     run_eval,
 )
 from worldforge.evaluation import EvaluationSuite
@@ -92,7 +91,7 @@ def test_planning_comparison_and_execution_flow(tmp_path) -> None:
     final_prediction = final_world.predict(Action.move_to(0.45, 0.5, 0.0), steps=1)
     assert final_prediction.provider == "manual-mock"
 
-    module_plan = plan(world, goal="spawn cube", max_steps=3, provider="manual-mock")
+    module_plan = world.plan(goal="spawn cube", max_steps=3, provider="manual-mock")
     assert module_plan.action_count >= 1
 
 

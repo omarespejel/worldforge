@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Sequence
 from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass
@@ -399,6 +399,7 @@ class World:
         description: str = "",
         world_id: str | None = None,
         metadata: JSONDict | None = None,
+        max_history: int | None = None,
     ) -> None:
         self._forge = forge or WorldForge()
         self.id = _validate_storage_id(world_id or generate_id("world"), name="world_id")
@@ -412,6 +413,9 @@ class World:
         self.step = 0
         self.metadata: JSONDict = metadata.copy() if metadata else {}
         self.metadata.setdefault("name", self.name)
+        if max_history is not None and max_history <= 0:
+            raise WorldForgeError("World max_history must be a positive integer or None.")
+        self.max_history = max_history
         self.scene_objects: dict[str, SceneObject] = {}
         self._history: list[HistoryEntry] = []
         self._record_history(summary="world initialized", action=None)
@@ -501,6 +505,12 @@ class World:
                 action_json=action.to_json() if action else None,
             )
         )
+        # Trim the oldest entries first when a bound is set; this is a ring buffer
+        # on write, so `history_state(0)` after a trim refers to the oldest kept entry.
+        if self.max_history is not None:
+            overflow = len(self._history) - self.max_history
+            if overflow > 0:
+                del self._history[:overflow]
 
     @staticmethod
     def _object_patch_payload(patch: SceneObjectPatch) -> JSONDict:
@@ -706,8 +716,10 @@ class World:
                 raise WorldForgeError(
                     "Structured goal object_near requires distinct primary and reference objects."
                 )
-            assert goal_spec.offset is not None
-            target_position = _offset_position(reference_object.position, goal_spec.offset)
+            offset = goal_spec.offset
+            if offset is None:
+                raise WorldForgeError("Structured goal object_near must carry a non-null offset.")
+            target_position = _offset_position(reference_object.position, offset)
             return [
                 Action.move_to(
                     target_position.x,
@@ -742,12 +754,16 @@ class World:
                 ),
             ]
 
-        assert goal_spec.position is not None
+        position = goal_spec.position
+        if position is None:
+            raise WorldForgeError(
+                f"Structured goal {goal_spec.kind!r} must carry a non-null position."
+            )
         return [
             Action.move_to(
-                goal_spec.position.x,
-                goal_spec.position.y,
-                goal_spec.position.z,
+                position.x,
+                position.y,
+                position.z,
                 object_id=target_object.id,
             )
         ]
@@ -816,15 +832,9 @@ class World:
             for item in (candidate_actions, score_provider, score_info, score_action_candidates)
         )
         selected_policy_provider = policy_provider or selected_provider
-        selected_policy_provider_instance = (
-            self._provider(selected_policy_provider) if uses_policy_planning else None
-        )
-        selected_score_provider = score_provider or selected_provider
-        selected_score_provider_instance = (
-            self._provider(selected_score_provider) if uses_score_planning else None
-        )
+        selected_policy_provider_instance: BaseProvider | None = None
         if uses_policy_planning:
-            assert selected_policy_provider_instance is not None
+            selected_policy_provider_instance = self._provider(selected_policy_provider)
             if not selected_policy_provider_instance.capabilities.policy:
                 raise WorldForgeError(
                     f"Provider '{selected_policy_provider}' does not support policy planning."
@@ -836,8 +846,10 @@ class World:
                     "Policy planning derives candidate actions from the policy provider; do not "
                     "pass candidate_actions."
                 )
+        selected_score_provider = score_provider or selected_provider
+        selected_score_provider_instance: BaseProvider | None = None
         if uses_score_planning:
-            assert selected_score_provider_instance is not None
+            selected_score_provider_instance = self._provider(selected_score_provider)
             if not selected_score_provider_instance.capabilities.score:
                 raise WorldForgeError(
                     f"Provider '{selected_score_provider}' does not support score-based planning."
@@ -867,9 +879,13 @@ class World:
         actions = actions[: min(max_steps, len(actions))]
 
         if uses_policy_planning:
-            assert policy_info is not None
-            assert selected_policy_provider_instance is not None
-            policy_result = selected_policy_provider_instance.select_actions(info=policy_info)
+            # Guards above ensure both are non-None; keep locals for type narrowing.
+            policy_provider_obj = selected_policy_provider_instance
+            if policy_provider_obj is None or policy_info is None:
+                raise WorldForgeError(
+                    "Policy planning is active but provider or policy_info is missing."
+                )
+            policy_result = policy_provider_obj.select_actions(info=policy_info)
             candidate_action_plans = [
                 candidate[:max_steps] for candidate in policy_result.action_candidates
             ]
@@ -878,14 +894,17 @@ class World:
                     f"Provider '{selected_policy_provider}' returned no policy action candidates."
                 )
             if uses_score_planning:
-                assert score_info is not None
-                assert selected_score_provider_instance is not None
+                score_provider_obj = selected_score_provider_instance
+                if score_provider_obj is None or score_info is None:
+                    raise WorldForgeError(
+                        "Score planning is active but provider or score_info is missing."
+                    )
                 score_payload = (
                     score_action_candidates
                     if score_action_candidates is not None
                     else _action_plans_to_score_payload(candidate_action_plans)
                 )
-                score_result = selected_score_provider_instance.score_actions(
+                score_result = score_provider_obj.score_actions(
                     info=score_info,
                     action_candidates=score_payload,
                 )
@@ -948,16 +967,19 @@ class World:
             )
 
         if uses_score_planning:
-            assert candidate_actions is not None
-            assert score_info is not None
-            assert selected_score_provider_instance is not None
+            score_provider_obj = selected_score_provider_instance
+            if score_provider_obj is None or candidate_actions is None or score_info is None:
+                raise WorldForgeError(
+                    "Score planning (without policy planning) requires provider, "
+                    "candidate_actions, and score_info."
+                )
             candidate_action_plans = _normalize_candidate_action_plans(candidate_actions)
             score_payload = (
                 score_action_candidates
                 if score_action_candidates is not None
                 else _action_plans_to_score_payload(candidate_action_plans)
             )
-            score_result = selected_score_provider_instance.score_actions(
+            score_result = score_provider_obj.score_actions(
                 info=score_info,
                 action_candidates=score_payload,
             )
@@ -1153,9 +1175,6 @@ class WorldForge:
 
     def provider_info(self, name: str) -> ProviderInfo:
         return self._require_provider(name).info()
-
-    def get_provider(self, name: str) -> ProviderInfo:
-        return self.provider_info(name)
 
     def provider_profile(self, name: str) -> ProviderProfile:
         catalog = self._provider_catalog(include_known=True)
@@ -1353,9 +1372,6 @@ class WorldForge:
         fork._record_history(summary="world forked", action=None)
         return fork
 
-    def compare(self, predictions: Iterable[Prediction]) -> Comparison:
-        return Comparison(list(predictions))
-
     def generate(
         self,
         prompt: str,
@@ -1389,9 +1405,6 @@ class WorldForge:
             prompt=prompt,
             options=options,
         )
-
-    def save_clip(self, clip: VideoClip, path: str | Path) -> Path:
-        return clip.save(path)
 
     def reason(
         self,
@@ -1442,9 +1455,3 @@ def run_eval(
 
     active_forge = forge or WorldForge()
     return EvaluationSuite.from_builtin(suite).run(provider, forge=active_forge)
-
-
-def plan(world: World, *args: Any, **kwargs: Any) -> Plan:
-    """Module-level alias for ``World.plan()``."""
-
-    return world.plan(*args, **kwargs)

@@ -8,13 +8,11 @@ from dataclasses import dataclass
 from worldforge.models import ProviderEvent
 
 from .base import BaseProvider
-from .cosmos import CosmosProvider
-from .gr00t import GrootPolicyClientProvider
-from .lerobot import LeRobotPolicyProvider
-from .leworldmodel import LeWorldModelProvider
-from .mock import MockProvider
-from .remote import GenieProvider, JepaProvider
-from .runway import RunwayProvider
+
+# Concrete provider classes are imported lazily inside each factory below so
+# that `import worldforge.providers.catalog` (reached at CLI cold start through
+# `framework.py`) doesn't drag every optional-runtime adapter module into the
+# module cache when only one is ever used.
 
 ProviderEventHandler = Callable[[ProviderEvent], None] | None
 ProviderFactory = Callable[[ProviderEventHandler], BaseProvider]
@@ -50,34 +48,50 @@ class ProviderCatalogEntry:
 
 
 def _mock(event_handler: ProviderEventHandler = None) -> BaseProvider:
+    from .mock import MockProvider
+
     return MockProvider(event_handler=event_handler)
 
 
 def _cosmos(event_handler: ProviderEventHandler = None) -> BaseProvider:
+    from .cosmos import CosmosProvider
+
     return CosmosProvider(event_handler=event_handler)
 
 
 def _runway(event_handler: ProviderEventHandler = None) -> BaseProvider:
+    from .runway import RunwayProvider
+
     return RunwayProvider(event_handler=event_handler)
 
 
 def _leworldmodel(event_handler: ProviderEventHandler = None) -> BaseProvider:
+    from .leworldmodel import LeWorldModelProvider
+
     return LeWorldModelProvider(event_handler=event_handler)
 
 
 def _gr00t(event_handler: ProviderEventHandler = None) -> BaseProvider:
+    from .gr00t import GrootPolicyClientProvider
+
     return GrootPolicyClientProvider(event_handler=event_handler)
 
 
 def _lerobot(event_handler: ProviderEventHandler = None) -> BaseProvider:
+    from .lerobot import LeRobotPolicyProvider
+
     return LeRobotPolicyProvider(event_handler=event_handler)
 
 
 def _jepa(event_handler: ProviderEventHandler = None) -> BaseProvider:
+    from .remote import JepaProvider
+
     return JepaProvider(event_handler=event_handler)
 
 
 def _genie(event_handler: ProviderEventHandler = None) -> BaseProvider:
+    from .remote import GenieProvider
+
     return GenieProvider(event_handler=event_handler)
 
 

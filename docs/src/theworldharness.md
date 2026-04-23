@@ -31,7 +31,7 @@ uv run worldforge harness --list --format json
 Installed package:
 
 ```bash
-pip install "worldforge[harness]"
+pip install "worldforge-ai[harness]"
 worldforge-harness
 ```
 

@@ -41,5 +41,6 @@ build/
 **/.DS_Store
 .claude/tsc-cache/
 .claude/cache/
+.claude/worktrees/
 .tldr/
 .tldrignore

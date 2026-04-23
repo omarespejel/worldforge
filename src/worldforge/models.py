@@ -697,10 +697,15 @@ class StructuredGoal:
                 self.reference_object_name,
                 fallback="reference object",
             )
-            assert self.offset is not None
+            offset = self.offset
+            if offset is None:
+                raise WorldForgeError(
+                    "StructuredGoal object_near must have a non-null offset (enforced in "
+                    "__post_init__)."
+                )
             return (
                 f"move {target} near {reference} "
-                f"with offset ({self.offset.x:.2f}, {self.offset.y:.2f}, {self.offset.z:.2f})"
+                f"with offset ({offset.x:.2f}, {offset.y:.2f}, {offset.z:.2f})"
             )
         if self.kind == "swap_objects":
             reference = self._selector_label(
@@ -709,11 +714,13 @@ class StructuredGoal:
                 fallback="reference object",
             )
             return f"swap {target} with {reference}"
-        assert self.position is not None
-        return (
-            f"move {target} to "
-            f"({self.position.x:.2f}, {self.position.y:.2f}, {self.position.z:.2f})"
-        )
+        position = self.position
+        if position is None:
+            raise WorldForgeError(
+                f"StructuredGoal {self.kind!r} must have a non-null position (enforced in "
+                "__post_init__)."
+            )
+        return f"move {target} to ({position.x:.2f}, {position.y:.2f}, {position.z:.2f})"
 
 
 @dataclass(slots=True)

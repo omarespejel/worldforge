@@ -40,7 +40,6 @@ from worldforge.framework import (
     World,
     WorldForge,
     list_eval_suites,
-    plan,
     run_eval,
 )
 from worldforge.models import (
@@ -74,7 +73,7 @@ from worldforge.models import (
 )
 
 try:
-    __version__ = version("worldforge")
+    __version__ = version("worldforge-ai")
 except PackageNotFoundError:  # pragma: no cover - fallback for editable local imports
     __version__ = "0.0.0"
 
@@ -137,7 +136,6 @@ __all__ = [
     "WorldForgeError",
     "WorldStateError",
     "list_eval_suites",
-    "plan",
     "run_benchmark",
     "run_eval",
 ]

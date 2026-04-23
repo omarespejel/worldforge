@@ -10,6 +10,7 @@ from worldforge import (
     Action,
     ActionPolicyResult,
     BBox,
+    Comparison,
     EmbeddingResult,
     GenerationOptions,
     Pose,
@@ -127,17 +128,17 @@ def test_framework_helpers_and_error_paths(tmp_path) -> None:
     artifacts = comparison.artifacts()
     assert set(artifacts) == {"json", "markdown", "csv"}
 
-    assert forge.get_provider("mock").name == "mock"
+    assert forge.provider_info("mock").name == "mock"
     assert [health.name for health in forge.provider_healths(capability="generate")] == ["mock"]
 
     clip = forge.generate("a cube rolling across a table", "mock", duration_seconds=1.0)
-    saved_clip_path = forge.save_clip(clip, tmp_path / "clip.bin")
+    saved_clip_path = clip.save(tmp_path / "clip.bin")
     assert saved_clip_path.exists()
 
-    assert forge.compare([prediction]).prediction_count == 1
+    assert Comparison([prediction]).prediction_count == 1
 
     with pytest.raises(ValueError, match="Comparison has no predictions"):
-        forge.compare([]).best_prediction()
+        Comparison([]).best_prediction()
 
     with pytest.raises(WorldForgeError, match="World name must not be empty"):
         forge.create_world("", "mock")

@@ -465,8 +465,8 @@ wheels = [
 ]
 
 [[package]]
-name = "worldforge"
-version = "0.4.0"
+name = "worldforge-ai"
+version = "0.5.0"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
