@@ -1342,7 +1342,6 @@ def main() -> int:
             return result
 
     parser.error(f"Unknown command: {args.command}")
-    return 2
 
 
 if __name__ == "__main__":

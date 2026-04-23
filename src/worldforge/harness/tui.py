@@ -9,7 +9,7 @@ import time
 from collections.abc import Iterable
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 from rich import box
 from rich.align import Align
@@ -128,6 +128,20 @@ class _ThemedRenderer:
     def _color(self, token: str) -> str:
         variables = self.app.get_css_variables()
         return variables.get(token, variables.get("foreground", ""))
+
+
+def _set_form_error(node, selector: str, message: str | None) -> None:
+    """Update or hide an inline form-error ``Static`` identified by ``selector``."""
+
+    error = _maybe_query(node, selector, Static)
+    if error is None:
+        return
+    if message:
+        error.update(message)
+        error.remove_class("hidden")
+    else:
+        error.update("")
+        error.add_class("hidden")
 
 
 def _maybe_query(node, selector: str, expected_type):
@@ -1319,15 +1333,7 @@ class NewWorldScreen(ModalScreen[WorldSpec | None]):
             name_input.focus()
 
     def _set_error(self, message: str | None) -> None:
-        error = _maybe_query(self, "#new-world-error", Static)
-        if error is None:
-            return
-        if message:
-            error.update(message)
-            error.remove_class("hidden")
-        else:
-            error.update("")
-            error.add_class("hidden")
+        _set_form_error(self, "#new-world-error", message)
 
     @on(Button.Pressed, "#new-world-create")
     @on(Input.Submitted, "#new-world-name")
@@ -1443,15 +1449,7 @@ class EditObjectScreen(ModalScreen[SceneObjectSpec | None]):
             name_input.focus()
 
     def _set_error(self, message: str | None) -> None:
-        error = _maybe_query(self, "#edit-object-error", Static)
-        if error is None:
-            return
-        if message:
-            error.update(message)
-            error.remove_class("hidden")
-        else:
-            error.update("")
-            error.add_class("hidden")
+        _set_form_error(self, "#edit-object-error", message)
 
     @on(Button.Pressed, "#edit-object-save")
     def _on_save(self) -> None:
@@ -3452,19 +3450,62 @@ class RoboticsTabletopPane(Static, _ThemedRenderer):
 class RoboticsArmPane(Static, _ThemedRenderer):
     """Illustrative animated robot-arm replay for the selected candidate."""
 
+    _FRAMES: ClassVar[list[list[str]]] = [
+        [
+            "                                    target",
+            "                                      T",
+            "                                      |",
+            "base [###]o====o----[]",
+            "        shoulder elbow gripper",
+            "        replay frame 1/4",
+        ],
+        [
+            "                                    target",
+            "                                      T",
+            "                                     /",
+            "base [###]o======o-----[]",
+            "        shoulder  elbow gripper",
+            "        replay frame 2/4",
+        ],
+        [
+            "                                    target",
+            "                                      T",
+            "                                    /",
+            "base [###]o========o------[]",
+            "        shoulder   elbow gripper",
+            "        replay frame 3/4",
+        ],
+        [
+            "                                    target",
+            "                                      T",
+            "                                      |",
+            "base [###]o==========o========[]",
+            "        shoulder    elbow     gripper",
+            "        replay frame 4/4",
+        ],
+    ]
+
     def __init__(self, summary: dict[str, object], *, animate: bool = True) -> None:
         super().__init__()
         self.summary = summary
         self.animate = animate
         self._frame_index = 0
+        self._timer: Any | None = None
+        self._target_line_cached = ""
 
     def on_mount(self) -> None:
+        self._target_line_cached = self._target_line()
         self._render_frame()
         if self.animate:
-            self.set_interval(0.32, self._advance)
+            self._timer = self.set_interval(0.32, self._advance)
+
+    def on_unmount(self) -> None:
+        if self._timer is not None:
+            self._timer.stop()
+            self._timer = None
 
     def _advance(self) -> None:
-        self._frame_index = (self._frame_index + 1) % len(self._frames())
+        self._frame_index = (self._frame_index + 1) % len(self._FRAMES)
         self._render_frame()
 
     def _selected_target(self) -> dict[str, object] | None:
@@ -3484,47 +3525,11 @@ class RoboticsArmPane(Static, _ThemedRenderer):
         z = _robotics_number(target.get("z")) or 0.0
         return f"selected candidate #{selected}: target x={x:.3f} y={y:.3f} z={z:.3f}"
 
-    def _frames(self) -> list[list[str]]:
-        return [
-            [
-                "                                    target",
-                "                                      T",
-                "                                      |",
-                "base [###]o====o----[]",
-                "        shoulder elbow gripper",
-                "        replay frame 1/4",
-            ],
-            [
-                "                                    target",
-                "                                      T",
-                "                                     /",
-                "base [###]o======o-----[]",
-                "        shoulder  elbow gripper",
-                "        replay frame 2/4",
-            ],
-            [
-                "                                    target",
-                "                                      T",
-                "                                    /",
-                "base [###]o========o------[]",
-                "        shoulder   elbow gripper",
-                "        replay frame 3/4",
-            ],
-            [
-                "                                    target",
-                "                                      T",
-                "                                      |",
-                "base [###]o==========o========[]",
-                "        shoulder    elbow     gripper",
-                "        replay frame 4/4",
-            ],
-        ]
-
     def _render_frame(self) -> None:
         title = Text("Illustrative Arm Replay", style=f"bold {_robotics_color('accent')}")
         subtitle = Text("simulation/replay only; no hardware command is emitted", style="dim")
-        target = Text(self._target_line(), style=f"bold {_robotics_color('success')}")
-        frame = Text("\n".join(self._frames()[self._frame_index]), style=_robotics_color("accent"))
+        target = Text(self._target_line_cached, style=f"bold {_robotics_color('success')}")
+        frame = Text("\n".join(self._FRAMES[self._frame_index]), style=_robotics_color("accent"))
         final_position = _robotics_final_position(self.summary)
         final = "mock final unavailable"
         if final_position is not None:

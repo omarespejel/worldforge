@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Callable
-from contextlib import nullcontext
 from time import perf_counter
 from typing import Any, Protocol
 
@@ -25,6 +24,7 @@ from worldforge.models import (
 )
 
 from ._config import env_value, optional_non_empty
+from ._policy import no_grad_context
 from ._tensor_validation import (
     _flatten_numeric,
     _require_rank,
@@ -151,7 +151,6 @@ class TorchHubJEPAWMSRuntime:
             model = model.to(self.device)
         if hasattr(model, "eval"):
             model = model.eval()
-
         self._model = model
         self._preprocessor = preprocessor
         return model, preprocessor
@@ -190,12 +189,6 @@ class TorchHubJEPAWMSRuntime:
             return normalize(action_tensor)
         except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
             raise ProviderError(f"JEPA-WMS action normalization failed: {exc}") from exc
-
-    def _no_grad_context(self, torch: Any) -> Any:
-        no_grad = getattr(torch, "no_grad", None)
-        if callable(no_grad):
-            return no_grad()
-        return nullcontext()
 
     def _score_via_model_method(
         self,
@@ -345,7 +338,7 @@ class TorchHubJEPAWMSRuntime:
         ) as exc:
             raise ProviderError(f"JEPA-WMS action tensor preparation failed: {exc}") from exc
 
-        with self._no_grad_context(torch):
+        with no_grad_context(torch):
             z_init = self._encode(model, observation, act=True)
             target = self._encode(model, goal, act=False)
             predicted = self._unroll(model, z_init, model_actions)
@@ -468,24 +461,17 @@ class JEPAWMSProvider(BaseProvider):
     def health(self) -> ProviderHealth:
         started = perf_counter()
         if self.model_path is None:
-            return ProviderHealth(
-                name=self.name,
-                healthy=False,
-                latency_ms=max(0.1, (perf_counter() - started) * 1000),
-                details=f"missing {JEPA_WMS_ENV_VAR}",
-            )
+            return self._health(started, f"missing {JEPA_WMS_ENV_VAR}", healthy=False)
         if self._runtime is None:
-            return ProviderHealth(
-                name=self.name,
+            return self._health(
+                started,
+                "scaffold generated; no runtime adapter implemented",
                 healthy=False,
-                latency_ms=max(0.1, (perf_counter() - started) * 1000),
-                details="scaffold generated; no runtime adapter implemented",
             )
-        return ProviderHealth(
-            name=self.name,
+        return self._health(
+            started,
+            f"configured for model path {self.model_path}",
             healthy=True,
-            latency_ms=max(0.1, (perf_counter() - started) * 1000),
-            details=f"configured for model path {self.model_path}",
         )
 
     def _validate_info(self, info: JSONDict) -> JSONDict:
@@ -622,25 +608,6 @@ class JEPAWMSProvider(BaseProvider):
             },
         )
 
-    def _emit_score_event(
-        self,
-        *,
-        phase: str,
-        duration_ms: float,
-        message: str = "",
-        metadata: JSONDict | None = None,
-    ) -> None:
-        self._emit_event(
-            ProviderEvent(
-                provider=self.name,
-                operation="score",
-                phase=phase,
-                duration_ms=duration_ms,
-                message=message,
-                metadata=dict(metadata or {}),
-            )
-        )
-
     def score_actions(self, *, info: JSONDict, action_candidates: object) -> ActionScoreResult:
         started = perf_counter()
         try:
@@ -652,7 +619,8 @@ class JEPAWMSProvider(BaseProvider):
             )
             result = self._parse_runtime_response(raw_result, candidate_count=candidate_count)
             duration_ms = max(0.1, (perf_counter() - started) * 1000)
-            self._emit_score_event(
+            self._emit_operation_event(
+                "score",
                 phase="success",
                 duration_ms=duration_ms,
                 metadata={
@@ -663,7 +631,8 @@ class JEPAWMSProvider(BaseProvider):
             )
             return result
         except ProviderError as exc:
-            self._emit_score_event(
+            self._emit_operation_event(
+                "score",
                 phase="failure",
                 duration_ms=max(0.1, (perf_counter() - started) * 1000),
                 message=str(exc),
@@ -684,7 +653,8 @@ class JEPAWMSProvider(BaseProvider):
             error = ProviderError(
                 f"JEPA-WMS scoring failed for model path '{self.model_path}': {exc}"
             )
-            self._emit_score_event(
+            self._emit_operation_event(
+                "score",
                 phase="failure",
                 duration_ms=max(0.1, (perf_counter() - started) * 1000),
                 message=str(error),

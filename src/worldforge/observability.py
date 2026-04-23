@@ -70,8 +70,13 @@ class JsonLoggerSink:
     level: int = logging.INFO
     extra_fields: JSONDict = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        # Deep-copy once; isolating callers from later extra-field mutation only
+        # matters at construction time, so don't pay the cost per event.
+        self.extra_fields = deepcopy(self.extra_fields)
+
     def __call__(self, event: ProviderEvent) -> None:
-        payload = {"event_type": "provider_event", **deepcopy(self.extra_fields), **event.to_dict()}
+        payload = {"event_type": "provider_event", **self.extra_fields, **event.to_dict()}
         self.logger.log(self.level, dump_json(payload))
 
 

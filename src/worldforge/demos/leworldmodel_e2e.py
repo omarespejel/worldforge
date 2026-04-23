@@ -14,9 +14,11 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from worldforge import Action, BBox, Position, SceneObject, StructuredGoal, WorldForge
+from worldforge import Position, WorldForge
 from worldforge.models import JSONDict, ProviderEvent
 from worldforge.providers import LeWorldModelProvider
+
+from . import BLUE_CUBE_GOAL, blue_cube_goal, make_blue_cube, make_candidate_plans
 
 
 def _depth(value: object) -> int:
@@ -146,23 +148,6 @@ def _make_candidate_tensors() -> list[list[list[list[float]]]]:
     ]
 
 
-def _make_candidate_plans(cube_id: str) -> list[list[Action]]:
-    return [
-        [
-            Action.move_to(0.20, 0.50, 0.00, object_id=cube_id),
-            Action.move_to(0.35, 0.50, 0.00, object_id=cube_id),
-        ],
-        [
-            Action.move_to(0.30, 0.50, 0.00, object_id=cube_id),
-            Action.move_to(0.55, 0.50, 0.00, object_id=cube_id),
-        ],
-        [
-            Action.move_to(0.70, 0.50, 0.00, object_id=cube_id),
-            Action.move_to(0.95, 0.50, 0.00, object_id=cube_id),
-        ],
-    ]
-
-
 def run_demo(
     *,
     state_dir: Path | None = None,
@@ -183,23 +168,11 @@ def run_demo(
     forge.register_provider(provider)
 
     world = forge.create_world("leworldmodel-score-planning-demo", provider="mock")
-    cube = world.add_object(
-        SceneObject(
-            "blue_cube",
-            Position(0.0, 0.5, 0.0),
-            BBox(Position(-0.05, 0.45, -0.05), Position(0.05, 0.55, 0.05)),
-        )
-    )
-    goal_position = Position(0.55, 0.50, 0.00)
-    goal = StructuredGoal.object_at(
-        object_id=cube.id,
-        object_name=cube.name,
-        position=goal_position,
-        tolerance=0.05,
-    )
-    score_info = _make_score_info(goal_position)
+    cube = make_blue_cube(world)
+    goal = blue_cube_goal(cube)
+    score_info = _make_score_info(BLUE_CUBE_GOAL)
     score_action_candidates = _make_candidate_tensors()
-    candidate_plans = _make_candidate_plans(cube.id)
+    candidate_plans = make_candidate_plans(cube.id)
 
     score_result = forge.score_actions(
         "leworldmodel",

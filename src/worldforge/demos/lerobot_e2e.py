@@ -34,10 +34,6 @@ from typing import Any
 from worldforge import (
     Action,
     ActionScoreResult,
-    BBox,
-    Position,
-    SceneObject,
-    StructuredGoal,
     WorldForge,
 )
 from worldforge.models import (
@@ -47,6 +43,8 @@ from worldforge.models import (
     ProviderHealth,
 )
 from worldforge.providers import BaseProvider, LeRobotPolicyProvider
+
+from . import BLUE_CUBE_GOAL, blue_cube_goal, make_blue_cube, make_candidate_plans
 
 
 class DemoTensor:
@@ -161,30 +159,13 @@ def _make_candidate_tensors() -> list[list[list[float]]]:
     ]
 
 
-def _make_candidate_plans(cube_id: str) -> list[list[Action]]:
-    return [
-        [
-            Action.move_to(0.20, 0.50, 0.00, object_id=cube_id),
-            Action.move_to(0.35, 0.50, 0.00, object_id=cube_id),
-        ],
-        [
-            Action.move_to(0.30, 0.50, 0.00, object_id=cube_id),
-            Action.move_to(0.55, 0.50, 0.00, object_id=cube_id),
-        ],
-        [
-            Action.move_to(0.70, 0.50, 0.00, object_id=cube_id),
-            Action.move_to(0.95, 0.50, 0.00, object_id=cube_id),
-        ],
-    ]
-
-
 def _build_translator(cube_id: str) -> Any:
     def translator(
         _raw: object,
         _info: JSONDict,
         _provider_info: JSONDict,
     ) -> list[list[Action]]:
-        return _make_candidate_plans(cube_id)
+        return make_candidate_plans(cube_id)
 
     return translator
 
@@ -197,20 +178,9 @@ def run_demo(*, state_dir: Path | None = None, emit: bool = True) -> JSONDict:
 
     forge = WorldForge(state_dir=resolved_state_dir, auto_register_remote=False)
     world = forge.create_world("lerobot-policy-plus-score-demo", provider="mock")
-    cube = world.add_object(
-        SceneObject(
-            "blue_cube",
-            Position(0.0, 0.5, 0.0),
-            BBox(Position(-0.05, 0.45, -0.05), Position(0.05, 0.55, 0.05)),
-        )
-    )
-    goal_position = Position(0.55, 0.50, 0.00)
-    goal = StructuredGoal.object_at(
-        object_id=cube.id,
-        object_name=cube.name,
-        position=goal_position,
-        tolerance=0.05,
-    )
+    cube = make_blue_cube(world)
+    goal = blue_cube_goal(cube)
+    goal_position = BLUE_CUBE_GOAL
 
     policy = DemoLeRobotPolicy(_make_candidate_tensors())
 

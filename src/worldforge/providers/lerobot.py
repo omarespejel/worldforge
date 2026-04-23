@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Callable, Sequence
-from contextlib import nullcontext
 from time import perf_counter
 from typing import Any
 
@@ -35,7 +34,7 @@ from worldforge.models import (
 )
 
 from ._config import env_value, first_env_value, optional_non_empty
-from ._policy import json_object, normalize_policy_action_candidates
+from ._policy import json_object, no_grad_context, normalize_policy_action_candidates, prepare_model
 from .base import BaseProvider, ProviderError
 
 LEROBOT_POLICY_PATH_ENV_VAR = "LEROBOT_POLICY_PATH"
@@ -72,12 +71,6 @@ def _optional_policy_type(value: str | None, *, name: str) -> str | None:
         supported = ", ".join(SUPPORTED_POLICY_TYPES)
         raise WorldForgeError(f"{name} must be one of: {supported}. Got '{normalized}'.")
     return lowered
-
-
-def _normalize_policy_action_candidates(
-    value: Sequence[Action] | Sequence[Sequence[Action]],
-) -> list[list[Action]]:
-    return normalize_policy_action_candidates(value, provider_label="LeRobot")
 
 
 class LeRobotPolicyProvider(BaseProvider):
@@ -174,30 +167,19 @@ class LeRobotPolicyProvider(BaseProvider):
     def health(self) -> ProviderHealth:
         started = perf_counter()
         if not self.configured():
-            return ProviderHealth(
-                name=self.name,
+            return self._health(
+                started,
+                f"missing {LEROBOT_POLICY_PATH_ENV_VAR} (or injected policy)",
                 healthy=False,
-                latency_ms=max(0.1, (perf_counter() - started) * 1000),
-                details=(f"missing {LEROBOT_POLICY_PATH_ENV_VAR} (or injected policy)"),
             )
         if self._policy is None:
             dependency_error = self._runtime_dependency_error()
             if dependency_error is not None:
-                return ProviderHealth(
-                    name=self.name,
-                    healthy=False,
-                    latency_ms=max(0.1, (perf_counter() - started) * 1000),
-                    details=dependency_error,
-                )
+                return self._health(started, dependency_error, healthy=False)
         detail_source = "injected policy"
         if self._policy is None:
             detail_source = self.policy_path or detail_source
-        return ProviderHealth(
-            name=self.name,
-            healthy=True,
-            latency_ms=max(0.1, (perf_counter() - started) * 1000),
-            details=f"configured for {detail_source}",
-        )
+        return self._health(started, f"configured for {detail_source}", healthy=True)
 
     def _runtime_dependency_error(self) -> str | None:
         if self._policy_loader is not None:
@@ -240,12 +222,7 @@ class LeRobotPolicyProvider(BaseProvider):
             raise ProviderError(
                 f"Failed to load LeRobot policy '{self.policy_path}': {exc}"
             ) from exc
-        if self.device is not None and hasattr(loaded, "to"):
-            loaded = loaded.to(self.device)
-        if hasattr(loaded, "eval"):
-            loaded = loaded.eval()
-        if hasattr(loaded, "requires_grad_"):
-            loaded.requires_grad_(False)
+        loaded = prepare_model(loaded, device=self.device)
         if hasattr(loaded, "reset"):
             loaded.reset()
         self._policy = loaded
@@ -334,36 +311,14 @@ class LeRobotPolicyProvider(BaseProvider):
             translated = self._action_translator(raw_actions, info, provider_info)
         except Exception as exc:
             raise ProviderError(f"LeRobot action translation failed: {exc}") from exc
-        return _normalize_policy_action_candidates(translated)
-
-    def _emit_policy_event(
-        self,
-        *,
-        phase: str,
-        duration_ms: float,
-        message: str = "",
-        metadata: JSONDict | None = None,
-    ) -> None:
-        self._emit_event(
-            ProviderEvent(
-                provider=self.name,
-                operation="policy",
-                phase=phase,
-                duration_ms=duration_ms,
-                message=message,
-                metadata=dict(metadata or {}),
-            )
-        )
+        return normalize_policy_action_candidates(translated, provider_label="LeRobot")
 
     def _no_grad_context(self) -> Any:
         try:
             torch = importlib.import_module("torch")
         except ImportError:
-            return nullcontext()
-        no_grad = getattr(torch, "no_grad", None)
-        if callable(no_grad):
-            return no_grad()
-        return nullcontext()
+            return no_grad_context(None)
+        return no_grad_context(torch)
 
     def _invoke_policy(self, policy: Any, observation: JSONDict, mode: str) -> object:
         if mode == "predict_chunk":
@@ -457,7 +412,8 @@ class LeRobotPolicyProvider(BaseProvider):
                 },
                 action_candidates=candidate_plans,
             )
-            self._emit_policy_event(
+            self._emit_operation_event(
+                "policy",
                 phase="success",
                 duration_ms=max(0.1, (perf_counter() - started) * 1000),
                 metadata={
@@ -471,7 +427,8 @@ class LeRobotPolicyProvider(BaseProvider):
             )
             return result
         except ProviderError as exc:
-            self._emit_policy_event(
+            self._emit_operation_event(
+                "policy",
                 phase="failure",
                 duration_ms=max(0.1, (perf_counter() - started) * 1000),
                 message=str(exc),
@@ -480,7 +437,8 @@ class LeRobotPolicyProvider(BaseProvider):
             raise
         except Exception as exc:
             error = ProviderError(f"LeRobot policy selection failed: {exc}")
-            self._emit_policy_event(
+            self._emit_operation_event(
+                "policy",
                 phase="failure",
                 duration_ms=max(0.1, (perf_counter() - started) * 1000),
                 message=str(error),

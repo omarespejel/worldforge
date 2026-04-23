@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from time import perf_counter, sleep
@@ -20,6 +19,7 @@ from worldforge.models import (
     require_positive_int,
 )
 
+from ._config import env_value, first_env_value
 from .base import ProviderError, RemoteProvider
 from .http_utils import (
     asset_to_uri,
@@ -245,7 +245,7 @@ class RunwayProvider(RemoteProvider):
             event_handler=event_handler,
         )
         self._base_url = (
-            base_url or os.environ.get("RUNWAYML_BASE_URL") or "https://api.dev.runwayml.com"
+            base_url or env_value("RUNWAYML_BASE_URL") or "https://api.dev.runwayml.com"
         )
         self._poll_interval_seconds = require_finite_number(
             poll_interval_seconds,
@@ -260,7 +260,7 @@ class RunwayProvider(RemoteProvider):
         return bool(self._api_key())
 
     def _api_key(self) -> str | None:
-        return os.environ.get("RUNWAYML_API_SECRET") or os.environ.get("RUNWAY_API_SECRET")
+        return first_env_value(("RUNWAYML_API_SECRET", "RUNWAY_API_SECRET"))
 
     def _headers(self) -> dict[str, str]:
         api_key = self._api_key()
@@ -282,13 +282,7 @@ class RunwayProvider(RemoteProvider):
     def health(self) -> ProviderHealth:
         started = perf_counter()
         if not self.configured():
-            return ProviderHealth(
-                name=self.name,
-                healthy=False,
-                latency_ms=max(0.1, (perf_counter() - started) * 1000),
-                details=f"missing {self.env_var}",
-            )
-
+            return self._health(started, f"missing {self.env_var}", healthy=False)
         try:
             request_policy = self._require_request_policy()
             with self._client() as client:
@@ -310,13 +304,7 @@ class RunwayProvider(RemoteProvider):
         except ProviderError as exc:
             healthy = False
             details = str(exc)
-
-        return ProviderHealth(
-            name=self.name,
-            healthy=healthy,
-            latency_ms=max(0.1, (perf_counter() - started) * 1000),
-            details=details,
-        )
+        return self._health(started, details, healthy=healthy)
 
     def _ratio(
         self,

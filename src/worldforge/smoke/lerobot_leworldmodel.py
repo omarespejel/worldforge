@@ -26,6 +26,7 @@ from typing import Any
 from worldforge import Action, BBox, Position, SceneObject, StructuredGoal, WorldForge
 from worldforge.models import ProviderEvent
 from worldforge.providers import LeRobotPolicyProvider, LeWorldModelProvider
+from worldforge.providers._config import env_value as _env_value
 
 from .leworldmodel import (
     DEFAULT_STABLEWM_HOME,
@@ -48,13 +49,6 @@ DEFAULT_TASK = (
     "PushT tabletop manipulation: use a LeRobot policy to propose an action chunk, "
     "then rank policy-compatible candidates with a LeWorldModel cost checkpoint."
 )
-
-
-def _env_value(name: str) -> str | None:
-    raw = os.environ.get(name)
-    if raw is None or not raw.strip():
-        return None
-    return raw.strip()
 
 
 def _load_json_file(path: Path, *, name: str) -> object:
@@ -979,7 +973,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         candidate_builder=candidate_builder,
         holder=score_action_candidates if isinstance(score_action_candidates, list) else [],
     )
-    action_translator = bridge.translate if candidate_builder is not None else bridge.translate
+    action_translator = bridge.translate
 
     policy_provider = LeRobotPolicyProvider(
         policy_path=args.policy_path,

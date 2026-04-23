@@ -155,16 +155,45 @@ class BaseProvider:
         started = perf_counter()
         healthy = self.configured()
         details = "configured" if healthy else f"missing {self.env_var}"
+        return self._health(started, details, healthy=healthy)
+
+    def _emit_event(self, event: ProviderEvent) -> None:
+        if self.event_handler is not None:
+            self.event_handler(event)
+
+    def _emit_operation_event(
+        self,
+        operation: str,
+        *,
+        phase: str,
+        duration_ms: float,
+        message: str = "",
+        metadata: JSONDict | None = None,
+    ) -> None:
+        self._emit_event(
+            ProviderEvent(
+                provider=self.name,
+                operation=operation,
+                phase=phase,
+                duration_ms=duration_ms,
+                message=message,
+                metadata=dict(metadata or {}),
+            )
+        )
+
+    def _health(
+        self,
+        started: float,
+        details: str,
+        *,
+        healthy: bool,
+    ) -> ProviderHealth:
         return ProviderHealth(
             name=self.name,
             healthy=healthy,
             latency_ms=max(0.1, (perf_counter() - started) * 1000),
             details=details,
         )
-
-    def _emit_event(self, event: ProviderEvent) -> None:
-        if self.event_handler is not None:
-            self.event_handler(event)
 
     def predict(self, world_state: JSONDict, action: Action, steps: int) -> PredictionPayload:
         raise ProviderError(f"Provider '{self.name}' does not implement predict().")

@@ -4,10 +4,31 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
+from contextlib import nullcontext
+from typing import Any
 
 from worldforge.models import Action, JSONDict
 
 from .base import ProviderError
+
+
+def no_grad_context(torch: Any) -> Any:
+    """Return ``torch.no_grad()`` when available, otherwise a null context."""
+
+    no_grad = getattr(torch, "no_grad", None)
+    return no_grad() if callable(no_grad) else nullcontext()
+
+
+def prepare_model(model: Any, *, device: str | None) -> Any:
+    """Move to device, set eval mode, and disable gradients when the model supports it."""
+
+    if device is not None and hasattr(model, "to"):
+        model = model.to(device)
+    if hasattr(model, "eval"):
+        model = model.eval()
+    if hasattr(model, "requires_grad_"):
+        model.requires_grad_(False)
+    return model
 
 
 def json_compatible(value: object, *, name: str) -> object:

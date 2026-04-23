@@ -1259,20 +1259,19 @@ class WorldForge:
         path = _world_file(self.state_dir, world.id)
         tmp_path = path.with_name(f".{path.name}.{generate_id('tmp')}.tmp")
         try:
-            payload = world.to_json()
-            World.from_state(self, json.loads(payload))
-            tmp_path.write_text(payload, encoding="utf-8")
+            state = world.to_dict()
+            World.from_state(self, state)
+            tmp_path.write_text(dump_json(state), encoding="utf-8")
             tmp_path.replace(path)
         except OSError as exc:
             raise WorldStateError(f"Failed to save world '{world.id}' to {path}: {exc}") from exc
-        except (json.JSONDecodeError, WorldStateError) as exc:
+        except WorldStateError as exc:
             raise WorldStateError(
                 f"World '{world.id}' is not valid for persistence: {exc}"
             ) from exc
         finally:
-            if tmp_path.exists():
-                with suppress(OSError):
-                    tmp_path.unlink()
+            with suppress(OSError):
+                tmp_path.unlink(missing_ok=True)
         return world.id
 
     def load_world(self, world_id: str) -> World:

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Callable
-from contextlib import nullcontext
 from time import perf_counter
 from typing import Any
 
@@ -19,6 +18,8 @@ from worldforge.models import (
 )
 
 from ._config import env_value, first_env_value, optional_non_empty
+from ._policy import no_grad_context, prepare_model
+from ._tensor_validation import _is_sequence
 from .base import BaseProvider, ProviderError
 
 LEWORLDMODEL_POLICY_ENV_VAR = "LEWORLDMODEL_POLICY"
@@ -28,10 +29,6 @@ LEWORLDMODEL_DEVICE_ENV_VAR = "LEWORLDMODEL_DEVICE"
 REQUIRED_INFO_FIELDS = ("pixels", "goal", "action")
 
 ModelLoader = Callable[[str, str | None], Any]
-
-
-def _is_sequence(value: object) -> bool:
-    return isinstance(value, list | tuple)
 
 
 class LeWorldModelProvider(BaseProvider):
@@ -110,28 +107,15 @@ class LeWorldModelProvider(BaseProvider):
     def health(self) -> ProviderHealth:
         started = perf_counter()
         if not self.configured():
-            return ProviderHealth(
-                name=self.name,
+            return self._health(
+                started,
+                "missing LEWORLDMODEL_POLICY or LEWM_POLICY",
                 healthy=False,
-                latency_ms=max(0.1, (perf_counter() - started) * 1000),
-                details="missing LEWORLDMODEL_POLICY or LEWM_POLICY",
             )
-
         dependency_error = self._runtime_dependency_error()
         if dependency_error is not None:
-            return ProviderHealth(
-                name=self.name,
-                healthy=False,
-                latency_ms=max(0.1, (perf_counter() - started) * 1000),
-                details=dependency_error,
-            )
-
-        return ProviderHealth(
-            name=self.name,
-            healthy=True,
-            latency_ms=max(0.1, (perf_counter() - started) * 1000),
-            details=f"configured for policy {self.policy}",
-        )
+            return self._health(started, dependency_error, healthy=False)
+        return self._health(started, f"configured for policy {self.policy}", healthy=True)
 
     def _runtime_dependency_error(self) -> str | None:
         if self._model_loader is not None and self._tensor_module is not None:
@@ -185,12 +169,7 @@ class LeWorldModelProvider(BaseProvider):
                 f"Failed to load LeWorldModel policy '{self.policy}': {exc}"
             ) from exc
 
-        if self.device is not None and hasattr(model, "to"):
-            model = model.to(self.device)
-        if hasattr(model, "eval"):
-            model = model.eval()
-        if hasattr(model, "requires_grad_"):
-            model.requires_grad_(False)
+        model = prepare_model(model, device=self.device)
         if hasattr(model, "interpolate_pos_encoding"):
             model.interpolate_pos_encoding = True
         self._model = model
@@ -284,12 +263,6 @@ class LeWorldModelProvider(BaseProvider):
             )
         return tensor
 
-    def _no_grad_context(self, torch: Any):
-        no_grad = getattr(torch, "no_grad", None)
-        if callable(no_grad):
-            return no_grad()
-        return nullcontext()
-
     def _tensor_to_scores(self, raw_scores: object) -> list[float]:
         value = raw_scores
         for method_name in ("detach", "cpu"):
@@ -320,25 +293,6 @@ class LeWorldModelProvider(BaseProvider):
             raise ProviderError("LeWorldModel returned no action scores.")
         return scores
 
-    def _emit_score_event(
-        self,
-        *,
-        phase: str,
-        duration_ms: float,
-        message: str = "",
-        metadata: JSONDict | None = None,
-    ) -> None:
-        self._emit_event(
-            ProviderEvent(
-                provider=self.name,
-                operation="score",
-                phase=phase,
-                duration_ms=duration_ms,
-                message=message,
-                metadata=dict(metadata or {}),
-            )
-        )
-
     def score_actions(self, *, info: JSONDict, action_candidates: object) -> ActionScoreResult:
         started = perf_counter()
         try:
@@ -346,7 +300,7 @@ class LeWorldModelProvider(BaseProvider):
             model = self._load_model()
             tensor_info = self._tensorize_info(torch, info)
             action_tensor = self._tensorize_action_candidates(torch, action_candidates)
-            with self._no_grad_context(torch):
+            with no_grad_context(torch):
                 raw_scores = model.get_cost(tensor_info, action_tensor)
             scores = self._tensor_to_scores(raw_scores)
             best_index = min(range(len(scores)), key=scores.__getitem__)
@@ -364,7 +318,8 @@ class LeWorldModelProvider(BaseProvider):
                     "candidate_count": len(scores),
                 },
             )
-            self._emit_score_event(
+            self._emit_operation_event(
+                "score",
                 phase="success",
                 duration_ms=duration_ms,
                 metadata={
@@ -375,7 +330,8 @@ class LeWorldModelProvider(BaseProvider):
             )
             return result
         except ProviderError as exc:
-            self._emit_score_event(
+            self._emit_operation_event(
+                "score",
                 phase="failure",
                 duration_ms=max(0.1, (perf_counter() - started) * 1000),
                 message=str(exc),
@@ -384,7 +340,8 @@ class LeWorldModelProvider(BaseProvider):
             raise
         except Exception as exc:
             error = ProviderError(f"LeWorldModel scoring failed for policy '{self.policy}': {exc}")
-            self._emit_score_event(
+            self._emit_operation_event(
+                "score",
                 phase="failure",
                 duration_ms=max(0.1, (perf_counter() - started) * 1000),
                 message=str(error),

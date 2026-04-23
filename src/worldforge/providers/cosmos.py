@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from time import perf_counter
@@ -19,6 +18,7 @@ from worldforge.models import (
     VideoClip,
 )
 
+from ._config import env_value
 from .base import ProviderError, RemoteProvider
 from .http_utils import asset_to_uri, parse_size, request_json_with_policy
 
@@ -153,14 +153,14 @@ class CosmosProvider(RemoteProvider):
         return bool(self._resolved_base_url())
 
     def _resolved_base_url(self) -> str | None:
-        return self._base_url or os.environ.get("COSMOS_BASE_URL")
+        return self._base_url or env_value("COSMOS_BASE_URL")
 
     def _headers(self) -> dict[str, str]:
         headers = {
             "Accept": "application/json",
             "Content-Type": "application/json",
         }
-        api_key = os.environ.get("NVIDIA_API_KEY")
+        api_key = env_value("NVIDIA_API_KEY")
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         return headers
@@ -179,13 +179,7 @@ class CosmosProvider(RemoteProvider):
         started = perf_counter()
         base_url = self._resolved_base_url()
         if not base_url:
-            return ProviderHealth(
-                name=self.name,
-                healthy=False,
-                latency_ms=max(0.1, (perf_counter() - started) * 1000),
-                details="missing COSMOS_BASE_URL",
-            )
-
+            return self._health(started, "missing COSMOS_BASE_URL", healthy=False)
         try:
             request_policy = self._require_request_policy()
             with self._client() as client:
@@ -207,13 +201,7 @@ class CosmosProvider(RemoteProvider):
         except ProviderError as exc:
             healthy = False
             details = str(exc)
-
-        return ProviderHealth(
-            name=self.name,
-            healthy=healthy,
-            latency_ms=max(0.1, (perf_counter() - started) * 1000),
-            details=details,
-        )
+        return self._health(started, details, healthy=healthy)
 
     def generate(
         self,

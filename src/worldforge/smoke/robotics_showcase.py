@@ -11,6 +11,8 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from worldforge.providers._config import env_value as _env_value
+
 from . import lerobot_leworldmodel
 from .lerobot_leworldmodel import (
     DEFAULT_DEVICE,
@@ -23,13 +25,6 @@ from .pusht_showcase_inputs import DEFAULT_ACTION_DIM, DEFAULT_HORIZON
 
 DEFAULT_JSON_OUTPUT = Path("/tmp/worldforge-robotics-showcase/real-run.json")
 PUSHT_INPUT_MODULE = "worldforge.smoke.pusht_showcase_inputs"
-
-
-def _env_value(name: str) -> str | None:
-    raw = os.environ.get(name)
-    if raw is None or not raw.strip():
-        return None
-    return raw.strip()
 
 
 def _parser() -> argparse.ArgumentParser:

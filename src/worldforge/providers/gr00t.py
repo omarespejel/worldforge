@@ -35,12 +35,6 @@ ActionTranslator = Callable[
 ]
 
 
-def _normalize_policy_action_candidates(
-    value: Sequence[Action] | Sequence[Sequence[Action]],
-) -> list[list[Action]]:
-    return normalize_policy_action_candidates(value, provider_label="GR00T")
-
-
 class GrootPolicyClientProvider(BaseProvider):
     """Adapter for NVIDIA Isaac GR00T policy-server inference.
 
@@ -140,45 +134,22 @@ class GrootPolicyClientProvider(BaseProvider):
     def health(self) -> ProviderHealth:
         started = perf_counter()
         if not self.configured():
-            return ProviderHealth(
-                name=self.name,
-                healthy=False,
-                latency_ms=max(0.1, (perf_counter() - started) * 1000),
-                details=f"missing {GROOT_POLICY_HOST_ENV_VAR}",
-            )
+            return self._health(started, f"missing {GROOT_POLICY_HOST_ENV_VAR}", healthy=False)
         if self._policy_client is None:
             dependency_error = self._runtime_dependency_error()
             if dependency_error is not None:
-                return ProviderHealth(
-                    name=self.name,
-                    healthy=False,
-                    latency_ms=max(0.1, (perf_counter() - started) * 1000),
-                    details=dependency_error,
-                )
-
+                return self._health(started, dependency_error, healthy=False)
         try:
             client = self._load_client()
             ping = getattr(client, "ping", None)
             if callable(ping) and not ping():
-                return ProviderHealth(
-                    name=self.name,
-                    healthy=False,
-                    latency_ms=max(0.1, (perf_counter() - started) * 1000),
-                    details="policy server ping failed",
-                )
+                return self._health(started, "policy server ping failed", healthy=False)
         except ProviderError as exc:
-            return ProviderHealth(
-                name=self.name,
-                healthy=False,
-                latency_ms=max(0.1, (perf_counter() - started) * 1000),
-                details=str(exc),
-            )
-
-        return ProviderHealth(
-            name=self.name,
+            return self._health(started, str(exc), healthy=False)
+        return self._health(
+            started,
+            f"configured for {self.host or 'injected policy client'}:{self.port}",
             healthy=True,
-            latency_ms=max(0.1, (perf_counter() - started) * 1000),
-            details=f"configured for {self.host or 'injected policy client'}:{self.port}",
         )
 
     def _runtime_dependency_error(self) -> str | None:
@@ -242,26 +213,7 @@ class GrootPolicyClientProvider(BaseProvider):
             translated = self._action_translator(raw_actions, info, provider_info)
         except Exception as exc:
             raise ProviderError(f"GR00T action translation failed: {exc}") from exc
-        return _normalize_policy_action_candidates(translated)
-
-    def _emit_policy_event(
-        self,
-        *,
-        phase: str,
-        duration_ms: float,
-        message: str = "",
-        metadata: JSONDict | None = None,
-    ) -> None:
-        self._emit_event(
-            ProviderEvent(
-                provider=self.name,
-                operation="policy",
-                phase=phase,
-                duration_ms=duration_ms,
-                message=message,
-                metadata=dict(metadata or {}),
-            )
-        )
+        return normalize_policy_action_candidates(translated, provider_label="GR00T")
 
     def select_actions(self, *, info: JSONDict) -> ActionPolicyResult:
         started = perf_counter()
@@ -320,7 +272,8 @@ class GrootPolicyClientProvider(BaseProvider):
                 },
                 action_candidates=candidate_plans,
             )
-            self._emit_policy_event(
+            self._emit_operation_event(
+                "policy",
                 phase="success",
                 duration_ms=max(0.1, (perf_counter() - started) * 1000),
                 metadata={
@@ -331,7 +284,8 @@ class GrootPolicyClientProvider(BaseProvider):
             )
             return result
         except ProviderError as exc:
-            self._emit_policy_event(
+            self._emit_operation_event(
+                "policy",
                 phase="failure",
                 duration_ms=max(0.1, (perf_counter() - started) * 1000),
                 message=str(exc),
@@ -339,7 +293,8 @@ class GrootPolicyClientProvider(BaseProvider):
             raise
         except Exception as exc:
             error = ProviderError(f"GR00T policy selection failed: {exc}")
-            self._emit_policy_event(
+            self._emit_operation_event(
+                "policy",
                 phase="failure",
                 duration_ms=max(0.1, (perf_counter() - started) * 1000),
                 message=str(error),

@@ -10,7 +10,6 @@ from pathlib import Path
 from uuid import uuid4
 
 from worldforge.benchmark import BenchmarkReport, ProviderBenchmarkHarness
-from worldforge.demos import lerobot_e2e, leworldmodel_e2e
 from worldforge.evaluation import EvaluationReport, EvaluationSuite
 from worldforge.framework import WorldForge
 from worldforge.harness.models import HarnessFlow, HarnessMetric, HarnessRun, HarnessStep
@@ -120,9 +119,21 @@ def _run_diagnostics_demo(*, state_dir: Path, emit: bool = False) -> JSONDict:
     return summary
 
 
+def _run_leworldmodel_demo(**kwargs: object) -> JSONDict:
+    from worldforge.demos import leworldmodel_e2e
+
+    return leworldmodel_e2e.run_demo(**kwargs)  # type: ignore[arg-type]
+
+
+def _run_lerobot_demo(**kwargs: object) -> JSONDict:
+    from worldforge.demos import lerobot_e2e
+
+    return lerobot_e2e.run_demo(**kwargs)  # type: ignore[arg-type]
+
+
 _RUNNERS: dict[str, FlowRunner] = {
-    "leworldmodel": leworldmodel_e2e.run_demo,
-    "lerobot": lerobot_e2e.run_demo,
+    "leworldmodel": _run_leworldmodel_demo,
+    "lerobot": _run_lerobot_demo,
     "diagnostics": _run_diagnostics_demo,
 }
 
@@ -245,13 +256,11 @@ def recent_report_paths(state_dir: Path, *, limit: int = 5) -> tuple[Path, ...]:
     """Return recent preserved report files from ``<state-dir>/reports``."""
 
     reports_dir = state_dir / "reports"
-    if not reports_dir.exists():
+    try:
+        candidates = list(reports_dir.glob("*.json"))
+    except OSError:
         return ()
-    paths = sorted(
-        (path for path in reports_dir.glob("*.json") if path.is_file()),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    )
+    paths = sorted(candidates, key=lambda path: path.stat().st_mtime, reverse=True)
     return tuple(paths[:limit])
 
 
