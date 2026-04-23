@@ -6,6 +6,7 @@ import csv
 import io
 import json
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar
 
@@ -465,16 +466,24 @@ class EvaluationSuite:
         if not provider_names:
             raise WorldForgeError("run_report() requires at least one provider.")
 
-        results: list[EvaluationResult] = []
         for provider in provider_names:
+            # Fail fast on capability mismatch before spinning up threads.
             self._require_provider_capabilities(provider, forge=active_forge)
-            results.extend(
-                self.run_with_world(
-                    provider,
-                    world=self._ensure_world(provider, forge=active_forge, world=world),
-                    forge=active_forge,
-                )
+
+        def _run_one(provider: str) -> list[EvaluationResult]:
+            return self.run_with_world(
+                provider,
+                world=self._ensure_world(provider, forge=active_forge, world=world),
+                forge=active_forge,
             )
+
+        results: list[EvaluationResult] = []
+        if len(provider_names) == 1:
+            results.extend(_run_one(provider_names[0]))
+        else:
+            with ThreadPoolExecutor(max_workers=min(8, len(provider_names))) as pool:
+                for provider_results in pool.map(_run_one, provider_names):
+                    results.extend(provider_results)
         return EvaluationReport(self.suite_id, self.name, results)
 
     def run_report_artifacts(

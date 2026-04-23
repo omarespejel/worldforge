@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass
@@ -641,21 +642,27 @@ class World:
         if not providers:
             raise WorldForgeError("compare() requires at least one provider.")
         state = self._snapshot()
-        predictions: list[Prediction] = []
-        for provider_name in providers:
-            payload = self._provider(provider_name).predict(state, action, steps)
-            predictions.append(
-                Prediction(
-                    provider=provider_name,
-                    confidence=payload.confidence,
-                    physics_score=payload.physics_score,
-                    frames=list(payload.frames),
-                    world_state=_clone_state(payload.state),
-                    metadata=dict(payload.metadata),
-                    latency_ms=payload.latency_ms,
-                    _forge=self._forge,
-                )
+        ordered = list(providers)
+
+        def _predict_one(provider_name: str) -> Prediction:
+            # Each thread gets its own copy of the immutable-by-convention state
+            # dict so nothing aliases if a provider accidentally mutates input.
+            payload = self._provider(provider_name).predict(_clone_state(state), action, steps)
+            return Prediction(
+                provider=provider_name,
+                confidence=payload.confidence,
+                physics_score=payload.physics_score,
+                frames=list(payload.frames),
+                world_state=_clone_state(payload.state),
+                metadata=dict(payload.metadata),
+                latency_ms=payload.latency_ms,
+                _forge=self._forge,
             )
+
+        if len(ordered) == 1:
+            return Comparison([_predict_one(ordered[0])])
+        with ThreadPoolExecutor(max_workers=min(8, len(ordered))) as pool:
+            predictions = list(pool.map(_predict_one, ordered))
         return Comparison(predictions)
 
     def _resolve_goal_object(

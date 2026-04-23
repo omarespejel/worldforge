@@ -1266,7 +1266,7 @@ class ProviderBenchmarkHarness:
                 f"Known operations: {', '.join(self.benchmarkable_operations)}."
             )
 
-        results: list[BenchmarkResult] = []
+        provider_plan: list[tuple[str, list[str]]] = []
         for provider in provider_names:
             self._forge._require_provider(provider)
             supported = self.supported_operations(provider)
@@ -1283,19 +1283,34 @@ class ProviderBenchmarkHarness:
                 raise WorldForgeError(
                     f"Provider '{provider}' does not expose benchmarkable operations."
                 )
+            provider_plan.append((provider, selected_operations))
 
-            for operation in selected_operations:
-                results.append(
-                    self._run_operation(
-                        provider,
-                        operation,
-                        iterations=iterations,
-                        concurrency=concurrency,
-                        inputs=benchmark_inputs,
-                        on_sample=on_sample,
-                    )
+        def _run_provider(entry: tuple[str, list[str]]) -> list[BenchmarkResult]:
+            # Run all operations for one provider sequentially. `_capture_metrics`
+            # swaps the provider instance's `event_handler`, so two operations on
+            # the *same* provider cannot overlap — but *different* providers
+            # operate on different instances and run safely in parallel.
+            provider, selected_operations = entry
+            return [
+                self._run_operation(
+                    provider,
+                    operation,
+                    iterations=iterations,
+                    concurrency=concurrency,
+                    inputs=benchmark_inputs,
+                    on_sample=on_sample,
                 )
+                for operation in selected_operations
+            ]
 
+        results: list[BenchmarkResult] = []
+        if len(provider_plan) <= 1:
+            for entry in provider_plan:
+                results.extend(_run_provider(entry))
+        else:
+            with ThreadPoolExecutor(max_workers=min(8, len(provider_plan))) as pool:
+                for provider_results in pool.map(_run_provider, provider_plan):
+                    results.extend(provider_results)
         return BenchmarkReport(results)
 
 
