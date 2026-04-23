@@ -29,6 +29,7 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+site/
 .pytest_cache/
 .ruff_cache/
 .coverage
@@ -38,7 +39,6 @@ build/
 *.sqlite3
 *.db
 
-**/.DS_Store
 .claude/tsc-cache/
 .claude/cache/
 .claude/worktrees/

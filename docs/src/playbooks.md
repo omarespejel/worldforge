@@ -17,6 +17,7 @@ uv lock --check
 uv run worldforge doctor
 uv run worldforge examples
 uv run python scripts/generate_provider_docs.py --check
+uv run mkdocs build --strict
 uv run pytest tests/test_cli_help_snapshots.py tests/test_provider_catalog_docs.py
 ```
 
@@ -25,6 +26,7 @@ Success signal:
 - `doctor` shows `mock` registered and reports optional providers as missing or unregistered only
   when their environment variables are absent.
 - provider docs are already up to date.
+- the MkDocs Material site builds without warnings.
 - focused tests pass without live credentials.
 
 If it fails:
@@ -422,6 +424,7 @@ uv lock --check
 uv run ruff check src tests examples scripts
 uv run ruff format --check src tests examples scripts
 uv run python scripts/generate_provider_docs.py --check
+uv run mkdocs build --strict
 uv run pytest
 uv run --extra harness pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
 bash scripts/test_package.sh
@@ -439,7 +442,7 @@ rm -f "$tmp_req"
 Success signal:
 
 - validation passes from a clean checkout.
-- generated provider docs have no drift.
+- generated provider docs have no drift and the Pages site builds in strict mode.
 - README, docs, changelog, and `AGENTS.md` reflect public behavior.
 - no optional runtime dependency, checkpoint, credential, generated artifact, or `.env` file is
   committed accidentally.

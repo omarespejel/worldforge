@@ -11,6 +11,9 @@ make test-cov
 make test-package
 ```
 
+`make docs-check` verifies generated provider docs and builds the MkDocs Material site in strict
+mode.
+
 Key directories:
 
 - `src/worldforge/models.py`: public data contracts and validation.
@@ -55,4 +58,5 @@ Before publishing a branch:
 - update [Architecture](./architecture.md) for new flows or ownership boundaries.
 - update [Operations](./operations.md) and [Playbooks](./playbooks.md) for new operator work.
 - update `CHANGELOG.md` for user-visible changes.
+- update `mkdocs.yml` when the docs navigation changes.
 - update `AGENTS.md` for new commands, constraints, gotchas, or architecture facts.

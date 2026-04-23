@@ -43,7 +43,10 @@ class ProviderCatalogEntry:
 
     def display_name(self, *, docs_link_prefix: str = "./") -> str:
         if self.docs_page:
-            return f"[`{self.name}`]({docs_link_prefix}{self.docs_page})"
+            docs_path = self.docs_page
+            if docs_link_prefix.startswith("http") and docs_path.endswith(".md"):
+                docs_path = f"{docs_path[:-3]}/"
+            return f"[`{self.name}`]({docs_link_prefix}{docs_path})"
         return f"`{self.name}`"
 
 

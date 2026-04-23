@@ -49,6 +49,9 @@ jobs:
       - name: Check formatting
         run: uv run ruff format --check src tests examples scripts
 
+      - name: Check docs
+        run: make docs-check
+
       - name: Run tests with coverage
         run: uv run --extra harness pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
 

@@ -41,7 +41,7 @@ classifiers = [
 
 [project.urls]
 Repository = "https://github.com/AbdelStark/worldforge"
-Documentation = "https://github.com/AbdelStark/worldforge/tree/main/docs"
+Documentation = "https://abdelstark.github.io/worldforge/"
 Issues = "https://github.com/AbdelStark/worldforge/issues"
 
 [project.scripts]
@@ -63,6 +63,7 @@ harness = [
 
 [dependency-groups]
 dev = [
+    "mkdocs-material>=9.6,<10",
     "pytest>=9.0.3",
     "pytest-cov>=7.0",
     "ruff>=0.8",
@@ -82,6 +83,7 @@ include = [
     "/CHANGELOG.md",
     "/README.md",
     "/CONTRIBUTING.md",
+    "/SECURITY.md",
     "/LICENSE",
     "/Makefile",
 ]

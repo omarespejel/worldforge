@@ -9,6 +9,7 @@ policies, and media generators behind a typed capability interface. It includes 
 evaluation, benchmarks, diagnostics, local state, and a CLI.
 
 [![CI](https://img.shields.io/github/actions/workflow/status/AbdelStark/worldforge/ci.yml?branch=main&label=CI&style=for-the-badge)](https://github.com/AbdelStark/worldforge/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/github/actions/workflow/status/AbdelStark/worldforge/pages.yml?branch=main&label=docs&style=for-the-badge)](https://abdelstark.github.io/worldforge/)
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://github.com/AbdelStark/worldforge/blob/main/pyproject.toml)
 [![Version](https://img.shields.io/badge/version-0.5.0-3f7cac?style=for-the-badge)](./CHANGELOG.md)
 [![PyPI](https://img.shields.io/pypi/v/worldforge-ai?style=for-the-badge&label=pypi&color=3f7cac)](https://pypi.org/project/worldforge-ai/)
@@ -20,12 +21,12 @@ evaluation, benchmarks, diagnostics, local state, and a CLI.
 [![Status: pre-1.0](https://img.shields.io/badge/status-pre--1.0%20beta-orange?style=for-the-badge)](#project-status)
 
 [**Quickstart**](#quickstart) ·
-[**CLI**](./docs/src/cli.md) ·
+[**CLI**](https://abdelstark.github.io/worldforge/cli/) ·
 [**Providers**](#provider-surfaces) ·
 [**Capability Model**](#capability-model) ·
 [**Architecture**](#architecture) ·
-[**Docs**](./docs/src) ·
-[**Playbooks**](./docs/src/playbooks.md)
+[**Docs**](https://abdelstark.github.io/worldforge/) ·
+[**Playbooks**](https://abdelstark.github.io/worldforge/playbooks/)
 
 </div>
 
@@ -46,12 +47,12 @@ safety checks, robot-controller integration, and task-specific preprocessing sta
 <table>
   <tr>
     <td width="50%">
-      <img src="./docs/assets/img/robotics-showcase-lerobot-leworldmodel-2.png" alt="WorldForge robotics showcase TUI with pipeline flow, runtime metrics, and tensor contract" width="100%" />
+      <img src="./docs/src/assets/img/robotics-showcase-lerobot-leworldmodel-2.png" alt="WorldForge robotics showcase TUI with pipeline flow, runtime metrics, and tensor contract" width="100%" />
       <br />
       <sub><strong>Pipeline:</strong> real policy, real score checkpoint, WorldForge planner, local mock replay.</sub>
     </td>
     <td width="50%">
-      <img src="./docs/assets/img/robotics-showcase-lerobot-leworldmodel-1.png" alt="WorldForge robotics showcase TUI with robot-arm illustration, candidate ranking, and tabletop replay" width="100%" />
+      <img src="./docs/src/assets/img/robotics-showcase-lerobot-leworldmodel-1.png" alt="WorldForge robotics showcase TUI with robot-arm illustration, candidate ranking, and tabletop replay" width="100%" />
       <br />
       <sub><strong>Decision:</strong> candidate ranking, robot-arm illustration, and fixed tabletop replay.</sub>
     </td>
@@ -68,7 +69,7 @@ The command launches a staged Textual report by default and writes the same run 
 `--no-tui-animation` to skip sleeps and arm motion, `--no-tui` for the plain terminal report, or
 `--json-only` for automation.
 
-Read the full walkthrough: [Real Robotics Showcase](./docs/src/robotics-showcase.md).
+Read the full walkthrough: [Real Robotics Showcase](https://abdelstark.github.io/worldforge/robotics-showcase/).
 
 <details>
 <summary><strong>TheWorldHarness TUI</strong> - checkout-safe visual harness for worlds, providers, evals, benchmarks, and packaged flows</summary>
@@ -87,24 +88,24 @@ uv run --extra harness worldforge-harness --flow diagnostics
 <table>
   <tr>
     <td width="50%">
-      <img src="./docs/assets/img/theworldharness-home-launchpad.png" alt="TheWorldHarness home screen with keyboard-first launch targets" width="100%" />
+      <img src="./docs/src/assets/img/theworldharness-home-launchpad.png" alt="TheWorldHarness home screen with keyboard-first launch targets" width="100%" />
       <br />
       <sub><strong>Home:</strong> keyboard-first launchpad for worlds, providers, evals, and help.</sub>
     </td>
     <td width="50%">
-      <img src="./docs/assets/img/theworldharness-run-inspector-score-planning.png" alt="TheWorldHarness run inspector showing a score-planning flow" width="100%" />
+      <img src="./docs/src/assets/img/theworldharness-run-inspector-score-planning.png" alt="TheWorldHarness run inspector showing a score-planning flow" width="100%" />
       <br />
       <sub><strong>Run inspector:</strong> flow trace with scored plans, metrics, and transcript.</sub>
     </td>
   </tr>
   <tr>
     <td width="50%">
-      <img src="./docs/assets/img/theworldharness-world-editor.png" alt="TheWorldHarness world editor with saved state preview" width="100%" />
+      <img src="./docs/src/assets/img/theworldharness-world-editor.png" alt="TheWorldHarness world editor with saved state preview" width="100%" />
       <br />
       <sub><strong>World editor:</strong> persisted scene state, objects, provider, and preview in one place.</sub>
     </td>
     <td width="50%">
-      <img src="./docs/assets/img/theworldharness-provider-help-overlay.png" alt="TheWorldHarness provider screen with bindings help overlay" width="100%" />
+      <img src="./docs/src/assets/img/theworldharness-provider-help-overlay.png" alt="TheWorldHarness provider screen with bindings help overlay" width="100%" />
       <br />
       <sub><strong>Provider help:</strong> discoverable bindings over live provider diagnostics.</sub>
     </td>
@@ -112,7 +113,7 @@ uv run --extra harness worldforge-harness --flow diagnostics
 </table>
 </div>
 
-More detail: [TheWorldHarness docs](./docs/src/theworldharness.md).
+More detail: [TheWorldHarness docs](https://abdelstark.github.io/worldforge/theworldharness/).
 
 </details>
 
@@ -198,9 +199,9 @@ The short path is the mock provider: it runs from a clean checkout and exercises
 world, provider, planning, persistence, and diagnostics surfaces used by richer runtimes.
 
 Full references:
-[Python API](./docs/src/api/python.md) ·
-[CLI reference](./docs/src/cli.md) ·
-[Examples index](./docs/src/examples.md)
+[Python API](https://abdelstark.github.io/worldforge/api/python/) ·
+[CLI reference](https://abdelstark.github.io/worldforge/cli/) ·
+[Examples index](https://abdelstark.github.io/worldforge/examples/)
 
 <details>
 <summary><strong>Python API sample</strong></summary>
@@ -262,7 +263,7 @@ uv run worldforge benchmark --provider mock --operation generate --budget-file b
 Scene mutations append persisted history entries with typed action payloads. Position patches keep
 the object's bounding box translated with the pose so saved snapshots stay coherent.
 
-Full CLI reference: [docs/src/cli.md](./docs/src/cli.md).
+Full CLI reference: [worldforge/cli](https://abdelstark.github.io/worldforge/cli/).
 
 </details>
 
@@ -303,18 +304,18 @@ observe state
 | Provider | Capability surface | Registration | Runtime ownership |
 | --- | --- | --- | --- |
 | `mock` | `predict`, `generate`, `transfer`, `reason`, `embed`, `plan` | always registered | in-repo deterministic local provider |
-| [`cosmos`](./docs/src/providers/cosmos.md) | `generate` | `COSMOS_BASE_URL` | host supplies a reachable Cosmos deployment and optional `NVIDIA_API_KEY` |
-| [`runway`](./docs/src/providers/runway.md) | `generate`, `transfer` | `RUNWAYML_API_SECRET` or `RUNWAY_API_SECRET` | host supplies Runway credentials and persists returned artifacts |
-| [`leworldmodel`](./docs/src/providers/leworldmodel.md) | `score` | `LEWORLDMODEL_POLICY` or `LEWM_POLICY` | host installs `stable_worldmodel`, torch, and compatible checkpoints |
-| [`gr00t`](./docs/src/providers/gr00t.md) | `policy` | `GROOT_POLICY_HOST` | host runs or reaches an Isaac GR00T policy server |
-| [`lerobot`](./docs/src/providers/lerobot.md) | `policy` | `LEROBOT_POLICY_PATH` or `LEROBOT_POLICY` | host installs LeRobot and compatible policy checkpoints |
+| [`cosmos`](https://abdelstark.github.io/worldforge/providers/cosmos/) | `generate` | `COSMOS_BASE_URL` | host supplies a reachable Cosmos deployment and optional `NVIDIA_API_KEY` |
+| [`runway`](https://abdelstark.github.io/worldforge/providers/runway/) | `generate`, `transfer` | `RUNWAYML_API_SECRET` or `RUNWAY_API_SECRET` | host supplies Runway credentials and persists returned artifacts |
+| [`leworldmodel`](https://abdelstark.github.io/worldforge/providers/leworldmodel/) | `score` | `LEWORLDMODEL_POLICY` or `LEWM_POLICY` | host installs `stable_worldmodel`, torch, and compatible checkpoints |
+| [`gr00t`](https://abdelstark.github.io/worldforge/providers/gr00t/) | `policy` | `GROOT_POLICY_HOST` | host runs or reaches an Isaac GR00T policy server |
+| [`lerobot`](https://abdelstark.github.io/worldforge/providers/lerobot/) | `policy` | `LEROBOT_POLICY_PATH` or `LEROBOT_POLICY` | host installs LeRobot and compatible policy checkpoints |
 | `jepa` | scaffold | `JEPA_MODEL_PATH` | credential-gated mock-backed reservation, not a real JEPA runtime |
 | `genie` | scaffold | `GENIE_API_KEY` | credential-gated mock-backed reservation, not a real Genie runtime |
 <!-- provider-catalog-readme:end -->
 
 Scaffold adapters stay outside package exports and auto-registration until they have a validated
 runtime path, typed parser coverage, request limits, and docs. The active candidate is
-[`jepa-wms`](./docs/src/providers/jepa-wms.md), a direct-construction scaffold targeting future
+[`jepa-wms`](https://abdelstark.github.io/worldforge/providers/jepa-wms/), a direct-construction scaffold targeting future
 `facebookresearch/jepa-wms` score-provider work.
 
 ## Architecture
@@ -361,9 +362,9 @@ runtime path, typed parser coverage, request limits, and docs. The active candid
 | `src/worldforge/observability.py` | `ProviderEvent` sinks for logs, recording, and metrics |
 | `src/worldforge/testing/` | Reusable provider contract assertions |
 
-Read [architecture](./docs/src/architecture.md) ·
-[world-model taxonomy](./docs/src/world-model-taxonomy.md) ·
-[provider authoring guide](./docs/src/provider-authoring-guide.md)
+Read [architecture](https://abdelstark.github.io/worldforge/architecture/) ·
+[world-model taxonomy](https://abdelstark.github.io/worldforge/world-model-taxonomy/) ·
+[provider authoring guide](https://abdelstark.github.io/worldforge/provider-authoring-guide/)
 before adding a new adapter.
 
 ## Command And Example Index
@@ -373,11 +374,11 @@ surface and runtime-specific entrypoints:
 
 | Need | Start here |
 | --- | --- |
-| Full CLI command map | [CLI reference](./docs/src/cli.md) |
-| Runnable example index | [Examples and CLI commands](./docs/src/examples.md) or `uv run worldforge examples` |
-| Real LeRobot + LeWorldModel showcase | [Robotics showcase walkthrough](./docs/src/robotics-showcase.md) |
-| Checkout-safe visual flows | [TheWorldHarness](./docs/src/theworldharness.md) |
-| Optional runtime operations | [Operator playbooks](./docs/src/playbooks.md#8-run-optional-runtime-smokes) |
+| Full CLI command map | [CLI reference](https://abdelstark.github.io/worldforge/cli/) |
+| Runnable example index | [Examples and CLI commands](https://abdelstark.github.io/worldforge/examples/) or `uv run worldforge examples` |
+| Real LeRobot + LeWorldModel showcase | [Robotics showcase walkthrough](https://abdelstark.github.io/worldforge/robotics-showcase/) |
+| Checkout-safe visual flows | [TheWorldHarness](https://abdelstark.github.io/worldforge/theworldharness/) |
+| Optional runtime operations | [Operator playbooks](https://abdelstark.github.io/worldforge/playbooks/#8-run-optional-runtime-smokes) |
 
 ## Who It's For
 
@@ -471,8 +472,8 @@ If you use WorldForge in academic work, a BibTeX entry is:
 Issues, discussions, and pull requests are welcome. Please read
 [CONTRIBUTING.md](./CONTRIBUTING.md) and open an issue for non-trivial changes before sending a
 patch. For provider work, start with the
-[provider authoring guide](./docs/src/provider-authoring-guide.md) and the
-[playbooks](./docs/src/playbooks.md).
+[provider authoring guide](https://abdelstark.github.io/worldforge/provider-authoring-guide/) and
+the [playbooks](https://abdelstark.github.io/worldforge/playbooks/).
 
 ## License
 
@@ -480,10 +481,11 @@ WorldForge is released under the [MIT License](./LICENSE).
 
 ## Links
 
-- Documentation: [docs/src](./docs/src)
-- Quickstart: [docs/src/quickstart.md](./docs/src/quickstart.md)
-- Playbooks: [docs/src/playbooks.md](./docs/src/playbooks.md)
-- Architecture: [docs/src/architecture.md](./docs/src/architecture.md)
-- World-model taxonomy: [docs/src/world-model-taxonomy.md](./docs/src/world-model-taxonomy.md)
+- Documentation: <https://abdelstark.github.io/worldforge/>
+- Quickstart: <https://abdelstark.github.io/worldforge/quickstart/>
+- Playbooks: <https://abdelstark.github.io/worldforge/playbooks/>
+- Architecture: <https://abdelstark.github.io/worldforge/architecture/>
+- World-model taxonomy: <https://abdelstark.github.io/worldforge/world-model-taxonomy/>
+- Security policy: [SECURITY.md](./SECURITY.md)
 - Repository: <https://github.com/AbdelStark/worldforge>
 - Issues: <https://github.com/AbdelStark/worldforge/issues>

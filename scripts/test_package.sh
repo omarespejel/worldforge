@@ -14,7 +14,14 @@ trap cleanup EXIT
 cd "$ROOT_DIR"
 uv build --out-dir "$TMP_DIR/dist"
 uv venv "$VENV_DIR"
-uv pip install --python "$VENV_DIR/bin/python" "$TMP_DIR"/dist/worldforge-*.whl pytest
+
+wheel_paths=("$TMP_DIR"/dist/*.whl)
+if [ "${#wheel_paths[@]}" -ne 1 ]; then
+    printf 'expected exactly one built wheel in %s/dist, found %s\n' "$TMP_DIR" "${#wheel_paths[@]}" >&2
+    exit 1
+fi
+
+uv pip install --python "$VENV_DIR/bin/python" "${wheel_paths[0]}" pytest
 
 "$VENV_DIR/bin/python" - <<'PY'
 import worldforge

@@ -11,12 +11,12 @@ LeWorldModel checkpoint is `~/.stable-wm/pusht/lewm_object.ckpt`.
 <table>
   <tr>
     <td width="50%">
-      <img src="../assets/img/robotics-showcase-lerobot-leworldmodel-2.png" alt="WorldForge robotics showcase TUI with pipeline flow, runtime metrics, and tensor contract" width="100%" />
+      <img src="assets/img/robotics-showcase-lerobot-leworldmodel-2.png" alt="WorldForge robotics showcase TUI with pipeline flow, runtime metrics, and tensor contract" width="100%" />
       <br />
       <sub><strong>Pipeline:</strong> real LeRobot policy, real LeWorldModel checkpoint scoring, WorldForge planning, local mock replay.</sub>
     </td>
     <td width="50%">
-      <img src="../assets/img/robotics-showcase-lerobot-leworldmodel-1.png" alt="WorldForge robotics showcase TUI with robot-arm illustration, candidate ranking, and tabletop replay" width="100%" />
+      <img src="assets/img/robotics-showcase-lerobot-leworldmodel-1.png" alt="WorldForge robotics showcase TUI with robot-arm illustration, candidate ranking, and tabletop replay" width="100%" />
       <br />
       <sub><strong>Decision:</strong> selected candidate, cost landscape, provider events, and tabletop replay.</sub>
     </td>
@@ -255,17 +255,17 @@ spaces.
 
 ## Source Map
 
-- [`src/worldforge/smoke/robotics_showcase.py`](../../src/worldforge/smoke/robotics_showcase.py)
+- [`src/worldforge/smoke/robotics_showcase.py`](https://github.com/AbdelStark/worldforge/blob/main/src/worldforge/smoke/robotics_showcase.py)
   implements the polished report entrypoint.
-- [`src/worldforge/smoke/lerobot_leworldmodel.py`](../../src/worldforge/smoke/lerobot_leworldmodel.py)
+- [`src/worldforge/smoke/lerobot_leworldmodel.py`](https://github.com/AbdelStark/worldforge/blob/main/src/worldforge/smoke/lerobot_leworldmodel.py)
   implements the lower-level real policy-plus-score runner.
-- [`src/worldforge/smoke/pusht_showcase_inputs.py`](../../src/worldforge/smoke/pusht_showcase_inputs.py)
+- [`src/worldforge/smoke/pusht_showcase_inputs.py`](https://github.com/AbdelStark/worldforge/blob/main/src/worldforge/smoke/pusht_showcase_inputs.py)
   contains the packaged PushT observation, score-info, translator, and candidate bridge.
-- [`src/worldforge/providers/lerobot.py`](../../src/worldforge/providers/lerobot.py) implements the
+- [`src/worldforge/providers/lerobot.py`](https://github.com/AbdelStark/worldforge/blob/main/src/worldforge/providers/lerobot.py) implements the
   LeRobot policy provider.
-- [`src/worldforge/providers/leworldmodel.py`](../../src/worldforge/providers/leworldmodel.py)
+- [`src/worldforge/providers/leworldmodel.py`](https://github.com/AbdelStark/worldforge/blob/main/src/worldforge/providers/leworldmodel.py)
   implements the LeWorldModel score provider.
-- [`src/worldforge/framework.py`](../../src/worldforge/framework.py) contains the policy-plus-score
+- [`src/worldforge/framework.py`](https://github.com/AbdelStark/worldforge/blob/main/src/worldforge/framework.py) contains the policy-plus-score
   planning path.
 
 Related docs:
@@ -273,7 +273,7 @@ Related docs:
 - [LeRobot provider](./providers/lerobot.md)
 - [LeWorldModel provider](./providers/leworldmodel.md)
 - [TheWorldHarness](./theworldharness.md)
-- [Optional runtime playbooks](./playbooks.md#optional-runtime-smokes)
+- [Optional runtime playbooks](./playbooks.md#8-run-optional-runtime-smokes)
 
 External references:
 

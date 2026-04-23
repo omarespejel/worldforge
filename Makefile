@@ -1,4 +1,4 @@
-.PHONY: sync format lint docs-check test test-cov test-package build publish check clean
+.PHONY: sync format lint docs-check docs-site test test-cov test-package build publish check clean
 
 UV ?= uv
 
@@ -14,6 +14,10 @@ lint:
 
 docs-check:
 	$(UV) run python scripts/generate_provider_docs.py --check
+	$(UV) run mkdocs build --strict
+
+docs-site:
+	$(UV) run mkdocs serve
 
 test:
 	$(UV) run pytest
@@ -33,5 +37,6 @@ publish:
 check: lint docs-check test test-package
 
 clean:
-	rm -rf build dist .pytest_cache .ruff_cache .worldforge .coverage
-	find src tests examples scripts -name '__pycache__' -type d -prune -exec rm -rf {} +
+	rm -rf build dist site .pytest_cache .ruff_cache .worldforge .coverage
+	find src tests examples scripts docs -name '__pycache__' -type d -prune -exec rm -rf {} +
+	find . -path './.git' -prune -o -name '.DS_Store' -type f -delete

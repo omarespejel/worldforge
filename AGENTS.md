@@ -98,6 +98,7 @@ uv lock --check
 uv run ruff check src tests examples scripts
 uv run ruff format --check src tests examples scripts
 uv run python scripts/generate_provider_docs.py --check
+uv run mkdocs build --strict
 uv run pytest
 uv run --extra harness pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
 bash scripts/test_package.sh
@@ -160,6 +161,8 @@ rm -f "$tmp_req"
   exception families.
 - `docs/src/providers/`: generated provider catalog plus provider-specific config, contracts,
   limits, failure modes, and validation notes.
+- `docs/src/assets/`: images used by the MkDocs Material site and README showcase.
+- `mkdocs.yml`: GitHub Pages navigation, theme, and strict docs-build configuration.
 - `CONTRIBUTING.md` and `docs/src/contributing.md`: contributor setup, validation gates,
   repository map, provider rules, and documentation routing.
 
@@ -190,6 +193,8 @@ rm -f "$tmp_req"
 - Update README, docs, changelog, playbooks, and this file when public behavior changes.
 - Keep operator docs concrete: every new runtime, provider, persistence, or release workflow
   should state the command to run, the expected success signal, and the first triage step.
+- Keep `mkdocs.yml` navigation synchronized with `docs/src/SUMMARY.md` when adding or removing
+  public docs pages.
 
 ## Critical Constraints
 
@@ -281,6 +286,8 @@ rm -f "$tmp_req"
   when adding new provider environment variables.
 - `make lint` and `make format` run against `src tests examples scripts` to match CI and the
   commands documented in `README.md`. Do not drop `scripts` from either target.
+- `make docs-check` checks generated provider docs and builds the MkDocs Material site with
+  `--strict`. A warning in the published docs build is a release blocker.
 - `worldforge benchmark --budget-file <path>` evaluates direct provider benchmark results against
   JSON thresholds and exits non-zero on violations. Keep benchmark budgets tied to preserved run
   artifacts when using them for release or paper claims.

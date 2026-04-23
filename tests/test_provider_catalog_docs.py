@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PROVIDER_INDEX = ROOT / "docs" / "src" / "providers" / "README.md"
 README = ROOT / "README.md"
 SCRIPT = ROOT / "scripts" / "generate_provider_docs.py"
+README_DOCS_LINK_PREFIX = "https://abdelstark.github.io/worldforge/providers/"
 START_MARKER = "<!-- provider-catalog:start -->"
 END_MARKER = "<!-- provider-catalog:end -->"
 README_START_MARKER = "<!-- provider-catalog-readme:start -->"
@@ -37,7 +38,7 @@ def _readme_catalog_block() -> str:
 def test_provider_catalog_docs_are_generated_from_catalog() -> None:
     assert _provider_catalog_block() == render_provider_catalog_markdown()
     assert _readme_catalog_block() == render_provider_catalog_markdown(
-        docs_link_prefix="./docs/src/providers/"
+        docs_link_prefix=README_DOCS_LINK_PREFIX
     )
 
 

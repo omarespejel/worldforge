@@ -15,6 +15,7 @@ if str(SRC) not in sys.path:
 
 PROVIDER_INDEX = ROOT / "docs" / "src" / "providers" / "README.md"
 README = ROOT / "README.md"
+README_DOCS_LINK_PREFIX = "https://abdelstark.github.io/worldforge/providers/"
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
             start_marker="<!-- provider-catalog-readme:start -->",
             end_marker="<!-- provider-catalog-readme:end -->",
             render=lambda: render_provider_catalog_markdown(
-                docs_link_prefix="./docs/src/providers/"
+                docs_link_prefix=README_DOCS_LINK_PREFIX
             ),
         ),
     )

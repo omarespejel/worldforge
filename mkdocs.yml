@@ -1,0 +1,78 @@
+site_name: WorldForge
+site_description: Integration layer for physical-AI world-model workflows.
+site_url: https://abdelstark.github.io/worldforge/
+repo_url: https://github.com/AbdelStark/worldforge
+repo_name: AbdelStark/worldforge
+
+docs_dir: docs/src
+site_dir: site
+strict: true
+exclude_docs: |
+  SUMMARY.md
+
+theme:
+  name: material
+  language: en
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - content.code.copy
+    - navigation.indexes
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+    - search.suggest
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: deep orange
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: deep orange
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+nav:
+  - Introduction: introduction.md
+  - Quick Start: quickstart.md
+  - CLI Reference: cli.md
+  - Examples And CLI Commands: examples.md
+  - Real Robotics Showcase: robotics-showcase.md
+  - TheWorldHarness: theworldharness.md
+  - World Model Taxonomy: world-model-taxonomy.md
+  - Architecture: architecture.md
+  - User And Operator Playbooks: playbooks.md
+  - Providers:
+      - Overview: providers/README.md
+      - Cosmos: providers/cosmos.md
+      - GR00T: providers/gr00t.md
+      - JEPA-WMS: providers/jepa-wms.md
+      - LeWorldModel: providers/leworldmodel.md
+      - LeRobot: providers/lerobot.md
+      - Runway: providers/runway.md
+  - Provider Authoring Guide: provider-authoring-guide.md
+  - Python API: api/python.md
+  - Evaluation: evaluation.md
+  - Benchmarking: benchmarking.md
+  - Operations: operations.md
+  - Contributing: contributing.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true

@@ -7,12 +7,21 @@ releases may still include breaking changes when the public API needs to tighten
 
 ## Unreleased
 
+### Added
+
+- Added a MkDocs Material documentation site, strict docs-build validation, and a GitHub Pages
+  workflow that deploys the site from `main`.
+- Added `SECURITY.md` with the vulnerability-reporting path and supported-version policy.
+
 ### Fixed
 
 - Cosmos and Runway now strip whitespace and treat blank environment variables as unset, matching
   the behaviour of every other provider. A blank `COSMOS_BASE_URL`, `NVIDIA_API_KEY`,
   `RUNWAYML_BASE_URL`, `RUNWAYML_API_SECRET`, or `RUNWAY_API_SECRET` no longer masks as
   configured.
+- `scripts/test_package.sh` now installs the built wheel generically instead of assuming the old
+  `worldforge-*.whl` filename prefix, so the package contract still works after the
+  `worldforge-ai` rename.
 
 ### Changed
 
@@ -27,6 +36,7 @@ releases may still include breaking changes when the public API needs to tighten
   classes into memory.
 - `save_world` skips a redundant `json.dumps`/`json.loads` round trip; the validation call now
   runs directly against the serialized dict.
+- Documentation metadata and README links now point at the published GitHub Pages site.
 
 ## 0.4.0 - 2026-04-22
 
