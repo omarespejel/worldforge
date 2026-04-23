@@ -157,7 +157,7 @@ include those IDs in surrounding application logs.
   host-owned upstream dependencies and an extracted object checkpoint.
 - If you have Hugging Face LeWM `config.json` and `weights.pt` assets rather than an extracted
   `*_object.ckpt` archive, build the object checkpoint first with
-  `uv run --python 3.10 --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" --with huggingface_hub
+  `uv run --python 3.13 --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" --with huggingface_hub
   worldforge-build-leworldmodel-checkpoint --stablewm-home ~/.stable-wm --policy pusht/lewm`.
   The builder downloads assets to `~/.cache/worldforge/leworldmodel` by default and writes the
   object checkpoint under `$STABLEWM_HOME`.

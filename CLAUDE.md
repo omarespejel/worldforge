@@ -13,13 +13,13 @@ WorldForge is a Python integration layer and CLI for physical-AI world-model pro
 <stack>
 | Layer | Technology | Version source | Notes |
 | --- | --- | --- | --- |
-| Language | Python | `pyproject.toml`: `>=3.10`; CI: 3.10, 3.11, 3.12, 3.13 | Typed package, `src/` layout |
+| Language | Python | `pyproject.toml`: `>=3.13,<3.14`; CI: 3.13 | Typed package, `src/` layout |
 | Package manager | uv | CI setup uses `0.9.18`; lockfile is `uv.lock` | Use uv commands; do not use pip/npm/yarn for project workflow |
 | Build backend | hatchling | `pyproject.toml`: `>=1.27.0` | Wheel/sdist from `src/worldforge` |
 | Runtime dependency | httpx | `uv.lock`: `0.28.1` | HTTP provider adapters |
 | Optional extra | textual | `uv.lock`: `8.2.4`; extra `harness` | Only `src/worldforge/harness/tui.py` may import Textual |
 | Tests | pytest, pytest-cov | `uv.lock`: pytest `9.0.3`, pytest-cov `7.1.0` | Coverage gate: 90 percent |
-| Lint/format | ruff | `uv.lock`: `0.15.9`; target py310; line length 100 | Check and format `src tests examples scripts` |
+| Lint/format | ruff | `uv.lock`: `0.15.9`; target py313; line length 100 | Check and format `src tests examples scripts` |
 | CI | GitHub Actions | `.github/workflows/*.yml` | CI, release, security audit |
 </stack>
 

@@ -2,7 +2,7 @@
 
 Invoke this command through uv, for example:
 
-    uv run --python 3.10 --with "<git stable-worldmodel>" --with "datasets>=2.21"
+    uv run --python 3.13 --with "<git stable-worldmodel>" --with "datasets>=2.21"
       lewm-real --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt
 
 This smoke requires the upstream LeWorldModel runtime dependencies and an
@@ -306,7 +306,7 @@ def _runtime_command(*, checkpoint: Path, device: str) -> str:
         f"scripts/lewm-real --checkpoint {checkpoint_text} --device {device}\n"
         "\n"
         "or, without the wrapper:\n"
-        'uv run --python 3.10 --with "stable-worldmodel[train] @ '
+        'uv run --python 3.13 --with "stable-worldmodel[train] @ '
         'git+https://github.com/galilai-group/stable-worldmodel.git" '
         f'--with "datasets>=2.21" lewm-real --checkpoint {checkpoint_text} --device {device}'
     )

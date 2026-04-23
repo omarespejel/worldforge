@@ -34,7 +34,7 @@ scripts/robotics-showcase
 
 By default, the script:
 
-- launches an ephemeral Python 3.10 `uv` runtime with host-owned optional dependencies;
+- launches an ephemeral Python 3.13 `uv` runtime with host-owned optional dependencies;
 - runs real LeRobot policy inference and real LeWorldModel checkpoint scoring;
 - opens a staged Textual report with the pipeline trace, metric bars, tensor contract, candidate
   ranking, provider event log, robot-arm illustration, and tabletop replay;

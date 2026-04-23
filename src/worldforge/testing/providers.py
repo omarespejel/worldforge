@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TypeVar
 
 from worldforge.models import (
     Action,
@@ -21,8 +20,6 @@ from worldforge.models import (
     VideoClip,
 )
 from worldforge.providers import BaseProvider, PredictionPayload, ProviderError
-
-T = TypeVar("T")
 
 
 def sample_contract_action() -> Action:
@@ -91,7 +88,7 @@ class ProviderContractReport:
         }
 
 
-def _expect_provider_error(operation_name: str, call: Callable[[], T]) -> None:
+def _expect_provider_error[T](operation_name: str, call: Callable[[], T]) -> None:
     try:
         call()
     except ProviderError:

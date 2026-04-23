@@ -54,7 +54,7 @@ cd "$repo_root"
 export PYGAME_HIDE_SUPPORT_PROMPT="${PYGAME_HIDE_SUPPORT_PROMPT:-1}"
 
 if is_help_request "$@"; then
-  exec uv run --python 3.10 worldforge-robotics-showcase "$@"
+  exec uv run --python 3.13 worldforge-robotics-showcase "$@"
 fi
 
 showcase_args=("$@")
@@ -77,8 +77,8 @@ if should_launch_tui "$@"; then
 fi
 
 if [[ "${WORLDFORGE_SHOW_RUNTIME_WARNINGS:-}" == "1" ]]; then
-  exec uv run --python 3.10 "${runtime_args[@]}" worldforge-robotics-showcase "${showcase_args[@]}"
+  exec uv run --python 3.13 "${runtime_args[@]}" worldforge-robotics-showcase "${showcase_args[@]}"
 fi
 
-exec uv run --python 3.10 "${runtime_args[@]}" worldforge-robotics-showcase "${showcase_args[@]}" \
+exec uv run --python 3.13 "${runtime_args[@]}" worldforge-robotics-showcase "${showcase_args[@]}" \
   2> >(filter_runtime_warnings >&2)

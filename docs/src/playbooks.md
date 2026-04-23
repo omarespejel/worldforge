@@ -307,7 +307,7 @@ scripts/lewm-real \
 Equivalent explicit `uv` command:
 
 ```bash
-uv run --python 3.10 \
+uv run --python 3.13 \
   --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
   --with "datasets>=2.21" \
   lewm-real \
@@ -315,7 +315,7 @@ uv run --python 3.10 \
     --device cpu
 ```
 
-The wrapper runs `uv run --python 3.10` with the upstream `stable-worldmodel` and `datasets`
+The wrapper runs `uv run --python 3.13` with the upstream `stable-worldmodel` and `datasets`
 runtime requirements, then invokes the packaged `lewm-real` alias. The live smoke prints what the
 run demonstrates, a visual pipeline, tensor shapes, latency metrics, provider events, and a ranked
 candidate cost landscape. It exits non-zero before inference if the checkpoint, optional runtime,
@@ -363,7 +363,7 @@ scripts/lewm-lerobot-real \
 Equivalent explicit `uv` command:
 
 ```bash
-uv run --python 3.10 \
+uv run --python 3.13 \
   --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
   --with "datasets>=2.21" \
   --with "lerobot" \
@@ -379,7 +379,7 @@ uv run --python 3.10 \
 Equivalent explicit `uv` command for the lower-level runner:
 
 ```bash
-uv run --python 3.10 \
+uv run --python 3.13 \
   --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
   --with "datasets>=2.21" \
   --with "lerobot" \

@@ -15,6 +15,7 @@ concurrency:
 
 env:
   UV_LOCKED: "true"
+  PYTHON_VERSION: "3.13"
 
 jobs:
   dependency-review:
@@ -41,7 +42,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v4

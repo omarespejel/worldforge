@@ -12,7 +12,7 @@ or dataset dependencies in the host environment before running:
 
 .. code-block:: bash
 
-   uv venv --python=3.10 .venv-lerobot
+   uv venv --python=3.13 .venv-lerobot
    source .venv-lerobot/bin/activate
    uv pip install -e .
    uv pip install "lerobot[aloha]"

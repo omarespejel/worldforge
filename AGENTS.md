@@ -67,7 +67,7 @@ evaluation harnesses, and testable prototypes.
 - `scripts/scaffold_provider.py`: safe scaffold generator for new provider adapter files,
   fixture placeholders, tests, and docs stubs.
 - `scripts/smoke_leworldmodel.py`: compatibility wrapper for
-  `uv run --python 3.10 --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" worldforge-smoke-leworldmodel`.
+  `uv run --python 3.13 --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" worldforge-smoke-leworldmodel`.
 - `scripts/smoke_gr00t_policy.py`: optional live GR00T PolicyClient smoke for host environments
   with Isaac-GR00T or a reachable policy server.
 - `scripts/smoke_lerobot_policy.py`: optional live LeRobot `PreTrainedPolicy` smoke for host
@@ -75,7 +75,7 @@ evaluation harnesses, and testable prototypes.
 
 ## Tech Stack
 
-- Python `>=3.10`, tested in CI on Python 3.10, 3.11, 3.12, and 3.13.
+- Python `>=3.13,<3.14`, with CI workflows standardized on Python 3.13.
 - Packaging/build: `hatchling`, `uv`, `uv.lock`.
 - Runtime dependency: `httpx`.
 - Optional TheWorldHarness runtime: `textual`, supplied only by the `harness` extra.
@@ -259,7 +259,7 @@ rm -f "$tmp_req"
   LeRobot policy, observation builder, LeWorldModel score tensors, and candidate bridge. Do not
   pad, project, or otherwise reinterpret mismatched action spaces inside WorldForge.
 - `worldforge-smoke-leworldmodel` is an optional real-checkpoint smoke. Run it through
-  `uv run --python 3.10 --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" ...`;
+  `uv run --python 3.13 --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" ...`;
   do not add those dependencies to WorldForge's base package. The upstream default storage root is
   `~/.stable-wm`; object checkpoints must already be extracted there or supplied through
   `--cache-dir`.

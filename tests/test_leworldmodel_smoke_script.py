@@ -561,4 +561,4 @@ def test_smoke_main_reports_missing_runtime_before_tensor_build(
     message = capsys.readouterr().out
     assert "LeWorldModel runtime preflight failed: missing optional dependency torch" in message
     assert "scripts/lewm-real --checkpoint" in message
-    assert 'uv run --python 3.10 --with "stable-worldmodel[train]' in message
+    assert 'uv run --python 3.13 --with "stable-worldmodel[train]' in message

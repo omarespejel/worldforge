@@ -25,6 +25,10 @@ releases may still include breaking changes when the public API needs to tighten
 
 ### Changed
 
+- CI workflows now run on Python 3.13 only. The multi-version OS/Python test matrix was removed,
+  and Pages, release, and security jobs were aligned to the same interpreter version.
+- Package metadata, docs, optional-runtime wrapper commands, and lint target now declare Python
+  3.13 only so the published support contract matches CI.
 - Dedupe repeated provider scaffolding into shared `BaseProvider._emit_operation_event` and
   `BaseProvider._health` helpers, and move `no_grad_context` plus `prepare_model` into
   `providers/_policy.py`. The cosmos, runway, leworldmodel, lerobot, gr00t, and jepa-wms adapters

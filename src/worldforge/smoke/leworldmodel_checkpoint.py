@@ -2,7 +2,7 @@
 
 Run with the same upstream runtime used by the real smoke:
 
-    uv run --python 3.10 --with "<git stable-worldmodel>" --with "datasets>=2.21"
+    uv run --python 3.13 --with "<git stable-worldmodel>" --with "datasets>=2.21"
       --with huggingface_hub worldforge-build-leworldmodel-checkpoint
 
 The command downloads ``config.json`` and ``weights.pt`` from the model repo,

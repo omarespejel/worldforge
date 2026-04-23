@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -105,9 +105,7 @@ def format_world_row(
         except OSError:
             mtime = 0.0
         if mtime > 0.0:
-            last_touched = (
-                datetime.fromtimestamp(mtime, tz=timezone.utc).replace(microsecond=0).isoformat()
-            )
+            last_touched = datetime.fromtimestamp(mtime, tz=UTC).replace(microsecond=0).isoformat()
     return (world.id, world.name, world.provider, int(world.step), last_touched)
 
 

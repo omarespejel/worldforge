@@ -10,7 +10,7 @@ evaluation, benchmarks, diagnostics, local state, and a CLI.
 
 [![CI](https://img.shields.io/github/actions/workflow/status/AbdelStark/worldforge/ci.yml?branch=main&label=CI&style=for-the-badge)](https://github.com/AbdelStark/worldforge/actions/workflows/ci.yml)
 [![Docs](https://img.shields.io/github/actions/workflow/status/AbdelStark/worldforge/pages.yml?branch=main&label=docs&style=for-the-badge)](https://abdelstark.github.io/worldforge/)
-[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://github.com/AbdelStark/worldforge/blob/main/pyproject.toml)
+[![Python](https://img.shields.io/badge/python-3.13-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://github.com/AbdelStark/worldforge/blob/main/pyproject.toml)
 [![Version](https://img.shields.io/badge/version-0.5.0-3f7cac?style=for-the-badge)](./CHANGELOG.md)
 [![PyPI](https://img.shields.io/pypi/v/worldforge-ai?style=for-the-badge&label=pypi&color=3f7cac)](https://pypi.org/project/worldforge-ai/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge)](./LICENSE)
@@ -145,7 +145,7 @@ application's responsibility.
 | **Deterministic by default** | Built-in `mock` provider, reusable contract assertions (`worldforge.testing`), and packaged demos that run from a clean checkout without credentials or GPUs. |
 | **Host-owned runtimes** | No torch, CUDA, robot controllers, or checkpoints in base dependencies. LeWorldModel, GR00T, LeRobot, Cosmos, and Runway integrate through their own surfaces. |
 | **Diagnostics** | `worldforge doctor`, provider events, benchmark and evaluation harnesses, and an optional Textual TUI (`TheWorldHarness`) for inspecting traces. |
-| **Quality gates** | `py.typed`, ruff, a 90% coverage floor, and wheel + sdist contract tests in CI across Python 3.10 to 3.13. |
+| **Quality gates** | `py.typed`, ruff, a 90% coverage floor, and wheel + sdist contract tests in CI on Python 3.13. |
 
 ## Install
 
@@ -191,7 +191,7 @@ Optional extras:
 uv sync --group dev --extra harness   # TheWorldHarness Textual TUI
 ```
 
-Python 3.10+. Base install depends only on `httpx`. Optional runtimes are host-owned.
+Python 3.13 only. Base install depends only on `httpx`. Optional runtimes are host-owned.
 
 ## Quickstart
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import tempfile
 from collections.abc import Callable, Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -236,7 +236,7 @@ def write_report(forge: WorldForge, kind: str, artifacts: dict[str, str]) -> Pat
         raise ValueError("report artifacts must include a json entry")
     reports_dir = forge.state_dir / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     run_id = uuid4().hex[:8]
     safe_kind = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in kind).strip("-")
     path = reports_dir / f"{safe_kind}-{timestamp}-{run_id}.json"
