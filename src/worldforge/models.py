@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from hashlib import sha256
 from mimetypes import guess_type
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
 JSONDict = dict[str, Any]
@@ -23,6 +25,17 @@ CAPABILITY_NAMES = (
     "score",
     "policy",
 )
+_REDACTED_OBSERVABLE_VALUE = "[redacted]"
+_SENSITIVE_FIELD_PATTERN = re.compile(
+    r"(api[_-]?key|authorization|bearer|credential|password|secret|signature|signed[_-]?url|token)",
+    re.IGNORECASE,
+)
+_SENSITIVE_ASSIGNMENT_PATTERN = re.compile(
+    r"\b(api[_-]?key|authorization|credential|password|secret|signature|token)=([^&\s,;]+)",
+    re.IGNORECASE,
+)
+_BEARER_VALUE_PATTERN = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE)
+_URL_IN_TEXT_PATTERN = re.compile(r"https?://[^\s\"'<>]+")
 
 
 class WorldForgeError(ValueError):
@@ -106,6 +119,63 @@ def require_bool(value: bool, *, name: str) -> bool:
 
     if not isinstance(value, bool):
         raise WorldForgeError(f"{name} must be a boolean.")
+    return value
+
+
+def _sanitize_observable_target(value: object | None) -> str | None:
+    """Return a provider event target safe for logs and metrics."""
+
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise WorldForgeError("ProviderEvent target must be a string when provided.")
+    target = value.strip()
+    if not target:
+        return None
+    try:
+        parts = urlsplit(target)
+    except ValueError:
+        stripped = target.split("?", maxsplit=1)[0].split("#", maxsplit=1)[0]
+        return stripped or _REDACTED_OBSERVABLE_VALUE
+    if parts.scheme or parts.netloc or parts.query or parts.fragment:
+        # Signed artifact URLs and bearer-style presigned URLs keep credentials in
+        # query strings. Provider events need route-level context, not secrets.
+        netloc = parts.netloc.rsplit("@", maxsplit=1)[-1]
+        sanitized = urlunsplit((parts.scheme, netloc, parts.path, "", ""))
+        return sanitized or _REDACTED_OBSERVABLE_VALUE
+    return target
+
+
+def _redact_observable_text(value: str) -> str:
+    """Redact common secret shapes from provider event text."""
+
+    redacted = _URL_IN_TEXT_PATTERN.sub(
+        lambda match: _sanitize_observable_target(match.group(0)) or _REDACTED_OBSERVABLE_VALUE,
+        value,
+    )
+    redacted = _BEARER_VALUE_PATTERN.sub("Bearer [redacted]", redacted)
+    return _SENSITIVE_ASSIGNMENT_PATTERN.sub(
+        lambda match: f"{match.group(1)}={_REDACTED_OBSERVABLE_VALUE}",
+        redacted,
+    )
+
+
+def _redact_observable_value(value: Any, *, key: str | None = None) -> Any:
+    """Redact obvious secrets from nested provider event metadata."""
+
+    if key is not None and _SENSITIVE_FIELD_PATTERN.search(key):
+        return _REDACTED_OBSERVABLE_VALUE
+    if isinstance(value, str):
+        return _redact_observable_text(value)
+    if isinstance(value, dict):
+        return {
+            item_key: _redact_observable_value(item_value, key=str(item_key))
+            for item_key, item_value in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_observable_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_redact_observable_value(item) for item in value]
     return value
 
 
@@ -1214,12 +1284,19 @@ class ProviderEvent:
             )
         if self.duration_ms is not None and self.duration_ms < 0.0:
             raise WorldForgeError("ProviderEvent duration_ms must be non-negative when set.")
+        if self.method is not None and not isinstance(self.method, str):
+            raise WorldForgeError("ProviderEvent method must be a string when provided.")
+        if not isinstance(self.message, str):
+            raise WorldForgeError("ProviderEvent message must be a string.")
         if not isinstance(self.metadata, dict):
             raise WorldForgeError("ProviderEvent metadata must be a JSON object.")
         self.provider = self.provider.strip()
         self.operation = self.operation.strip()
         self.phase = self.phase.strip()
-        self.metadata = dict(self.metadata)
+        self.method = self.method.strip().upper() if self.method else None
+        self.target = _sanitize_observable_target(self.target)
+        self.message = _redact_observable_text(self.message)
+        self.metadata = _redact_observable_value(dict(self.metadata))
 
     def to_dict(self) -> JSONDict:
         return {

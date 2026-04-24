@@ -375,7 +375,10 @@ def test_runway_provider_retries_polling_and_download_reads(monkeypatch) -> None
                 json={
                     "id": "task_generate",
                     "status": "SUCCEEDED",
-                    "output": ["https://downloads.example.com/generated.mp4"],
+                    "output": [
+                        "https://downloads.example.com/generated.mp4"
+                        "?X-Amz-Signature=download-secret&token=download-token"
+                    ],
                 },
             )
 
@@ -414,6 +417,12 @@ def test_runway_provider_retries_polling_and_download_reads(monkeypatch) -> None
         ("artifact download", "retry"),
         ("artifact download", "success"),
     ]
+    download_targets = [event.target for event in events if event.operation == "artifact download"]
+    assert download_targets == [
+        "https://downloads.example.com/generated.mp4",
+        "https://downloads.example.com/generated.mp4",
+    ]
+    assert "download-secret" not in json.dumps([event.to_dict() for event in events])
 
 
 def test_runway_provider_does_not_retry_generation_post(monkeypatch) -> None:

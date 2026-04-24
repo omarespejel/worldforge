@@ -75,6 +75,10 @@ forge.generate("orbiting cube", "mock", duration_seconds=1.0)
 print(metrics.get("mock", "generate").to_dict())
 ```
 
+Provider events are log-safe by default. The `target` field keeps endpoint or artifact path context
+but strips URL userinfo, query strings, and fragments; message and metadata fields redact obvious
+bearer tokens, API keys, signatures, passwords, and signed URLs.
+
 ## Action Scoring
 
 Providers that expose the `score` capability can rank candidate action sequences without claiming

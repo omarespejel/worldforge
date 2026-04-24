@@ -279,9 +279,11 @@ Operational rules:
   host-owned storage immediately after completion.
 - provider errors should include operation and provider context without leaking credentials,
   bearer tokens, or signed URLs.
+- provider event `target` values are sanitized for logs: use them to identify the endpoint or
+  artifact path, not to recover a full signed URL.
 
 If artifact download fails, inspect provider events for `operation`, `phase`, `status_code`,
-`attempt`, and `target`, then rerun with a fresh task when the URL has expired.
+`attempt`, and sanitized `target`, then rerun with a fresh task when the URL has expired.
 
 ## 8. Run Optional Runtime Smokes
 

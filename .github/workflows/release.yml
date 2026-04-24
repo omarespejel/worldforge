@@ -41,6 +41,26 @@ jobs:
       - name: Install development environment
         run: uv sync --group dev
 
+      - name: Lint
+        run: uv run ruff check src tests examples scripts
+
+      - name: Check formatting
+        run: uv run ruff format --check src tests examples scripts
+
+      - name: Check docs
+        run: make docs-check
+
+      - name: Run tests with coverage
+        run: uv run --extra harness pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
+
+      - name: Audit dependencies
+        run: |
+          uv export --frozen --all-groups --no-emit-project --no-hashes -o requirements-ci.txt
+          uvx --from pip-audit pip-audit -r requirements-ci.txt
+
+      - name: Validate package contract
+        run: bash scripts/test_package.sh
+
       - name: Run tests
         run: uv run pytest
 

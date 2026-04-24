@@ -107,7 +107,9 @@ Configuration cascade:
 - Use `ProviderCapabilities()` fail-closed by default; opt into each capability explicitly.
 - Unsupported provider methods should inherit or raise `ProviderError` with provider context.
 - Remote adapters should use typed `ProviderRequestPolicy`/`RequestOperationPolicy`; create/mutation requests stay single-attempt unless idempotency is proven.
-- Provider events should use `ProviderEvent` phases `retry`, `success`, and `failure` and must not leak credentials or signed URLs.
+- Provider events should use `ProviderEvent` phases `retry`, `success`, and `failure`; targets,
+  messages, and metadata must stay sanitized so logs never retain credentials or signed URL query
+  strings.
 - Keep docs concrete: command, success signal, first triage step.
 - Do not add broad abstractions until they remove real duplication across current modules.
 </code_conventions>

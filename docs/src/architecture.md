@@ -572,6 +572,8 @@ State invariants:
 - score providers return finite scores and an in-range `best_index`
 - policy providers return executable actions and preserve raw provider actions
 - remote media artifacts reject unsupported content types before returning a `VideoClip`
+- provider events sanitize log-facing targets, messages, and metadata before event sinks record
+  them; signed URL query strings and obvious credential fields are redacted
 
 ## Failure Boundaries
 
@@ -608,13 +610,17 @@ are the framework-level hook that host applications can fan out to their own log
 ```text
 Provider operation
   |
-  |-- ProviderEvent(provider, operation, phase, duration_ms, attempt, status_code, message, metadata)
+  |-- ProviderEvent(provider, operation, phase, duration_ms, attempt, status_code, sanitized target, message, metadata)
   |
   `-- host event_handler
         |-- JsonLoggerSink
         |-- InMemoryRecorderSink
         `-- ProviderMetricsSink
 ```
+
+Targets in provider events are intentionally route-level. They keep enough context to identify the
+provider endpoint or artifact path, but query strings, fragments, URL userinfo, bearer tokens, and
+secret-like metadata fields are removed before JSON logging or in-memory recording.
 
 Example:
 

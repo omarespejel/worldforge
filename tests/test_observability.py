@@ -5,7 +5,7 @@ import logging
 
 import pytest
 
-from worldforge import Action, ProviderEvent, WorldForge
+from worldforge import Action, ProviderEvent, WorldForge, WorldForgeError
 from worldforge.observability import (
     InMemoryRecorderSink,
     JsonLoggerSink,
@@ -48,6 +48,88 @@ def test_json_logger_sink_emits_structured_json(caplog) -> None:
         "status_code": None,
         "target": None,
     }
+
+
+def test_provider_event_redacts_observable_secret_fields() -> None:
+    event = ProviderEvent(
+        provider="runway",
+        operation="artifact download",
+        phase="failure",
+        method="get",
+        target=(
+            "https://user:pass@downloads.example.com/generated.mp4"
+            "?X-Amz-Signature=query-secret&token=query-token#fragment"
+        ),
+        message=(
+            "download failed for https://downloads.example.com/generated.mp4?token=query-token "
+            "with Authorization=raw-secret and Bearer bearer-secret"
+        ),
+        metadata={
+            "api_token": "metadata-secret",
+            "nested": {
+                "signed_url": "https://downloads.example.com/generated.mp4?signature=secret",
+                "safe_url": "https://downloads.example.com/generated.mp4?signature=secret",
+            },
+            "safe": "token=inline-secret",
+        },
+    )
+
+    payload = event.to_dict()
+
+    assert payload["method"] == "GET"
+    assert payload["target"] == "https://downloads.example.com/generated.mp4"
+    assert "query-secret" not in json.dumps(payload)
+    assert "query-token" not in json.dumps(payload)
+    assert "raw-secret" not in json.dumps(payload)
+    assert "bearer-secret" not in json.dumps(payload)
+    assert payload["metadata"]["api_token"] == "[redacted]"
+    assert payload["metadata"]["nested"]["signed_url"] == "[redacted]"
+    assert (
+        payload["metadata"]["nested"]["safe_url"] == "https://downloads.example.com/generated.mp4"
+    )
+    assert payload["metadata"]["safe"] == "token=[redacted]"
+
+
+def test_provider_event_validates_and_normalizes_observable_fields() -> None:
+    blank_target = ProviderEvent(
+        provider="runway",
+        operation="artifact download",
+        phase="success",
+        target="   ",
+    )
+    assert blank_target.target is None
+
+    invalid_url = ProviderEvent(
+        provider="runway",
+        operation="artifact download",
+        phase="failure",
+        target="http://[invalid?token=secret",
+    )
+    assert invalid_url.target == "http://[invalid"
+
+    with pytest.raises(WorldForgeError, match="target"):
+        ProviderEvent(
+            provider="runway",
+            operation="artifact download",
+            phase="failure",
+            target=object(),  # type: ignore[arg-type]
+        )
+
+    with pytest.raises(WorldForgeError, match="method"):
+        ProviderEvent(
+            provider="runway",
+            operation="artifact download",
+            phase="failure",
+            method=object(),  # type: ignore[arg-type]
+        )
+
+    with pytest.raises(WorldForgeError, match="message"):
+        ProviderEvent(
+            provider="runway",
+            operation="artifact download",
+            phase="failure",
+            message=object(),  # type: ignore[arg-type]
+        )
 
 
 def test_in_memory_recorder_sink_records_isolated_event_snapshots() -> None:

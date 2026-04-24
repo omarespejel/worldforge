@@ -185,6 +185,9 @@ rm -f "$tmp_req"
   `worldforge.cli`, or non-TUI harness modules.
 - Remote create/mutation requests are single-attempt by default; health, polling, and downloads
   use retry/backoff policy.
+- Provider events are log-facing records. Keep `target`, `message`, and `metadata` sanitized so
+  bearer tokens, API keys, signed URL query strings, and secret-like metadata never reach event
+  sinks.
 - Keep public API models typed and serializable. Validate boundary values before persistence or
   outbound network I/O.
 - Add regression tests for every bug fix and every documented failure mode.

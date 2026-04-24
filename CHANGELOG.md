@@ -15,6 +15,9 @@ releases may still include breaking changes when the public API needs to tighten
 
 ### Fixed
 
+- Provider events now sanitize observable request targets and obvious secret-bearing message or
+  metadata fields before logs or in-memory sinks can record them. Signed artifact URLs keep
+  scheme/host/path context but drop query strings, fragments, and userinfo.
 - Cosmos and Runway now strip whitespace and treat blank environment variables as unset, matching
   the behaviour of every other provider. A blank `COSMOS_BASE_URL`, `NVIDIA_API_KEY`,
   `RUNWAYML_BASE_URL`, `RUNWAYML_API_SECRET`, or `RUNWAY_API_SECRET` no longer masks as
@@ -41,6 +44,13 @@ releases may still include breaking changes when the public API needs to tighten
 - `save_world` skips a redundant `json.dumps`/`json.loads` round trip; the validation call now
   runs directly against the serialized dict.
 - Documentation metadata and README links now point at the published GitHub Pages site.
+- Release tags now run the full quality gate before artifacts are built or published: lint,
+  formatting, strict docs, coverage, dependency audit, package contract, and tests.
+
+### Security
+
+- Hardened `ProviderEvent` serialization so structured provider logs do not leak bearer tokens,
+  API keys, signed URL query strings, or secret-like metadata values.
 
 ## 0.4.0 - 2026-04-22
 

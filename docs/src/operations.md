@@ -114,6 +114,12 @@ Use `compose_event_handlers(...)` to fan out events to:
 - `ProviderMetricsSink` for request, retry, error, and latency aggregates.
 - `InMemoryRecorderSink` for tests and local debugging.
 
+`ProviderEvent` sanitizes observable fields before they reach these sinks: HTTP targets keep
+scheme, host, port, and path but drop userinfo, query strings, and fragments; message and metadata
+fields redact obvious bearer tokens, API keys, signatures, passwords, and signed URLs. Host
+applications should still avoid placing raw credentials in provider exception messages or custom
+metadata.
+
 Host services should add request or trace IDs through `JsonLoggerSink(extra_fields=...)` and
 include those IDs in surrounding application logs.
 
@@ -146,7 +152,7 @@ include those IDs in surrounding application logs.
 - For missing credentials, fix the environment and restart the host process so provider
   auto-registration runs again.
 - For transient remote failures, inspect emitted `ProviderEvent` records for `operation`,
-  `phase`, `status_code`, `attempt`, and `target`.
+  `phase`, `status_code`, `attempt`, and sanitized `target`.
 - For expired Runway artifact URLs, regenerate or persist downloaded outputs immediately after
   task completion.
 - For LeWorldModel failures, run `worldforge provider health leworldmodel`, verify
@@ -194,9 +200,23 @@ uv lock --check
 uv run ruff check src tests examples scripts
 uv run ruff format --check src tests examples scripts
 uv run python scripts/generate_provider_docs.py --check
+uv run mkdocs build --strict
+uv run pytest
 uv run --extra harness pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
 bash scripts/test_package.sh
 ```
+
+Run the dependency audit before cutting the tag:
+
+```bash
+tmp_req="$(mktemp requirements-audit.XXXXXX)"
+uv export --frozen --all-groups --no-emit-project --no-hashes -o "$tmp_req" >/dev/null
+uvx --from pip-audit pip-audit -r "$tmp_req" --no-deps --disable-pip --progress-spinner off
+rm -f "$tmp_req"
+```
+
+The tag-triggered release workflow repeats the full quality gate before building distributions or
+publishing release artifacts.
 
 Also update `CHANGELOG.md`, the README, and provider documentation for any public behavior change.
 
