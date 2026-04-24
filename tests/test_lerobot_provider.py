@@ -316,6 +316,29 @@ def test_lerobot_provider_reports_unconfigured_and_missing_dependency(monkeypatc
     assert "lerobot" in unhealthy.health().details
 
 
+def test_lerobot_provider_health_reports_optional_import_crash(monkeypatch) -> None:
+    real_import = importlib.import_module
+
+    def broken_lerobot_policy_import(name: str, *args: object, **kwargs: object):
+        if name == "lerobot":
+            return types.SimpleNamespace()
+        if name == "lerobot.policies.pretrained":
+            raise TypeError("non-default argument 'backbone_cfg' follows default argument")
+        if name == "lerobot.common.policies.pretrained":
+            raise ImportError("no common pretrained policy module")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib, "import_module", broken_lerobot_policy_import)
+
+    provider = LeRobotPolicyProvider(policy_path="lerobot/diffusion_pusht")
+    health = provider.health()
+
+    assert health.healthy is False
+    assert "lerobot.policies.pretrained" in health.details
+    assert "TypeError" in health.details
+    assert "backbone_cfg" in health.details
+
+
 def test_lerobot_provider_reads_env_configuration(monkeypatch) -> None:
     monkeypatch.setenv("LEROBOT_POLICY_PATH", "lerobot/diffusion_pusht")
     monkeypatch.setenv("LEROBOT_POLICY_TYPE", "diffusion")

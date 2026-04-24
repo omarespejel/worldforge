@@ -341,8 +341,10 @@ candidate ranking, provider events, and tabletop replay map, then writes the ful
 `/tmp/worldforge-robotics-showcase/real-run.json`. Pass `--tui-stage-delay <seconds>` to tune the
 reveal pace, `--no-tui-animation` to disable sleeps and arm motion, `--no-tui` for the plain
 terminal report, `--json-only` for automation, or `--health-only` for a dependency preflight. It
-filters common macOS native-library duplicate class warnings from the user-facing output; set
-`WORLDFORGE_SHOW_RUNTIME_WARNINGS=1` to see raw third-party stderr.
+requests LeRobot's `transformers-dep` extra so LeRobot controls the Transformers version while
+`stable-worldmodel[train]` is installed, and filters common macOS native-library duplicate class
+warnings from the user-facing output; set `WORLDFORGE_SHOW_RUNTIME_WARNINGS=1` to see raw
+third-party stderr.
 
 Use the lower-level runner when replacing the task observation, score tensors, translator, or
 candidate bridge:
@@ -368,7 +370,7 @@ Equivalent explicit `uv` command:
 uv run --python 3.13 \
   --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
   --with "datasets>=2.21" \
-  --with "lerobot" \
+  --with "lerobot[transformers-dep]" \
   --with "textual>=8.2,<9" \
   --with "pygame" \
   --with "opencv-python" \
@@ -384,7 +386,7 @@ Equivalent explicit `uv` command for the lower-level runner:
 uv run --python 3.13 \
   --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
   --with "datasets>=2.21" \
-  --with "lerobot" \
+  --with "lerobot[transformers-dep]" \
   lewm-lerobot-real \
     --policy-path lerobot/diffusion_pusht \
     --policy-type diffusion \

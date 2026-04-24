@@ -54,6 +54,10 @@ SUPPORTED_POLICY_TYPES: tuple[str, ...] = (
     "tdmpc",
     "vqbet",
 )
+PRETRAINED_POLICY_MODULE_CANDIDATES: tuple[str, ...] = (
+    "lerobot.policies.pretrained",
+    "lerobot.common.policies.pretrained",
+)
 
 PolicyLoader = Callable[[str, str | None, str | None, str | None], Any]
 ActionTranslator = Callable[
@@ -71,6 +75,27 @@ def _optional_policy_type(value: str | None, *, name: str) -> str | None:
         supported = ", ".join(SUPPORTED_POLICY_TYPES)
         raise WorldForgeError(f"{name} must be one of: {supported}. Got '{normalized}'.")
     return lowered
+
+
+def _import_failure_detail(module_name: str, exc: Exception) -> str:
+    message = str(exc).strip()
+    suffix = f": {message}" if message else ""
+    return f"{module_name}: {type(exc).__name__}{suffix}"
+
+
+def _import_pretrained_policy_module() -> tuple[Any | None, str | None]:
+    failures: list[str] = []
+    for module_name in PRETRAINED_POLICY_MODULE_CANDIDATES:
+        try:
+            module = importlib.import_module(module_name)
+        except Exception as exc:
+            failures.append(_import_failure_detail(module_name, exc))
+            continue
+        if not hasattr(module, "PreTrainedPolicy"):
+            failures.append(f"{module_name}: PreTrainedPolicy is unavailable")
+            continue
+        return module, None
+    return None, "LeRobot PreTrainedPolicy import unavailable (" + "; ".join(failures) + ")"
 
 
 class LeRobotPolicyProvider(BaseProvider):
@@ -190,15 +215,18 @@ class LeRobotPolicyProvider(BaseProvider):
             importlib.import_module("lerobot")
         except ImportError:
             return "missing optional dependency lerobot"
-        try:
-            pretrained_module = importlib.import_module("lerobot.policies.pretrained")
-        except ImportError:
-            try:
-                pretrained_module = importlib.import_module("lerobot.common.policies.pretrained")
-            except ImportError:
-                return "lerobot.policies.pretrained is unavailable"
-        if not hasattr(pretrained_module, "PreTrainedPolicy"):
-            return "lerobot.policies.pretrained.PreTrainedPolicy is unavailable"
+        except Exception as exc:
+            return (
+                "LeRobot optional dependency import failed ("
+                + _import_failure_detail(
+                    "lerobot",
+                    exc,
+                )
+                + ")"
+            )
+        _pretrained_module, dependency_error = _import_pretrained_policy_module()
+        if dependency_error is not None:
+            return dependency_error
         return None
 
     def _load_policy(self) -> Any:
@@ -238,10 +266,10 @@ class LeRobotPolicyProvider(BaseProvider):
         if self.policy_type is not None:
             policy_class = self._import_policy_class(self.policy_type)
             return policy_class.from_pretrained(self.policy_path, **kwargs)
-        try:
-            pretrained_module = importlib.import_module("lerobot.policies.pretrained")
-        except ImportError:
-            pretrained_module = importlib.import_module("lerobot.common.policies.pretrained")
+        pretrained_module, dependency_error = _import_pretrained_policy_module()
+        if dependency_error is not None:
+            raise ProviderError(dependency_error)
+        assert pretrained_module is not None
         base_class = pretrained_module.PreTrainedPolicy
         return base_class.from_pretrained(self.policy_path, **kwargs)
 

@@ -35,13 +35,14 @@ def test_leworldmodel_uv_commands_are_packaged_console_scripts() -> None:
     assert "uv run --python 3.13" in robotics_task_text
     assert "stable-worldmodel[train]" in robotics_task_text
     assert '"datasets>=2.21"' in robotics_task_text
-    assert '"lerobot"' in robotics_task_text
+    assert '"lerobot[transformers-dep]"' in robotics_task_text
     assert 'lewm-lerobot-real "$@"' in robotics_task_text
     showcase_task = root / "scripts" / "robotics-showcase"
     assert showcase_task.exists()
     assert showcase_task.stat().st_mode & 0o111
     showcase_task_text = showcase_task.read_text()
     assert "stable-worldmodel[train]" in showcase_task_text
+    assert '"lerobot[transformers-dep]"' in showcase_task_text
     assert "stable-worldmodel[env]" not in showcase_task_text
     assert '"textual>=8.2,<9"' in showcase_task_text
     assert '"pygame"' in showcase_task_text
