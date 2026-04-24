@@ -4,7 +4,7 @@ WorldForge is a Python integration layer and CLI for physical-AI world-model pro
 
 <priority_rules>
 1. Keep provider capabilities truthful: advertise only callable, tested, typed WorldForge surfaces.
-2. Keep optional runtimes host-owned: do not add torch, LeWorldModel, LeRobot, GR00T, CUDA, checkpoints, datasets, or robot controllers to base dependencies or the repo.
+2. Make the library fault tolerant, resilient, and forgiving, you should make the dev experience a top priority and help fixing issues and overcoming challenges. feel free to addadd torch, LeWorldModel, LeRobot, GR00T, CUDA, checkpoints, datasets, or robot controllers to base dependencies or the repo when relevant.
 3. Fail loudly at boundaries: invalid public inputs raise `WorldForgeError`; malformed persisted/provider state raises `WorldStateError`; provider/runtime failures raise `ProviderError`.
 4. Preserve local-first scope: no hosted service, production database, credential store, robot safety layer, telemetry backend, or durable multi-writer persistence unless explicitly designed and approved.
 5. Public contribution artifacts must be human, maintainer-style, and tool-neutral. Do not mention agent/tool branding in branch names, commits, PR titles, PR bodies, changelog, docs, or README copy.
@@ -203,17 +203,3 @@ Load skills on demand:
 - `.codex/skills/tui-development/SKILL.md`: TheWorldHarness Textual TUI — screens, workers, command palette, snapshot tests (bundled `references/roadmap.md`).
 </skills>
 
-<context_lifecycle>
-- `AGENTS.md` remains the detailed repository guide and is already present. Do not create a lowercase `agents.md` beside it on case-insensitive filesystems; that path resolves to `AGENTS.md` in this checkout.
-- Keep `CLAUDE.md` as the compact primary context. Move domain depth into skills.
-- Update this file only when new instructions would change agent behavior.
-- When adding a lesson, include date, decision, rationale, and rejected alternatives.
-</context_lifecycle>
-
-<memory>
-<project_decisions>
-- 2026-04-20: Keep optional runtime dependencies host-owned - base package must stay lightweight and installable without torch/CUDA/robot stacks - rejected adding optional runtimes to base dependency set.
-- 2026-04-20: Keep provider capabilities strict and fail-closed - diagnostics, planning, and tests depend on truthful capability flags - rejected treating unknown or missing capabilities as empty filters.
-- 2026-04-20: Keep local JSON persistence single-writer - WorldForge is a library boundary, not a storage service - rejected adding lock files, SQLite, or service persistence without a dedicated design.
-</project_decisions>
-</memory>
