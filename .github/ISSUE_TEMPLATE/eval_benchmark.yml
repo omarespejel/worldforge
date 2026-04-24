@@ -1,0 +1,31 @@
+name: Evaluation or benchmark issue
+description: Report a problem with eval suites, benchmark inputs, budgets, or reports.
+title: "[Eval/Benchmark]: "
+labels: ["evaluation", "benchmark"]
+body:
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: Exact eval or benchmark command.
+      render: bash
+    validations:
+      required: true
+  - type: textarea
+    id: artifact
+    attributes:
+      label: Artifact
+      description: JSON, CSV, Markdown, input file, or budget file involved.
+      render: json
+  - type: textarea
+    id: claim
+    attributes:
+      label: Claim or regression
+      description: What number, score, gate, or report behavior looks wrong?
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Provider, host, Python version, and optional runtime details.

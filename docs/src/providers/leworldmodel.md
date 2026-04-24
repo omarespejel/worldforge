@@ -130,7 +130,7 @@ This loads the host-owned upstream runtime and object checkpoint, then scores sy
 PushT-shaped candidate tensors through `LeWorldModelProvider`. It is real checkpoint scoring, not
 task-specific preprocessing or robot execution.
 
-Real LeRobot + LeWorldModel robotics showcase:
+LeRobot + LeWorldModel robotics replay showcase:
 
 ```bash
 scripts/robotics-showcase
@@ -138,7 +138,7 @@ scripts/robotics-showcase
 
 This uses `LeWorldModelProvider` as the score half of the real policy-plus-score showcase. Full
 runnable context lives in [CLI Reference](../cli.md), [Examples And CLI Commands](../examples.md),
-and [Real Robotics Showcase](../robotics-showcase.md).
+and [Robotics Replay Showcase](../robotics-showcase.md).
 
 ## Failure Modes
 

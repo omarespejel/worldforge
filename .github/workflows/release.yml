@@ -19,6 +19,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write
+      attestations: write
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -41,6 +43,20 @@ jobs:
       - name: Install development environment
         run: uv sync --group dev
 
+      - name: Verify release tag matches package version
+        run: |
+          python - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          tag = os.environ["GITHUB_REF_NAME"]
+          version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+          expected = f"v{version}"
+          if tag != expected:
+              raise SystemExit(f"release tag {tag!r} does not match package version {expected!r}")
+          PY
+
       - name: Lint
         run: uv run ruff check src tests examples scripts
 
@@ -56,7 +72,7 @@ jobs:
       - name: Audit dependencies
         run: |
           uv export --frozen --all-groups --no-emit-project --no-hashes -o requirements-ci.txt
-          uvx --from pip-audit pip-audit -r requirements-ci.txt
+          uv run pip-audit -r requirements-ci.txt --no-deps --disable-pip --progress-spinner off
 
       - name: Validate package contract
         run: bash scripts/test_package.sh
@@ -67,6 +83,11 @@ jobs:
       - name: Build distributions
         run: uv build --out-dir dist --no-build-logs
 
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*
+
       - name: Upload distributions
         uses: actions/upload-artifact@v4
         with:
@@ -75,7 +96,7 @@ jobs:
 
   github-release:
     name: GitHub release
-    needs: build-distributions
+    needs: [build-distributions, publish-pypi]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -98,6 +119,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write
+    environment:
+      name: pypi
     steps:
       - name: Download distributions
         uses: actions/download-artifact@v4
@@ -116,6 +140,4 @@ jobs:
           version: "0.9.18"
 
       - name: Publish distributions
-        env:
-          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
         run: uv publish dist/*

@@ -12,14 +12,14 @@ Keep this page and the provider pages aligned with that catalog.
 <!-- provider-catalog:start -->
 | Provider | Capability surface | Registration | Runtime ownership |
 | --- | --- | --- | --- |
-| `mock` | `predict`, `generate`, `transfer`, `reason`, `embed`, `plan` | always registered | in-repo deterministic local provider |
+| `mock` | `predict`, `generate`, `transfer`, `reason`, `embed` | always registered | in-repo deterministic local provider |
 | [`cosmos`](./cosmos.md) | `generate` | `COSMOS_BASE_URL` | host supplies a reachable Cosmos deployment and optional `NVIDIA_API_KEY` |
 | [`runway`](./runway.md) | `generate`, `transfer` | `RUNWAYML_API_SECRET` or `RUNWAY_API_SECRET` | host supplies Runway credentials and persists returned artifacts |
 | [`leworldmodel`](./leworldmodel.md) | `score` | `LEWORLDMODEL_POLICY` or `LEWM_POLICY` | host installs `stable_worldmodel`, torch, and compatible checkpoints |
 | [`gr00t`](./gr00t.md) | `policy` | `GROOT_POLICY_HOST` | host runs or reaches an Isaac GR00T policy server |
 | [`lerobot`](./lerobot.md) | `policy` | `LEROBOT_POLICY_PATH` or `LEROBOT_POLICY` | host installs LeRobot and compatible policy checkpoints |
-| `jepa` | scaffold | `JEPA_MODEL_PATH` | credential-gated mock-backed reservation, not a real JEPA runtime |
-| `genie` | scaffold | `GENIE_API_KEY` | credential-gated mock-backed reservation, not a real Genie runtime |
+| `jepa` | scaffold | `JEPA_MODEL_PATH` | capability-fail-closed reservation, not a real JEPA runtime |
+| `genie` | scaffold | `GENIE_API_KEY` | capability-fail-closed reservation, not a real Genie runtime |
 <!-- provider-catalog:end -->
 
 ## Candidate Scaffolds
@@ -88,7 +88,7 @@ uv run worldforge provider list
 uv run worldforge provider docs
 uv run worldforge provider docs leworldmodel --format json
 uv run worldforge provider info leworldmodel
-uv run worldforge doctor
+uv run worldforge doctor --registered-only
 uv run worldforge doctor --capability score
 ```
 

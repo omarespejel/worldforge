@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 
 from worldforge.models import (
@@ -15,8 +16,11 @@ from worldforge.models import (
     VideoClip,
 )
 
-from .base import PredictionPayload, ProviderProfileSpec, RemoteProvider
+from .base import PredictionPayload, ProviderError, ProviderProfileSpec, RemoteProvider
 from .mock import MockProvider
+
+SCAFFOLD_SURROGATE_ENV_VAR = "WORLDFORGE_ENABLE_SCAFFOLD_SURROGATES"
+_TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
 
 
 class StubRemoteProvider(RemoteProvider):
@@ -33,7 +37,17 @@ class StubRemoteProvider(RemoteProvider):
             )
         return self._mock_surrogate
 
+    def _require_scaffold_surrogate_enabled(self) -> None:
+        enabled = os.environ.get(SCAFFOLD_SURROGATE_ENV_VAR, "").strip().lower()
+        if enabled not in _TRUTHY_ENV_VALUES:
+            raise ProviderError(
+                f"Provider '{self.name}' is a scaffold and does not advertise executable "
+                f"capabilities. Set {SCAFFOLD_SURROGATE_ENV_VAR}=1 only for local "
+                "surrogate testing."
+            )
+
     def predict(self, world_state: JSONDict, action: Action, steps: int) -> PredictionPayload:
+        self._require_scaffold_surrogate_enabled()
         self._require_credentials()
         payload = self._surrogate.predict(world_state, action, steps)
         payload.metadata["mode"] = "stub-remote-adapter"
@@ -47,6 +61,7 @@ class StubRemoteProvider(RemoteProvider):
         *,
         options: GenerationOptions | None = None,
     ) -> VideoClip:
+        self._require_scaffold_surrogate_enabled()
         self._require_credentials()
         clip = self._surrogate.generate(prompt, duration_seconds, options=options)
         clip.metadata["mode"] = "stub-remote-adapter"
@@ -63,6 +78,7 @@ class StubRemoteProvider(RemoteProvider):
         prompt: str = "",
         options: GenerationOptions | None = None,
     ) -> VideoClip:
+        self._require_scaffold_surrogate_enabled()
         self._require_credentials()
         transferred = self._surrogate.transfer(
             clip,
@@ -77,12 +93,14 @@ class StubRemoteProvider(RemoteProvider):
         return transferred
 
     def reason(self, query: str, *, world_state: JSONDict | None = None) -> ReasoningResult:
+        self._require_scaffold_surrogate_enabled()
         self._require_credentials()
         result = self._surrogate.reason(query, world_state=world_state)
         result.evidence.append(f"Executed via stub adapter gated by {self.env_var}")
         return result
 
     def embed(self, *, text: str) -> EmbeddingResult:
+        self._require_scaffold_surrogate_enabled()
         self._require_credentials()
         return self._surrogate.embed(text=text)
 
@@ -100,20 +118,16 @@ class JepaProvider(StubRemoteProvider):
     ) -> None:
         super().__init__(
             name=name,
-            capabilities=ProviderCapabilities(
-                predict=True,
-                reason=True,
-                embed=True,
-                plan=True,
-            ),
+            capabilities=ProviderCapabilities(),
             profile=ProviderProfileSpec(
                 description="Python adapter surface for JEPA-family models.",
                 implementation_status="scaffold",
                 supported_modalities=("world_state", "text"),
-                artifact_types=("prediction", "reasoning", "embedding"),
+                artifact_types=(),
                 notes=(
-                    "Credential-gated scaffold adapter.",
-                    "Runtime path falls back to deterministic mock behavior after auth checks.",
+                    "Capability-fail-closed scaffold adapter; it is not a real JEPA runtime.",
+                    "A deterministic local surrogate exists only behind "
+                    f"{SCAFFOLD_SURROGATE_ENV_VAR}=1 for adapter testing.",
                 ),
                 default_model="jepa-scaffold-v1",
                 supported_models=("jepa-scaffold-v1",),
@@ -135,20 +149,16 @@ class GenieProvider(StubRemoteProvider):
     ) -> None:
         super().__init__(
             name=name,
-            capabilities=ProviderCapabilities(
-                predict=True,
-                generate=True,
-                reason=True,
-                plan=True,
-            ),
+            capabilities=ProviderCapabilities(),
             profile=ProviderProfileSpec(
                 description="Python adapter surface for Genie-family models.",
                 implementation_status="scaffold",
                 supported_modalities=("world_state", "text", "video"),
-                artifact_types=("prediction", "video", "reasoning"),
+                artifact_types=(),
                 notes=(
-                    "Credential-gated scaffold adapter.",
-                    "Runtime path falls back to deterministic mock behavior after auth checks.",
+                    "Capability-fail-closed scaffold adapter; it is not a real Genie runtime.",
+                    "A deterministic local surrogate exists only behind "
+                    f"{SCAFFOLD_SURROGATE_ENV_VAR}=1 for adapter testing.",
                 ),
                 default_model="genie-scaffold-v1",
                 supported_models=("genie-scaffold-v1",),

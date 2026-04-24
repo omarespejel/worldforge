@@ -41,6 +41,16 @@ BENCHMARKABLE_OPERATIONS = (
     "policy",
 )
 
+BENCHMARK_CLAIM_BOUNDARY = (
+    "Benchmark reports measure adapter-path latency, retries, throughput, and errors for the "
+    "selected provider inputs. They do not measure physical fidelity, media quality, safety, or "
+    "production load capacity."
+)
+BENCHMARK_METRIC_SEMANTICS = (
+    "Latency metrics are process-local wall-clock timings; retry counts come from emitted "
+    "ProviderEvent records; throughput is computed from successful samples over elapsed time."
+)
+
 _BENCHMARK_INPUT_KEYS = (
     "prediction_action",
     "prediction_steps",
@@ -893,7 +903,11 @@ class BenchmarkReport:
     results: list[BenchmarkResult]
 
     def to_dict(self) -> JSONDict:
-        return {"results": [result.to_dict() for result in self.results]}
+        return {
+            "claim_boundary": BENCHMARK_CLAIM_BOUNDARY,
+            "metric_semantics": BENCHMARK_METRIC_SEMANTICS,
+            "results": [result.to_dict() for result in self.results],
+        }
 
     def to_json(self) -> str:
         return dump_json(self.to_dict())
@@ -901,6 +915,9 @@ class BenchmarkReport:
     def to_markdown(self) -> str:
         lines = [
             "# Benchmark Report",
+            "",
+            f"Claim boundary: {BENCHMARK_CLAIM_BOUNDARY}",
+            f"Metric semantics: {BENCHMARK_METRIC_SEMANTICS}",
             "",
             "| provider | operation | ok | retries | avg_ms | p95_ms | throughput/s |",
             "| --- | --- | ---: | ---: | ---: | ---: | ---: |",

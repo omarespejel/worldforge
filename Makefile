@@ -1,9 +1,12 @@
-.PHONY: sync format lint docs-check docs-site test test-cov test-package build publish check clean
+.PHONY: sync lock format lint docs-check docs-site test test-cov test-package build audit publish check release-check clean
 
 UV ?= uv
 
 sync:
 	$(UV) sync --group dev
+
+lock:
+	$(UV) lock --check
 
 format:
 	$(UV) run ruff format src tests examples scripts
@@ -31,10 +34,18 @@ test-package:
 build:
 	$(UV) build
 
+audit:
+	tmp_req="$$(mktemp requirements-audit.XXXXXX)"; \
+	trap 'rm -f "$$tmp_req"' EXIT; \
+	$(UV) export --frozen --all-groups --no-emit-project --no-hashes -o "$$tmp_req" >/dev/null; \
+	$(UV) run pip-audit -r "$$tmp_req" --no-deps --disable-pip --progress-spinner off
+
 publish:
 	$(UV) publish
 
-check: lint docs-check test test-package
+check: lock lint docs-check test test-cov test-package build
+
+release-check: check audit
 
 clean:
 	rm -rf build dist site .pytest_cache .ruff_cache .worldforge .coverage

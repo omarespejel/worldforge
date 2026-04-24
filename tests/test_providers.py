@@ -13,6 +13,7 @@ from worldforge.providers import (
     ProviderError,
     RunwayProvider,
 )
+from worldforge.providers.base import ProviderProfileSpec
 
 
 def test_provider_submodule_exports_provider_classes() -> None:
@@ -38,6 +39,25 @@ def test_provider_capabilities_are_closed_by_default_and_unsupported_predict_is_
 
     with pytest.raises(ProviderError, match="does not implement predict"):
         world.predict(Action.move_to(0.1, 0.5, 0.0))
+
+
+def test_base_provider_requires_all_profile_environment_variables(monkeypatch) -> None:
+    provider = BaseProvider(
+        "remote-contract",
+        profile=ProviderProfileSpec(required_env_vars=("FIRST_REQUIRED", "SECOND_REQUIRED")),
+    )
+    monkeypatch.delenv("FIRST_REQUIRED", raising=False)
+    monkeypatch.delenv("SECOND_REQUIRED", raising=False)
+
+    assert provider.configured() is False
+    assert "FIRST_REQUIRED" in provider.health().details
+    assert "SECOND_REQUIRED" in provider.health().details
+
+    monkeypatch.setenv("FIRST_REQUIRED", "set")
+    assert provider.configured() is False
+
+    monkeypatch.setenv("SECOND_REQUIRED", "set")
+    assert provider.configured() is True
 
 
 def test_generation_transfer_reason_embedding_and_manual_registration(tmp_path) -> None:

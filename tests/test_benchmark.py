@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from base64 import b64encode
+from pathlib import Path
 
 import httpx
 import pytest
@@ -26,6 +27,8 @@ from worldforge.benchmark import (
 from worldforge.models import JSONDict
 from worldforge.providers import CosmosProvider, RunwayProvider
 from worldforge.providers.base import BaseProvider, ProviderError, ProviderProfileSpec
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class _ScoreBenchmarkProvider(BaseProvider):
@@ -119,6 +122,9 @@ def test_provider_benchmark_harness_reports_mock_operations(tmp_path) -> None:
         assert result.average_latency_ms is not None
         assert result.operation_metrics["provider"] == "mock"
         assert result.operation_metrics["events"]
+    payload = json.loads(report.to_json())
+    assert "adapter-path latency" in payload["claim_boundary"]
+    assert "ProviderEvent" in payload["metric_semantics"]
 
 
 def test_benchmark_report_evaluates_budget_gates(tmp_path) -> None:
@@ -167,6 +173,25 @@ def test_benchmark_report_evaluates_budget_gates(tmp_path) -> None:
         "matching_results",
     }
     assert json.loads(failing.to_json())["violation_count"] == 2
+
+
+def test_documented_benchmark_fixtures_load_and_pass_gate(tmp_path) -> None:
+    input_file = ROOT / "examples" / "benchmark-inputs.json"
+    budget_file = ROOT / "examples" / "benchmark-budget.json"
+    inputs = load_benchmark_inputs(json.loads(input_file.read_text()), base_path=input_file.parent)
+    budgets = load_benchmark_budgets(json.loads(budget_file.read_text()))
+    forge = WorldForge(state_dir=tmp_path)
+
+    report = ProviderBenchmarkHarness(forge=forge).run(
+        "mock",
+        operations=["predict", "embed", "generate"],
+        iterations=1,
+        inputs=inputs,
+    )
+    gate = report.evaluate_budgets(budgets)
+
+    assert {result.operation for result in report.results} == {"predict", "embed", "generate"}
+    assert gate.passed is True
 
 
 def test_load_benchmark_budgets_accepts_list_or_object_payload() -> None:

@@ -56,7 +56,7 @@ report = ProviderBenchmarkHarness(forge=forge).run(
 uv run worldforge benchmark --provider mock --iterations 5
 uv run worldforge benchmark --provider mock --operation generate --format json
 uv run worldforge benchmark --provider mock --operation embed --format markdown
-uv run worldforge benchmark --provider mock --operation embed --input-file benchmark-inputs.json
+uv run worldforge benchmark --provider mock --operation embed --input-file examples/benchmark-inputs.json
 ```
 
 Use `--input-file` when a benchmark result needs to be reproducible from preserved inputs. The
@@ -72,8 +72,7 @@ file can contain input fields directly, or an `inputs` object plus metadata:
       "type": "move_to",
       "parameters": {
         "target": { "x": 0.25, "y": 0.5, "z": 0.0 },
-        "speed": 1.0,
-        "object_id": "cube"
+        "speed": 1.0
       }
     },
     "prediction_steps": 2,
@@ -150,7 +149,7 @@ uv run worldforge benchmark \
   --operation generate \
   --iterations 5 \
   --format json \
-  --budget-file benchmark-budget.json
+  --budget-file examples/benchmark-budget.json
 ```
 
 With `--budget-file`, the command prints both the benchmark report and a gate report. A failing gate
@@ -167,4 +166,7 @@ reports; CSV prints the gate violation table.
 - serialized provider-operation event aggregates for deeper inspection
 - optional budget-gate results for release or claim-oriented thresholds
 
-The benchmark harness is synthetic. It measures operation latency, retries, and throughput for the selected provider adapter path; it does not score media quality or replace a distributed load-test setup.
+Every JSON and Markdown report includes `claim_boundary` and `metric_semantics` fields. The
+benchmark harness is synthetic. It measures operation latency, retries, and throughput for the
+selected provider adapter path; it does not score media quality, physical fidelity, safety, or
+production load capacity.

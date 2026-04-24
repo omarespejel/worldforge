@@ -71,7 +71,7 @@ use the canonical JSON / Markdown / CSV renderers.
 The diagnostics, eval, and benchmark screens map directly to non-TUI commands:
 
 ```bash
-uv run worldforge doctor
+uv run worldforge doctor --registered-only
 uv run worldforge provider list
 uv run worldforge benchmark --provider mock --iterations 2 --format json
 uv run worldforge eval --suite planning --provider mock --format json
@@ -151,5 +151,5 @@ example of how to compose WorldForge from Python. The work is broken into six mi
 | [M4 — Eval + Benchmark](https://github.com/AbdelStark/worldforge/tree/main/specs/theworldharness-M4-eval-benchmark) | `EvalScreen` and `BenchmarkScreen`; capability mismatch as a hard toast; reports preserved to disk and exportable. |
 | [M5 — Polish + showcase](https://github.com/AbdelStark/worldforge/tree/main/specs/theworldharness-M5-polish-showcase) | High-contrast theme, dynamic command-palette provider, recent items, screenshot export matrix, README screenshot refresh. |
 
-The intent and design language behind these milestones live in the contributor-facing roadmap
-spec at `.codex/skills/tui-development/references/roadmap.md`.
+The intent and design language behind these milestones are summarized in the public
+[roadmap](./roadmap.md).

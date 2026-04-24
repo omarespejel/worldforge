@@ -32,7 +32,9 @@ def test_provider_catalog_instantiates_known_provider_profiles() -> None:
     assert profiles["gr00t"].capabilities.policy is True
     assert profiles["lerobot"].capabilities.policy is True
     assert profiles["jepa"].implementation_status == "scaffold"
+    assert profiles["jepa"].capabilities.enabled_names() == []
     assert profiles["genie"].implementation_status == "scaffold"
+    assert profiles["genie"].capabilities.enabled_names() == []
 
 
 # Pairs of (canonical_env_var, legacy_alias) that provider auto-registration must continue

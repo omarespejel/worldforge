@@ -1,8 +1,12 @@
-# Real Robotics Showcase
+# Robotics Replay Showcase
 
 The real robotics showcase is WorldForge's primary end-to-end physical-AI demo. It combines a
 Hugging Face LeRobot policy with a LeWorldModel cost-model checkpoint, then uses WorldForge's
 policy-plus-score planner to select and mock-replay the best action chunk.
+
+No hardware is controlled by this command. It demonstrates policy inference, score-model
+inference, candidate ranking, provider events, and local replay; robot controllers, safety checks,
+and task-specific preprocessing remain host-owned.
 
 The default task is PushT. The default policy is `lerobot/diffusion_pusht`. The default
 LeWorldModel checkpoint is `~/.stable-wm/pusht/lewm_object.ckpt`.

@@ -3043,7 +3043,7 @@ class BenchmarkScreen(Screen):  # pragma: no cover - exercised by Pilot tests.
 
 
 # ---------------------------------------------------------------------------
-# Real Robotics Showcase Report
+# Robotics Replay Showcase Report
 # ---------------------------------------------------------------------------
 
 
@@ -3665,7 +3665,7 @@ class RoboticsShowcaseApp(App[None]):
     """Standalone Textual report for the real robotics showcase."""
 
     TITLE = "WorldForge Robotics Showcase"
-    SUB_TITLE = "Real LeRobot policy + LeWorldModel scoring"
+    SUB_TITLE = "LeRobot policy + LeWorldModel checkpoint scoring replay"
     BINDINGS = [
         Binding("?", "show_tabletop_help", "Help", show=True),
         Binding("q", "quit", "Quit", show=True),

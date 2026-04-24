@@ -26,7 +26,9 @@ evaluation, benchmarks, diagnostics, local state, and a CLI.
 [**Capability Model**](#capability-model) ·
 [**Architecture**](#architecture) ·
 [**Docs**](https://abdelstark.github.io/worldforge/) ·
-[**Playbooks**](https://abdelstark.github.io/worldforge/playbooks/)
+[**Playbooks**](https://abdelstark.github.io/worldforge/playbooks/) ·
+[**Support**](./SUPPORT.md) ·
+[**Security**](./SECURITY.md)
 
 </div>
 
@@ -69,7 +71,7 @@ The command launches a staged Textual report by default and writes the same run 
 `--no-tui-animation` to skip sleeps and arm motion, `--no-tui` for the plain terminal report, or
 `--json-only` for automation.
 
-Read the full walkthrough: [Real Robotics Showcase](https://abdelstark.github.io/worldforge/robotics-showcase/).
+Read the full walkthrough: [Robotics Replay Showcase](https://abdelstark.github.io/worldforge/robotics-showcase/).
 
 <details>
 <summary><strong>TheWorldHarness TUI</strong> - checkout-safe visual harness for worlds, providers, evals, benchmarks, and packaged flows</summary>
@@ -242,7 +244,7 @@ print(doctor.healthy_provider_count, doctor.provider_count)
 
 ```bash
 uv run worldforge examples                                              # runnable scripts index
-uv run worldforge doctor                                                # provider health
+uv run worldforge doctor --registered-only                              # active provider health
 uv run worldforge world create lab --provider mock                      # save a local world
 uv run worldforge world add-object <world-id> cube --x 0 --y 0.5 --z 0  # edit scene state
 uv run worldforge world predict <world-id> --object-id <object-id> --x 0.4 --y 0.5 --z 0
@@ -256,8 +258,8 @@ uv run worldforge provider info mock                                    # capabi
 uv run worldforge predict kitchen --provider mock --x 0.3 --y 0.8 --z 0.0 --steps 2
 uv run worldforge eval --suite planning --provider mock --format json
 uv run worldforge benchmark --provider mock --iterations 5 --format json
-uv run worldforge benchmark --provider mock --operation embed --input-file benchmark-inputs.json
-uv run worldforge benchmark --provider mock --operation generate --budget-file benchmark-budget.json
+uv run worldforge benchmark --provider mock --operation embed --input-file examples/benchmark-inputs.json
+uv run worldforge benchmark --provider mock --operation generate --budget-file examples/benchmark-budget.json
 ```
 
 Scene mutations append persisted history entries with typed action payloads. Position patches keep
@@ -281,7 +283,7 @@ model's branding.
 | `transfer` | `artifact + prompt/options → artifact` | `runway`, `mock` |
 | `reason` | structured reasoning over state | `mock` |
 | `embed` | observation → embedding | `mock` |
-| `plan` | facade over composed surfaces | `mock` |
+| `plan` | facade over composed surfaces | WorldForge facade |
 
 LeWorldModel is a score provider, not a video generator. GR00T and LeRobot are policy providers,
 not predictive world models. Cosmos and Runway are media generators, not controllable physical
@@ -303,18 +305,19 @@ observe state
 <!-- provider-catalog-readme:start -->
 | Provider | Capability surface | Registration | Runtime ownership |
 | --- | --- | --- | --- |
-| `mock` | `predict`, `generate`, `transfer`, `reason`, `embed`, `plan` | always registered | in-repo deterministic local provider |
+| `mock` | `predict`, `generate`, `transfer`, `reason`, `embed` | always registered | in-repo deterministic local provider |
 | [`cosmos`](https://abdelstark.github.io/worldforge/providers/cosmos/) | `generate` | `COSMOS_BASE_URL` | host supplies a reachable Cosmos deployment and optional `NVIDIA_API_KEY` |
 | [`runway`](https://abdelstark.github.io/worldforge/providers/runway/) | `generate`, `transfer` | `RUNWAYML_API_SECRET` or `RUNWAY_API_SECRET` | host supplies Runway credentials and persists returned artifacts |
 | [`leworldmodel`](https://abdelstark.github.io/worldforge/providers/leworldmodel/) | `score` | `LEWORLDMODEL_POLICY` or `LEWM_POLICY` | host installs `stable_worldmodel`, torch, and compatible checkpoints |
 | [`gr00t`](https://abdelstark.github.io/worldforge/providers/gr00t/) | `policy` | `GROOT_POLICY_HOST` | host runs or reaches an Isaac GR00T policy server |
 | [`lerobot`](https://abdelstark.github.io/worldforge/providers/lerobot/) | `policy` | `LEROBOT_POLICY_PATH` or `LEROBOT_POLICY` | host installs LeRobot and compatible policy checkpoints |
-| `jepa` | scaffold | `JEPA_MODEL_PATH` | credential-gated mock-backed reservation, not a real JEPA runtime |
-| `genie` | scaffold | `GENIE_API_KEY` | credential-gated mock-backed reservation, not a real Genie runtime |
+| `jepa` | scaffold | `JEPA_MODEL_PATH` | capability-fail-closed reservation, not a real JEPA runtime |
+| `genie` | scaffold | `GENIE_API_KEY` | capability-fail-closed reservation, not a real Genie runtime |
 <!-- provider-catalog-readme:end -->
 
-Scaffold adapters stay outside package exports and auto-registration until they have a validated
-runtime path, typed parser coverage, request limits, and docs. The active candidate is
+`jepa` and `genie` are capability-closed reservations. Executable scaffold candidates stay outside
+package exports and auto-registration until they have a validated runtime path, typed parser
+coverage, request limits, and docs. The active candidate is
 [`jepa-wms`](https://abdelstark.github.io/worldforge/providers/jepa-wms/), a direct-construction scaffold targeting future
 `facebookresearch/jepa-wms` score-provider work.
 
@@ -376,9 +379,10 @@ surface and runtime-specific entrypoints:
 | --- | --- |
 | Full CLI command map | [CLI reference](https://abdelstark.github.io/worldforge/cli/) |
 | Runnable example index | [Examples and CLI commands](https://abdelstark.github.io/worldforge/examples/) or `uv run worldforge examples` |
-| Real LeRobot + LeWorldModel showcase | [Robotics showcase walkthrough](https://abdelstark.github.io/worldforge/robotics-showcase/) |
+| LeRobot + LeWorldModel replay showcase | [Robotics showcase walkthrough](https://abdelstark.github.io/worldforge/robotics-showcase/) |
 | Checkout-safe visual flows | [TheWorldHarness](https://abdelstark.github.io/worldforge/theworldharness/) |
 | Optional runtime operations | [Operator playbooks](https://abdelstark.github.io/worldforge/playbooks/#8-run-optional-runtime-smokes) |
+| Support, security, citation | [Support](./SUPPORT.md), [Security](./SECURITY.md), [Citation](./CITATION.cff) |
 
 ## Who It's For
 
@@ -446,7 +450,7 @@ needs to tighten.
 
 **Known limits**
 
-- `jepa` and `genie` are credential-gated scaffold adapters backed by mock behavior
+- `jepa` and `genie` are capability-fail-closed scaffold adapters
 - `jepa-wms` is a direct-construction candidate, not exported or auto-registered
 - local JSON persistence is single-writer only
 - evaluation scores are contract signals, not physical-fidelity or safety claims

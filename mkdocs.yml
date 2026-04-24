@@ -43,7 +43,7 @@ nav:
   - Quick Start: quickstart.md
   - CLI Reference: cli.md
   - Examples And CLI Commands: examples.md
-  - Real Robotics Showcase: robotics-showcase.md
+  - Robotics Replay Showcase: robotics-showcase.md
   - TheWorldHarness: theworldharness.md
   - World Model Taxonomy: world-model-taxonomy.md
   - Architecture: architecture.md
@@ -61,6 +61,11 @@ nav:
   - Evaluation: evaluation.md
   - Benchmarking: benchmarking.md
   - Operations: operations.md
+  - Security: security.md
+  - Support: support.md
+  - Changelog: changelog.md
+  - Citation: citation.md
+  - Roadmap: roadmap.md
   - Contributing: contributing.md
 
 markdown_extensions:

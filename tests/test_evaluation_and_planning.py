@@ -95,6 +95,17 @@ def test_planning_comparison_and_execution_flow(tmp_path) -> None:
     assert module_plan.action_count >= 1
 
 
+def test_evaluation_reports_carry_claim_boundaries(tmp_path) -> None:
+    forge = WorldForge(state_dir=tmp_path)
+    report = EvaluationSuite.from_builtin("physics").run_report(["mock"], forge=forge)
+    payload = json.loads(report.to_json())
+    markdown = report.to_markdown()
+
+    assert "deterministic adapter contract checks" in payload["claim_boundary"]
+    assert "typed contract" in payload["metric_semantics"]
+    assert "Claim boundary:" in markdown
+
+
 def test_structured_goal_targets_selected_object_and_validates_inputs(tmp_path) -> None:
     forge = WorldForge(state_dir=tmp_path)
     world = forge.create_world("structured-goal-world", "mock")

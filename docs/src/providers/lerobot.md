@@ -171,7 +171,7 @@ WorldForge policy-plus-score path without requiring LeRobot, torch, or checkpoin
 Real policy smoke:
 
 ```bash
-python scripts/smoke_lerobot_policy.py \
+uv run python scripts/smoke_lerobot_policy.py \
   --policy-path lerobot/act_aloha_sim_transfer_cube_human \
   --observation-module /path/to/obs.py:build_observation \
   --translator /path/to/translator.py:translate_actions \
@@ -181,7 +181,7 @@ python scripts/smoke_lerobot_policy.py \
 This requires a host-owned LeRobot install, policy checkpoint, observation source, and
 embodiment-specific action translator.
 
-Real LeRobot + LeWorldModel robotics showcase:
+LeRobot + LeWorldModel robotics replay showcase:
 
 ```bash
 scripts/robotics-showcase
@@ -189,7 +189,8 @@ scripts/robotics-showcase
 
 This is the real-checkpoint counterpart to `worldforge-demo-lerobot` for the packaged PushT
 showcase. Full runnable context lives in [CLI Reference](../cli.md),
-[Examples And CLI Commands](../examples.md), and [Real Robotics Showcase](../robotics-showcase.md).
+[Examples And CLI Commands](../examples.md), and
+[Robotics Replay Showcase](../robotics-showcase.md).
 
 ## Failure Modes
 

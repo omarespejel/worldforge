@@ -508,8 +508,8 @@ In-repo provider mapping:
 | `lerobot` | optional runtime adapter | policy | host-owned LeRobot policy checkpoint |
 | `cosmos` | HTTP adapter | generate | remote physical-AI video foundation model API |
 | `runway` | HTTP adapter | generate, transfer | remote video generation API |
-| `jepa` | scaffold | mock-backed | reservation for future JEPA provider work |
-| `genie` | scaffold | mock-backed | reservation for future interactive simulator work |
+| `jepa` | scaffold | capability-fail-closed | reservation for future JEPA provider work |
+| `genie` | scaffold | capability-fail-closed | reservation for future interactive simulator work |
 
 `src/worldforge/providers/catalog.py` owns the in-repo provider factory list and auto-registration
 policy. Provider profiles expose the same information through Python and CLI diagnostics.

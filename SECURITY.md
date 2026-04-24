@@ -16,10 +16,6 @@ vulnerability reporting:
 If you cannot use GitHub Security Advisories, open a private thread with
 [@AbdelStark](https://github.com/AbdelStark) on GitHub and we'll route from there.
 
-> **Repo admin:** this channel relies on GitHub's Private Vulnerability Reporting.
-> Enable it once in **Settings → Code security → Private vulnerability reporting →
-> Enable**.
-
 ## Scope
 
 In scope:

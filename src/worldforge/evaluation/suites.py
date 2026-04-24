@@ -27,6 +27,16 @@ from worldforge.models import (
 if TYPE_CHECKING:
     from worldforge.framework import World, WorldForge
 
+EVALUATION_CLAIM_BOUNDARY = (
+    "Built-in evaluation suites are deterministic adapter contract checks. Scores are synthetic "
+    "workflow signals, not claims of physical fidelity, media quality, safety, or real robot "
+    "performance."
+)
+EVALUATION_METRIC_SEMANTICS = (
+    "Scenario scores and pass rates measure whether a provider satisfied the suite's typed "
+    "contract under preserved inputs."
+)
+
 
 def _clamp_score(value: float) -> float:
     return max(0.0, min(1.0, float(value)))
@@ -241,6 +251,8 @@ class EvaluationReport:
         return {
             "suite_id": self.suite_id,
             "suite": self.suite,
+            "claim_boundary": EVALUATION_CLAIM_BOUNDARY,
+            "metric_semantics": EVALUATION_METRIC_SEMANTICS,
             "provider_summaries": [summary.to_dict() for summary in self.provider_summaries],
             "results": [result.to_dict() for result in self.results],
         }
@@ -250,6 +262,9 @@ class EvaluationReport:
             "# Evaluation Report",
             "",
             f"Suite: {self.suite} ({self.suite_id})",
+            "",
+            f"Claim boundary: {EVALUATION_CLAIM_BOUNDARY}",
+            f"Metric semantics: {EVALUATION_METRIC_SEMANTICS}",
             "",
             "| provider | average_score | passed | scenarios |",
             "| --- | ---: | ---: | ---: |",

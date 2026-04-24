@@ -44,7 +44,6 @@ class MockProvider(BaseProvider):
                 generate=True,
                 reason=True,
                 embed=True,
-                plan=True,
                 transfer=True,
             ),
             profile=ProviderProfileSpec(

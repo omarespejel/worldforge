@@ -45,7 +45,9 @@ Configuration comes from constructor arguments and environment variables documen
 - `LEROBOT_POLICY_PATH` or `LEROBOT_POLICY` enables the optional LeRobot embodied-policy adapter.
 - `LEROBOT_POLICY_TYPE`, `LEROBOT_DEVICE`, `LEROBOT_CACHE_DIR`, and `LEROBOT_EMBODIMENT_TAG` are
   optional LeRobot settings.
-- `JEPA_MODEL_PATH` and `GENIE_API_KEY` enable scaffold adapters only.
+- `JEPA_MODEL_PATH` and `GENIE_API_KEY` only register capability-closed scaffold reservations.
+- `WORLDFORGE_ENABLE_SCAFFOLD_SURROGATES=1` is for local scaffold adapter tests only; it does not
+  make JEPA or Genie real provider integrations.
 
 Validate configuration when the host process starts:
 
@@ -180,10 +182,10 @@ include those IDs in surrounding application logs.
   persistence, and reload. It is not a real LeRobot checkpoint inference run.
 - To run the real LeRobot plus real LeWorldModel showcase, use `scripts/robotics-showcase`. It
   launches the packaged PushT policy-plus-score bridge and opens the Textual report by default.
-  For the full walkthrough, see [Real Robotics Showcase](./robotics-showcase.md).
+  For the full walkthrough, see [Robotics Replay Showcase](./robotics-showcase.md).
 - To smoke-test a real GR00T policy server, install or check out NVIDIA Isaac-GR00T, prepare a
   host-specific observation factory and action translator, then run
-  `python scripts/smoke_gr00t_policy.py --gr00t-root /path/to/Isaac-GR00T --start-server ...`.
+  `uv run python scripts/smoke_gr00t_policy.py --gr00t-root /path/to/Isaac-GR00T --start-server ...`.
   The script can also connect to an existing server with `GROOT_POLICY_HOST` and
   `--policy-info-json` or `--observation-module`.
 - Starting the upstream GR00T server requires a compatible NVIDIA/Linux runtime for its CUDA and

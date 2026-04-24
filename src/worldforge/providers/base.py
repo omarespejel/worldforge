@@ -171,12 +171,22 @@ class BaseProvider:
         )
 
     def configured(self) -> bool:
-        return self.env_var is None or bool(os.environ.get(self.env_var))
+        if self.env_var is not None:
+            return bool(os.environ.get(self.env_var))
+        if self.required_env_vars:
+            return all(bool(os.environ.get(env_var)) for env_var in self.required_env_vars)
+        return True
 
     def health(self) -> ProviderHealth:
         started = perf_counter()
         healthy = self.configured()
-        details = "configured" if healthy else f"missing {self.env_var}"
+        if healthy:
+            details = "configured"
+        else:
+            missing = [env_var for env_var in self.required_env_vars if not os.environ.get(env_var)]
+            if not missing and self.env_var is not None:
+                missing = [self.env_var]
+            details = f"missing {', '.join(missing)}"
         return self._health(started, details, healthy=healthy)
 
     def _emit_event(self, event: ProviderEvent) -> None:

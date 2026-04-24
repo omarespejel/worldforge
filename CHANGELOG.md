@@ -12,9 +12,18 @@ releases may still include breaking changes when the public API needs to tighten
 - Added a MkDocs Material documentation site, strict docs-build validation, and a GitHub Pages
   workflow that deploys the site from `main`.
 - Added `SECURITY.md` with the vulnerability-reporting path and supported-version policy.
+- Added public governance and contributor surfaces: code of conduct, support policy, maintainer
+  ownership, citation metadata, issue templates, pull request template, and CODEOWNERS.
+- Added documented `examples/benchmark-inputs.json` and `examples/benchmark-budget.json` fixtures
+  so README and docs benchmark commands are copy-paste runnable.
+- Added explicit claim-boundary and metric-semantics fields to evaluation and benchmark JSON and
+  Markdown reports.
 
 ### Fixed
 
+- Scene object mutations and prediction actions now validate history payload JSON before committing
+  state changes, so malformed metadata or action payloads cannot leave an in-memory world half
+  mutated.
 - Provider events now sanitize observable request targets and obvious secret-bearing message or
   metadata fields before logs or in-memory sinks can record them. Signed artifact URLs keep
   scheme/host/path context but drop query strings, fragments, and userinfo.
@@ -46,11 +55,23 @@ releases may still include breaking changes when the public API needs to tighten
 - Documentation metadata and README links now point at the published GitHub Pages site.
 - Release tags now run the full quality gate before artifacts are built or published: lint,
   formatting, strict docs, coverage, dependency audit, package contract, and tests.
+- `make check` now includes the lockfile check, coverage gate, package contract, and build; `make
+  release-check` adds a dependency audit using the locked dev environment.
+- JEPA and Genie scaffold providers now advertise no executable capabilities. Their deterministic
+  mock-backed surrogate path remains available only for local adapter tests with
+  `WORLDFORGE_ENABLE_SCAFFOLD_SURROGATES=1`.
+- Mock no longer advertises the provider-level `plan` capability; planning remains a WorldForge
+  facade workflow built from provider-specific `predict`, `score`, and `policy` surfaces.
+- Release publishing now verifies that the pushed tag matches the package version, uses locked
+  `pip-audit`, attaches build provenance attestations, and is configured for PyPI trusted
+  publishing.
 
 ### Security
 
 - Hardened `ProviderEvent` serialization so structured provider logs do not leak bearer tokens,
   API keys, signed URL query strings, or secret-like metadata values.
+- Scaffold provider capability fail-closed behavior prevents deterministic surrogate outputs from
+  being mistaken for real JEPA or Genie provider results in evals, benchmarks, or public reports.
 
 ## 0.4.0 - 2026-04-22
 

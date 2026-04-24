@@ -1,0 +1,44 @@
+name: Provider adapter proposal
+description: Propose or promote a provider adapter.
+title: "[Provider]: "
+labels: ["provider"]
+body:
+  - type: input
+    id: provider
+    attributes:
+      label: Provider or runtime
+    validations:
+      required: true
+  - type: checkboxes
+    id: capabilities
+    attributes:
+      label: Implemented capabilities
+      options:
+        - label: predict
+        - label: generate
+        - label: reason
+        - label: embed
+        - label: transfer
+        - label: score
+        - label: policy
+  - type: textarea
+    id: runtime
+    attributes:
+      label: Runtime ownership
+      description: Dependencies, credentials, checkpoints, datasets, and hardware required by the host.
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation plan
+      description: Contract tests, fixtures, docs, and commands that prove each advertised capability.
+    validations:
+      required: true
+  - type: textarea
+    id: failure_modes
+    attributes:
+      label: Failure modes
+      description: Expected provider errors, missing dependency behavior, and first triage step.
+    validations:
+      required: true

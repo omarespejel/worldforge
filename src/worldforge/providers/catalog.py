@@ -140,12 +140,12 @@ PROVIDER_CATALOG: tuple[ProviderCatalogEntry, ...] = (
     ProviderCatalogEntry(
         "jepa",
         _jepa,
-        runtime_ownership="credential-gated mock-backed reservation, not a real JEPA runtime",
+        runtime_ownership="capability-fail-closed reservation, not a real JEPA runtime",
     ),
     ProviderCatalogEntry(
         "genie",
         _genie,
-        runtime_ownership="credential-gated mock-backed reservation, not a real Genie runtime",
+        runtime_ownership="capability-fail-closed reservation, not a real Genie runtime",
     ),
 )
 

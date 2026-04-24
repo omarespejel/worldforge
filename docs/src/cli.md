@@ -18,7 +18,7 @@ uv run worldforge examples --format json
 ## Provider Diagnostics
 
 ```bash
-uv run worldforge doctor
+uv run worldforge doctor --registered-only
 uv run worldforge provider list
 uv run worldforge provider info mock
 uv run worldforge provider docs
@@ -76,8 +76,8 @@ not claims of physical fidelity, media quality, or real-world safety.
 
 ```bash
 uv run worldforge benchmark --provider mock --iterations 5 --format json
-uv run worldforge benchmark --provider mock --operation embed --input-file benchmark-inputs.json
-uv run worldforge benchmark --provider mock --operation generate --budget-file benchmark-budget.json
+uv run worldforge benchmark --provider mock --operation embed --input-file examples/benchmark-inputs.json
+uv run worldforge benchmark --provider mock --operation generate --budget-file examples/benchmark-budget.json
 ```
 
 Budget files can make latency, throughput, success-rate, retry-count, and error-count limits fail
@@ -118,7 +118,7 @@ Real LeWorldModel checkpoint scoring:
 scripts/lewm-real --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt --device cpu
 ```
 
-Real LeRobot policy plus real LeWorldModel scoring:
+LeRobot policy plus LeWorldModel checkpoint scoring replay:
 
 ```bash
 scripts/robotics-showcase
@@ -127,8 +127,8 @@ scripts/robotics-showcase
 Live GR00T and LeRobot policy smoke helpers:
 
 ```bash
-python scripts/smoke_gr00t_policy.py --help
-python scripts/smoke_lerobot_policy.py --help
+uv run python scripts/smoke_gr00t_policy.py --help
+uv run python scripts/smoke_lerobot_policy.py --help
 ```
 
 Optional-runtime commands require host-owned runtimes, checkpoints, credentials, observations, and
@@ -137,7 +137,7 @@ does not treat injected demos as real upstream inference.
 
 More detail:
 
-- [Real Robotics Showcase](./robotics-showcase.md)
+- [Robotics Replay Showcase](./robotics-showcase.md)
 - [TheWorldHarness](./theworldharness.md)
 - [Examples And CLI Commands](./examples.md)
 - [User And Operator Playbooks](./playbooks.md)

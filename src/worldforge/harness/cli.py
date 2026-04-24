@@ -84,7 +84,7 @@ def launch_harness(
             print(
                 "TheWorldHarness requires the optional Textual dependency. "
                 "Install with `uv run --extra harness worldforge-harness` "
-                "or `pip install 'worldforge[harness]'`.",
+                "or `pip install 'worldforge-ai[harness]'`.",
                 file=sys.stderr,
             )
             return 2

@@ -122,8 +122,8 @@ uv run worldforge-demo-leworldmodel
 uv run worldforge-demo-lerobot
 scripts/robotics-showcase
 scripts/lewm-lerobot-real --help
-uv run worldforge benchmark --provider mock --operation generate --budget-file benchmark-budget.json
-uv run worldforge benchmark --provider mock --operation embed --input-file benchmark-inputs.json
+uv run worldforge benchmark --provider mock --operation generate --budget-file examples/benchmark-budget.json
+uv run worldforge benchmark --provider mock --operation embed --input-file examples/benchmark-inputs.json
 ```
 
 Generate a provider scaffold:

@@ -69,12 +69,12 @@ checkpoint inference.
 | Example | Command | Runtime boundary |
 | --- | --- | --- |
 | `leworldmodel-real-checkpoint-smoke` | `scripts/lewm-real --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt --device cpu` | Requires host-owned `stable_worldmodel`, torch, datasets, and LeWM checkpoint assets; prints visual pipeline, tensor, latency, event, and candidate-cost output. |
-| `lerobot-leworldmodel-real-robotics` | `scripts/robotics-showcase` | Requires host-owned LeRobot, `stable_worldmodel`, torch, datasets, a real policy checkpoint, LeWM checkpoint assets, and PushT simulation dependencies; runs a packaged PushT bridge through real policy+score planning and opens a staged Textual visual report by default. See the [real robotics showcase walkthrough](./robotics-showcase.md). |
+| `lerobot-leworldmodel-real-robotics` | `scripts/robotics-showcase` | Requires host-owned LeRobot, `stable_worldmodel`, torch, datasets, a real policy checkpoint, LeWM checkpoint assets, and PushT simulation dependencies; runs a packaged PushT bridge through real policy+score planning and opens a staged Textual visual report by default. See the [robotics replay showcase walkthrough](./robotics-showcase.md). |
 
 ## Operational Commands
 
 ```bash
-uv run worldforge doctor
+uv run worldforge doctor --registered-only
 uv run worldforge world create lab --provider mock
 uv run worldforge world add-object <world-id> cube --x 0 --y 0.5 --z 0 --object-id cube-1
 uv run worldforge world predict <world-id> --object-id cube-1 --x 0.4 --y 0.5 --z 0

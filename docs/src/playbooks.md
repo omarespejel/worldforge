@@ -219,8 +219,8 @@ uv run worldforge eval --suite planning --provider mock --format markdown
 uv run worldforge eval --suite generation --provider mock --format json
 uv run worldforge benchmark --provider mock --iterations 5 --format markdown
 uv run worldforge benchmark --provider mock --iterations 5 --format json
-uv run worldforge benchmark --provider mock --operation embed --input-file benchmark-inputs.json
-uv run worldforge benchmark --provider mock --operation generate --budget-file benchmark-budget.json
+uv run worldforge benchmark --provider mock --operation embed --input-file examples/benchmark-inputs.json
+uv run worldforge benchmark --provider mock --operation generate --budget-file examples/benchmark-budget.json
 ```
 
 Success signal:
@@ -328,7 +328,7 @@ The live smoke uses deterministic synthetic PushT-shaped tensors. It proves the 
 and scores candidates through the WorldForge provider contract; it does not prove task-specific
 preprocessing or robot execution.
 
-Real LeRobot policy plus real LeWorldModel scoring:
+LeRobot policy plus LeWorldModel checkpoint scoring replay:
 
 ```bash
 scripts/robotics-showcase
@@ -410,8 +410,8 @@ padding or projecting actions.
 GR00T and LeRobot live smokes:
 
 ```bash
-python scripts/smoke_gr00t_policy.py --help
-python scripts/smoke_lerobot_policy.py --help
+uv run python scripts/smoke_gr00t_policy.py --help
+uv run python scripts/smoke_lerobot_policy.py --help
 ```
 
 Success signal: the demo or smoke states whether it used injected deterministic runtime, real

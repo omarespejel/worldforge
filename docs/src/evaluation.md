@@ -41,8 +41,13 @@ silently skipping the suite.
 ## Report formats
 
 - Markdown: provider summary table plus scenario-level detail table
-- JSON: `suite_id`, `suite`, `provider_summaries`, and scenario `results`
+- JSON: `suite_id`, `suite`, `claim_boundary`, `metric_semantics`, `provider_summaries`, and
+  scenario `results`
 - CSV: one row per provider/scenario pair with serialized metrics payloads
+
+Every JSON and Markdown report carries an explicit claim boundary. Built-in suites are
+deterministic adapter contract checks; their scores are not physical-fidelity, media-quality,
+safety, or real robot performance claims.
 
 ## Capability checks
 

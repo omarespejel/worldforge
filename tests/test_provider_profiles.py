@@ -80,6 +80,8 @@ def test_provider_profiles_and_doctor_report_include_known_scaffolds(tmp_path, m
         "LEROBOT_POLICY_PATH",
         "LEROBOT_POLICY",
     ]
+    assert builtin_profiles["jepa"].capabilities.enabled_names() == []
+    assert builtin_profiles["genie"].capabilities.enabled_names() == []
 
     report = forge.doctor()
     assert isinstance(report, DoctorReport)

@@ -54,7 +54,7 @@ comparison flows.
 | Example | Surface | Command |
 | --- | --- | --- |
 | `leworldmodel-real-checkpoint-smoke` | real checkpoint smoke | `scripts/lewm-real --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt --device cpu` |
-| `lerobot-leworldmodel-real-robotics` | real policy plus real world-model scoring | `scripts/robotics-showcase` |
+| `lerobot-leworldmodel-real-robotics` | real policy plus real world-model scoring replay | `scripts/robotics-showcase` |
 
 The explicit command behind the wrapper is:
 

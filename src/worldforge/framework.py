@@ -44,8 +44,10 @@ from worldforge.models import (
     dump_json,
     ensure_directory,
     generate_id,
+    require_finite_number,
     require_non_negative_int,
     require_positive_int,
+    require_probability,
 )
 from worldforge.providers import (
     BaseProvider,
@@ -266,6 +268,31 @@ class Prediction:
     latency_ms: float
     _forge: WorldForge
 
+    def __post_init__(self) -> None:
+        self.provider = _require_non_empty_text(self.provider, name="Prediction provider")
+        self.confidence = require_probability(self.confidence, name="Prediction confidence")
+        self.physics_score = require_probability(
+            self.physics_score,
+            name="Prediction physics_score",
+        )
+        if not isinstance(self.frames, list) or not all(
+            isinstance(frame, bytes) for frame in self.frames
+        ):
+            raise WorldForgeError("Prediction frames must be a list of bytes.")
+        if not isinstance(self.metadata, dict):
+            raise WorldForgeError("Prediction metadata must be a JSON object.")
+        if not isinstance(self.world_state, dict):
+            raise WorldForgeError("Prediction world_state must be a JSON object.")
+        _validate_world_state_payload(self.world_state, context="Prediction world_state")
+        self.latency_ms = require_finite_number(self.latency_ms, name="Prediction latency_ms")
+        if self.latency_ms < 0.0:
+            raise WorldForgeError("Prediction latency_ms must be non-negative.")
+        dump_json(self.metadata)
+        dump_json(self.world_state)
+        self.frames = list(self.frames)
+        self.metadata = dict(self.metadata)
+        self.world_state = _clone_state(self.world_state)
+
     def output_world(self) -> World:
         return World.from_state(self._forge, _clone_state(self.world_state))
 
@@ -347,14 +374,35 @@ class Plan:
         goal_spec: JSONDict | None = None,
         metadata: JSONDict | None = None,
     ) -> None:
-        self.goal = goal
-        self.planner = planner
-        self.provider = provider
+        self.goal = _require_non_empty_text(goal, name="Plan goal")
+        self.planner = _require_non_empty_text(planner, name="Plan planner")
+        self.provider = _require_non_empty_text(provider, name="Plan provider")
+        if not _is_sequence_of_actions(actions) or not all(
+            isinstance(action, Action) for action in actions
+        ):
+            raise WorldForgeError("Plan actions must be a sequence of Action instances.")
         self.actions = list(actions)
+        if not isinstance(predicted_states, Sequence) or isinstance(
+            predicted_states,
+            str | bytes,
+        ):
+            raise WorldForgeError("Plan predicted_states must be a sequence of JSON objects.")
         self.predicted_states = [_clone_state(state) for state in predicted_states]
-        self.success_probability = success_probability
+        for index, state in enumerate(self.predicted_states):
+            if not isinstance(state, dict):
+                raise WorldForgeError(f"Plan predicted_states[{index}] must be a JSON object.")
+            _validate_world_state_payload(state, context=f"Plan predicted_states[{index}]")
+        self.success_probability = require_probability(
+            success_probability,
+            name="Plan success_probability",
+        )
+        if goal_spec is not None and not isinstance(goal_spec, dict):
+            raise WorldForgeError("Plan goal_spec must be a JSON object when provided.")
         self.goal_spec = _clone_state(goal_spec) if goal_spec is not None else None
+        if metadata is not None and not isinstance(metadata, dict):
+            raise WorldForgeError("Plan metadata must be a JSON object when provided.")
         self.metadata = _clone_state(metadata or {})
+        dump_json(self.to_dict())
 
     @property
     def action_count(self) -> int:
@@ -458,6 +506,16 @@ class World:
         return len(self._history)
 
     def _snapshot(self) -> JSONDict:
+        return self._snapshot_with()
+
+    def _snapshot_with(
+        self,
+        *,
+        scene_objects: dict[str, SceneObject] | None = None,
+        metadata: JSONDict | None = None,
+    ) -> JSONDict:
+        selected_scene_objects = self.scene_objects if scene_objects is None else scene_objects
+        selected_metadata = self.metadata if metadata is None else metadata
         return {
             "schema_version": SCHEMA_VERSION,
             "id": self.id,
@@ -467,10 +525,10 @@ class World:
             "step": self.step,
             "scene": {
                 "objects": {
-                    object_id: obj.to_dict() for object_id, obj in self.scene_objects.items()
+                    object_id: obj.to_dict() for object_id, obj in selected_scene_objects.items()
                 }
             },
-            "metadata": dict(self.metadata),
+            "metadata": dict(selected_metadata),
         }
 
     def _apply_state(self, state: JSONDict, *, preserve_history: bool = False) -> None:
@@ -497,21 +555,33 @@ class World:
         except (KeyError, TypeError, ValueError) as exc:
             raise WorldStateError(f"World state could not be applied: {exc}") from exc
 
-    def _record_history(self, *, summary: str, action: Action | None) -> None:
-        self._history.append(
-            HistoryEntry(
-                step=self.step,
-                state=self._snapshot(),
-                summary=summary,
-                action_json=action.to_json() if action else None,
-            )
+    def _make_history_entry(
+        self,
+        *,
+        summary: str,
+        action: Action | None,
+        state: JSONDict | None = None,
+    ) -> HistoryEntry:
+        entry = HistoryEntry(
+            step=self.step,
+            state=_clone_state(state if state is not None else self._snapshot()),
+            summary=summary,
+            action_json=action.to_json() if action else None,
         )
+        dump_json(entry.to_dict())
+        return entry
+
+    def _append_history_entry(self, entry: HistoryEntry) -> None:
+        self._history.append(entry)
         # Trim the oldest entries first when a bound is set; this is a ring buffer
         # on write, so `history_state(0)` after a trim refers to the oldest kept entry.
         if self.max_history is not None:
             overflow = len(self._history) - self.max_history
             if overflow > 0:
                 del self._history[:overflow]
+
+    def _record_history(self, *, summary: str, action: Action | None) -> None:
+        self._append_history_entry(self._make_history_entry(summary=summary, action=action))
 
     @staticmethod
     def _object_patch_payload(patch: SceneObjectPatch) -> JSONDict:
@@ -535,13 +605,21 @@ class World:
     def add_object(self, obj: SceneObject) -> SceneObject:
         if obj.id in self.scene_objects:
             raise WorldForgeError(f"Object id '{obj.id}' is already present in world '{self.id}'.")
-        self.scene_objects[obj.id] = obj.copy()
-        self.metadata["name"] = self.name
-        added = self.scene_objects[obj.id]
-        self._record_history(
+        added = obj.copy()
+        staged_scene_objects = {**self.scene_objects, added.id: added}
+        staged_metadata = {**self.metadata, "name": self.name}
+        action = Action("add_object", {"object": added.to_dict()})
+        history_entry = self._make_history_entry(
             summary=f"added object {added.id}",
-            action=Action("add_object", {"object": added.to_dict()}),
+            action=action,
+            state=self._snapshot_with(
+                scene_objects=staged_scene_objects,
+                metadata=staged_metadata,
+            ),
         )
+        self.scene_objects = staged_scene_objects
+        self.metadata = staged_metadata
+        self._append_history_entry(history_entry)
         return added
 
     def list_objects(self) -> list[str]:
@@ -565,38 +643,57 @@ class World:
         changes = self._object_patch_payload(patch)
         if not changes:
             return before
-        scene_object.apply_patch(patch)
-        updated = scene_object.copy()
-        self._record_history(
-            summary=f"updated object {updated.id}",
-            action=Action(
-                "update_object",
-                {
-                    "object_id": updated.id,
-                    "changes": changes,
-                    "before": before.to_dict(),
-                    "after": updated.to_dict(),
-                },
-            ),
+        staged_object = before.copy()
+        staged_object.apply_patch(patch)
+        updated = staged_object.copy()
+        staged_scene_objects = {**self.scene_objects, object_id: updated}
+        action = Action(
+            "update_object",
+            {
+                "object_id": updated.id,
+                "changes": changes,
+                "before": before.to_dict(),
+                "after": updated.to_dict(),
+            },
         )
+        history_entry = self._make_history_entry(
+            summary=f"updated object {updated.id}",
+            action=action,
+            state=self._snapshot_with(scene_objects=staged_scene_objects),
+        )
+        self.scene_objects = staged_scene_objects
+        self._append_history_entry(history_entry)
         return updated
 
     def remove_object_by_id(self, object_id: str) -> SceneObject | None:
-        removed = self.scene_objects.pop(object_id, None)
+        removed = self.scene_objects.get(object_id)
         if removed is None:
             return None
         removed_copy = removed.copy()
-        self.metadata["name"] = self.name
-        self._record_history(
+        staged_scene_objects = {
+            existing_id: scene_object
+            for existing_id, scene_object in self.scene_objects.items()
+            if existing_id != object_id
+        }
+        staged_metadata = {**self.metadata, "name": self.name}
+        action = Action(
+            "remove_object",
+            {
+                "object_id": removed_copy.id,
+                "object": removed_copy.to_dict(),
+            },
+        )
+        history_entry = self._make_history_entry(
             summary=f"removed object {removed_copy.id}",
-            action=Action(
-                "remove_object",
-                {
-                    "object_id": removed_copy.id,
-                    "object": removed_copy.to_dict(),
-                },
+            action=action,
+            state=self._snapshot_with(
+                scene_objects=staged_scene_objects,
+                metadata=staged_metadata,
             ),
         )
+        self.scene_objects = staged_scene_objects
+        self.metadata = staged_metadata
+        self._append_history_entry(history_entry)
         return removed_copy
 
     def history(self) -> list[HistoryEntry]:
@@ -619,9 +716,13 @@ class World:
 
     def predict(self, action: Action, steps: int = 1, provider: str | None = None) -> Prediction:
         require_positive_int(steps, name="steps")
+        if not isinstance(action, Action):
+            raise WorldForgeError("predict() action must be an Action.")
+        action.to_json()
         selected_provider = _normalize_provider_name(provider, self.provider)
         payload = self._provider(selected_provider).predict(self._snapshot(), action, steps)
         next_state = _clone_state(payload.state)
+        dump_json(next_state)
         self._apply_state(next_state, preserve_history=True)
         self.provider = selected_provider
         self.metadata["name"] = self.name

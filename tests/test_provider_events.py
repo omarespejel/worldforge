@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from worldforge import Action, ProviderEvent, WorldForge
-from worldforge.providers import JepaProvider, MockProvider
+from worldforge import Action, ProviderEvent, VideoClip, WorldForge
+from worldforge.providers import GenieProvider, JepaProvider, MockProvider
 
 
 def test_worldforge_event_handler_propagates_to_builtin_and_manual_providers(tmp_path) -> None:
@@ -31,6 +31,7 @@ def test_worldforge_event_handler_propagates_to_builtin_and_manual_providers(tmp
 
 def test_stub_remote_provider_forwards_mock_events(monkeypatch) -> None:
     monkeypatch.setenv("JEPA_MODEL_PATH", "/tmp/jepa-model")
+    monkeypatch.setenv("WORLDFORGE_ENABLE_SCAFFOLD_SURROGATES", "1")
     events: list[ProviderEvent] = []
     provider = JepaProvider(event_handler=events.append)
 
@@ -51,3 +52,29 @@ def test_stub_remote_provider_forwards_mock_events(monkeypatch) -> None:
     assert [(event.provider, event.operation, event.phase) for event in events] == [
         ("jepa", "predict", "success")
     ]
+
+
+def test_scaffold_surrogate_opt_in_exercises_non_predict_operations(monkeypatch) -> None:
+    monkeypatch.setenv("GENIE_API_KEY", "genie-test-key")
+    monkeypatch.setenv("WORLDFORGE_ENABLE_SCAFFOLD_SURROGATES", "true")
+    provider = GenieProvider()
+
+    generated = provider.generate("cube replay", 1.0)
+    transferred = provider.transfer(
+        VideoClip(
+            frames=[b"seed"],
+            fps=8.0,
+            resolution=(160, 90),
+            duration_seconds=1.0,
+        ),
+        width=320,
+        height=180,
+        fps=12.0,
+    )
+    reasoning = provider.reason("how many objects?", world_state={"scene": {"objects": {}}})
+    embedding = provider.embed(text="cube")
+
+    assert generated.metadata["mode"] == "stub-remote-adapter"
+    assert transferred.metadata["credential_env"] == "GENIE_API_KEY"
+    assert "GENIE_API_KEY" in reasoning.evidence[-1]
+    assert embedding.provider == "genie"
