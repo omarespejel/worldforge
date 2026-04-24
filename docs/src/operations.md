@@ -165,10 +165,12 @@ include those IDs in surrounding application logs.
   host-owned upstream dependencies and an extracted object checkpoint.
 - If you have Hugging Face LeWM `config.json` and `weights.pt` assets rather than an extracted
   `*_object.ckpt` archive, build the object checkpoint first with
-  `uv run --python 3.13 --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" --with huggingface_hub
+  `uv run --python 3.13 --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" --with huggingface_hub --with matplotlib
   worldforge-build-leworldmodel-checkpoint --stablewm-home ~/.stable-wm --policy pusht/lewm`.
-  The builder downloads assets to `~/.cache/worldforge/leworldmodel` by default and writes the
-  object checkpoint under `$STABLEWM_HOME`.
+  `matplotlib` is required because upstream `stable_pretraining` imports it unconditionally at
+  module load time even though it is not declared as a runtime dependency. The builder downloads
+  assets to `~/.cache/worldforge/leworldmodel` by default and writes the object checkpoint under
+  `$STABLEWM_HOME`.
 - To demonstrate the LeWorldModel planning flow without optional dependencies, run
   `uv run worldforge-demo-leworldmodel`. It uses the real `LeWorldModelProvider` interface
   with an injected deterministic cost runtime and exercises score planning, execution,

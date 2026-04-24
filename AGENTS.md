@@ -268,8 +268,9 @@ rm -f "$tmp_req"
   `--cache-dir`.
 - `worldforge-build-leworldmodel-checkpoint` is an optional host-owned object-checkpoint builder
   for Hugging Face LeWM `config.json` and `weights.pt` assets. Run it with the same upstream
-  LeWorldModel runtime plus `huggingface_hub`; do not add those dependencies to WorldForge's base
-  package or commit downloaded assets/checkpoints.
+  LeWorldModel runtime plus `huggingface_hub` and `matplotlib` (transitive import requirement of
+  `stable_pretraining`); do not add those dependencies to WorldForge's base package or commit
+  downloaded assets/checkpoints.
 - `scripts/smoke_gr00t_policy.py` is an optional live PolicyClient smoke. It can start
   `gr00t/eval/run_gr00t_server.py` from a host-owned Isaac-GR00T checkout, but it still requires
   the host to provide real observations and an embodiment-specific action translator.

@@ -61,6 +61,8 @@ showcase_args=("$@")
 runtime_args=(
   --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git"
   --with "datasets>=2.21"
+  --with "huggingface_hub"
+  --with "matplotlib"
   --with "lerobot[transformers-dep]"
   --with "pygame"
   --with "opencv-python"
