@@ -185,30 +185,13 @@ Internally, string arguments resolve through the matching registry; object argum
 - **Zero change to result dataclasses.** `ActionScoreResult`, `ActionPolicyResult`, `VideoClip`, `PredictionPayload`, `ReasoningResult`, `EmbeddingResult` are untouched. Their validators still fire on construction.
 - **Deterministic behavior preserved.** Mock's deterministic outputs are byte-identical across the refactor. Evaluation suites produce identical reports.
 
-## Open questions
-1. **Mock layout.** Two options:
-   - (a) Keep `MockProvider` as one class implementing six protocols structurally (one class, six methods).
-   - (b) Split into `MockPolicy`, `MockCost`, `MockGenerator`, `MockPredictor`, `MockReasoner`, `MockEmbedder`, each a small focused class, bundled via a `RunnableModel` factory in the catalog.
-
-   Recommendation: (b). Each focused class is cleaner, easier to test, matches the "capability is the unit" mental model. Slight code-size increase, worth it.
-
-2. **Should `profile` live on the protocol or on a separate registration-time record?**
-   - (a) `profile: ProviderProfileSpec | None` on every protocol (current spec).
-   - (b) Caller passes profile at registration: `forge.register_cost(impl, profile=...)`.
-
-   Recommendation: (a). Keeps metadata with the impl, survives serialization/introspection, doesn't force every registration call to carry a profile arg.
-
-3. **`RemoteProvider` helpers.** Today `RemoteProvider` wraps credential-check and request-policy logic for HTTP adapters. Where do those go?
-   - (a) Keep `RemoteProvider` as a concrete helper base class that remote capability impls can inherit from. It no longer subclasses `BaseProvider`; it's just a mixin with `_require_credentials()` and `_require_request_policy()`.
-   - (b) Extract to a `worldforge.providers.remote_helpers` module as free functions.
-
-   Recommendation: (a). Current HTTP adapters (Cosmos, Runway) share nontrivial state (request policy, credential env var, event handler); a shared base is less awkward than passing them around.
-
-4. **`PredictionPayload` location.** Currently in [providers/base.py](../../src/worldforge/providers/base.py). When `BaseProvider` is removed, where does it live? Suggested: move to `worldforge.models` alongside the other result types.
-
-5. **Name collisions across capability registries.** Currently all providers share one namespace — `"leworldmodel"` is unique. With per-capability registries, is `forge.register_cost(X(name="foo"))` + `forge.register_policy(Y(name="foo"))` allowed? Proposed answer: yes, names are scoped per capability. The catalog uses `(capability, name)` as the lookup key. Worth writing up explicitly.
-
-6. **Should `WorldForge.register(x)` raise on duplicate names?** Current `register_provider` raises on duplicate. New API: raise on duplicate per-capability? Yes — behavior parity.
+## Resolved decisions
+1. **Mock layout.** Split into `MockPolicy`, `MockCost`, `MockGenerator`, `MockPredictor`, `MockReasoner`, `MockEmbedder`, `MockTransferer` — each a small focused class — bundled via a `RunnableModel` factory in the catalog. Decided 2026-04-24.
+2. **Profile placement.** `profile: ProviderProfileSpec | None` lives on every protocol. Metadata stays with the impl; no separate registration-time record. Decided 2026-04-24.
+3. **`RemoteProvider` helpers.** Keep `RemoteProvider` as a mixin class that remote capability impls inherit from. It no longer subclasses `BaseProvider`; it exposes `_require_credentials()` and `_require_request_policy()` only. Decided 2026-04-24.
+4. **`PredictionPayload` location.** Move from [providers/base.py](../../src/worldforge/providers/base.py) to [src/worldforge/models.py](../../src/worldforge/models.py) alongside the other result types. Decided 2026-04-24.
+5. **Name scoping.** Names are scoped per capability. `forge.register_cost(X(name="foo"))` + `forge.register_policy(Y(name="foo"))` is allowed; registries use capability-local namespaces. Lookup is `(capability, name)`. Decided 2026-04-24.
+6. **Duplicate names within a capability.** `WorldForge.register(x)` raises `WorldForgeError` on duplicate name within a capability registry. Matches legacy `register_provider` behavior for parity. Decided 2026-04-24.
 
 ## References
 - Current base class: [src/worldforge/providers/base.py](../../src/worldforge/providers/base.py)

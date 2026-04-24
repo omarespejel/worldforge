@@ -169,16 +169,16 @@ Each milestone is a single PR; revert the PR to roll back. Because milestones ar
 
 Recovery from a merged-and-broken state: revert the bad milestone and its successors; re-open the task list for the reverted portion.
 
-## Open decisions that block milestones
-Resolve before M0 lands:
-- Mock layout question from spec.md open questions #1.
-- `PredictionPayload` location from open question #4.
-- Name scoping from open question #5.
+## Resolved decisions
+All six spec-level open questions resolved 2026-04-24. No blockers before M0. See [spec.md](./spec.md) § "Resolved decisions".
 
-Resolve before M3 lands:
-- `RemoteProvider` disposition from open question #3 (affects M4 shape but defined by M3 patterns).
-
-Profile-on-protocol question #2 is locked as answer (a) per spec.md.
+Summary:
+- Mock layout: split per capability, bundled via `RunnableModel`.
+- Profile placement: on every protocol.
+- `RemoteProvider`: kept as a mixin class for HTTP adapters.
+- `PredictionPayload`: moved to [src/worldforge/models.py](../../src/worldforge/models.py).
+- Name scoping: per capability (local namespaces).
+- Duplicate name handling: raises `WorldForgeError` within a capability.
 
 ## Dependencies on other milestones
 None. This refactor is self-contained within the providers/framework/testing layers.

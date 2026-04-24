@@ -5,11 +5,11 @@ Draft · 2026-04-24
 
 Checkable task list matching the milestones in [plan.md](./plan.md). Each group corresponds to one PR on `refactor/capability-protocols`.
 
-## Pre-M0 — resolve open decisions
-- [ ] Decide mock layout: split per capability (recommended) vs one multi-protocol class. Record in spec.md.
-- [ ] Decide `PredictionPayload` destination: move to `worldforge.models` (recommended) vs keep in providers package.
-- [ ] Decide name-scoping semantics: per-capability namespaces (recommended) vs single global namespace.
-- [ ] Decide `RemoteProvider` disposition: keep as mixin (recommended) vs extract free functions.
+## Pre-M0 — resolved decisions
+- [x] Mock layout: split per capability, bundle via `RunnableModel`. (2026-04-24)
+- [x] `PredictionPayload` destination: move to `worldforge.models`. (2026-04-24)
+- [x] Name-scoping semantics: per-capability namespaces. (2026-04-24)
+- [x] `RemoteProvider` disposition: keep as mixin. (2026-04-24)
 - [ ] Lock final protocol signatures (spec.md target architecture). No signature drift once M0 lands.
 
 ## M0 — Protocol module and registry scaffolding
