@@ -11,6 +11,17 @@ from worldforge.benchmark import (
     ProviderBenchmarkHarness,
     run_benchmark,
 )
+from worldforge.capabilities import (
+    Cost,
+    Embedder,
+    Generator,
+    Planner,
+    Policy,
+    Predictor,
+    Reasoner,
+    RunnableModel,
+    Transferer,
+)
 from worldforge.evaluation import (
     EvalReport,
     EvalResult,
@@ -88,6 +99,15 @@ __all__ = [
     "BenchmarkResult",
     "CAPABILITY_NAMES",
     "Comparison",
+    "Cost",
+    "Embedder",
+    "Generator",
+    "Planner",
+    "Policy",
+    "Predictor",
+    "Reasoner",
+    "RunnableModel",
+    "Transferer",
     "DoctorReport",
     "EmbeddingResult",
     "GenerationOptions",

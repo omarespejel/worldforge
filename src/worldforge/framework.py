@@ -17,6 +17,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from worldforge.capabilities import (
+    CAPABILITY_FIELD_NAMES,
+    CAPABILITY_PROTOCOLS,
+    Cost,
+    Embedder,
+    Generator,
+    Planner,
+    Policy,
+    Predictor,
+    Reasoner,
+    RunnableModel,
+    Transferer,
+)
 from worldforge.models import (
     Action,
     ActionPolicyResult,
@@ -54,6 +67,7 @@ from worldforge.providers import (
     ProviderError,
 )
 from worldforge.providers.catalog import PROVIDER_CATALOG, create_known_providers
+from worldforge.providers.observable import _ObservableCapability
 
 if TYPE_CHECKING:
     from worldforge.evaluation import EvaluationReport, EvaluationResult
@@ -1234,6 +1248,11 @@ class WorldForge:
         ensure_directory(self.state_dir)
         self._providers: dict[str, BaseProvider] = {}
         self._event_handler = event_handler
+        # Per-capability registries for the new capability-protocol API. One dict per capability;
+        # names are scoped per capability so the same name in different registries is allowed.
+        self._capability_registries: dict[str, dict[str, _ObservableCapability]] = {
+            field: {} for field in CAPABILITY_FIELD_NAMES
+        }
         for entry in PROVIDER_CATALOG:
             provider = entry.create(event_handler=self._event_handler)
             if entry.always_register or (auto_register_remote and provider.configured()):
@@ -1258,6 +1277,102 @@ class WorldForge:
         if self._event_handler is not None and provider.event_handler is None:
             provider.event_handler = self._event_handler
         self._providers[provider.name] = provider
+
+    # ------------------------------------------------------------------
+    # New capability-protocol registration surface (M0).
+    # ------------------------------------------------------------------
+
+    def register(self, impl: object) -> None:
+        """Register a capability impl or :class:`RunnableModel` bundle.
+
+        Dispatches by structural protocol membership: an impl that satisfies several capability
+        protocols is indexed into every matching registry. A :class:`RunnableModel` is unpacked and
+        each non-``None`` capability slot is registered into the matching capability registry.
+        Raises :class:`WorldForgeError` if ``impl`` does not satisfy any known capability protocol.
+        """
+
+        if isinstance(impl, RunnableModel):
+            for field_name, capability_impl in impl.capability_fields():
+                self._register_capability(field_name, capability_impl)
+            return
+        matched = False
+        for field_name, protocol in CAPABILITY_PROTOCOLS.items():
+            if isinstance(impl, protocol):
+                self._register_capability(field_name, impl)
+                matched = True
+        if not matched:
+            raise WorldForgeError(
+                f"{type(impl).__name__} does not satisfy any capability protocol. "
+                f"Expected one of: {', '.join(sorted(CAPABILITY_PROTOCOLS))}."
+            )
+
+    def register_policy(self, policy: Policy) -> None:
+        """Register a :class:`~worldforge.capabilities.Policy` implementation."""
+
+        self._register_typed("policy", policy, Policy)
+
+    def register_cost(self, cost: Cost) -> None:
+        """Register a :class:`~worldforge.capabilities.Cost` implementation."""
+
+        self._register_typed("cost", cost, Cost)
+
+    def register_generator(self, generator: Generator) -> None:
+        """Register a :class:`~worldforge.capabilities.Generator` implementation."""
+
+        self._register_typed("generator", generator, Generator)
+
+    def register_predictor(self, predictor: Predictor) -> None:
+        """Register a :class:`~worldforge.capabilities.Predictor` implementation."""
+
+        self._register_typed("predictor", predictor, Predictor)
+
+    def register_reasoner(self, reasoner: Reasoner) -> None:
+        """Register a :class:`~worldforge.capabilities.Reasoner` implementation."""
+
+        self._register_typed("reasoner", reasoner, Reasoner)
+
+    def register_embedder(self, embedder: Embedder) -> None:
+        """Register an :class:`~worldforge.capabilities.Embedder` implementation."""
+
+        self._register_typed("embedder", embedder, Embedder)
+
+    def register_transferer(self, transferer: Transferer) -> None:
+        """Register a :class:`~worldforge.capabilities.Transferer` implementation."""
+
+        self._register_typed("transferer", transferer, Transferer)
+
+    def register_planner(self, planner: Planner) -> None:
+        """Register a :class:`~worldforge.capabilities.Planner` implementation."""
+
+        self._register_typed("planner", planner, Planner)
+
+    def _register_typed(self, field_name: str, impl: object, protocol: type) -> None:
+        if not isinstance(impl, protocol):
+            raise WorldForgeError(
+                f"{type(impl).__name__} does not satisfy the "
+                f"{protocol.__name__} capability protocol."
+            )
+        self._register_capability(field_name, impl)
+
+    def _register_capability(self, field_name: str, impl: object) -> None:
+        registry = self._capability_registries[field_name]
+        impl_name = getattr(impl, "name", None)
+        if not isinstance(impl_name, str) or not impl_name.strip():
+            raise WorldForgeError(
+                f"Capability impl '{type(impl).__name__}' must declare "
+                f"a non-empty 'name' attribute."
+            )
+        if impl_name in registry:
+            raise WorldForgeError(
+                f"Capability '{field_name}' already has a registered implementation named "
+                f"'{impl_name}'. Names must be unique within a capability registry."
+            )
+        wrapped = _ObservableCapability(
+            impl,
+            kind=field_name,
+            event_handler=self._event_handler,
+        )
+        registry[impl_name] = wrapped
 
     def providers(self) -> list[str]:
         return sorted(self._providers)
