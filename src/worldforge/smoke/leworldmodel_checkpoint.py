@@ -29,15 +29,23 @@ def _repo_cache_dir(repo_id: str) -> Path:
 
 def _load_optional_build_dependencies():
     try:
+        import stable_pretraining  # noqa: F401  probe upstream transitive imports
         import torch
         from huggingface_hub import hf_hub_download
         from hydra.utils import instantiate
         from omegaconf import OmegaConf
     except ImportError as exc:  # pragma: no cover - exercised by host smoke usage
+        missing = exc.name or ""
+        if missing == "matplotlib":
+            raise SystemExit(
+                "Building a LeWorldModel object checkpoint requires matplotlib because upstream "
+                "stable_pretraining imports it at module load time. Add `--with matplotlib` to "
+                "the uv run invocation (see docs/src/operations.md)."
+            ) from exc
         raise SystemExit(
             "Building a LeWorldModel object checkpoint requires torch, huggingface_hub, "
-            "hydra-core, omegaconf, and the upstream stable-worldmodel LeWM modules. "
-            "Run the command with the dependency flags documented in the README."
+            "hydra-core, omegaconf, matplotlib, and the upstream stable-worldmodel LeWM modules. "
+            "Run the command with the dependency flags documented in docs/src/operations.md."
         ) from exc
     return torch, hf_hub_download, instantiate, OmegaConf
 

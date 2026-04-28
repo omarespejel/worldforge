@@ -283,6 +283,114 @@ def test_robotics_showcase_uses_tmp_json_output_by_default(monkeypatch) -> None:
     )
 
 
+def test_robotics_showcase_auto_downloads_missing_checkpoint(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    build_calls: dict[str, Any] = {}
+
+    def fake_build_checkpoint(**kwargs: Any) -> dict[str, Any]:
+        build_calls.update(kwargs)
+        target = kwargs["stablewm_home"] / f"{kwargs['policy']}_object.ckpt"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"stub")
+        return {"created": True, "output": str(target)}
+
+    def fake_low_level_main(argv: list[str]) -> int:
+        return 0
+
+    monkeypatch.setattr(
+        robotics_showcase.leworldmodel_checkpoint, "build_checkpoint", fake_build_checkpoint
+    )
+    monkeypatch.setattr(robotics_showcase.lerobot_leworldmodel, "main", fake_low_level_main)
+
+    assert (
+        robotics_showcase.main(
+            [
+                "--stablewm-home",
+                str(tmp_path),
+                "--no-json-output",
+                "--no-tui",
+            ]
+        )
+        == 0
+    )
+
+    assert build_calls["policy"] == "pusht/lewm"
+    assert build_calls["stablewm_home"] == tmp_path
+    assert build_calls["repo_id"] == robotics_showcase.leworldmodel_checkpoint.DEFAULT_REPO_ID
+
+
+def test_robotics_showcase_skips_download_when_checkpoint_present(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    build_called = False
+
+    def fake_build_checkpoint(**_: Any) -> dict[str, Any]:
+        nonlocal build_called
+        build_called = True
+        return {"created": False}
+
+    def fake_low_level_main(argv: list[str]) -> int:
+        return 0
+
+    target = tmp_path / "pusht/lewm_object.ckpt"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"stub")
+
+    monkeypatch.setattr(
+        robotics_showcase.leworldmodel_checkpoint, "build_checkpoint", fake_build_checkpoint
+    )
+    monkeypatch.setattr(robotics_showcase.lerobot_leworldmodel, "main", fake_low_level_main)
+
+    assert (
+        robotics_showcase.main(
+            [
+                "--stablewm-home",
+                str(tmp_path),
+                "--no-json-output",
+                "--no-tui",
+            ]
+        )
+        == 0
+    )
+    assert build_called is False
+
+
+def test_robotics_showcase_skips_download_when_explicit_checkpoint(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    build_called = False
+
+    def fake_build_checkpoint(**_: Any) -> dict[str, Any]:
+        nonlocal build_called
+        build_called = True
+        return {"created": False}
+
+    def fake_low_level_main(argv: list[str]) -> int:
+        return 0
+
+    monkeypatch.setattr(
+        robotics_showcase.leworldmodel_checkpoint, "build_checkpoint", fake_build_checkpoint
+    )
+    monkeypatch.setattr(robotics_showcase.lerobot_leworldmodel, "main", fake_low_level_main)
+
+    assert (
+        robotics_showcase.main(
+            [
+                "--checkpoint",
+                str(tmp_path / "custom/path.ckpt"),
+                "--no-json-output",
+                "--no-tui",
+            ]
+        )
+        == 0
+    )
+    assert build_called is False
+
+
 def test_robotics_showcase_tui_mode_captures_json_and_launches_report(
     monkeypatch,
     tmp_path: Path,

@@ -23,6 +23,11 @@ def test_top_level_exports_and_subpackages_import() -> None:
         "score",
         "policy",
     )
+    assert worldforge.Cost is not None
+    assert worldforge.Policy is not None
+    assert worldforge.Generator is not None
+    assert worldforge.Predictor is not None
+    assert worldforge.RunnableModel is not None
     assert worldforge.GenerationOptions is not None
     assert worldforge.GenerationEvaluationSuite is not None
     assert worldforge.ProviderEvent is not None

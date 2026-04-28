@@ -71,7 +71,8 @@ The command launches a staged Textual report by default and writes the same run 
 `--no-tui-animation` to skip sleeps and arm motion, `--no-tui` for the plain terminal report, or
 `--json-only` for automation.
 
-Read the full walkthrough: [Robotics Replay Showcase](https://abdelstark.github.io/worldforge/robotics-showcase/).
+Read the walkthrough and implementation notes: [Robotics Replay Showcase](https://abdelstark.github.io/worldforge/robotics-showcase/)
+and [Robotics Showcase Technical Deep Dive](https://abdelstark.github.io/worldforge/robotics-showcase-deep-dive/).
 
 <details>
 <summary><strong>TheWorldHarness TUI</strong> - checkout-safe visual harness for worlds, providers, evals, benchmarks, and packaged flows</summary>
@@ -285,6 +286,12 @@ model's branding.
 | `embed` | observation → embedding | `mock` |
 | `plan` | facade over composed surfaces | WorldForge facade |
 
+Adapters can register a full `BaseProvider` or a narrow capability protocol implementation such
+as a `Cost`, `Policy`, `Generator`, or `Predictor`. The protocol path is intentionally small:
+declare `name`, optional profile metadata, and the one method behind the advertised capability.
+Registered protocol implementations are visible through diagnostics, planning, and benchmarks
+without forcing unrelated provider methods into the adapter.
+
 LeWorldModel is a score provider, not a video generator. GR00T and LeRobot are policy providers,
 not predictive world models. Cosmos and Runway are media generators, not controllable physical
 planning.
@@ -422,6 +429,7 @@ uv run python scripts/generate_provider_docs.py --check
 uv run pytest
 uv run --extra harness pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
 bash scripts/test_package.sh
+uv build --out-dir dist --clear --no-build-logs
 ```
 
 Scaffold a new provider:

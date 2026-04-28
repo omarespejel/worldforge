@@ -7,20 +7,21 @@ import contextlib
 import io
 import json
 import os
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 from worldforge.providers._config import env_value as _env_value
 
-from . import lerobot_leworldmodel
+from . import lerobot_leworldmodel, leworldmodel_checkpoint
 from .lerobot_leworldmodel import (
     DEFAULT_DEVICE,
     DEFAULT_LEROBOT_POLICY,
     DEFAULT_LEWORLDMODEL_POLICY,
     DEFAULT_MODE,
 )
-from .leworldmodel import DEFAULT_STABLEWM_HOME
+from .leworldmodel import DEFAULT_STABLEWM_HOME, _checkpoint_path
 from .pusht_showcase_inputs import DEFAULT_ACTION_DIM, DEFAULT_HORIZON
 
 DEFAULT_JSON_OUTPUT = Path("/tmp/worldforge-robotics-showcase/real-run.json")
@@ -134,6 +135,26 @@ def _append_optional_path(argv: list[str], flag: str, value: Path | str | None) 
         argv.extend([flag, str(value)])
 
 
+def _ensure_checkpoint(args: argparse.Namespace) -> None:
+    if args.checkpoint is not None:
+        return
+    cache_dir = (args.lewm_cache_dir or args.stablewm_home).expanduser()
+    target = _checkpoint_path(cache_dir, args.lewm_policy)
+    if target.exists():
+        return
+    print(
+        f"LeWorldModel checkpoint missing at {target}; "
+        f"downloading from Hugging Face ({leworldmodel_checkpoint.DEFAULT_REPO_ID})...",
+        file=sys.stderr,
+        flush=True,
+    )
+    leworldmodel_checkpoint.build_checkpoint(
+        repo_id=leworldmodel_checkpoint.DEFAULT_REPO_ID,
+        policy=args.lewm_policy,
+        stablewm_home=cache_dir,
+    )
+
+
 def _forward_args(args: argparse.Namespace) -> list[str]:
     forwarded = [
         "--policy-path",
@@ -235,6 +256,7 @@ def _launch_tui(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args, extra = parser.parse_known_args(argv)
+    _ensure_checkpoint(args)
     forwarded = _forward_args(args)
     forwarded.extend(extra)
     if args.tui and not args.json_only and not args.health_only:

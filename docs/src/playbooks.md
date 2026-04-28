@@ -65,6 +65,25 @@ Success signal: the provider advertises exactly the method your workflow calls. 
 needs policy plus scoring, configure one policy provider and one score provider rather than
 stretching either adapter into a false capability.
 
+Python integrations can use either a registered full provider or a narrow capability protocol:
+
+```python
+from worldforge import ActionScoreResult, WorldForge
+
+
+class LocalCost:
+    name = "local-cost"
+    profile = None
+
+    def score_actions(self, *, info, action_candidates):
+        return ActionScoreResult(provider=self.name, scores=[0.1], best_index=0)
+
+
+forge = WorldForge(auto_register_remote=False)
+forge.register_cost(LocalCost())
+assert forge.doctor(capability="score", registered_only=True).provider_count == 1
+```
+
 ## 3. Add Or Promote A Provider Adapter
 
 Use this for new provider work and for promoting a scaffold to a real adapter.
@@ -87,6 +106,12 @@ Before setting any capability flag to `True`, prove the full contract:
 - `health()` is cheap and reports missing credentials or optional dependencies clearly.
 - docs state configuration, runtime ownership, input shape, output schema, limits, failure modes,
   and smoke path.
+
+If the integration is one narrow local surface, prefer a capability protocol implementation instead
+of a mostly-empty `BaseProvider` subclass. Register it with `register_cost`, `register_policy`,
+`register_generator`, `register_predictor`, `register_reasoner`, `register_embedder`, or
+`register_transferer`; it will still appear in `providers()`, `provider_profile(...)`,
+`doctor(...)`, planning, and benchmark routing.
 
 Validation:
 
@@ -432,7 +457,13 @@ uv run mkdocs build --strict
 uv run pytest
 uv run --extra harness pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
 bash scripts/test_package.sh
+uv build --out-dir dist --clear --no-build-logs
 ```
+
+The package contract checks both distribution artifacts: the wheel must contain only runtime package
+files, the `py.typed` marker, capability protocols, observable capability wrapper, and console
+scripts; the sdist must contain docs, tests, examples, scripts, and release metadata needed to
+rebuild and audit the source package.
 
 Security audit:
 

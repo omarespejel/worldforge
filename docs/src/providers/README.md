@@ -55,11 +55,18 @@ Rules:
 - Keep scaffold providers obvious: they reserve names and contracts without claiming runtime
   support.
 
+Full provider classes expose these contracts through `ProviderCapabilities`. Narrow local
+integrations can also implement one runtime-checkable capability protocol, such as a `Cost` object
+with `score_actions(...)` or a `Policy` object with `select_actions(...)`. Protocol
+implementations are registered through `WorldForge.register_cost(...)`,
+`register_policy(...)`, or `register(...)`; WorldForge wraps them so diagnostics, provider events,
+planning, and benchmarks see the same capability surface as full providers.
+
 ## Provider Profiles
 
 Every provider exposes a `ProviderProfile` for routing, diagnostics, and documentation:
 
-- capability surface derived from `ProviderCapabilities`
+- capability surface derived from `ProviderCapabilities` or the registered capability protocol
 - local versus remote runtime
 - deterministic versus stochastic behavior
 - implementation maturity such as `stable`, `beta`, `experimental`, or `scaffold`

@@ -18,6 +18,9 @@ releases may still include breaking changes when the public API needs to tighten
   so README and docs benchmark commands are copy-paste runnable.
 - Added explicit claim-boundary and metric-semantics fields to evaluation and benchmark JSON and
   Markdown reports.
+- Added capability-protocol registration for narrow `Cost`, `Policy`, `Generator`, `Predictor`,
+  `Reasoner`, `Embedder`, and `Transferer` implementations, including diagnostics, planning, and
+  benchmark routing without requiring a full `BaseProvider` subclass.
 
 ### Fixed
 
@@ -34,6 +37,9 @@ releases may still include breaking changes when the public API needs to tighten
 - `scripts/test_package.sh` now installs the built wheel generically instead of assuming the old
   `worldforge-*.whl` filename prefix, so the package contract still works after the
   `worldforge-ai` rename.
+- `scripts/test_package.sh` now validates wheel and sdist contents before installing the wheel,
+  including capability protocol files, the `py.typed` marker, console scripts, and source-package
+  docs/tests/scripts.
 
 ### Changed
 
@@ -41,6 +47,8 @@ releases may still include breaking changes when the public API needs to tighten
   and Pages, release, and security jobs were aligned to the same interpreter version.
 - Package metadata, docs, optional-runtime wrapper commands, and lint target now declare Python
   3.13 only so the published support contract matches CI.
+- Package metadata now uses SPDX license metadata and an explicit `uv` package marker, while the
+  Hatch wheel target is restricted to runtime package files.
 - Dedupe repeated provider scaffolding into shared `BaseProvider._emit_operation_event` and
   `BaseProvider._health` helpers, and move `no_grad_context` plus `prepare_model` into
   `providers/_policy.py`. The cosmos, runway, leworldmodel, lerobot, gr00t, and jepa-wms adapters

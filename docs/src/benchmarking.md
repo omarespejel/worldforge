@@ -1,9 +1,10 @@
 # Benchmarking
 
-WorldForge includes a capability-aware benchmark harness for registered providers. It can measure
-direct provider surfaces: `predict`, `reason`, `generate`, `transfer`, `embed`, `score`, and
-`policy`. `plan` remains a WorldForge facade workflow, so benchmark score providers and policy
-providers directly when you need planning-path latency.
+WorldForge includes a capability-aware benchmark harness for registered full providers and
+registered capability protocol implementations. It can measure direct provider surfaces:
+`predict`, `reason`, `generate`, `transfer`, `embed`, `score`, and `policy`. `plan` remains a
+WorldForge facade workflow, so benchmark score providers and policy providers directly when you
+need planning-path latency.
 
 ## Python
 

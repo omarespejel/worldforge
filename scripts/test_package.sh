@@ -12,7 +12,8 @@ cleanup() {
 trap cleanup EXIT
 
 cd "$ROOT_DIR"
-uv build --out-dir "$TMP_DIR/dist"
+uv build --out-dir "$TMP_DIR/dist" --clear --no-build-logs
+uv run python "$ROOT_DIR/scripts/check_distribution.py" "$TMP_DIR/dist"
 uv venv "$VENV_DIR"
 
 wheel_paths=("$TMP_DIR"/dist/*.whl)

@@ -1175,13 +1175,34 @@ class ProviderBenchmarkHarness:
     @contextmanager
     def _capture_metrics(self, provider: str):
         metrics = ProviderMetricsSink()
-        provider_instance = self._forge._require_provider(provider)
-        original_handler = provider_instance.event_handler
-        provider_instance.event_handler = compose_event_handlers(original_handler, metrics)
+        provider_instance = self._forge._providers.get(provider)
+        capability_wrappers = self._forge._capability_wrappers_for_name(provider)
+        if provider_instance is None and not capability_wrappers:
+            raise ProviderError(f"Provider '{provider}' is not registered.")
+        original_provider_handler = provider_instance.event_handler if provider_instance else None
+        original_capability_handlers = [wrapper.event_handler for wrapper in capability_wrappers]
+        if provider_instance is not None:
+            provider_instance.event_handler = compose_event_handlers(
+                original_provider_handler,
+                metrics,
+            )
+        for wrapper, original_handler in zip(
+            capability_wrappers,
+            original_capability_handlers,
+            strict=True,
+        ):
+            wrapper.event_handler = compose_event_handlers(original_handler, metrics)
         try:
             yield metrics
         finally:
-            provider_instance.event_handler = original_handler
+            if provider_instance is not None:
+                provider_instance.event_handler = original_provider_handler
+            for wrapper, original_handler in zip(
+                capability_wrappers,
+                original_capability_handlers,
+                strict=True,
+            ):
+                wrapper.event_handler = original_handler
 
     def _run_operation(
         self,
@@ -1285,7 +1306,8 @@ class ProviderBenchmarkHarness:
 
         provider_plan: list[tuple[str, list[str]]] = []
         for provider in provider_names:
-            self._forge._require_provider(provider)
+            if provider not in self._forge.providers():
+                raise ProviderError(f"Provider '{provider}' is not registered.")
             supported = self.supported_operations(provider)
             selected_operations = supported if operations is None else list(requested_operations)
             unsupported = [

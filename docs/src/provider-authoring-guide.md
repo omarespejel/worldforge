@@ -114,7 +114,8 @@ Checklist:
 
 - [ ] The provider's taxonomy category is documented.
 - [ ] The provider's capabilities are derived from actual callable behavior.
-- [ ] Unsupported surfaces raise `ProviderError` through `BaseProvider`.
+- [ ] Full providers inherit `ProviderError` defaults for unsupported `BaseProvider` methods.
+- [ ] Single-capability protocol implementations expose only their one callable method.
 - [ ] Scaffold adapters are labeled `scaffold` and do not claim real upstream behavior.
 - [ ] The provider profile notes whether it is local, remote, deterministic, beta, stable, or
       scaffold.
@@ -149,6 +150,17 @@ Rules:
       provider diagnostics.
 - [ ] Do not set `plan=True` just because a provider can score candidates. Score-based planning is
       represented by `score=True` plus `World.plan(...)`.
+
+Implementation choices:
+
+- Use a `BaseProvider` subclass when one adapter owns several capabilities, needs catalog
+  auto-registration, or has provider-specific health/configuration behavior.
+- Use a capability protocol implementation when one local object exposes one narrow method such as
+  `score_actions(...)` or `select_actions(...)`. Protocol implementations declare `name`, optional
+  `ProviderProfileSpec` metadata, and the matching method; `WorldForge` wraps them for events,
+  health, profiles, diagnostics, planning, and benchmarks.
+- Use `RunnableModel` only when one logical model genuinely groups several protocol
+  implementations under one registration call.
 
 ## Step 3: Define the Contract Before Code
 
@@ -189,10 +201,11 @@ Questions to answer:
 
 ## Step 4: Use the Standard Adapter Shape
 
-Provider adapters should be small boundary objects.
+Provider adapters should be small boundary objects. Choose the smallest shape that honestly
+represents the integration.
 
 ```text
-Provider class
+Full provider class
   |
   |-- __init__
   |     define identity, capabilities, profile metadata, env vars, request policy
@@ -214,11 +227,12 @@ Provider class
         keep upstream schemas explicit and testable
 ```
 
-Minimal skeleton:
+Minimal full-provider skeleton:
 
 ```python
-from worldforge.models import ProviderCapabilities, ProviderEvent, ProviderHealth
+from worldforge.models import ProviderCapabilities, ProviderHealth
 from worldforge.providers import BaseProvider, ProviderError
+from worldforge.providers.base import ProviderProfileSpec
 
 
 class ExampleProvider(BaseProvider):
@@ -228,15 +242,16 @@ class ExampleProvider(BaseProvider):
         super().__init__(
             name="example",
             capabilities=ProviderCapabilities(generate=True),
-            is_local=False,
-            description="Example provider adapter.",
-            package="worldforge",
-            implementation_status="beta",
-            deterministic=False,
-            required_env_vars=[self.env_var],
-            supported_modalities=["text"],
-            artifact_types=["video"],
-            notes=["Documents provider-specific limits here."],
+            profile=ProviderProfileSpec(
+                description="Example provider adapter.",
+                package="worldforge",
+                implementation_status="beta",
+                deterministic=False,
+                required_env_vars=(self.env_var,),
+                supported_modalities=("text",),
+                artifact_types=("video",),
+                notes=("Documents provider-specific limits here.",),
+            ),
             event_handler=event_handler,
         )
 
@@ -252,6 +267,32 @@ class ExampleProvider(BaseProvider):
             raise
         except Exception as exc:
             raise ProviderError(f"Provider 'example' generation failed: {exc}") from exc
+```
+
+Minimal single-capability protocol skeleton:
+
+```python
+from worldforge import ActionScoreResult, WorldForge
+from worldforge.providers.base import ProviderProfileSpec
+
+
+class ExampleCost:
+    name = "example-cost"
+    profile = ProviderProfileSpec(
+        description="Example local cost model.",
+        implementation_status="experimental",
+        deterministic=True,
+        supported_modalities=("world_state", "action"),
+        artifact_types=("score",),
+    )
+
+    def score_actions(self, *, info, action_candidates):
+        # validate info and candidates, call model/runtime, return finite scores
+        return ActionScoreResult(provider=self.name, scores=[0.2, 0.8], best_index=0)
+
+
+forge = WorldForge(auto_register_remote=False)
+forge.register_cost(ExampleCost())
 ```
 
 ## Step 5: Boundary Validation Checklist
@@ -483,7 +524,8 @@ Runtime contract
   [ ] env vars and optional dependencies documented
   [ ] input shapes and limits documented
   [ ] output schema and score direction documented
-  [ ] unsupported methods fail through BaseProvider defaults
+  [ ] unsupported methods fail through BaseProvider defaults, or the implementation is a
+      single-capability protocol object with no unrelated public methods
 
 Validation and errors
   [ ] caller inputs validated

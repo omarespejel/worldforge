@@ -19,10 +19,12 @@ worldforge/
 |-- src/worldforge/
 |   |-- framework.py       # WorldForge facade, World runtime, planning, persistence
 |   |-- models.py          # public data contracts and validation
+|   |-- capabilities/      # narrow runtime-checkable capability protocols
 |   |-- providers/
 |   |   |-- base.py        # provider interface, ProviderError, PredictionPayload
 |   |   |-- catalog.py     # provider factories and auto-registration policy
 |   |   |-- mock.py        # deterministic reference provider
+|   |   |-- observable.py  # event/health wrapper for protocol implementations
 |   |   |-- leworldmodel.py# local JEPA cost-model adapter
 |   |   |-- cosmos.py      # HTTP video generation adapter
 |   |   |-- gr00t.py       # host-owned embodied policy client adapter
@@ -46,14 +48,14 @@ Host application
   |
   |  Python API / CLI
   v
-+-------------------+
-| WorldForge facade |
-| provider registry |
-| diagnostics       |
-+---------+---------+
-          |
-          | owns
-          v
++------------------------+
+| WorldForge facade      |
+| provider + capability  |
+| registries, diagnostics|
++-----------+------------+
+            |
+            | owns
+            v
 +-------------------+
 | World runtime     |
 | state/history     |
@@ -62,10 +64,11 @@ Host application
           |
           | dispatches by capability
           v
-+-------------------+       +---------------------------+
-| Provider adapter  | ----> | upstream model/API/runtime|
-| validation/events | <---- | checkpoint/task/artifact  |
-+-------------------+       +---------------------------+
++-------------------------+       +---------------------------+
+| Provider adapter or     | ----> | upstream model/API/runtime|
+| capability implementation| <---- | checkpoint/task/artifact  |
+| validation/events       |       |                           |
++-------------------------+       +---------------------------+
           |
           v
 +-------------------+
@@ -83,9 +86,9 @@ Mermaid equivalent:
 ```mermaid
 flowchart TD
     Host[Host app or CLI]
-    Forge[WorldForge facade\nregistry, diagnostics, persistence]
+    Forge[WorldForge facade\nprovider + capability registries,\ndiagnostics, persistence]
     World[World\nstate, history, planning]
-    Provider[Provider adapter\ncapability contract]
+    Provider[Provider adapter or capability impl\ncapability contract]
     Upstream[Upstream runtime or API\nLeWM, GR00T, LeRobot, Cosmos, Runway, mock]
     Models[Typed public models\nPrediction, VideoClip, ActionScoreResult, ActionPolicyResult]
     Obs[ProviderEvent sinks\nlogs, recorder, metrics]
@@ -141,6 +144,20 @@ boundaries.
 - `BaseProvider`, which defines the common capability surface.
 - `ProviderError`, the public provider/runtime failure type.
 - `PredictionPayload`, the validated payload returned by `predict(...)` implementations.
+
+`capabilities/__init__.py`
+
+- Runtime-checkable protocol contracts for narrow integrations: `Cost`, `Policy`, `Generator`,
+  `Predictor`, `Reasoner`, `Embedder`, `Transferer`, and reserved `Planner`.
+- `RunnableModel`, an optional bundle for implementations that genuinely expose multiple
+  capability protocols under one logical model.
+
+`providers/observable.py`
+
+- `_ObservableCapability`, the internal wrapper that adds provider events, timing, health,
+  profile, and info surfaces around pure capability protocol implementations.
+- Capability method mapping used by the `WorldForge` facade when dispatching protocol-registered
+  implementations.
 
 `providers/catalog.py`
 
@@ -203,7 +220,9 @@ Expanded:
 1. Provider discovery
    - mock registers unconditionally
    - optional providers register only when their env vars are present
-   - hosts may call register_provider(...) for custom adapters
+   - hosts may call register_provider(...) for full custom adapters
+   - hosts may call register_cost(...), register_policy(...), or register(...) for narrow
+     capability protocol implementations
 
 2. World setup
    - create_world(...) starts from empty typed state
@@ -256,11 +275,28 @@ WorldForge(auto_register_remote=True)
 ```
 
 ```text
-Manual registration
+Manual full-provider registration
 
 forge = WorldForge(auto_register_remote=False)
 forge.register_provider(MyProvider(...))
 world = forge.create_world("lab", provider="my-provider")
+```
+
+```text
+Manual capability-protocol registration
+
+forge = WorldForge(auto_register_remote=False)
+forge.register_cost(MyCostModel(name="my-cost"))
+forge.register_policy(MyPolicy(name="my-policy"))
+
+result = forge.score_actions(cost="my-cost", info=info, action_candidates=candidates)
+plan = world.plan(
+    goal="pick best policy candidate",
+    policy_provider="my-policy",
+    score_provider="my-cost",
+    policy_info=policy_info,
+    score_info=score_info,
+)
 ```
 
 ```text
@@ -272,21 +308,28 @@ world.predict(action)                         # uses world.provider
 world.predict(action, provider="other")       # overrides for this call
 world.plan(..., provider="leworldmodel")      # planner/scorer provider
 world.execute_plan(plan, provider="mock")     # execution provider
+forge.generate("prompt", generator=impl)      # direct one-off capability instance
 ```
 
-Provider lookup is name-based. Provider dispatch is capability-based. A provider should never
-advertise a capability unless the corresponding method is implemented end to end.
+Provider lookup is name-based for registered full providers and registered protocol
+implementations. Provider dispatch is capability-based. A full provider should never advertise a
+capability unless the corresponding method is implemented end to end; a protocol implementation is
+indexed only into the registry for the method it structurally implements.
 
 ```mermaid
 flowchart LR
     Env[Environment variables] --> Auto[WorldForge auto-registration]
-    Custom[Custom adapter instance] --> Manual[register_provider]
+    Custom[Custom BaseProvider instance] --> Manual[register_provider]
+    Protocol[Capability protocol impl] --> ManualProtocol[register_cost / register_policy / register]
     Auto --> Registry[Provider registry]
     Manual --> Registry
+    ManualProtocol --> CapabilityRegistry[Capability registries]
     WorldProvider[world.provider default] --> Resolve[provider resolution]
     CallOverride[method provider override] --> Resolve
+    Direct[direct capability instance] --> Resolve
     PlanExec[Plan metadata execution_provider] --> Resolve
     Registry --> Resolve
+    CapabilityRegistry --> Resolve
     Resolve --> Capability{capability supported?}
     Capability -- yes --> Invoke[call provider method]
     Capability -- no --> Error[WorldForgeError or ProviderError]
@@ -488,21 +531,23 @@ WorldForge does not ask "is this a world model?" at runtime. It asks which opera
 can honestly perform.
 
 ```text
-BaseProvider
-|-- predict(world_state, action, steps) -> PredictionPayload
-|-- generate(prompt, duration_seconds, options) -> VideoClip
-|-- transfer(clip, width, height, fps, prompt, options) -> VideoClip
-|-- reason(query, world_state) -> ReasoningResult
-|-- embed(text) -> EmbeddingResult
-|-- score_actions(info, action_candidates) -> ActionScoreResult
-`-- select_actions(info) -> ActionPolicyResult
+BaseProvider subclass
+|-- declares ProviderCapabilities(...)
+|-- implements every advertised method end to end
+`-- inherits ProviderError defaults for unsupported methods
+
+Capability protocol implementation
+|-- declares name and optional ProviderProfileSpec
+|-- implements exactly the protocol method it exposes
+|-- is wrapped for ProviderEvent, health, profile, and info surfaces
+`-- can be registered with register_cost/register_policy/... or register(...)
 ```
 
 In-repo provider mapping:
 
 | Provider | Surface | Primary capability | Runtime kind |
 | --- | --- | --- | --- |
-| `mock` | implemented | predict, generate, reason, embed, plan, transfer | deterministic local surrogate |
+| `mock` | implemented | predict, generate, reason, embed, transfer | deterministic local surrogate |
 | `leworldmodel` | optional runtime adapter | score | local JEPA cost model |
 | `gr00t` | optional runtime adapter | policy | host-owned Isaac GR00T policy client |
 | `lerobot` | optional runtime adapter | policy | host-owned LeRobot policy checkpoint |

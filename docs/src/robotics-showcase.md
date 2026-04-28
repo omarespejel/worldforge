@@ -11,6 +11,9 @@ and task-specific preprocessing remain host-owned.
 The default task is PushT. The default policy is `lerobot/diffusion_pusht`. The default
 LeWorldModel checkpoint is `~/.stable-wm/pusht/lewm_object.ckpt`.
 
+For the implementation-level contract, tensor shapes, provider sequence, and real-robot mapping,
+see [Robotics Showcase Technical Deep Dive](./robotics-showcase-deep-dive.md).
+
 <div align="center">
 <table>
   <tr>
@@ -276,6 +279,7 @@ spaces.
 
 Related docs:
 
+- [Robotics Showcase Technical Deep Dive](./robotics-showcase-deep-dive.md)
 - [LeRobot provider](./providers/lerobot.md)
 - [LeWorldModel provider](./providers/leworldmodel.md)
 - [TheWorldHarness](./theworldharness.md)

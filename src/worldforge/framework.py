@@ -15,9 +15,24 @@ from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
+from worldforge.capabilities import (
+    CAPABILITY_FIELD_NAMES,
+    CAPABILITY_FIELD_TO_NAME,
+    CAPABILITY_PROTOCOLS,
+    Cost,
+    Embedder,
+    Generator,
+    Planner,
+    Policy,
+    Predictor,
+    Reasoner,
+    RunnableModel,
+    Transferer,
+)
 from worldforge.models import (
+    CAPABILITY_NAMES,
     Action,
     ActionPolicyResult,
     ActionScoreResult,
@@ -28,6 +43,7 @@ from worldforge.models import (
     HistoryEntry,
     JSONDict,
     Position,
+    ProviderCapabilities,
     ProviderDoctorStatus,
     ProviderEvent,
     ProviderHealth,
@@ -51,9 +67,11 @@ from worldforge.models import (
 )
 from worldforge.providers import (
     BaseProvider,
+    PredictionPayload,
     ProviderError,
 )
 from worldforge.providers.catalog import PROVIDER_CATALOG, create_known_providers
+from worldforge.providers.observable import CAPABILITY_METHOD_MAP, _ObservableCapability
 
 if TYPE_CHECKING:
     from worldforge.evaluation import EvaluationReport, EvaluationResult
@@ -68,6 +86,20 @@ def _clone_state(state: JSONDict) -> JSONDict:
 
 def _normalize_provider_name(provider: str | None, fallback: str) -> str:
     return provider or fallback
+
+
+def _dedupe_text(values: Sequence[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for value in values:
+        if value and value not in seen:
+            seen.add(value)
+            deduped.append(value)
+    return deduped
+
+
+def _join_non_empty(values: Sequence[str], *, separator: str = " ") -> str:
+    return separator.join(value for value in values if value)
 
 
 def _require_non_empty_text(value: object, *, name: str, message: str | None = None) -> str:
@@ -720,7 +752,12 @@ class World:
             raise WorldForgeError("predict() action must be an Action.")
         action.to_json()
         selected_provider = _normalize_provider_name(provider, self.provider)
-        payload = self._provider(selected_provider).predict(self._snapshot(), action, steps)
+        payload = self._forge.predict(
+            self._snapshot(),
+            action,
+            steps=steps,
+            provider=selected_provider,
+        )
         next_state = _clone_state(payload.state)
         dump_json(next_state)
         self._apply_state(next_state, preserve_history=True)
@@ -748,7 +785,12 @@ class World:
         def _predict_one(provider_name: str) -> Prediction:
             # Each thread gets its own copy of the immutable-by-convention state
             # dict so nothing aliases if a provider accidentally mutates input.
-            payload = self._provider(provider_name).predict(_clone_state(state), action, steps)
+            payload = self._forge.predict(
+                _clone_state(state),
+                action,
+                steps=steps,
+                provider=provider_name,
+            )
             return Prediction(
                 provider=provider_name,
                 confidence=payload.confidence,
@@ -940,10 +982,8 @@ class World:
             for item in (candidate_actions, score_provider, score_info, score_action_candidates)
         )
         selected_policy_provider = policy_provider or selected_provider
-        selected_policy_provider_instance: BaseProvider | None = None
         if uses_policy_planning:
-            selected_policy_provider_instance = self._provider(selected_policy_provider)
-            if not selected_policy_provider_instance.capabilities.policy:
+            if not self._forge.provider_profile(selected_policy_provider).capabilities.policy:
                 raise WorldForgeError(
                     f"Provider '{selected_policy_provider}' does not support policy planning."
                 )
@@ -955,10 +995,8 @@ class World:
                     "pass candidate_actions."
                 )
         selected_score_provider = score_provider or selected_provider
-        selected_score_provider_instance: BaseProvider | None = None
         if uses_score_planning:
-            selected_score_provider_instance = self._provider(selected_score_provider)
-            if not selected_score_provider_instance.capabilities.score:
+            if not self._forge.provider_profile(selected_score_provider).capabilities.score:
                 raise WorldForgeError(
                     f"Provider '{selected_score_provider}' does not support score-based planning."
                 )
@@ -987,13 +1025,9 @@ class World:
         actions = actions[: min(max_steps, len(actions))]
 
         if uses_policy_planning:
-            # Guards above ensure both are non-None; keep locals for type narrowing.
-            policy_provider_obj = selected_policy_provider_instance
-            if policy_provider_obj is None or policy_info is None:
-                raise WorldForgeError(
-                    "Policy planning is active but provider or policy_info is missing."
-                )
-            policy_result = policy_provider_obj.select_actions(info=policy_info)
+            if policy_info is None:
+                raise WorldForgeError("Policy planning is active but policy_info is missing.")
+            policy_result = self._forge.select_actions(selected_policy_provider, info=policy_info)
             candidate_action_plans = [
                 candidate[:max_steps] for candidate in policy_result.action_candidates
             ]
@@ -1002,17 +1036,15 @@ class World:
                     f"Provider '{selected_policy_provider}' returned no policy action candidates."
                 )
             if uses_score_planning:
-                score_provider_obj = selected_score_provider_instance
-                if score_provider_obj is None or score_info is None:
-                    raise WorldForgeError(
-                        "Score planning is active but provider or score_info is missing."
-                    )
+                if score_info is None:
+                    raise WorldForgeError("Score planning is active but score_info is missing.")
                 score_payload = (
                     score_action_candidates
                     if score_action_candidates is not None
                     else _action_plans_to_score_payload(candidate_action_plans)
                 )
-                score_result = score_provider_obj.score_actions(
+                score_result = self._forge.score_actions(
+                    selected_score_provider,
                     info=score_info,
                     action_candidates=score_payload,
                 )
@@ -1075,8 +1107,7 @@ class World:
             )
 
         if uses_score_planning:
-            score_provider_obj = selected_score_provider_instance
-            if score_provider_obj is None or candidate_actions is None or score_info is None:
+            if candidate_actions is None or score_info is None:
                 raise WorldForgeError(
                     "Score planning (without policy planning) requires provider, "
                     "candidate_actions, and score_info."
@@ -1087,7 +1118,8 @@ class World:
                 if score_action_candidates is not None
                 else _action_plans_to_score_payload(candidate_action_plans)
             )
-            score_result = score_provider_obj.score_actions(
+            score_result = self._forge.score_actions(
+                selected_score_provider,
                 info=score_info,
                 action_candidates=score_payload,
             )
@@ -1128,7 +1160,12 @@ class World:
         predicted_states: list[JSONDict] = []
         scores: list[float] = []
         for action in actions:
-            payload = self._provider(selected_provider).predict(simulated_state, action, 1)
+            payload = self._forge.predict(
+                simulated_state,
+                action,
+                steps=1,
+                provider=selected_provider,
+            )
             simulated_state = _clone_state(payload.state)
             predicted_states.append(simulated_state)
             scores.append(payload.physics_score)
@@ -1155,7 +1192,7 @@ class World:
             selected_provider = next((arg for arg in args if isinstance(arg, str)), None)
         if selected_provider is None:
             selected_provider = str(plan.metadata.get("execution_provider") or plan.provider)
-        if not self._provider(selected_provider).capabilities.predict:
+        if not self._forge.provider_profile(selected_provider).capabilities.predict:
             raise WorldForgeError(
                 f"Provider '{selected_provider}' cannot execute plans because it does not "
                 "support predict(). Pass an execution provider that supports predict()."
@@ -1234,6 +1271,11 @@ class WorldForge:
         ensure_directory(self.state_dir)
         self._providers: dict[str, BaseProvider] = {}
         self._event_handler = event_handler
+        # Per-capability registries for the new capability-protocol API. One dict per capability;
+        # names are scoped per capability so the same name in different registries is allowed.
+        self._capability_registries: dict[str, dict[str, _ObservableCapability]] = {
+            field: {} for field in CAPABILITY_FIELD_NAMES
+        }
         for entry in PROVIDER_CATALOG:
             provider = entry.create(event_handler=self._event_handler)
             if entry.always_register or (auto_register_remote and provider.configured()):
@@ -1259,8 +1301,323 @@ class WorldForge:
             provider.event_handler = self._event_handler
         self._providers[provider.name] = provider
 
+    # ------------------------------------------------------------------
+    # New capability-protocol registration surface (M0).
+    # ------------------------------------------------------------------
+
+    def register(self, impl: object) -> None:
+        """Register a capability impl or :class:`RunnableModel` bundle.
+
+        Dispatches by structural protocol membership: an impl that satisfies several capability
+        protocols is indexed into every matching registry. A :class:`RunnableModel` is unpacked and
+        each non-``None`` capability slot is registered into the matching capability registry.
+        Raises :class:`WorldForgeError` if ``impl`` does not satisfy any known capability protocol.
+        """
+
+        if isinstance(impl, BaseProvider):
+            self.register_provider(impl)
+            return
+        if isinstance(impl, RunnableModel):
+            matched = False
+            for field_name, capability_impl in impl.capability_fields():
+                self._register_capability(field_name, capability_impl)
+                matched = True
+            if not matched:
+                raise WorldForgeError(
+                    f"RunnableModel '{impl.name}' does not contain any capability impls."
+                )
+            return
+        matched = False
+        for field_name, protocol in CAPABILITY_PROTOCOLS.items():
+            if isinstance(impl, protocol):
+                self._register_capability(field_name, impl)
+                matched = True
+        if not matched:
+            raise WorldForgeError(
+                f"{type(impl).__name__} does not satisfy any capability protocol. "
+                f"Expected one of: {', '.join(sorted(CAPABILITY_PROTOCOLS))}."
+            )
+
+    def register_policy(self, policy: Policy) -> None:
+        """Register a :class:`~worldforge.capabilities.Policy` implementation."""
+
+        self._register_typed("policy", policy, Policy)
+
+    def register_cost(self, cost: Cost) -> None:
+        """Register a :class:`~worldforge.capabilities.Cost` implementation."""
+
+        self._register_typed("cost", cost, Cost)
+
+    def register_generator(self, generator: Generator) -> None:
+        """Register a :class:`~worldforge.capabilities.Generator` implementation."""
+
+        self._register_typed("generator", generator, Generator)
+
+    def register_predictor(self, predictor: Predictor) -> None:
+        """Register a :class:`~worldforge.capabilities.Predictor` implementation."""
+
+        self._register_typed("predictor", predictor, Predictor)
+
+    def register_reasoner(self, reasoner: Reasoner) -> None:
+        """Register a :class:`~worldforge.capabilities.Reasoner` implementation."""
+
+        self._register_typed("reasoner", reasoner, Reasoner)
+
+    def register_embedder(self, embedder: Embedder) -> None:
+        """Register an :class:`~worldforge.capabilities.Embedder` implementation."""
+
+        self._register_typed("embedder", embedder, Embedder)
+
+    def register_transferer(self, transferer: Transferer) -> None:
+        """Register a :class:`~worldforge.capabilities.Transferer` implementation."""
+
+        self._register_typed("transferer", transferer, Transferer)
+
+    def register_planner(self, planner: Planner) -> None:
+        """Register a :class:`~worldforge.capabilities.Planner` implementation."""
+
+        self._register_typed("planner", planner, Planner)
+
+    def _register_typed(self, field_name: str, impl: object, protocol: type) -> None:
+        if not isinstance(impl, protocol):
+            raise WorldForgeError(
+                f"{type(impl).__name__} does not satisfy the "
+                f"{protocol.__name__} capability protocol."
+            )
+        self._register_capability(field_name, impl)
+
+    def _register_capability(self, field_name: str, impl: object) -> None:
+        registry = self._capability_registries[field_name]
+        impl_name = getattr(impl, "name", None)
+        if not isinstance(impl_name, str) or not impl_name.strip():
+            raise WorldForgeError(
+                f"Capability impl '{type(impl).__name__}' must declare "
+                f"a non-empty 'name' attribute."
+            )
+        if impl_name in registry:
+            raise WorldForgeError(
+                f"Capability '{field_name}' already has a registered implementation named "
+                f"'{impl_name}'. Names must be unique within a capability registry."
+            )
+        wrapped = _ObservableCapability(
+            impl,
+            kind=field_name,
+            event_handler=self._event_handler,
+        )
+        registry[impl_name] = wrapped
+
+    def _registered_capability_names(self) -> set[str]:
+        return {name for registry in self._capability_registries.values() for name in registry}
+
+    def _capability_wrappers_for_name(self, name: str) -> tuple[_ObservableCapability, ...]:
+        return tuple(
+            registry[name]
+            for field_name in CAPABILITY_FIELD_NAMES
+            for registry in (self._capability_registries[field_name],)
+            if name in registry
+        )
+
+    def _registered_provider_names(self) -> set[str]:
+        return set(self._providers) | self._registered_capability_names()
+
+    def _provider_view_names(self, *, include_known: bool) -> list[str]:
+        names = set(self._registered_provider_names())
+        if include_known:
+            names.update(self._provider_catalog(include_known=True))
+        return sorted(names)
+
+    def _merged_capabilities(
+        self,
+        *,
+        legacy_profile: ProviderProfile | None,
+        wrappers: Sequence[_ObservableCapability],
+    ) -> ProviderCapabilities:
+        flags = (
+            legacy_profile.capabilities.to_dict()
+            if legacy_profile is not None
+            else {name: False for name in CAPABILITY_NAMES}
+        )
+        for wrapper in wrappers:
+            flags[CAPABILITY_FIELD_TO_NAME[wrapper.kind]] = True
+        return ProviderCapabilities(**flags)
+
+    def _merged_profile(
+        self,
+        name: str,
+        *,
+        legacy_provider: BaseProvider | None,
+        wrappers: Sequence[_ObservableCapability],
+    ) -> ProviderProfile:
+        wrapper_profiles = [wrapper.profile() for wrapper in wrappers]
+        legacy_profile = legacy_provider.profile() if legacy_provider is not None else None
+        profiles = [
+            profile for profile in (legacy_profile, *wrapper_profiles) if profile is not None
+        ]
+        if not profiles:
+            raise ProviderError(f"Provider '{name}' is unknown.")
+        primary = profiles[0]
+        required_env_vars = _dedupe_text(
+            [env_var for profile in profiles for env_var in profile.required_env_vars]
+        )
+        credential_env_var = next(
+            (profile.credential_env_var for profile in profiles if profile.credential_env_var),
+            required_env_vars[0] if required_env_vars else None,
+        )
+        request_policy = next(
+            (profile.request_policy for profile in profiles if profile.request_policy is not None),
+            None,
+        )
+        default_model = next(
+            (profile.default_model for profile in profiles if profile.default_model),
+            None,
+        )
+        description = primary.description or _join_non_empty(
+            [profile.description for profile in profiles],
+            separator="; ",
+        )
+        return ProviderProfile(
+            name=name,
+            capabilities=self._merged_capabilities(
+                legacy_profile=legacy_profile,
+                wrappers=wrappers,
+            ),
+            is_local=any(profile.is_local for profile in profiles),
+            description=description,
+            package=primary.package,
+            implementation_status=primary.implementation_status,
+            deterministic=all(profile.deterministic for profile in profiles),
+            requires_credentials=any(profile.requires_credentials for profile in profiles),
+            credential_env_var=credential_env_var,
+            required_env_vars=required_env_vars,
+            supported_modalities=_dedupe_text(
+                [item for profile in profiles for item in profile.supported_modalities]
+            ),
+            artifact_types=_dedupe_text(
+                [item for profile in profiles for item in profile.artifact_types]
+            ),
+            notes=_dedupe_text([item for profile in profiles for item in profile.notes]),
+            default_model=default_model,
+            supported_models=_dedupe_text(
+                [item for profile in profiles for item in profile.supported_models]
+            ),
+            request_policy=request_policy,
+        )
+
+    def _merged_health(
+        self,
+        name: str,
+        *,
+        legacy_provider: BaseProvider | None,
+        wrappers: Sequence[_ObservableCapability],
+    ) -> ProviderHealth:
+        healths: list[ProviderHealth] = []
+        if legacy_provider is not None:
+            healths.append(legacy_provider.health())
+        healths.extend(wrapper.health() for wrapper in wrappers)
+        if not healths:
+            raise ProviderError(f"Provider '{name}' is unknown.")
+        if len(healths) == 1:
+            return healths[0]
+        healthy = all(health.healthy for health in healths)
+        if healthy:
+            details = "configured"
+        else:
+            details = "; ".join(
+                f"{health.name}: {health.details}" for health in healths if not health.healthy
+            )
+        return ProviderHealth(
+            name=name,
+            healthy=healthy,
+            latency_ms=sum(health.latency_ms for health in healths),
+            details=details,
+        )
+
+    def _registered_or_known_provider(
+        self,
+        name: str,
+        *,
+        include_known: bool,
+    ) -> BaseProvider | None:
+        if name in self._providers:
+            return self._providers[name]
+        if include_known:
+            return self._provider_catalog(include_known=True).get(name)
+        return None
+
+    def _resolve_capability_target(
+        self,
+        *,
+        field_name: str,
+        protocol: type,
+        target: object | None,
+        operation: str,
+        target_label: str,
+    ) -> object:
+        if target is None:
+            raise WorldForgeError(
+                f"{operation}() requires a provider name or {target_label} target."
+            )
+        if isinstance(target, str):
+            target_name = _require_non_empty_text(target, name=f"{operation} target")
+            registry = self._capability_registries[field_name]
+            if target_name in registry:
+                return registry[target_name]
+            return self._require_provider(target_name)
+        if isinstance(target, BaseProvider):
+            if self._event_handler is not None and target.event_handler is None:
+                target.event_handler = self._event_handler
+            return target
+        if not isinstance(target, protocol):
+            capability_name = CAPABILITY_FIELD_TO_NAME[field_name]
+            raise WorldForgeError(
+                f"{type(target).__name__} does not satisfy the "
+                f"{protocol.__name__} capability protocol for '{capability_name}'."
+            )
+        return _ObservableCapability(
+            target,
+            kind=field_name,
+            event_handler=self._event_handler,
+        )
+
+    def _call_capability(
+        self,
+        *,
+        field_name: str,
+        protocol: type,
+        target: object | None,
+        operation: str,
+        target_label: str,
+        args: tuple[object, ...] = (),
+        kwargs: JSONDict | None = None,
+    ) -> object:
+        resolved = self._resolve_capability_target(
+            field_name=field_name,
+            protocol=protocol,
+            target=target,
+            operation=operation,
+            target_label=target_label,
+        )
+        if isinstance(resolved, _ObservableCapability):
+            return resolved.call(*args, **dict(kwargs or {}))
+        method_name = CAPABILITY_METHOD_MAP[field_name][0]
+        return getattr(resolved, method_name)(*args, **dict(kwargs or {}))
+
+    def _select_capability_target(
+        self,
+        positional: object | None,
+        keyword: object | None,
+        *,
+        operation: str,
+        keyword_name: str,
+    ) -> object | None:
+        if positional is not None and keyword is not None:
+            raise WorldForgeError(
+                f"{operation}() accepts either positional provider or {keyword_name}=, not both."
+            )
+        return keyword if keyword is not None else positional
+
     def providers(self) -> list[str]:
-        return sorted(self._providers)
+        return sorted(self._registered_provider_names())
 
     def _provider_catalog(self, *, include_known: bool = True) -> dict[str, BaseProvider]:
         catalog: dict[str, BaseProvider] = {}
@@ -1272,41 +1629,56 @@ class WorldForge:
         return catalog
 
     def list_providers(self) -> list[ProviderInfo]:
-        return [self._providers[name].info() for name in self.providers()]
+        return [self.provider_info(name) for name in self.providers()]
 
     def list_provider_profiles(self) -> list[ProviderProfile]:
-        return [self._providers[name].profile() for name in self.providers()]
+        return [self.provider_profile(name) for name in self.providers()]
 
     def builtin_provider_profiles(self) -> list[ProviderProfile]:
         catalog = self._provider_catalog(include_known=True)
         return [catalog[name].profile() for name in sorted(catalog)]
 
     def provider_info(self, name: str) -> ProviderInfo:
-        return self._require_provider(name).info()
+        provider_name = _require_non_empty_text(name, name="Provider name")
+        if provider_name not in self._registered_provider_names():
+            raise ProviderError(f"Provider '{provider_name}' is not registered.")
+        profile = self.provider_profile(provider_name)
+        return ProviderInfo(
+            name=profile.name,
+            capabilities=profile.capabilities,
+            is_local=profile.is_local,
+            description=profile.description,
+        )
 
     def provider_profile(self, name: str) -> ProviderProfile:
-        catalog = self._provider_catalog(include_known=True)
-        try:
-            provider = catalog[name]
-        except KeyError as exc:
-            raise ProviderError(f"Provider '{name}' is unknown.") from exc
-        return provider.profile()
+        provider_name = _require_non_empty_text(name, name="Provider name")
+        legacy_provider = self._registered_or_known_provider(provider_name, include_known=True)
+        wrappers = self._capability_wrappers_for_name(provider_name)
+        return self._merged_profile(
+            provider_name,
+            legacy_provider=legacy_provider,
+            wrappers=wrappers,
+        )
 
     def provider_health(self, name: str) -> ProviderHealth:
-        catalog = self._provider_catalog(include_known=True)
-        try:
-            provider = catalog[name]
-        except KeyError as exc:
-            raise ProviderError(f"Provider '{name}' is unknown.") from exc
-        return provider.health()
+        provider_name = _require_non_empty_text(name, name="Provider name")
+        legacy_provider = self._registered_or_known_provider(provider_name, include_known=True)
+        wrappers = self._capability_wrappers_for_name(provider_name)
+        return self._merged_health(
+            provider_name,
+            legacy_provider=legacy_provider,
+            wrappers=wrappers,
+        )
 
     def provider_healths(self, capability: str | None = None) -> list[ProviderHealth]:
         names = self.providers()
         if capability:
             names = [
-                name for name in names if self._providers[name].capabilities.supports(capability)
+                name
+                for name in names
+                if self.provider_profile(name).capabilities.supports(capability)
             ]
-        return [self._providers[name].health() for name in names]
+        return [self.provider_health(name) for name in names]
 
     def doctor(
         self,
@@ -1321,25 +1693,38 @@ class WorldForge:
         Pass ``registered_only=True`` to inspect only the providers active in this process.
         """
 
-        catalog = self._provider_catalog(include_known=not registered_only)
+        legacy_catalog = self._provider_catalog(include_known=not registered_only)
         statuses: list[ProviderDoctorStatus] = []
         issues: list[str] = []
 
-        for name in sorted(catalog):
-            provider = catalog[name]
-            profile = provider.profile()
+        for name in self._provider_view_names(include_known=not registered_only):
+            legacy_provider = legacy_catalog.get(name)
+            wrappers = self._capability_wrappers_for_name(name)
+            profile = self._merged_profile(
+                name,
+                legacy_provider=legacy_provider,
+                wrappers=wrappers,
+            )
             if capability and not profile.capabilities.supports(capability):
                 continue
-            health = provider.health()
+            health = self._merged_health(
+                name,
+                legacy_provider=legacy_provider,
+                wrappers=wrappers,
+            )
             statuses.append(
                 ProviderDoctorStatus(
-                    registered=name in self._providers,
+                    registered=name in self._registered_provider_names(),
                     profile=profile,
                     health=health,
                 )
             )
             if not health.healthy:
-                if profile.required_env_vars and not provider.configured():
+                missing_configuration = bool(profile.required_env_vars) and (
+                    (legacy_provider is not None and not legacy_provider.configured())
+                    or any(not wrapper.configured() for wrapper in wrappers)
+                )
+                if missing_configuration:
                     required = ", ".join(profile.required_env_vars)
                     issues.append(
                         f"Provider '{name}' is unavailable: missing or invalid {required}."
@@ -1358,7 +1743,8 @@ class WorldForge:
         """Create an empty world bound to a registered default provider."""
 
         selected_provider = _require_non_empty_text(provider, name="Provider name")
-        self._require_provider(selected_provider)
+        if selected_provider not in self._registered_provider_names():
+            raise ProviderError(f"Provider '{selected_provider}' is not registered.")
         return World(name=name, provider=selected_provider, forge=self, description=description)
 
     def create_world_from_prompt(
@@ -1483,64 +1869,207 @@ class WorldForge:
     def generate(
         self,
         prompt: str,
-        provider: str,
+        provider: str | Generator | BaseProvider | None = None,
         *,
+        generator: str | Generator | BaseProvider | None = None,
         duration_seconds: float = 1.0,
         options: GenerationOptions | None = None,
     ) -> VideoClip:
-        return self._require_provider(provider).generate(
-            prompt,
-            duration_seconds,
-            options=options,
+        target = self._select_capability_target(
+            provider,
+            generator,
+            operation="generate",
+            keyword_name="generator",
+        )
+        return cast(
+            VideoClip,
+            self._call_capability(
+                field_name="generator",
+                protocol=Generator,
+                target=target,
+                operation="generate",
+                target_label="generator",
+                args=(prompt, duration_seconds),
+                kwargs={"options": options},
+            ),
+        )
+
+    def predict(
+        self,
+        world_state: JSONDict,
+        action: Action,
+        steps: int = 1,
+        provider: str | Predictor | BaseProvider | None = None,
+        *,
+        predictor: str | Predictor | BaseProvider | None = None,
+    ) -> PredictionPayload:
+        require_positive_int(steps, name="steps")
+        if not isinstance(action, Action):
+            raise WorldForgeError("predict() action must be an Action.")
+        action.to_json()
+        target = self._select_capability_target(
+            provider,
+            predictor,
+            operation="predict",
+            keyword_name="predictor",
+        )
+        return cast(
+            PredictionPayload,
+            self._call_capability(
+                field_name="predictor",
+                protocol=Predictor,
+                target=target,
+                operation="predict",
+                target_label="predictor",
+                args=(world_state, action, steps),
+            ),
         )
 
     def transfer(
         self,
         clip: VideoClip,
-        provider: str,
+        provider: str | Transferer | BaseProvider | None = None,
         *,
+        transferer: str | Transferer | BaseProvider | None = None,
         width: int,
         height: int,
         fps: float,
         prompt: str = "",
         options: GenerationOptions | None = None,
     ) -> VideoClip:
-        return self._require_provider(provider).transfer(
-            clip,
-            width=width,
-            height=height,
-            fps=fps,
-            prompt=prompt,
-            options=options,
+        target = self._select_capability_target(
+            provider,
+            transferer,
+            operation="transfer",
+            keyword_name="transferer",
+        )
+        return cast(
+            VideoClip,
+            self._call_capability(
+                field_name="transferer",
+                protocol=Transferer,
+                target=target,
+                operation="transfer",
+                target_label="transferer",
+                args=(clip,),
+                kwargs={
+                    "width": width,
+                    "height": height,
+                    "fps": fps,
+                    "prompt": prompt,
+                    "options": options,
+                },
+            ),
         )
 
     def reason(
         self,
-        provider: str,
-        query: str,
+        provider: str | Reasoner | BaseProvider | None = None,
+        query: str | None = None,
         *,
+        reasoner: str | Reasoner | BaseProvider | None = None,
         world: World | None = None,
     ) -> ReasoningResult:
+        if query is None:
+            raise WorldForgeError("reason() requires a query.")
         world_state = world._snapshot() if world else None
-        return self._require_provider(provider).reason(query, world_state=world_state)
+        target = self._select_capability_target(
+            provider,
+            reasoner,
+            operation="reason",
+            keyword_name="reasoner",
+        )
+        return cast(
+            ReasoningResult,
+            self._call_capability(
+                field_name="reasoner",
+                protocol=Reasoner,
+                target=target,
+                operation="reason",
+                target_label="reasoner",
+                args=(query,),
+                kwargs={"world_state": world_state},
+            ),
+        )
 
-    def embed(self, provider: str, *, text: str) -> EmbeddingResult:
-        return self._require_provider(provider).embed(text=text)
+    def embed(
+        self,
+        provider: str | Embedder | BaseProvider | None = None,
+        *,
+        embedder: str | Embedder | BaseProvider | None = None,
+        text: str,
+    ) -> EmbeddingResult:
+        target = self._select_capability_target(
+            provider,
+            embedder,
+            operation="embed",
+            keyword_name="embedder",
+        )
+        return cast(
+            EmbeddingResult,
+            self._call_capability(
+                field_name="embedder",
+                protocol=Embedder,
+                target=target,
+                operation="embed",
+                target_label="embedder",
+                kwargs={"text": text},
+            ),
+        )
 
     def score_actions(
         self,
-        provider: str,
+        provider: str | Cost | BaseProvider | None = None,
         *,
+        cost: str | Cost | BaseProvider | None = None,
         info: JSONDict,
         action_candidates: object,
     ) -> ActionScoreResult:
-        return self._require_provider(provider).score_actions(
-            info=info,
-            action_candidates=action_candidates,
+        target = self._select_capability_target(
+            provider,
+            cost,
+            operation="score_actions",
+            keyword_name="cost",
+        )
+        return cast(
+            ActionScoreResult,
+            self._call_capability(
+                field_name="cost",
+                protocol=Cost,
+                target=target,
+                operation="score_actions",
+                target_label="cost",
+                kwargs={
+                    "info": info,
+                    "action_candidates": action_candidates,
+                },
+            ),
         )
 
-    def select_actions(self, provider: str, *, info: JSONDict) -> ActionPolicyResult:
-        return self._require_provider(provider).select_actions(info=info)
+    def select_actions(
+        self,
+        provider: str | Policy | BaseProvider | None = None,
+        *,
+        policy: str | Policy | BaseProvider | None = None,
+        info: JSONDict,
+    ) -> ActionPolicyResult:
+        target = self._select_capability_target(
+            provider,
+            policy,
+            operation="select_actions",
+            keyword_name="policy",
+        )
+        return cast(
+            ActionPolicyResult,
+            self._call_capability(
+                field_name="policy",
+                protocol=Policy,
+                target=target,
+                operation="select_actions",
+                target_label="policy",
+                kwargs={"info": info},
+            ),
+        )
 
 
 def list_eval_suites() -> list[str]:

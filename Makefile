@@ -32,7 +32,7 @@ test-package:
 	bash scripts/test_package.sh
 
 build:
-	$(UV) build
+	$(UV) build --out-dir dist --clear --no-build-logs
 
 audit:
 	tmp_req="$$(mktemp requirements-audit.XXXXXX)"; \
