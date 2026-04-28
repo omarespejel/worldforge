@@ -1,7 +1,8 @@
 # Introduction
 
-WorldForge is a Python integration layer for physical-AI world-model systems. It provides provider
-capability contracts, world state, planning, evaluation, benchmarking, and diagnostics for local
+WorldForge is a Python integration layer for testable physical-AI world-model workflows. It gives
+providers, score models, embodied policies, and media generators explicit capability contracts,
+then adds world state, planning, evaluation, benchmarking, diagnostics, and CLI tools for local
 experiments and adapter development.
 
 The project is built around a strict provider boundary:

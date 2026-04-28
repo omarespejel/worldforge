@@ -1,9 +1,9 @@
 # Architecture
 
-WorldForge is the software layer around physical-AI world-model workflows. Its job is to expose
-each provider through an honest typed capability surface, validate the boundary, and let host
-applications compose planning, prediction, generation, evaluation, persistence, and observability
-without pretending every provider means the same thing by "world model."
+WorldForge is the Python integration layer around testable physical-AI world-model workflows. Its
+job is to expose each provider through an honest typed capability surface, validate the boundary,
+and let host applications compose planning, prediction, generation, evaluation, persistence, and
+observability without pretending every provider means the same thing by "world model."
 
 The architecture centers on capability-specific contracts. LeWorldModel scores action candidates.
 GR00T and LeRobot select embodied action chunks. Cosmos and Runway return media artifacts. The

@@ -100,6 +100,8 @@ releases may still include breaking changes when the public API needs to tighten
 - The robotics showcase deep dive now includes end-to-end flow, model payload, inference
   responsibility, and sequence diagrams that show how LeRobot policy inference, LeWorldModel cost
   inference, WorldForge planning, mock replay, and the visual report fit together.
+- The README, package metadata, citation metadata, docs site description, and introduction now use
+  a tighter project pitch: testable world-model workflows for physical-AI systems.
 - `save_world` skips a redundant `json.dumps`/`json.loads` round trip; the validation call now
   runs directly against the serialized dict.
 - Documentation metadata and README links now point at the published GitHub Pages site.

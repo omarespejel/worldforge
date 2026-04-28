@@ -2,9 +2,10 @@
 
 ## Project Identity
 
-WorldForge is a Python integration layer for physical-AI world-model workflows: provider adapters,
-world state, planning, evaluation, benchmarking, diagnostics, and host-owned optional runtimes. It
-is a library and CLI, not a hosted service, on-chain contract, or end-user application.
+WorldForge is a Python integration layer for testable physical-AI world-model workflows: provider
+adapters, world state, planning, evaluation, benchmarking, diagnostics, and host-owned optional
+runtimes. It is a library and CLI, not a hosted service, on-chain contract, or end-user
+application.
 
 Intended users are Python developers building provider adapters, local world-model experiments,
 evaluation harnesses, and testable prototypes.

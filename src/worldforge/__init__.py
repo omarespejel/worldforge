@@ -1,4 +1,4 @@
-"""WorldForge: integration layer for physical-AI world-model workflows."""
+"""WorldForge: testable world-model workflows for physical-AI systems."""
 
 from __future__ import annotations
 

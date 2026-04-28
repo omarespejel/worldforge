@@ -2,11 +2,12 @@
 
 # WorldForge
 
-**Build physical-AI workflows from world models, not one-off scripts.**
+**Testable world-model workflows for physical-AI systems.**
 
-WorldForge is a Python integration layer for wiring world-model providers, action scorers, embodied
-policies, and media generators behind a typed capability interface. It includes planning,
-evaluation, benchmarks, diagnostics, local state, and a CLI.
+WorldForge is a Python integration layer that gives world-model providers, score models, embodied
+policies, and media generators explicit capability contracts. It adds planning, evaluation,
+benchmarks, diagnostics, local state, and CLI tools while keeping checkpoints, credentials, robot
+controllers, and deployment host-owned.
 
 [![CI](https://img.shields.io/github/actions/workflow/status/AbdelStark/worldforge/ci.yml?branch=main&label=CI&style=for-the-badge)](https://github.com/AbdelStark/worldforge/actions/workflows/ci.yml)
 [![Docs](https://img.shields.io/github/actions/workflow/status/AbdelStark/worldforge/pages.yml?branch=main&label=docs&style=for-the-badge)](https://abdelstark.github.io/worldforge/)

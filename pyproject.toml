@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "worldforge-ai"
 version = "0.5.0"
-description = "Integration layer for building physical-AI workflows from world-model providers, policies, planning, evaluation, and diagnostics."
+description = "Python integration layer for testable physical-AI world-model workflows, with capability contracts, planning, evaluation, benchmarks, diagnostics, local state, and CLI tools."
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
 license = "MIT"
