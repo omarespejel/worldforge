@@ -32,12 +32,14 @@ ModelLoader = Callable[[str, str | None], Any]
 
 
 class LeWorldModelProvider(BaseProvider):
-    """Adapter for LeWorldModel JEPA action-candidate cost models.
+    """Adapter for LeWorldModel JEPA action-candidate cost inference.
 
-    LeWorldModel exposes a cost-model surface through
-    ``stable_worldmodel.policy.AutoCostModel``. The adapter intentionally models that
-    surface as action scoring instead of pretending the checkpoint is a generator or
-    text reasoner.
+    With a real host-owned ``stable_worldmodel`` runtime and checkpoint, this adapter
+    loads ``stable_worldmodel.policy.AutoCostModel`` and runs ``get_cost(...)`` over
+    checkpoint-native observation, goal, action-history, and candidate-action tensors.
+    WorldForge exposes that real model call as the ``score`` capability because the
+    checkpoint returns action costs; it does not generate video, predict full world
+    state, or answer text queries.
     """
 
     def __init__(
@@ -93,6 +95,8 @@ class LeWorldModelProvider(BaseProvider):
                 artifact_types=("action_scores",),
                 notes=(
                     "Loads checkpoints with stable_worldmodel.policy.AutoCostModel.",
+                    "Runs real AutoCostModel.get_cost(...) inference when the host supplies the "
+                    "optional runtime and checkpoint.",
                     "Set LEWORLDMODEL_POLICY to the checkpoint run name relative to STABLEWM_HOME.",
                     "Input tensors or nested numeric arrays must already match the checkpoint "
                     "task.",
