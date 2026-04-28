@@ -78,6 +78,11 @@ def _parser() -> argparse.ArgumentParser:
         default=Path(os.environ.get("STABLEWM_HOME", DEFAULT_STABLEWM_HOME)).expanduser(),
     )
     parser.add_argument("--lewm-cache-dir", type=Path, default=None)
+    parser.add_argument(
+        "--lewm-revision",
+        default=os.environ.get("LEWORLDMODEL_REVISION"),
+        help="Optional Hugging Face revision, tag, or commit for auto-built LeWorldModel assets.",
+    )
     parser.add_argument("--device", default=DEFAULT_DEVICE)
     parser.add_argument("--lerobot-device", default=_env_value("LEROBOT_DEVICE"))
     parser.add_argument("--lewm-device", default=_env_value("LEWORLDMODEL_DEVICE"))
@@ -127,6 +132,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-color", action="store_const", const="never", dest="color")
     parser.add_argument("--health-only", action="store_true")
     parser.add_argument("--no-execute", action="store_true")
+    parser.add_argument(
+        "--allow-unsafe-pickle",
+        action="store_true",
+        help=(
+            "Allow legacy torch.load pickle deserialization while auto-building the "
+            "LeWorldModel checkpoint. Use only for trusted weights."
+        ),
+    )
     return parser
 
 
@@ -152,6 +165,8 @@ def _ensure_checkpoint(args: argparse.Namespace) -> None:
         repo_id=leworldmodel_checkpoint.DEFAULT_REPO_ID,
         policy=args.lewm_policy,
         stablewm_home=cache_dir,
+        revision=args.lewm_revision,
+        allow_unsafe_pickle=args.allow_unsafe_pickle,
     )
 
 

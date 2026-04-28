@@ -144,6 +144,21 @@ def test_leworldmodel_provider_scores_fixture_payload_and_routes_through_forge(t
     assert events[-1].phase == "success"
 
 
+def test_leworldmodel_provider_rejects_score_count_mismatch() -> None:
+    payload = _fixture("leworldmodel_score_request.json")
+    provider = LeWorldModelProvider(
+        policy="pusht/lewm",
+        model_loader=lambda _policy, _cache_dir: FakeLeWorldModel([0.1, 0.2]),
+        tensor_module=FakeTorch(),
+    )
+
+    with pytest.raises(ProviderError, match=r"returned 2 score\(s\) for 3 candidate"):
+        provider.score_actions(
+            info=payload["info"],
+            action_candidates=payload["action_candidates"],
+        )
+
+
 def test_leworldmodel_score_planning_selects_best_candidate_and_execution_provider(
     tmp_path,
 ) -> None:
@@ -206,7 +221,7 @@ def test_leworldmodel_score_planning_selects_best_candidate_and_execution_provid
         tensor_module=FakeTorch(),
     )
     forge.register_provider(mismatched_provider)
-    with pytest.raises(WorldForgeError, match="returned 2 score\\(s\\) for 3 candidate"):
+    with pytest.raises(ProviderError, match=r"returned 2 score\(s\) for 3 candidate"):
         world.plan(
             goal="mismatched score count",
             provider="mismatched-leworldmodel",

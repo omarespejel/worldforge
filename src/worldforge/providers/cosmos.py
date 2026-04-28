@@ -222,7 +222,7 @@ class CosmosProvider(RemoteProvider):
         fps = options.fps if options and options.fps is not None else 24.0
         if fps <= 0.0:
             raise ProviderError("Cosmos fps must be greater than 0.")
-        frame_count = max(1, int(round(duration_seconds * fps)))
+        frame_count = max(1, round(duration_seconds * fps))
         body: dict[str, object] = {
             "prompt": prompt,
             "seed": options.seed if options and options.seed is not None else 4,
@@ -230,7 +230,7 @@ class CosmosProvider(RemoteProvider):
                 "height": height,
                 "width": width,
                 "frames_count": frame_count,
-                "frames_per_sec": int(round(fps)),
+                "frames_per_sec": round(fps),
             },
         }
 

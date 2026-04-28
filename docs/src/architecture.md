@@ -250,6 +250,7 @@ Expanded:
    - ActionScoreResult validates finite scores and an in-range best_index
    - ActionPolicyResult validates executable actions and JSON-compatible raw actions
    - ProviderError surfaces provider/runtime failures with context
+   - unexpected protocol exceptions are wrapped as ProviderError after failure events are emitted
 
 6. Host-owned operation
    - JSON persistence is single-writer local storage
@@ -566,6 +567,14 @@ dependencies and missing credentials show up before a workflow fails.
 Important public result contracts:
 
 ```text
+Action
+  type: non-empty string
+  parameters: JSON object
+
+SceneObject
+  id: non-empty string
+  metadata: JSON object
+
 PredictionPayload
   state: JSON object
   confidence: probability
@@ -604,10 +613,11 @@ Plan
 State invariants:
 
 - persisted worlds contain `id`, `name`, and `provider`
+- persisted worlds declare the current schema_version before nested state is accepted
 - world `step` is always a non-negative integer
 - `scene.objects` is a JSON object keyed by object ID
 - embedded scene object IDs must match their map keys
-- metadata is a JSON object
+- action parameters and metadata fields are JSON-native objects with string keys and finite numbers
 - history entries have non-negative steps, validated snapshot states, non-empty summaries, and
   valid serialized action payloads when actions are present
 - history entry steps cannot exceed the current world step

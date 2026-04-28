@@ -309,6 +309,9 @@ def test_robotics_showcase_auto_downloads_missing_checkpoint(
             [
                 "--stablewm-home",
                 str(tmp_path),
+                "--lewm-revision",
+                "abc123",
+                "--allow-unsafe-pickle",
                 "--no-json-output",
                 "--no-tui",
             ]
@@ -319,6 +322,8 @@ def test_robotics_showcase_auto_downloads_missing_checkpoint(
     assert build_calls["policy"] == "pusht/lewm"
     assert build_calls["stablewm_home"] == tmp_path
     assert build_calls["repo_id"] == robotics_showcase.leworldmodel_checkpoint.DEFAULT_REPO_ID
+    assert build_calls["revision"] == "abc123"
+    assert build_calls["allow_unsafe_pickle"] is True
 
 
 def test_robotics_showcase_skips_download_when_checkpoint_present(

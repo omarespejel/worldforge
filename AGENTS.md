@@ -202,6 +202,9 @@ rm -f "$tmp_req"
   sinks.
 - Keep public API models typed and serializable. Validate boundary values before persistence or
   outbound network I/O.
+- Keep action parameters, scene metadata, provider-event metadata, score metadata, policy raw
+  actions, and policy metadata JSON-native: string keys, finite numbers, lists, dicts, booleans,
+  strings, and nulls only. Reject object instances or tuple-shaped values at construction time.
 - Add regression tests for every bug fix and every documented failure mode.
 - Put remote provider payload fixtures under `tests/fixtures/providers/` and assert both parser
   errors and public provider errors.
@@ -281,8 +284,10 @@ rm -f "$tmp_req"
 - `worldforge-build-leworldmodel-checkpoint` is an optional host-owned object-checkpoint builder
   for Hugging Face LeWM `config.json` and `weights.pt` assets. Run it with the same upstream
   LeWorldModel runtime plus `huggingface_hub` and `matplotlib` (transitive import requirement of
-  `stable_pretraining`); do not add those dependencies to WorldForge's base package or commit
-  downloaded assets/checkpoints.
+  `stable_pretraining`); use `--revision` or `LEWORLDMODEL_REVISION` to pin Hugging Face asset
+  resolution, and keep the default `torch.load(..., weights_only=True)` behavior unless a trusted
+  legacy artifact explicitly requires `--allow-unsafe-pickle`. Do not add those dependencies to
+  WorldForge's base package or commit downloaded assets/checkpoints.
 - `scripts/smoke_gr00t_policy.py` is an optional live PolicyClient smoke. It can start
   `gr00t/eval/run_gr00t_server.py` from a host-owned Isaac-GR00T checkout, but it still requires
   the host to provide real observations and an embodiment-specific action translator.

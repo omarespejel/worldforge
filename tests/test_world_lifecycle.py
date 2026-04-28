@@ -197,10 +197,10 @@ def test_world_object_mutation_rejects_non_json_history_without_state_change(tmp
         Position(0.0, 0.5, 0.0),
         BBox(Position(-0.05, 0.45, -0.05), Position(0.05, 0.55, 0.05)),
         id="bad-cube",
-        metadata={"not_json": object()},
     )
+    bad_object.metadata["not_json"] = object()
 
-    with pytest.raises(WorldForgeError, match="JSON serializable"):
+    with pytest.raises(WorldForgeError, match="JSON-compatible"):
         world.add_object(bad_object)
 
     assert world.object_count == 0
@@ -212,8 +212,11 @@ def test_predict_rejects_non_json_action_before_provider_state_change(tmp_path) 
     forge = WorldForge(state_dir=tmp_path)
     world = forge.create_world("transactional-predict", provider="mock")
 
+    bad_action = Action("custom", {})
+    bad_action.parameters["not_json"] = object()
+
     with pytest.raises(WorldForgeError, match="JSON serializable"):
-        world.predict(Action("custom", {"not_json": object()}), steps=1)
+        world.predict(bad_action, steps=1)
 
     assert world.step == 0
     assert world.history_length == 1
@@ -270,6 +273,12 @@ def test_world_rejects_invalid_runtime_inputs(tmp_path) -> None:
     with pytest.raises(WorldForgeError, match="not present in world"):
         world.update_object_patch("missing-object", SceneObjectPatch(name="ghost"))
 
+    with pytest.raises(WorldForgeError, match="SceneObjectPatch position"):
+        SceneObjectPatch(position="bad")  # type: ignore[arg-type]
+
+    with pytest.raises(WorldForgeError, match="SceneObjectPatch"):
+        world.update_object_patch("missing-object", "bad")  # type: ignore[arg-type]
+
 
 def test_world_import_and_load_reject_malformed_state(tmp_path) -> None:
     forge = WorldForge(state_dir=tmp_path)
@@ -284,6 +293,7 @@ def test_world_import_and_load_reject_malformed_state(tmp_path) -> None:
         forge.import_world(json.dumps({"state": "not-a-world"}))
 
     unsafe_state = {
+        "schema_version": 1,
         "id": "../outside",
         "name": "invalid",
         "provider": "mock",
@@ -293,6 +303,18 @@ def test_world_import_and_load_reject_malformed_state(tmp_path) -> None:
     }
     with pytest.raises(WorldStateError, match="file-safe identifier"):
         forge.import_world(json.dumps(unsafe_state))
+
+    malformed_object_state = {
+        "schema_version": 1,
+        "id": "bad_object_world",
+        "name": "invalid",
+        "provider": "mock",
+        "scene": {"objects": {"cube-1": {"id": "cube-1", "name": "cube"}}},
+        "metadata": {},
+        "step": 0,
+    }
+    with pytest.raises(WorldStateError, match="scene object 'cube-1' is invalid"):
+        forge.import_world(json.dumps(malformed_object_state))
 
     with pytest.raises(WorldForgeError, match="file-safe identifier"):
         forge.load_world("../outside")
@@ -307,6 +329,7 @@ def test_world_import_and_load_reject_malformed_state(tmp_path) -> None:
 def test_world_import_rejects_malformed_history_entries(tmp_path) -> None:
     forge = WorldForge(state_dir=tmp_path)
     valid_history_state = {
+        "schema_version": 1,
         "id": "world_history",
         "name": "history",
         "provider": "mock",

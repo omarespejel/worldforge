@@ -7,8 +7,10 @@ from worldforge import (
     Action,
     ActionPolicyResult,
     ActionScoreResult,
+    BenchmarkBudget,
     Cost,
     Policy,
+    load_benchmark_inputs,
     RunnableModel,
     WorldForge,
 )
@@ -151,6 +153,8 @@ print(result.best_index, result.best_score)
 
 `ActionScoreResult` validates finite scores, exposes `best_index` and `best_score`, and includes
 `lower_is_better` so callers do not have to infer score direction from provider-specific docs.
+Metadata must be JSON-native: dict keys are strings, numbers are finite, and object instances or
+tuples are rejected instead of being coerced silently.
 
 The planner can consume the same score surface when callers provide WorldForge actions that
 correspond to each scored candidate. By default, those actions are serialized and passed to the
@@ -206,7 +210,8 @@ print(result.actions, result.raw_actions)
 
 `ActionPolicyResult` validates that the provider returned at least one WorldForge `Action`,
 preserves provider-native raw actions for debugging, and can carry multiple candidate action
-chunks for downstream scoring.
+chunks for downstream scoring. Preserved raw actions and metadata must be JSON-native so run
+artifacts can be serialized without hidden encoder behavior.
 
 Policy-only planning:
 
@@ -283,8 +288,7 @@ print(report.to_markdown())
 ## Benchmarking
 
 ```python
-from worldforge import ProviderBenchmarkHarness
-from worldforge.benchmark import load_benchmark_inputs
+from worldforge import BenchmarkBudget, ProviderBenchmarkHarness, load_benchmark_inputs
 
 harness = ProviderBenchmarkHarness(forge=forge)
 inputs = load_benchmark_inputs(
@@ -300,6 +304,9 @@ report = harness.run(
     inputs=inputs,
 )
 print(report.to_json())
+
+budget = BenchmarkBudget.from_dict({"max_p95_latency_ms": 25.0})
+print(report.evaluate_budgets([budget]).passed)
 ```
 
 ## Provider contract testing
@@ -365,6 +372,9 @@ Important boundary checks:
 
 - `Position`, `Rotation`, `VideoClip`, request policies, provider events, embeddings, reasoning
   confidence, and prediction payload metrics reject non-finite numbers.
+- `Action.parameters`, `SceneObject.metadata`, provider-event metadata, score metadata, policy raw
+  actions, and policy metadata reject non-JSON-native values rather than accepting object instances
+  that only fail at persistence time.
 - `World.add_object(...)` rejects duplicate scene object IDs.
 - Imported or provider-supplied world state rejects scene-object keys that disagree with embedded
   object IDs.
@@ -372,6 +382,6 @@ Important boundary checks:
   optional metadata.
 - Runway task creation, polling, and artifact download responses are validated before constructing
   a returned `VideoClip`.
-- LeWorldModel scoring requires `pixels`, `goal`, and `action` info fields, four-dimensional
-  action candidates, optional `stable_worldmodel` and `torch` runtime dependencies, and finite
-  model scores.
+- LeWorldModel scoring requires `pixels`, `goal`, and `action` info fields, action candidates shaped
+  as `(batch=1, samples, horizon, action_dim)`, optional `stable_worldmodel` and `torch` runtime
+  dependencies, one returned score per candidate sample, and finite model scores.

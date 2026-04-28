@@ -129,7 +129,7 @@ def _prompt_score(clip: VideoClip, *, expected_prompt: str) -> float:
 def _is_image_conditioned(clip: VideoClip) -> bool:
     options = clip.metadata.get("options", {})
     mode = str(clip.metadata.get("mode", "")).lower()
-    return isinstance(options, dict) and bool(options.get("image")) or "image" in mode
+    return (isinstance(options, dict) and bool(options.get("image"))) or "image" in mode
 
 
 def _is_transfer_clip(clip: VideoClip) -> bool:
@@ -269,12 +269,14 @@ class EvaluationReport:
             "| provider | average_score | passed | scenarios |",
             "| --- | ---: | ---: | ---: |",
         ]
-        for summary in self.provider_summaries:
-            lines.append(
+        lines.extend(
+            (
                 f"| {summary.provider} | {summary.average_score:.2f} | "
                 f"{summary.passed_scenario_count}/{summary.scenario_count} | "
                 f"{summary.scenario_count} |"
             )
+            for summary in self.provider_summaries
+        )
 
         lines.extend(
             [
@@ -283,11 +285,13 @@ class EvaluationReport:
                 "| --- | --- | ---: | ---: |",
             ]
         )
-        for result in self.results:
-            lines.append(
+        lines.extend(
+            (
                 f"| {result.provider} | {result.scenario} | {result.score:.2f} | "
                 f"{'yes' if result.passed else 'no'} |"
             )
+            for result in self.results
+        )
         return "\n".join(lines)
 
     def to_csv(self) -> str:

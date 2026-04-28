@@ -19,7 +19,7 @@ from worldforge.models import (
 
 from ._config import env_value, first_env_value, optional_non_empty
 from ._policy import no_grad_context, prepare_model
-from ._tensor_validation import _is_sequence
+from ._tensor_validation import _is_sequence, _shape
 from .base import BaseProvider, ProviderError, ProviderProfileSpec
 
 LEWORLDMODEL_POLICY_ENV_VAR = "LEWORLDMODEL_POLICY"
@@ -266,6 +266,20 @@ class LeWorldModelProvider(BaseProvider):
             )
         return tensor
 
+    def _candidate_sample_count(self, action_candidates: object) -> int:
+        shape = _shape(action_candidates, name="LeWorldModel action_candidates")
+        if len(shape) != 4:
+            raise ProviderError(
+                "LeWorldModel action_candidates must be four-dimensional: "
+                "(batch, samples, horizon, action_dim)."
+            )
+        batch, samples, _horizon, _action_dim = shape
+        if batch != 1:
+            raise ProviderError("LeWorldModel action_candidates batch dimension must be 1.")
+        if samples <= 0:
+            raise ProviderError("LeWorldModel action_candidates sample dimension must be positive.")
+        return samples
+
     def _tensor_to_scores(self, raw_scores: object) -> list[float]:
         value = raw_scores
         for method_name in ("detach", "cpu"):
@@ -302,10 +316,16 @@ class LeWorldModelProvider(BaseProvider):
             torch = self._torch()
             model = self._load_model()
             tensor_info = self._tensorize_info(torch, info)
+            candidate_count = self._candidate_sample_count(action_candidates)
             action_tensor = self._tensorize_action_candidates(torch, action_candidates)
             with no_grad_context(torch):
                 raw_scores = model.get_cost(tensor_info, action_tensor)
             scores = self._tensor_to_scores(raw_scores)
+            if len(scores) != candidate_count:
+                raise ProviderError(
+                    f"LeWorldModel returned {len(scores)} score(s) for "
+                    f"{candidate_count} candidate action sample(s)."
+                )
             best_index = min(range(len(scores)), key=scores.__getitem__)
             duration_ms = max(0.1, (perf_counter() - started) * 1000)
             result = ActionScoreResult(
@@ -318,7 +338,7 @@ class LeWorldModelProvider(BaseProvider):
                     "cache_dir": self.cache_dir,
                     "device": self.device,
                     "score_type": "cost",
-                    "candidate_count": len(scores),
+                    "candidate_count": candidate_count,
                 },
             )
             self._emit_operation_event(
@@ -327,7 +347,7 @@ class LeWorldModelProvider(BaseProvider):
                 duration_ms=duration_ms,
                 metadata={
                     "policy": self.policy,
-                    "candidate_count": len(scores),
+                    "candidate_count": candidate_count,
                     "best_index": best_index,
                 },
             )

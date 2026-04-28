@@ -143,9 +143,16 @@ def test_build_checkpoint_saves_object_checkpoint_with_injected_runtime(
         def __init__(self) -> None:
             self.saved_model: FakeModel | None = None
 
-        def load(self, path: Path, *, map_location: str) -> dict[str, bool]:
+        def load(
+            self,
+            path: Path,
+            *,
+            map_location: str,
+            weights_only: bool = False,
+        ) -> dict[str, bool]:
             assert path.name == "weights.pt"
             assert map_location == "cpu"
+            assert weights_only is True
             return {"weights": True}
 
         def save(self, model: FakeModel, path: Path) -> None:
@@ -161,8 +168,15 @@ def test_build_checkpoint_saves_object_checkpoint_with_injected_runtime(
     model = FakeModel()
     torch = FakeTorch()
 
-    def hf_hub_download(*, repo_id: str, filename: str, local_dir: str) -> str:
+    def hf_hub_download(
+        *,
+        repo_id: str,
+        filename: str,
+        local_dir: str,
+        revision: str | None,
+    ) -> str:
         assert repo_id == "quentinll/lewm-pusht"
+        assert revision == "abc123"
         path = Path(local_dir) / filename
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(filename)
@@ -179,6 +193,7 @@ def test_build_checkpoint_saves_object_checkpoint_with_injected_runtime(
         policy="pusht/lewm",
         stablewm_home=tmp_path / "stablewm",
         cache_dir=tmp_path / "assets",
+        revision="abc123",
     )
 
     assert summary == {
@@ -187,6 +202,7 @@ def test_build_checkpoint_saves_object_checkpoint_with_injected_runtime(
         "output": str(tmp_path / "stablewm/pusht/lewm_object.ckpt"),
         "policy": "pusht/lewm",
         "repo_id": "quentinll/lewm-pusht",
+        "revision": "abc123",
         "weights": str(tmp_path / "assets/weights.pt"),
     }
     assert torch.saved_model is model
@@ -205,7 +221,13 @@ def test_build_checkpoint_rejects_incompatible_weights(
 
     class FakeTorch:
         @staticmethod
-        def load(path: Path, *, map_location: str) -> dict[str, bool]:
+        def load(
+            path: Path,
+            *,
+            map_location: str,
+            weights_only: bool = False,
+        ) -> dict[str, bool]:
+            assert weights_only is True
             return {"weights": True}
 
     class FakeOmegaConf:
@@ -213,7 +235,14 @@ def test_build_checkpoint_rejects_incompatible_weights(
         def load(path: Path) -> dict[str, str]:
             return {"_target_": "fake"}
 
-    def hf_hub_download(*, repo_id: str, filename: str, local_dir: str) -> str:
+    def hf_hub_download(
+        *,
+        repo_id: str,
+        filename: str,
+        local_dir: str,
+        revision: str | None,
+    ) -> str:
+        assert revision is None
         path = Path(local_dir) / filename
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(filename)
@@ -232,6 +261,35 @@ def test_build_checkpoint_rejects_incompatible_weights(
             stablewm_home=tmp_path / "stablewm",
             cache_dir=tmp_path / "assets",
         )
+
+
+def test_checkpoint_weight_loader_rejects_legacy_unsafe_torch_load(tmp_path: Path) -> None:
+    class LegacyTorch:
+        @staticmethod
+        def load(path: Path, *, map_location: str) -> dict[str, bool]:
+            return {"weights": True}
+
+    with pytest.raises(SystemExit, match="weights_only=True"):
+        leworldmodel_checkpoint._load_weights(
+            LegacyTorch,
+            tmp_path / "weights.pt",
+            allow_unsafe_pickle=False,
+        )
+
+
+def test_checkpoint_weight_loader_allows_explicit_unsafe_pickle(tmp_path: Path) -> None:
+    class LegacyTorch:
+        @staticmethod
+        def load(path: Path, *, map_location: str) -> dict[str, bool]:
+            assert path == tmp_path / "weights.pt"
+            assert map_location == "cpu"
+            return {"weights": True}
+
+    assert leworldmodel_checkpoint._load_weights(
+        LegacyTorch,
+        tmp_path / "weights.pt",
+        allow_unsafe_pickle=True,
+    ) == {"weights": True}
 
 
 def test_incompatible_keys_supports_torch_return_object() -> None:
@@ -267,12 +325,15 @@ def test_checkpoint_builder_main_prints_summary(
             "worldforge-build-leworldmodel-checkpoint",
             "--repo-id",
             "repo/id",
+            "--revision",
+            "abc123",
             "--policy",
             "task/lewm",
             "--stablewm-home",
             str(tmp_path / "stablewm"),
             "--asset-cache-dir",
             str(tmp_path / "assets"),
+            "--allow-unsafe-pickle",
             "--force",
         ],
     )
@@ -280,10 +341,12 @@ def test_checkpoint_builder_main_prints_summary(
     assert leworldmodel_checkpoint.main() == 0
 
     assert calls == {
+        "allow_unsafe_pickle": True,
         "cache_dir": tmp_path / "assets",
         "force": True,
         "policy": "task/lewm",
         "repo_id": "repo/id",
+        "revision": "abc123",
         "stablewm_home": tmp_path / "stablewm",
     }
     assert json.loads(capsys.readouterr().out) == {"created": False, "output": "checkpoint"}

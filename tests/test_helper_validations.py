@@ -24,6 +24,7 @@ from worldforge import (
     SceneObject,
     SceneObjectPatch,
     VideoClip,
+    World,
     WorldForge,
     WorldForgeError,
     WorldStateError,
@@ -56,21 +57,23 @@ def test_http_utils_validate_assets_size_and_polling(tmp_path) -> None:
         ),
         base_url="http://providers.test",
     )
-    with processing_client as client:
-        with pytest.raises(ProviderError, match="did not complete before timeout"):
-            poll_json_task(
-                client,
-                path="/tasks/1",
-                success_values={"SUCCEEDED"},
-                failure_values={"FAILED"},
-                poll_interval_seconds=0.0,
-                max_polls=1,
-                provider_name="mock",
-                operation_policy=ProviderRequestPolicy.remote_defaults(
-                    request_timeout_seconds=10.0,
-                    read_backoff_seconds=0.0,
-                ).polling,
-            )
+    with (
+        processing_client as client,
+        pytest.raises(ProviderError, match="did not complete before timeout"),
+    ):
+        poll_json_task(
+            client,
+            path="/tasks/1",
+            success_values={"SUCCEEDED"},
+            failure_values={"FAILED"},
+            poll_interval_seconds=0.0,
+            max_polls=1,
+            provider_name="mock",
+            operation_policy=ProviderRequestPolicy.remote_defaults(
+                request_timeout_seconds=10.0,
+                read_backoff_seconds=0.0,
+            ).polling,
+        )
 
     failed_client = httpx.Client(
         transport=httpx.MockTransport(
@@ -78,21 +81,23 @@ def test_http_utils_validate_assets_size_and_polling(tmp_path) -> None:
         ),
         base_url="http://providers.test",
     )
-    with failed_client as client:
-        with pytest.raises(ProviderError, match="task failed with status FAILED"):
-            poll_json_task(
-                client,
-                path="/tasks/2",
-                success_values={"SUCCEEDED"},
-                failure_values={"FAILED"},
-                poll_interval_seconds=0.0,
-                max_polls=1,
-                provider_name="mock",
-                operation_policy=ProviderRequestPolicy.remote_defaults(
-                    request_timeout_seconds=10.0,
-                    read_backoff_seconds=0.0,
-                ).polling,
-            )
+    with (
+        failed_client as client,
+        pytest.raises(ProviderError, match="task failed with status FAILED"),
+    ):
+        poll_json_task(
+            client,
+            path="/tasks/2",
+            success_values={"SUCCEEDED"},
+            failure_values={"FAILED"},
+            poll_interval_seconds=0.0,
+            max_polls=1,
+            provider_name="mock",
+            operation_policy=ProviderRequestPolicy.remote_defaults(
+                request_timeout_seconds=10.0,
+                read_backoff_seconds=0.0,
+            ).polling,
+        )
 
     with pytest.raises(WorldForgeError, match="max_attempts"):
         RetryPolicy(max_attempts=0)
@@ -124,7 +129,7 @@ def test_framework_helpers_and_error_paths(tmp_path) -> None:
     prediction = world.predict(Action.move_to(0.1, 0.5, 0.0), steps=1)
     assert prediction.output_world().object_count == world.object_count
 
-    comparison = world.compare(Action.move_to(0.2, 0.5, 0.0), ["mock"], steps=1)
+    comparison = world.compare(Action.move_to(0.2, 0.5, 0.0), "mock", steps=1)
     artifacts = comparison.artifacts()
     assert set(artifacts) == {"json", "markdown", "csv"}
 
@@ -143,6 +148,9 @@ def test_framework_helpers_and_error_paths(tmp_path) -> None:
     with pytest.raises(WorldForgeError, match="World name must not be empty"):
         forge.create_world("", "mock")
 
+    with pytest.raises(WorldForgeError, match="World max_history"):
+        World("limited", "mock", max_history=True)
+
     with pytest.raises(WorldForgeError, match="Only json export"):
         forge.export_world("missing", format="yaml")
 
@@ -159,6 +167,8 @@ def test_public_models_reject_non_finite_and_incoherent_values(tmp_path) -> None
 
     with pytest.raises(WorldForgeError, match="speed"):
         Action.move_to(0.0, 0.0, 0.0, speed=0.0)
+    with pytest.raises(WorldForgeError, match="Action parameters"):
+        Action("bad", {"not_json": object()})
 
     policy_result = ActionPolicyResult(
         provider="policy",
@@ -214,6 +224,7 @@ def test_public_models_reject_non_finite_and_incoherent_values(tmp_path) -> None
         world.add_object(cube)
 
     bad_state = {
+        "schema_version": 1,
         "id": "world_bad",
         "name": "bad",
         "provider": "mock",
@@ -345,6 +356,13 @@ def test_public_validation_guards_cover_boundary_failure_modes() -> None:
             BBox(Position(0.0, 0.0, 0.0), Position(1.0, 1.0, 1.0)),
             metadata=[],  # type: ignore[arg-type]
         )
+    with pytest.raises(WorldForgeError, match="SceneObject metadata"):
+        SceneObject(
+            "cube",
+            Position(0.0, 0.0, 0.0),
+            BBox(Position(0.0, 0.0, 0.0), Position(1.0, 1.0, 1.0)),
+            metadata={"not_json": object()},
+        )
 
     with pytest.raises(WorldForgeError):
         RetryPolicy(max_attempts=True)  # type: ignore[arg-type]
@@ -435,6 +453,7 @@ def test_public_validation_guards_cover_boundary_failure_modes() -> None:
         EmbeddingResult(provider="mock", model="model", vector=[math.nan])
 
     valid_state = {
+        "schema_version": 1,
         "id": "world",
         "name": "world",
         "provider": "mock",

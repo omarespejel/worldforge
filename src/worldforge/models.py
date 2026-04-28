@@ -63,6 +63,40 @@ def dump_json(payload: Any) -> str:
         ) from exc
 
 
+def _clone_json_value(value: Any, *, name: str) -> Any:
+    """Return a JSON-native deep copy or raise for non-JSON values."""
+
+    if value is None or isinstance(value, str | bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return require_finite_number(value, name=name)
+    if isinstance(value, list):
+        return [_clone_json_value(item, name=f"{name}[]") for item in value]
+    if isinstance(value, dict):
+        cloned: JSONDict = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise WorldForgeError(f"{name} keys must be strings.")
+            cloned[key] = _clone_json_value(item, name=f"{name}.{key}")
+        return cloned
+    raise WorldForgeError(f"{name} must contain only JSON-compatible values.")
+
+
+def require_json_dict(value: Any, *, name: str, allow_empty: bool = True) -> JSONDict:
+    """Return a JSON-native dict copy with string keys and finite numeric values."""
+
+    if not isinstance(value, dict):
+        raise WorldForgeError(f"{name} must be a JSON object.")
+    if not allow_empty and not value:
+        raise WorldForgeError(f"{name} must be a non-empty JSON object.")
+    cloned = _clone_json_value(value, name=name)
+    if not isinstance(cloned, dict):  # pragma: no cover - defensive invariant
+        raise WorldForgeError(f"{name} must be a JSON object.")
+    return cloned
+
+
 def ensure_directory(path: Path) -> None:
     """Create a directory tree when it does not already exist."""
 
@@ -328,7 +362,7 @@ class Action:
         if not isinstance(self.parameters, dict):
             raise WorldForgeError("Action parameters must be a JSON object.")
         self.kind = self.kind.strip()
-        self.parameters = dict(self.parameters)
+        self.parameters = require_json_dict(self.parameters, name="Action parameters")
 
     @staticmethod
     def move_to(
@@ -801,6 +835,14 @@ class SceneObjectPatch:
     position: Position | None = None
     graspable: bool | None = None
 
+    def __post_init__(self) -> None:
+        if self.name is not None:
+            self.set_name(self.name)
+        if self.position is not None:
+            self.set_position(self.position)
+        if self.graspable is not None:
+            self.set_graspable(self.graspable)
+
     def set_name(self, name: str) -> None:
         if not isinstance(name, str) or not name.strip():
             raise WorldForgeError("SceneObjectPatch name must be a non-empty string.")
@@ -843,7 +885,7 @@ class SceneObject:
             self.is_graspable,
             name="SceneObject is_graspable",
         )
-        self.metadata = dict(self.metadata)
+        self.metadata = require_json_dict(self.metadata, name="SceneObject metadata")
 
     @property
     def pose(self) -> Pose:
@@ -1155,7 +1197,7 @@ class GenerationOptions:
         if not isinstance(self.extras, dict):
             raise WorldForgeError("GenerationOptions extras must be a JSON object.")
         self.reference_images = list(self.reference_images)
-        self.extras = dict(self.extras)
+        self.extras = require_json_dict(self.extras, name="GenerationOptions extras")
 
     def to_dict(self) -> JSONDict:
         return {
@@ -1296,7 +1338,10 @@ class ProviderEvent:
         self.method = self.method.strip().upper() if self.method else None
         self.target = _sanitize_observable_target(self.target)
         self.message = _redact_observable_text(self.message)
-        self.metadata = _redact_observable_value(dict(self.metadata))
+        self.metadata = require_json_dict(
+            _redact_observable_value(dict(self.metadata)),
+            name="ProviderEvent metadata",
+        )
 
     def to_dict(self) -> JSONDict:
         return {
@@ -1424,7 +1469,7 @@ class VideoClip:
         if not isinstance(self.metadata, dict):
             raise WorldForgeError("VideoClip metadata must be a JSON object.")
         self.frames = list(self.frames)
-        self.metadata = dict(self.metadata)
+        self.metadata = require_json_dict(self.metadata, name="VideoClip metadata")
 
     @property
     def frame_count(self) -> int:
@@ -1577,7 +1622,7 @@ class ActionScoreResult:
         if not isinstance(self.metadata, dict):
             raise WorldForgeError("ActionScoreResult metadata must be a JSON object.")
         self.provider = self.provider.strip()
-        self.metadata = dict(self.metadata)
+        self.metadata = require_json_dict(self.metadata, name="ActionScoreResult metadata")
 
     @property
     def best_score(self) -> float:
@@ -1654,12 +1699,16 @@ class ActionPolicyResult:
         else:
             normalized_candidates = [list(self.actions)]
 
-        dump_json(self.raw_actions)
-        dump_json(self.metadata)
         self.provider = self.provider.strip()
         self.actions = list(self.actions)
-        self.raw_actions = dict(self.raw_actions)
-        self.metadata = dict(self.metadata)
+        self.raw_actions = require_json_dict(
+            self.raw_actions,
+            name="ActionPolicyResult raw_actions",
+        )
+        self.metadata = require_json_dict(
+            self.metadata,
+            name="ActionPolicyResult metadata",
+        )
         self.action_candidates = normalized_candidates
 
     def to_dict(self) -> JSONDict:

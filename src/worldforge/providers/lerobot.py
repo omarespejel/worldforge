@@ -378,7 +378,7 @@ class LeRobotPolicyProvider(BaseProvider):
     def select_actions(self, *, info: JSONDict) -> ActionPolicyResult:
         started = perf_counter()
         try:
-            observation, options, mode = self._validate_info(info)
+            observation, _options, mode = self._validate_info(info)
             policy = self._load_policy()
             try:
                 raw = self._invoke_policy(policy, observation, mode)

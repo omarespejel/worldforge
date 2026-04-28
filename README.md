@@ -70,7 +70,8 @@ scripts/robotics-showcase
 The command launches a staged Textual report by default and writes the same run data to
 `/tmp/worldforge-robotics-showcase/real-run.json`. Use `--tui-stage-delay 0.1` for a faster reveal,
 `--no-tui-animation` to skip sleeps and arm motion, `--no-tui` for the plain terminal report, or
-`--json-only` for automation.
+`--json-only` for automation. Use `--lewm-revision <tag-or-commit>` to pin auto-built LeWorldModel
+assets.
 
 Read the walkthrough and implementation notes: [Robotics Replay Showcase](https://abdelstark.github.io/worldforge/robotics-showcase/)
 and [Robotics Showcase Technical Deep Dive](https://abdelstark.github.io/worldforge/robotics-showcase-deep-dive/).

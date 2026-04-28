@@ -391,7 +391,7 @@ class RunwayProvider(RemoteProvider):
         if duration_seconds <= 0.0:
             raise ProviderError("Runway duration_seconds must be greater than 0.")
 
-        duration = max(2, min(10, int(round(duration_seconds or _RUNWAY_DEFAULT_DURATION))))
+        duration = max(2, min(10, round(duration_seconds or _RUNWAY_DEFAULT_DURATION)))
         ratio = self._ratio(options=options)
         resolution = _parse_ratio(ratio)
         model = options.model if options and options.model else self.default_model
@@ -467,10 +467,10 @@ class RunwayProvider(RemoteProvider):
         model = options.model if options and options.model else "gen4_aleph"
         references: list[dict[str, str]] = []
         if options:
-            for reference in options.reference_images:
-                references.append(
-                    {"uri": asset_to_uri(reference, default_content_type="image/png") or reference}
-                )
+            references.extend(
+                {"uri": asset_to_uri(reference, default_content_type="image/png") or reference}
+                for reference in options.reference_images
+            )
 
         body: dict[str, object] = {
             "model": model,

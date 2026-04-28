@@ -153,7 +153,7 @@ class MockProvider(BaseProvider):
         if duration_seconds <= 0.0:
             raise ProviderError("Mock duration_seconds must be greater than 0.")
         started = perf_counter()
-        frame_count = max(1, int(round(duration_seconds * 8)))
+        frame_count = max(1, round(duration_seconds * 8))
         clip = VideoClip(
             frames=[_frame_bytes(prompt, index) for index in range(frame_count)],
             fps=8.0,

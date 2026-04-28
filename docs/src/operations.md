@@ -139,8 +139,9 @@ include those IDs in surrounding application logs.
 - Runway artifact downloads fail explicitly on expired/unavailable URLs, empty downloads, and
   explicit unsupported content types.
 - LeWorldModel scoring fails explicitly when optional dependencies are unavailable, the checkpoint
-  cannot load, required `pixels` / `goal` / `action` fields are missing, action candidates are not
-  four-dimensional, or returned scores are not finite.
+  cannot load, required `pixels` / `goal` / `action` fields are missing, action candidates do not
+  have shape `(batch=1, samples, horizon, action_dim)`, returned score count does not match
+  candidate samples, or returned scores are not finite.
 - GR00T policy selection fails explicitly when the PolicyClient dependency is unavailable, the
   policy server is unreachable, observations are malformed, raw actions are not JSON-compatible,
   or no host-owned action translator is provided.
@@ -168,9 +169,12 @@ include those IDs in surrounding application logs.
   `uv run --python 3.13 --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" --with huggingface_hub --with matplotlib
   worldforge-build-leworldmodel-checkpoint --stablewm-home ~/.stable-wm --policy pusht/lewm`.
   `matplotlib` is required because upstream `stable_pretraining` imports it unconditionally at
-  module load time even though it is not declared as a runtime dependency. The builder downloads
-  assets to `~/.cache/worldforge/leworldmodel` by default and writes the object checkpoint under
-  `$STABLEWM_HOME`.
+  module load time even though it is not declared as a runtime dependency. Pass `--revision <tag-or-commit>`
+  or set `LEWORLDMODEL_REVISION` when the run must be pinned to a specific Hugging Face revision.
+  The builder loads downloaded `weights.pt` with `torch.load(..., weights_only=True)` by default;
+  `--allow-unsafe-pickle` exists only for trusted legacy weights and older torch environments. The
+  builder downloads assets to `~/.cache/worldforge/leworldmodel` by default and writes the object
+  checkpoint under `$STABLEWM_HOME`.
 - To demonstrate the LeWorldModel planning flow without optional dependencies, run
   `uv run worldforge-demo-leworldmodel`. It uses the real `LeWorldModelProvider` interface
   with an injected deterministic cost runtime and exercises score planning, execution,

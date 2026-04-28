@@ -224,10 +224,12 @@ def test_load_benchmark_budgets_accepts_list_or_object_payload() -> None:
     [
         ({}, "non-empty 'budgets' list"),
         ([], "non-empty list"),
+        ({"budgets": [{"max_error_count": 0}], "unexpected": True}, "unknown key"),
         ([{"operation": "not-real", "max_error_count": 0}], "operation must be one of"),
         ([{"provider": "", "max_error_count": 0}], "provider must be a non-empty string"),
         ([{"provider": "mock"}], "requires at least one threshold"),
         ([{"max_error_count": -1}], "max_error_count must be an integer"),
+        ([{"max_error_count": 0, "max_erorr_count": 0}], "unknown key"),
     ],
 )
 def test_load_benchmark_budgets_rejects_invalid_payloads(

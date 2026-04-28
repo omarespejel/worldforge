@@ -65,6 +65,8 @@ framework should track:
 
 - Ruff owns formatting-compatible linting and import ordering for `src`, `tests`, `examples`, and
   `scripts`.
+- The enforced Ruff surface includes bugbear-adjacent quality families for comprehensions,
+  returns, simplification, pytest style, performance footguns, and Ruff-native correctness checks.
 - Public `__all__` exports stay sorted so public API diffs are reviewable.
 - Mutable class metadata such as Textual `BINDINGS` and `SCREENS` must be annotated as `ClassVar`
   to separate framework declarations from instance state.
@@ -82,6 +84,8 @@ framework should track:
   `predict`. Branding must not override executable capability truth.
 - Provider events are log-facing records. Targets, messages, and metadata must remain sanitized
   before reaching JSON logs, in-memory sinks, or metrics aggregation.
+- Downloaded PyTorch weight files load through `torch.load(..., weights_only=True)` by default.
+  Falling back to pickle deserialization must be explicit and limited to trusted artifacts.
 
 ## Local Gate
 

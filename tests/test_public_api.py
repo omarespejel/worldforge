@@ -10,6 +10,9 @@ def test_top_level_exports_and_subpackages_import() -> None:
     assert worldforge.__version__
     assert worldforge.ActionPolicyResult is not None
     assert worldforge.ActionScoreResult is not None
+    assert worldforge.BenchmarkBudget is not None
+    assert worldforge.BenchmarkGateReport is not None
+    assert worldforge.BenchmarkGateViolation is not None
     assert worldforge.BenchmarkInputs is not None
     assert worldforge.BenchmarkReport is not None
     assert worldforge.BenchmarkResult is not None
@@ -41,6 +44,8 @@ def test_top_level_exports_and_subpackages_import() -> None:
     assert worldforge.WorldForgeError is not None
     assert worldforge.WorldStateError is not None
     assert worldforge.SceneObjectPatch is not None
+    assert worldforge.load_benchmark_budgets is not None
+    assert worldforge.load_benchmark_inputs is not None
     assert EvaluationSuite is not None
     assert worldforge.PlanningEvaluationSuite is not None
     assert worldforge.ReasoningEvaluationSuite is not None

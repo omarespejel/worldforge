@@ -22,7 +22,7 @@ def test_worlds_view_imports_without_textual() -> None:
 
     # Poison ``textual`` in ``sys.modules`` and reload the helper module. If
     # anything in the module imports Textual, the reload raises ModuleNotFoundError.
-    import worldforge.harness.worlds_view as module  # noqa: WPS433 - intentional
+    import worldforge.harness.worlds_view as module
 
     saved_textual = sys.modules.pop("textual", None)
     sys.modules["textual"] = None  # type: ignore[assignment]

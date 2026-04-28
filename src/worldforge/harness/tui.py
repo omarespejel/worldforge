@@ -158,7 +158,7 @@ def _maybe_query(node, selector: str, expected_type):
 
 
 class Breadcrumb(Static):
-    """Header breadcrumb showing ``worldforge › <screen> [› <flow>]``.
+    """Header breadcrumb showing ``worldforge > <screen> [> <flow>]``.
 
     Path segments live in a reactive tuple; later milestones can deepen the
     trail (worlds, runs) without changing the rendering surface.
@@ -179,7 +179,7 @@ class Breadcrumb(Static):
         if not new:
             self.update("")
             return
-        separator = Text(" › ", style="dim")
+        separator = Text(" > ", style="dim")
         rendered = Text()
         for index, segment in enumerate(new):
             if index:
@@ -800,15 +800,14 @@ class RunInspectorScreen(Screen):
             yield Breadcrumb(id="breadcrumb")
             yield ProviderStatusPill(id="provider-pill")
         if self._fixed_run is not None and self._fixed_run.kind != "flow":
-            with Container(id="root"):
-                with Horizontal(id="body"):
-                    with Vertical(id="timeline"):
-                        yield InspectorPane(id="inspector")
-                        yield TranscriptPane(id="transcript")
-                    yield ExportPane(
-                        artifacts=self._fixed_run.artifacts or {},
-                        widget_id="export-preview",
-                    )
+            with Container(id="root"), Horizontal(id="body"):
+                with Vertical(id="timeline"):
+                    yield InspectorPane(id="inspector")
+                    yield TranscriptPane(id="transcript")
+                yield ExportPane(
+                    artifacts=self._fixed_run.artifacts or {},
+                    widget_id="export-preview",
+                )
             yield Footer()
             return
         with Container(id="root"):
@@ -3851,31 +3850,30 @@ class WorldForgeCommandProvider(  # pragma: no cover - exercised by Pilot/provid
         if not hasattr(app, "_get_forge"):
             return []
         forge = app._get_forge()  # type: ignore[attr-defined]
-        items: list[tuple[str, str, Any]] = []
-        for world_id in forge.list_worlds():
-            items.append(
-                (
-                    f"World: {world_id}",
-                    "Open the Worlds screen",
-                    lambda world_id=world_id: app._open_world_from_palette(world_id),  # type: ignore[attr-defined]
-                )
+        items: list[tuple[str, str, Any]] = [
+            (
+                f"World: {world_id}",
+                "Open the Worlds screen",
+                lambda world_id=world_id: app._open_world_from_palette(world_id),  # type: ignore[attr-defined]
             )
-        for provider in forge.providers():
-            items.append(
-                (
-                    f"Provider: {provider}",
-                    "Open the Providers screen",
-                    lambda provider=provider: app._open_provider_from_palette(provider),  # type: ignore[attr-defined]
-                )
+            for world_id in forge.list_worlds()
+        ]
+        items.extend(
+            (
+                f"Provider: {provider}",
+                "Open the Providers screen",
+                lambda provider=provider: app._open_provider_from_palette(provider),  # type: ignore[attr-defined]
             )
-        for path in recent_report_paths(forge.state_dir, limit=50):
-            items.append(
-                (
-                    f"Run: {path.name}",
-                    "Open the preserved report",
-                    lambda path=path: app._open_report_path(path),  # type: ignore[attr-defined]
-                )
+            for provider in forge.providers()
+        )
+        items.extend(
+            (
+                f"Run: {path.name}",
+                "Open the preserved report",
+                lambda path=path: app._open_report_path(path),  # type: ignore[attr-defined]
             )
+            for path in recent_report_paths(forge.state_dir, limit=50)
+        )
         return items
 
 

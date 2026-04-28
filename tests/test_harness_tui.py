@@ -1229,8 +1229,8 @@ def test_dynamic_command_provider_finds_world_provider_and_run(tmp_path) -> None
             world_hits = [hit async for hit in provider.search("palette")]
             provider_hits = [hit async for hit in provider.search("mock")]
             run_hits = [hit async for hit in provider.search(report_path.name[:12])]
-            assert any("World: palette-lab" == hit.text for hit in world_hits)
-            assert any("Provider: mock" == hit.text for hit in provider_hits)
+            assert any(hit.text == "World: palette-lab" for hit in world_hits)
+            assert any(hit.text == "Provider: mock" for hit in provider_hits)
             assert any(hit.text and hit.text.startswith("Run: ") for hit in run_hits)
 
     asyncio.run(scenario())

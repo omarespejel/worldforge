@@ -243,10 +243,7 @@ def _score_chart(result: dict[str, Any], *, color: bool = False) -> list[str]:
     lines = [f"  {'rank':<4} {'candidate':<9} {'score':>12} {delta_label:>12}  landscape"]
     for rank, (index, score) in enumerate(ranked, start=1):
         delta = (score - best_score) if lower_is_better else (best_score - score)
-        if span == 0:
-            fill = 0
-        else:
-            fill = round((delta / span) * width)
+        fill = 0 if span == 0 else round((delta / span) * width)
         bar = "#" * fill
         marker = "BEST" if index == best_index else ""
         marker = _paint(marker, "green", enabled=color, bold=True) if marker else ""

@@ -24,6 +24,8 @@ releases may still include breaking changes when the public API needs to tighten
 - Added an engineering quality standards page that maps WorldForge's Python packaging, testing,
   linting, typed-distribution, ML reproducibility, and robotics-runtime boundaries to upstream
   Python and scientific-computing guidance.
+- Exported benchmark budget and fixture-loading helpers from the top-level Python package so
+  provider benchmarking workflows do not need to reach into implementation modules.
 
 ### Fixed
 
@@ -43,6 +45,21 @@ releases may still include breaking changes when the public API needs to tighten
 - `scripts/test_package.sh` now validates wheel and sdist contents before installing the wheel,
   including capability protocol files, the `py.typed` marker, console scripts, and source-package
   docs/tests/scripts.
+- Public JSON-carrying models now reject non-JSON-native action parameters, scene metadata,
+  provider-event metadata, score metadata, policy raw actions, and policy metadata at construction
+  time instead of allowing values that fail later during persistence or artifact serialization.
+- World import/load validation now requires the persisted schema version, validates embedded scene
+  object payloads, rejects `SceneObjectPatch` misuse, and treats a single provider string in
+  `World.compare(...)` as one provider rather than a sequence of characters.
+- Capability protocol adapters now wrap unexpected runtime exceptions as `ProviderError` after
+  emitting failure events.
+- LeWorldModel direct scoring now validates checkpoint-native candidate shape and requires one
+  returned score per candidate sample before constructing `ActionScoreResult`.
+- Benchmark budget fixtures now reject unknown top-level or budget-entry keys so typoed release
+  thresholds fail closed.
+- The LeWorldModel object-checkpoint builder now supports pinned Hugging Face revisions and loads
+  downloaded weights with `torch.load(..., weights_only=True)` by default. The
+  `--allow-unsafe-pickle` escape hatch is explicit for trusted legacy weights only.
 
 ### Changed
 
@@ -55,6 +72,8 @@ releases may still include breaking changes when the public API needs to tighten
 - Pytest now runs with importlib import mode and strict xfail handling, while Ruff enforces sorted
   exports, explicit mutable class metadata annotations, literal exception-match patterns, and
   clearer pytest imports/assertions.
+- Ruff now also enforces comprehension, simplification, return, performance, pytest-style, and
+  Ruff-native correctness rules across `src`, `tests`, `examples`, and `scripts`.
 - Dedupe repeated provider scaffolding into shared `BaseProvider._emit_operation_event` and
   `BaseProvider._health` helpers, and move `no_grad_context` plus `prepare_model` into
   `providers/_policy.py`. The cosmos, runway, leworldmodel, lerobot, gr00t, and jepa-wms adapters

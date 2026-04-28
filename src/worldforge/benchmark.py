@@ -76,6 +76,17 @@ _TRANSFER_CLIP_KEYS = (
     "duration_seconds",
     "metadata",
 )
+_BENCHMARK_BUDGET_KEYS = {
+    "provider",
+    "operation",
+    "min_success_rate",
+    "max_error_count",
+    "max_retry_count",
+    "max_average_latency_ms",
+    "max_p95_latency_ms",
+    "min_throughput_per_second",
+}
+_BENCHMARK_BUDGET_WRAPPER_KEYS = {"budgets"}
 
 
 def _sample_transfer_clip() -> VideoClip:
@@ -186,6 +197,15 @@ def _format_optional_number(value: float | int | None) -> str:
     if isinstance(value, int):
         return str(value)
     return f"{value:.4f}"
+
+
+def _reject_unknown_keys(payload: JSONDict, *, allowed: set[str], name: str) -> None:
+    unknown = sorted(set(payload) - allowed)
+    if unknown:
+        raise WorldForgeError(
+            f"{name} contains unknown key(s): {', '.join(unknown)}. "
+            f"Allowed keys: {', '.join(sorted(allowed))}."
+        )
 
 
 def _required_json_object(value: object, *, name: str) -> JSONDict:
@@ -424,6 +444,11 @@ class BenchmarkBudget:
     def from_dict(cls, payload: JSONDict) -> BenchmarkBudget:
         if not isinstance(payload, dict):
             raise WorldForgeError("Benchmark budget entries must be JSON objects.")
+        _reject_unknown_keys(
+            payload,
+            allowed=_BENCHMARK_BUDGET_KEYS,
+            name="Benchmark budget entry",
+        )
         return cls(
             provider=payload.get("provider"),
             operation=payload.get("operation"),
@@ -529,8 +554,8 @@ class BenchmarkGateReport:
                     "| --- | --- | --- | ---: | ---: | --- | --- |",
                 ]
             )
-            for violation in self.violations:
-                lines.append(
+            lines.extend(
+                (
                     "| "
                     f"{violation.provider} | "
                     f"{violation.operation} | "
@@ -540,6 +565,8 @@ class BenchmarkGateReport:
                     f"{violation.condition} | "
                     f"{violation.budget_selector} |"
                 )
+                for violation in self.violations
+            )
         return "\n".join(lines)
 
     def to_csv(self) -> str:
@@ -577,6 +604,11 @@ def load_benchmark_budgets(payload: object) -> list[BenchmarkBudget]:
 
     budget_entries = payload
     if isinstance(payload, dict):
+        _reject_unknown_keys(
+            payload,
+            allowed=_BENCHMARK_BUDGET_WRAPPER_KEYS,
+            name="Benchmark budget payload",
+        )
         budget_entries = payload.get("budgets")
     if not isinstance(budget_entries, list) or not budget_entries:
         raise WorldForgeError(
@@ -922,14 +954,16 @@ class BenchmarkReport:
             "| provider | operation | ok | retries | avg_ms | p95_ms | throughput/s |",
             "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
         ]
-        for result in self.results:
-            lines.append(
+        lines.extend(
+            (
                 f"| {result.provider} | {result.operation} | "
                 f"{result.success_count}/{result.iterations} | {result.retry_count} | "
                 f"{(result.average_latency_ms or 0.0):.2f} | "
                 f"{(result.p95_latency_ms or 0.0):.2f} | "
                 f"{result.throughput_per_second:.2f} |"
             )
+            for result in self.results
+        )
         return "\n".join(lines)
 
     def to_csv(self) -> str:

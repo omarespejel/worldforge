@@ -61,6 +61,7 @@ from worldforge.models import (
     ensure_directory,
     generate_id,
     require_finite_number,
+    require_json_dict,
     require_non_negative_int,
     require_positive_int,
     require_probability,
@@ -193,11 +194,17 @@ def _validate_world_state_payload(state: JSONDict, *, context: str) -> None:
     if not isinstance(state, dict):
         raise WorldStateError(f"{context} must be a JSON object.")
 
-    missing_keys = [key for key in ("id", "name", "provider") if key not in state]
+    missing_keys = [key for key in ("schema_version", "id", "name", "provider") if key not in state]
     if missing_keys:
         joined = ", ".join(sorted(missing_keys))
         raise WorldStateError(f"{context} is missing required keys: {joined}.")
     try:
+        schema_version = require_positive_int(
+            state["schema_version"],
+            name=f"{context} field 'schema_version'",
+        )
+        if schema_version != SCHEMA_VERSION:
+            raise WorldForgeError(f"{context} field 'schema_version' must be {SCHEMA_VERSION}.")
         _validate_storage_id(state["id"], name=f"{context} field 'id'")
         _require_non_empty_text(state["name"], name=f"{context} field 'name'")
         _require_non_empty_text(state["provider"], name=f"{context} field 'provider'")
@@ -212,6 +219,8 @@ def _validate_world_state_payload(state: JSONDict, *, context: str) -> None:
     if not isinstance(objects, dict):
         raise WorldStateError(f"{context} field 'scene.objects' must be a JSON object.")
     for object_id, object_state in objects.items():
+        if not isinstance(object_id, str) or not object_id.strip():
+            raise WorldStateError(f"{context} scene object ids must be non-empty strings.")
         if not isinstance(object_state, dict):
             raise WorldStateError(f"{context} scene object '{object_id}' must be a JSON object.")
         embedded_id = object_state.get("id")
@@ -220,10 +229,20 @@ def _validate_world_state_payload(state: JSONDict, *, context: str) -> None:
                 f"{context} scene object key '{object_id}' does not match embedded id "
                 f"'{embedded_id}'."
             )
+        object_payload = dict(object_state)
+        object_payload.setdefault("id", object_id)
+        try:
+            SceneObject.from_dict(object_payload)
+        except (KeyError, TypeError, ValueError, WorldForgeError) as exc:
+            raise WorldStateError(
+                f"{context} scene object '{object_id}' is invalid: {exc}"
+            ) from exc
 
     metadata = state.get("metadata", {})
-    if not isinstance(metadata, dict):
-        raise WorldStateError(f"{context} field 'metadata' must be a JSON object.")
+    try:
+        require_json_dict(metadata, name=f"{context} field 'metadata'")
+    except WorldForgeError as exc:
+        raise WorldStateError(str(exc)) from exc
 
     history = state.get("history", [])
     if not isinstance(history, list):
@@ -262,7 +281,7 @@ def _restore_scene_objects(state: JSONDict, *, context: str) -> dict[str, SceneO
         object_payload.setdefault("id", str(object_id))
         try:
             restored[str(object_id)] = SceneObject.from_dict(object_payload)
-        except (KeyError, TypeError, ValueError) as exc:
+        except (KeyError, TypeError, ValueError, WorldForgeError) as exc:
             raise WorldStateError(
                 f"{context} scene object '{object_id}' could not be restored: {exc}"
             ) from exc
@@ -351,20 +370,24 @@ class Comparison:
             "| provider | physics_score | confidence | latency_ms |",
             "| --- | ---: | ---: | ---: |",
         ]
-        for result in self.results:
-            lines.append(
+        lines.extend(
+            (
                 f"| {result.provider} | {result.physics_score:.2f} | "
                 f"{result.confidence:.2f} | {result.latency_ms:.2f} |"
             )
+            for result in self.results
+        )
         return "\n".join(lines)
 
     def to_csv(self) -> str:
         rows = ["provider,physics_score,confidence,latency_ms"]
-        for result in self.results:
-            rows.append(
+        rows.extend(
+            (
                 f"{result.provider},{result.physics_score:.4f},"
                 f"{result.confidence:.4f},{result.latency_ms:.4f}"
             )
+            for result in self.results
+        )
         return "\n".join(rows)
 
     def to_json(self) -> str:
@@ -492,11 +515,13 @@ class World:
         self.provider = _require_non_empty_text(provider, name="World provider")
         self.description = description
         self.step = 0
-        self.metadata: JSONDict = metadata.copy() if metadata else {}
+        self.metadata = require_json_dict(metadata or {}, name="World metadata")
         self.metadata.setdefault("name", self.name)
-        if max_history is not None and max_history <= 0:
-            raise WorldForgeError("World max_history must be a positive integer or None.")
-        self.max_history = max_history
+        self.max_history = (
+            require_positive_int(max_history, name="World max_history")
+            if max_history is not None
+            else None
+        )
         self.scene_objects: dict[str, SceneObject] = {}
         self._history: list[HistoryEntry] = []
         self._record_history(summary="world initialized", action=None)
@@ -665,6 +690,8 @@ class World:
         return scene_object.copy() if scene_object else None
 
     def update_object_patch(self, object_id: str, patch: SceneObjectPatch) -> SceneObject:
+        if not isinstance(patch, SceneObjectPatch):
+            raise WorldForgeError("update_object_patch() patch must be a SceneObjectPatch.")
         try:
             scene_object = self.scene_objects[object_id]
         except KeyError as exc:
@@ -775,8 +802,10 @@ class World:
             _forge=self._forge,
         )
 
-    def compare(self, action: Action, providers: Sequence[str], steps: int = 1) -> Comparison:
+    def compare(self, action: Action, providers: str | Sequence[str], steps: int = 1) -> Comparison:
         require_positive_int(steps, name="steps")
+        if isinstance(providers, str):
+            providers = [providers]
         if not providers:
             raise WorldForgeError("compare() requires at least one provider.")
         state = self._snapshot()
@@ -1435,7 +1464,7 @@ class WorldForge:
         flags = (
             legacy_profile.capabilities.to_dict()
             if legacy_profile is not None
-            else {name: False for name in CAPABILITY_NAMES}
+            else dict.fromkeys(CAPABILITY_NAMES, False)
         )
         for wrapper in wrappers:
             flags[CAPABILITY_FIELD_TO_NAME[wrapper.kind]] = True

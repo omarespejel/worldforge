@@ -13,6 +13,7 @@ where ``stable_worldmodel.policy.AutoCostModel`` expects it.
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import os
 from pathlib import Path
@@ -29,7 +30,7 @@ def _repo_cache_dir(repo_id: str) -> Path:
 
 def _load_optional_build_dependencies():
     try:
-        import stable_pretraining  # noqa: F401  probe upstream transitive imports
+        importlib.import_module("stable_pretraining")  # probe upstream transitive imports
         import torch
         from huggingface_hub import hf_hub_download
         from hydra.utils import instantiate
@@ -59,12 +60,27 @@ def _incompatible_keys(load_result: object) -> tuple[list[str], list[str]]:
     return list(missing), list(unexpected)
 
 
+def _load_weights(torch: object, weights_path: Path, *, allow_unsafe_pickle: bool) -> object:
+    if allow_unsafe_pickle:
+        return torch.load(weights_path, map_location="cpu")
+    try:
+        return torch.load(weights_path, map_location="cpu", weights_only=True)
+    except TypeError as exc:
+        raise SystemExit(
+            "Safe LeWorldModel weight loading requires a torch version that supports "
+            "`torch.load(..., weights_only=True)`. Upgrade torch or rerun with "
+            "`--allow-unsafe-pickle` only when the weights file is trusted."
+        ) from exc
+
+
 def build_checkpoint(
     *,
     repo_id: str,
     policy: str,
     stablewm_home: Path,
     cache_dir: Path | None = None,
+    revision: str | None = None,
+    allow_unsafe_pickle: bool = False,
     force: bool = False,
 ) -> dict[str, object]:
     """Build and persist an object checkpoint from a Hugging Face LeWM repo."""
@@ -79,18 +95,28 @@ def build_checkpoint(
             "reason": "checkpoint already exists",
         }
 
-    torch, hf_hub_download, instantiate, OmegaConf = _load_optional_build_dependencies()
+    torch, hf_hub_download, instantiate, omega_conf = _load_optional_build_dependencies()
     asset_dir = (cache_dir or _repo_cache_dir(repo_id)).expanduser()
     config_path = Path(
-        hf_hub_download(repo_id=repo_id, filename="config.json", local_dir=str(asset_dir))
+        hf_hub_download(
+            repo_id=repo_id,
+            filename="config.json",
+            local_dir=str(asset_dir),
+            revision=revision,
+        )
     )
     weights_path = Path(
-        hf_hub_download(repo_id=repo_id, filename="weights.pt", local_dir=str(asset_dir))
+        hf_hub_download(
+            repo_id=repo_id,
+            filename="weights.pt",
+            local_dir=str(asset_dir),
+            revision=revision,
+        )
     )
 
-    config = OmegaConf.load(config_path)
+    config = omega_conf.load(config_path)
     model = instantiate(config)
-    weights = torch.load(weights_path, map_location="cpu")
+    weights = _load_weights(torch, weights_path, allow_unsafe_pickle=allow_unsafe_pickle)
     incompatible = model.load_state_dict(weights, strict=False)
     missing, unexpected = _incompatible_keys(incompatible)
     if missing or unexpected:
@@ -105,7 +131,7 @@ def build_checkpoint(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(model, output_path)
-    return {
+    summary: dict[str, object] = {
         "created": True,
         "config": str(config_path),
         "output": str(output_path),
@@ -113,6 +139,9 @@ def build_checkpoint(
         "repo_id": repo_id,
         "weights": str(weights_path),
     }
+    if revision is not None:
+        summary["revision"] = revision
+    return summary
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -121,6 +150,11 @@ def _parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--repo-id", default=DEFAULT_REPO_ID)
+    parser.add_argument(
+        "--revision",
+        default=os.environ.get("LEWORLDMODEL_REVISION"),
+        help="Optional Hugging Face git revision, tag, or commit for config.json and weights.pt.",
+    )
     parser.add_argument("--policy", default=os.environ.get("LEWORLDMODEL_POLICY", "pusht/lewm"))
     parser.add_argument(
         "--stablewm-home",
@@ -140,6 +174,14 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Rebuild and overwrite the object checkpoint when it already exists.",
     )
+    parser.add_argument(
+        "--allow-unsafe-pickle",
+        action="store_true",
+        help=(
+            "Allow legacy torch.load pickle deserialization for trusted weights only. "
+            "By default, weights are loaded with weights_only=True."
+        ),
+    )
     return parser
 
 
@@ -150,6 +192,8 @@ def main() -> int:
         policy=args.policy,
         stablewm_home=args.stablewm_home,
         cache_dir=args.asset_cache_dir.expanduser() if args.asset_cache_dir else None,
+        revision=args.revision,
+        allow_unsafe_pickle=args.allow_unsafe_pickle,
         force=args.force,
     )
     print(json.dumps(summary, indent=2, sort_keys=True))

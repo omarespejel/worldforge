@@ -82,7 +82,7 @@ def test_scaffold_provider_script_refuses_to_overwrite_files(tmp_path: Path) -> 
     ]
 
     subprocess.run(command, check=True, capture_output=True, text=True)
-    second = subprocess.run(command, capture_output=True, text=True)
+    second = subprocess.run(command, check=False, capture_output=True, text=True)
 
     assert second.returncode == 2
     assert "refusing to overwrite existing scaffold files" in second.stderr

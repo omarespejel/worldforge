@@ -27,7 +27,7 @@ from worldforge.models import (
     ProviderProfile,
     WorldForgeError,
 )
-from worldforge.providers.base import ProviderProfileSpec
+from worldforge.providers.base import ProviderError, ProviderProfileSpec
 
 ProviderEventHandler = Callable[[ProviderEvent], None]
 
@@ -81,7 +81,7 @@ class _ObservableCapability:
 
     @property
     def name(self) -> str:
-        return getattr(self._impl, "name")  # noqa: B009 — explicit attr read for type narrowing
+        return self._impl.name
 
     @property
     def kind(self) -> str:
@@ -205,10 +205,15 @@ class _ObservableCapability:
         started = perf_counter()
         try:
             result = method(*args, **kwargs)
-        except Exception as exc:
+        except ProviderError as exc:
             duration_ms = max(0.1, (perf_counter() - started) * 1000)
             self._emit(phase="failure", duration_ms=duration_ms, message=str(exc))
             raise
+        except Exception as exc:
+            duration_ms = max(0.1, (perf_counter() - started) * 1000)
+            wrapped = ProviderError(f"Provider '{self.name}' {self._operation} failed: {exc}")
+            self._emit(phase="failure", duration_ms=duration_ms, message=str(wrapped))
+            raise wrapped from exc
         duration_ms = max(0.1, (perf_counter() - started) * 1000)
         self._emit(phase="success", duration_ms=duration_ms)
         return result

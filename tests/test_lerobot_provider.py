@@ -665,9 +665,7 @@ def test_lerobot_provider_raises_when_no_policy_class_resolves(monkeypatch) -> N
     real_import = importlib.import_module
 
     def no_policy_module(name: str, *args: object, **kwargs: object):
-        if name.startswith("lerobot.policies.vqbet") or name.startswith(
-            "lerobot.common.policies.vqbet"
-        ):
+        if name.startswith(("lerobot.policies.vqbet", "lerobot.common.policies.vqbet")):
             raise ImportError("simulated missing vqbet module")
         return real_import(name, *args, **kwargs)
 

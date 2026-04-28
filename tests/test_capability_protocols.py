@@ -29,7 +29,7 @@ from worldforge.models import (
     ProviderEvent,
     VideoClip,
 )
-from worldforge.providers.base import ProviderProfileSpec
+from worldforge.providers.base import ProviderError, ProviderProfileSpec
 from worldforge.providers.mock import MockProvider
 from worldforge.providers.observable import _ObservableCapability
 
@@ -173,11 +173,11 @@ def test_observable_capability_emits_failure_event_on_exception():
 
     events: list[ProviderEvent] = []
     wrapped = _ObservableCapability(_Boom(), kind="cost", event_handler=events.append)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(ProviderError, match="Provider 'boom' score failed: boom"):
         wrapped.call(info={}, action_candidates=[])
     assert len(events) == 1
     assert events[0].phase == "failure"
-    assert "boom" in events[0].message
+    assert "Provider 'boom' score failed: boom" in events[0].message
 
 
 def test_observable_capability_synthesizes_diagnostics_surfaces():

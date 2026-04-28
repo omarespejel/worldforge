@@ -224,6 +224,7 @@ The wrapper filters common native-library and simulation warning noise. Set
 - LeRobot policy path and policy type;
 - LeWorldModel policy name;
 - object checkpoint path or cache root;
+- optional Hugging Face revision for auto-built LeWorldModel assets;
 - device settings;
 - state directory;
 - JSON output path;
@@ -245,6 +246,12 @@ If the default checkpoint is missing, the polished runner builds it from Hugging
 `worldforge.smoke.leworldmodel_checkpoint`. That builder downloads `config.json` and `weights.pt`
 from `quentinll/lewm-pusht`, instantiates the upstream model, loads the weights, freezes the
 module, and saves the object checkpoint where `AutoCostModel` expects it.
+
+For reproducible artifact resolution, pass `--lewm-revision <tag-or-commit>` or set
+`LEWORLDMODEL_REVISION`; the same revision is passed to both Hugging Face downloads. The builder
+loads the downloaded `weights.pt` with `torch.load(..., weights_only=True)` by default. The
+`--allow-unsafe-pickle` flag is intentionally explicit and should be limited to trusted legacy
+weights or older torch environments that cannot perform safe weights-only deserialization.
 
 ### 3. The Runner Forwards Packaged PushT Hooks
 
@@ -591,6 +598,7 @@ Common failure points and where to inspect them:
 | `missing optional dependency lerobot` | Host runtime | `scripts/robotics-showcase --health-only` |
 | `missing optional dependency torch` or `stable_worldmodel` | Host runtime | `scripts/robotics-showcase --health-only` |
 | checkpoint not found | LeWorldModel artifact cache | `worldforge-build-leworldmodel-checkpoint` or `--checkpoint` |
+| torch does not support `weights_only=True` | Checkpoint builder safety gate | upgrade torch or use `--allow-unsafe-pickle` only for trusted weights |
 | policy output cannot translate | Action translator | `--translator module:function` |
 | score provider rejects action candidates | Candidate bridge | `--candidate-builder module:function` and `--expected-action-dim` |
 | score count does not match candidates | Planner contract | `World.plan(...)` score/candidate validation |

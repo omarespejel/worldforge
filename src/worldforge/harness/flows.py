@@ -392,12 +392,14 @@ def _markdown_from_eval_payload(payload: JSONDict) -> str:
         "| provider | average_score | passed | scenarios |",
         "| --- | ---: | ---: | ---: |",
     ]
-    for summary in payload.get("provider_summaries", []):
-        lines.append(
+    lines.extend(
+        (
             f"| {summary.get('provider')} | {float(summary.get('average_score', 0.0)):.2f} | "
             f"{summary.get('passed_scenario_count', 0)}/{summary.get('scenario_count', 0)} | "
             f"{summary.get('scenario_count', 0)} |"
         )
+        for summary in payload.get("provider_summaries", [])
+    )
     return "\n".join(lines)
 
 
@@ -408,14 +410,16 @@ def _markdown_from_benchmark_payload(payload: JSONDict) -> str:
         "| provider | operation | ok | retries | avg_ms | p95_ms | throughput/s |",
         "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
     ]
-    for result in payload.get("results", []):
-        lines.append(
+    lines.extend(
+        (
             f"| {result.get('provider')} | {result.get('operation')} | "
             f"{result.get('success_count')}/{result.get('iterations')} | "
             f"{result.get('retry_count')} | {float(result.get('average_latency_ms') or 0.0):.2f} | "
             f"{float(result.get('p95_latency_ms') or 0.0):.2f} | "
             f"{float(result.get('throughput_per_second') or 0.0):.2f} |"
         )
+        for result in payload.get("results", [])
+    )
     return "\n".join(lines)
 
 

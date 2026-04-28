@@ -5,10 +5,15 @@ from __future__ import annotations
 from importlib.metadata import PackageNotFoundError, version
 
 from worldforge.benchmark import (
+    BenchmarkBudget,
+    BenchmarkGateReport,
+    BenchmarkGateViolation,
     BenchmarkInputs,
     BenchmarkReport,
     BenchmarkResult,
     ProviderBenchmarkHarness,
+    load_benchmark_budgets,
+    load_benchmark_inputs,
     run_benchmark,
 )
 from worldforge.capabilities import (
@@ -94,6 +99,9 @@ __all__ = [
     "ActionPolicyResult",
     "ActionScoreResult",
     "BBox",
+    "BenchmarkBudget",
+    "BenchmarkGateReport",
+    "BenchmarkGateViolation",
     "BenchmarkInputs",
     "BenchmarkReport",
     "BenchmarkResult",
@@ -156,6 +164,8 @@ __all__ = [
     "WorldStateError",
     "__version__",
     "list_eval_suites",
+    "load_benchmark_budgets",
+    "load_benchmark_inputs",
     "run_benchmark",
     "run_eval",
 ]
