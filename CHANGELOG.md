@@ -94,6 +94,9 @@ releases may still include breaking changes when the public API needs to tighten
   classes into memory.
 - The robotics showcase wrapper no longer suppresses LeRobot runtime device fallback warnings, so
   CUDA-to-MPS or similar execution changes remain visible in the terminal.
+- Documentation now routes release validation through `make check` and `make release-check`, keeps
+  robotics preflight commands visible from the README/CLI/examples pages, and splits long optional
+  runtime commands into copy-pasteable blocks.
 - `save_world` skips a redundant `json.dumps`/`json.loads` round trip; the validation call now
   runs directly against the serialized dict.
 - Documentation metadata and README links now point at the published GitHub Pages site.

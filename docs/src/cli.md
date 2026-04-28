@@ -121,6 +121,7 @@ scripts/lewm-real --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt --device cpu
 LeRobot policy plus LeWorldModel checkpoint scoring replay:
 
 ```bash
+scripts/robotics-showcase --health-only
 scripts/robotics-showcase
 ```
 

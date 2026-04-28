@@ -16,8 +16,7 @@ uv sync --group dev
 uv lock --check
 uv run worldforge doctor
 uv run worldforge examples
-uv run python scripts/generate_provider_docs.py --check
-uv run mkdocs build --strict
+make docs-check
 uv run pytest tests/test_cli_help_snapshots.py tests/test_provider_catalog_docs.py
 ```
 
@@ -451,15 +450,7 @@ Use this before publishing a package, merging provider work, or pushing a milest
 
 ```bash
 uv sync --group dev
-uv lock --check
-uv run ruff check src tests examples scripts
-uv run ruff format --check src tests examples scripts
-uv run python scripts/generate_provider_docs.py --check
-uv run mkdocs build --strict
-uv run pytest
-uv run --extra harness pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
-bash scripts/test_package.sh
-uv build --out-dir dist --clear --no-build-logs
+make check
 ```
 
 The package contract checks both distribution artifacts: the wheel must contain only runtime package
@@ -467,7 +458,13 @@ files, the `py.typed` marker, capability protocols, observable capability wrappe
 scripts; the sdist must contain docs, tests, examples, scripts, and release metadata needed to
 rebuild and audit the source package.
 
-Security audit:
+Run the full release gate plus dependency audit before cutting a tag:
+
+```bash
+make release-check
+```
+
+Standalone audit command used by `make release-check`:
 
 ```bash
 tmp_req="$(mktemp requirements-audit.XXXXXX)"

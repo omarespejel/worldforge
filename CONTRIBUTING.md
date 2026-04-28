@@ -24,6 +24,9 @@ make test-package
 make build
 ```
 
+`make check` runs that complete local gate in order. `make release-check` runs `make check` plus
+the dependency audit and is the command to use before tagging or publishing.
+
 `make test-package` is the packaging contract check. It builds the wheel and sdist with `uv`,
 checks the distribution contents, installs the wheel into an isolated virtual environment, and runs
 the root test suite against the installed package.

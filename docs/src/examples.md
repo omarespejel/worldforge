@@ -69,6 +69,7 @@ checkpoint inference.
 | Example | Command | Runtime boundary |
 | --- | --- | --- |
 | `leworldmodel-real-checkpoint-smoke` | `scripts/lewm-real --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt --device cpu` | Requires host-owned `stable_worldmodel`, torch, datasets, and LeWM checkpoint assets; prints visual pipeline, tensor, latency, event, and candidate-cost output. |
+| `lerobot-leworldmodel-health` | `scripts/robotics-showcase --health-only` | Non-mutating preflight for LeRobot, LeWorldModel, and checkpoint presence before running the full showcase. |
 | `lerobot-leworldmodel-real-robotics` | `scripts/robotics-showcase` | Requires host-owned LeRobot, `stable_worldmodel`, torch, datasets, a real policy checkpoint, LeWM checkpoint assets, and PushT simulation dependencies; runs a packaged PushT bridge through real policy+score planning and opens a staged Textual visual report by default. See the [robotics replay showcase walkthrough](./robotics-showcase.md). |
 
 ## Operational Commands

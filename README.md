@@ -69,9 +69,9 @@ scripts/robotics-showcase
 
 The command launches a staged Textual report by default and writes the same run data to
 `/tmp/worldforge-robotics-showcase/real-run.json`. Use `--tui-stage-delay 0.1` for a faster reveal,
-`--no-tui-animation` to skip sleeps and arm motion, `--no-tui` for the plain terminal report, or
-`--json-only` for automation. Use `--lewm-revision <tag-or-commit>` to pin auto-built LeWorldModel
-assets.
+`--no-tui-animation` to skip sleeps and arm motion, `--no-tui` for the plain terminal report,
+`--json-only` for automation, or `--health-only` for a non-mutating dependency/checkpoint
+preflight. Use `--lewm-revision <tag-or-commit>` to pin auto-built LeWorldModel assets.
 
 Read the walkthrough and implementation notes: [Robotics Replay Showcase](https://abdelstark.github.io/worldforge/robotics-showcase/)
 and [Robotics Showcase Technical Deep Dive](https://abdelstark.github.io/worldforge/robotics-showcase-deep-dive/).
@@ -424,15 +424,13 @@ Primary local gate (same as CI):
 
 ```bash
 uv sync --group dev
-uv lock --check
-uv run ruff check src tests examples scripts
-uv run ruff format --check src tests examples scripts
-uv run python scripts/generate_provider_docs.py --check
-uv run pytest
-uv run --extra harness pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
-bash scripts/test_package.sh
-uv build --out-dir dist --clear --no-build-logs
+make check
 ```
+
+`make check` runs the lock check, Ruff, strict docs build, full pytest, harness coverage gate,
+wheel/sdist package contract, and distribution build. Run `make release-check` before a tag; it
+adds the dependency audit. The expanded gate and triage steps live in the
+[operator playbooks](https://abdelstark.github.io/worldforge/playbooks/#9-prepare-a-release-or-public-branch).
 
 Scaffold a new provider:
 

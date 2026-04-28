@@ -21,12 +21,17 @@ world-model planning loops, evaluation harnesses, and testable prototypes. It is
 control plane and it does not own checkpoints, robot runtimes, production telemetry, or durable
 multi-writer persistence.
 
-Start with:
+## Documentation Map
 
-- [Quick Start](./quickstart.md) for the Python and CLI path.
-- [CLI Reference](./cli.md) for the full command map.
-- [World Model Taxonomy](./world-model-taxonomy.md) for terminology and capability boundaries.
-- [Architecture](./architecture.md) for the provider pipeline and planning modes.
-- [User And Operator Playbooks](./playbooks.md) for checkout validation, provider diagnostics,
-  persistence recovery, optional runtime smokes, benchmarks, and release gates.
-- [Provider Authoring Guide](./provider-authoring-guide.md) before adding an adapter.
+| Need | Start here |
+| --- | --- |
+| Install, create a world, and run the mock provider | [Quick Start](./quickstart.md) |
+| Find an exact CLI command or optional runtime smoke | [CLI Reference](./cli.md) |
+| Understand capability names and provider boundaries | [World Model Taxonomy](./world-model-taxonomy.md) |
+| See module responsibilities and planning pipelines | [Architecture](./architecture.md) |
+| Validate a checkout, diagnose providers, run smokes, or prepare a release | [User And Operator Playbooks](./playbooks.md) |
+| Add or promote a provider adapter | [Provider Authoring Guide](./provider-authoring-guide.md) |
+| Check package, testing, typing, and ML-runtime quality rules | [Engineering Quality](./quality.md) |
+
+If a page changes public behavior, update the linked operational page and the changelog in the same
+branch. WorldForge docs are treated as part of the package contract, not as post-release notes.

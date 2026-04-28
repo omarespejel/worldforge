@@ -4,14 +4,10 @@ WorldForge contributions should keep code, tests, docs, and agent context in syn
 
 ```bash
 uv sync --group dev
-make lint
-make docs-check
-make test
-make test-cov
-make test-package
-make build
+make check
 ```
 
+`make release-check` adds the dependency audit and should pass before tags or package publishing.
 `make docs-check` verifies generated provider docs and builds the MkDocs Material site in strict
 mode.
 `make test-package` checks the wheel/sdist contents before installing the built wheel and running

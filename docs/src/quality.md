@@ -16,7 +16,7 @@ framework should track:
   for `src` layout packaging and distribution structure.
 - [uv package guide](https://docs.astral.sh/uv/guides/package/) for building and publishing
   packages through a modern build frontend while preserving the backend contract.
-- [pytest good integration practices](https://docs.pytest.org/en/7.1.x/explanation/goodpractices.html)
+- [pytest good integration practices](https://docs.pytest.org/en/stable/explanation/goodpractices.html)
   for `src` layout test isolation and `--import-mode=importlib`.
 - [Ruff linter configuration](https://docs.astral.sh/ruff/linter/) and
   [Ruff formatter guidance](https://docs.astral.sh/ruff/formatter/) for a single fast lint and
@@ -95,6 +95,20 @@ Run the full gate from the repository root before publishing behavior, docs, or 
 changes:
 
 ```bash
+make check
+```
+
+`make check` runs the lock check, Ruff, generated-provider-doc drift check, strict MkDocs build,
+full pytest, harness coverage gate, wheel/sdist package contract, and distribution build. Before a
+release tag, run:
+
+```bash
+make release-check
+```
+
+`make release-check` adds the dependency audit. The equivalent expanded commands are:
+
+```bash
 uv lock --check
 uv run ruff check src tests examples scripts
 uv run ruff format --check src tests examples scripts
@@ -103,6 +117,7 @@ uv run mkdocs build --strict
 uv run pytest
 uv run --extra harness pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
 bash scripts/test_package.sh
+uv build --out-dir dist --clear --no-build-logs
 ```
 
-For release hardening, also run the dependency audit documented in `docs/src/operations.md`.
+For release hardening, use the dependency audit in [Operations](./operations.md).

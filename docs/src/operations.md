@@ -166,8 +166,19 @@ include those IDs in surrounding application logs.
   host-owned upstream dependencies and an extracted object checkpoint.
 - If you have Hugging Face LeWM `config.json` and `weights.pt` assets rather than an extracted
   `*_object.ckpt` archive, build the object checkpoint first with
-  `uv run --python 3.13 --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" --with huggingface_hub --with matplotlib
-  worldforge-build-leworldmodel-checkpoint --stablewm-home ~/.stable-wm --policy pusht/lewm`.
+  the command below:
+
+  ```bash
+  uv run --python 3.13 \
+    --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
+    --with "datasets>=2.21" \
+    --with huggingface_hub \
+    --with matplotlib \
+    worldforge-build-leworldmodel-checkpoint \
+      --stablewm-home ~/.stable-wm \
+      --policy pusht/lewm
+  ```
+
   `matplotlib` is required because upstream `stable_pretraining` imports it unconditionally at
   module load time even though it is not declared as a runtime dependency. Pass `--revision <tag-or-commit>`
   or set `LEWORLDMODEL_REVISION` when the run must be pinned to a specific Hugging Face revision.
@@ -204,18 +215,11 @@ Before publishing a release:
 
 ```bash
 uv sync --group dev
-uv lock --check
-uv run ruff check src tests examples scripts
-uv run ruff format --check src tests examples scripts
-uv run python scripts/generate_provider_docs.py --check
-uv run mkdocs build --strict
-uv run pytest
-uv run --extra harness pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
-bash scripts/test_package.sh
-uv build --out-dir dist --clear --no-build-logs
+make release-check
 ```
 
-Run the dependency audit before cutting the tag:
+`make release-check` runs the local release gate plus the dependency audit. To run the audit by
+itself:
 
 ```bash
 tmp_req="$(mktemp requirements-audit.XXXXXX)"
