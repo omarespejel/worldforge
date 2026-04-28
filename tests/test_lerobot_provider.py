@@ -7,6 +7,7 @@ import types
 
 import pytest
 
+import worldforge.providers.lerobot as lerobot_module
 from worldforge import Action, ActionPolicyResult, ActionScoreResult, WorldForge, WorldForgeError
 from worldforge.models import JSONDict, ProviderCapabilities, ProviderEvent, ProviderHealth
 from worldforge.providers import (
@@ -134,6 +135,21 @@ def test_lerobot_provider_contract_unconfigured(monkeypatch) -> None:
 
     assert report.configured is False
     assert report.exercised_operations == []
+
+
+def test_lerobot_provider_rejects_missing_pretrained_module(monkeypatch) -> None:
+    monkeypatch.setattr(
+        lerobot_module,
+        "_import_pretrained_policy_module",
+        lambda: (None, None),
+    )
+    provider = LeRobotPolicyProvider(
+        policy_path="lerobot/diffusion_pusht",
+        action_translator=lambda *_args: [Action.move_to(0.0, 0.0, 0.0)],
+    )
+
+    with pytest.raises(ProviderError, match="PreTrainedPolicy module was not loaded"):
+        provider.select_actions(info=_policy_info())
 
 
 def test_lerobot_policy_provider_passes_contract_and_emits_events() -> None:

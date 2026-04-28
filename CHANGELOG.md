@@ -63,6 +63,10 @@ releases may still include breaking changes when the public API needs to tighten
 - The LeWorldModel object-checkpoint builder now supports pinned Hugging Face revisions and loads
   downloaded weights with `torch.load(..., weights_only=True)` by default. The
   `--allow-unsafe-pickle` escape hatch is explicit for trusted legacy weights only.
+- `scripts/robotics-showcase --health-only` no longer auto-builds or downloads a missing
+  LeWorldModel object checkpoint; preflight reports checkpoint absence without mutating the cache.
+- Production CLI and LeRobot provider checks now raise explicit WorldForge errors instead of
+  relying on Python `assert` statements that disappear under optimized execution.
 
 ### Changed
 
@@ -88,6 +92,8 @@ releases may still include breaking changes when the public API needs to tighten
 - TheWorldHarness no longer eagerly imports `worldforge.demos.*` at module load; demo flow
   runners import lazily so the harness cold start does not drag the optional-runtime provider
   classes into memory.
+- The robotics showcase wrapper no longer suppresses LeRobot runtime device fallback warnings, so
+  CUDA-to-MPS or similar execution changes remain visible in the terminal.
 - `save_world` skips a redundant `json.dumps`/`json.loads` round trip; the validation call now
   runs directly against the serialized dict.
 - Documentation metadata and README links now point at the published GitHub Pages site.

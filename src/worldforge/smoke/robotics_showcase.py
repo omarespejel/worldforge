@@ -271,7 +271,8 @@ def _launch_tui(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args, extra = parser.parse_known_args(argv)
-    _ensure_checkpoint(args)
+    if not args.health_only:
+        _ensure_checkpoint(args)
     forwarded = _forward_args(args)
     forwarded.extend(extra)
     if args.tui and not args.json_only and not args.health_only:

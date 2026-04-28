@@ -326,6 +326,44 @@ def test_robotics_showcase_auto_downloads_missing_checkpoint(
     assert build_calls["allow_unsafe_pickle"] is True
 
 
+def test_robotics_showcase_health_only_does_not_auto_download_missing_checkpoint(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    build_called = False
+    captured: dict[str, Any] = {}
+
+    def fake_build_checkpoint(**_: Any) -> dict[str, Any]:
+        nonlocal build_called
+        build_called = True
+        return {"created": False}
+
+    def fake_low_level_main(argv: list[str]) -> int:
+        captured["argv"] = argv
+        return 0
+
+    monkeypatch.setattr(
+        robotics_showcase.leworldmodel_checkpoint, "build_checkpoint", fake_build_checkpoint
+    )
+    monkeypatch.setattr(robotics_showcase.lerobot_leworldmodel, "main", fake_low_level_main)
+
+    assert (
+        robotics_showcase.main(
+            [
+                "--stablewm-home",
+                str(tmp_path),
+                "--health-only",
+                "--no-json-output",
+                "--no-tui",
+            ]
+        )
+        == 0
+    )
+
+    assert build_called is False
+    assert "--health-only" in captured["argv"]
+
+
 def test_robotics_showcase_skips_download_when_checkpoint_present(
     monkeypatch,
     tmp_path: Path,

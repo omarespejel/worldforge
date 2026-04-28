@@ -11,7 +11,6 @@ filter_runtime_warnings() {
     /^[[:space:]]*from pkg_resources import resource_stream, resource_exists/ { next }
     /gymnasium\/spaces\/box.py:.*Casting input x to numpy array/ { next }
     /^[[:space:]]*gym\.logger\.warn\("Casting input x to numpy array\."\)/ { next }
-    /WARNING:lerobot\.configs\.policies:Device '\''cuda'\'' is not available\. Switching to '\''mps'\''\./ { next }
     /WARNING:root:Unexpected key\(s\) when loading model:/ { next }
     { print; fflush() }
   '

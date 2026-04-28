@@ -70,8 +70,8 @@ The polished runner forwards the default PushT hooks to the lower-level runner:
 
 | Component | WorldForge capability | Exact role |
 | --- | --- | --- |
-| `scripts/robotics-showcase` | None | Shell wrapper that creates the uv runtime, filters noisy third-party warnings, and enables the TUI by default. |
-| `worldforge.smoke.robotics_showcase` | None | Polished CLI entrypoint. Resolves defaults, ensures the checkpoint exists, forwards packaged PushT hooks, and optionally launches the Textual report. |
+| `scripts/robotics-showcase` | None | Shell wrapper that creates the uv runtime, filters noisy third-party native-library and simulation warnings, and enables the TUI by default. Runtime device fallback warnings remain visible. |
+| `worldforge.smoke.robotics_showcase` | None | Polished CLI entrypoint. Resolves defaults, ensures the checkpoint exists for normal runs, keeps `--health-only` non-mutating, forwards packaged PushT hooks, and optionally launches the Textual report. |
 | `worldforge.smoke.lerobot_leworldmodel` | Orchestration runner | Lower-level configurable runner. Loads task inputs, registers providers, calls `World.plan(...)`, executes local replay, and emits JSON/report data. |
 | `LeRobotPolicyProvider` | `policy` | Loads a LeRobot `PreTrainedPolicy` or policy-type-specific class, runs `select_action` or `predict_action_chunk`, and returns `ActionPolicyResult`. |
 | `LeWorldModelProvider` | `score` | Loads `stable_worldmodel.policy.AutoCostModel`, calls `get_cost(info, action_candidates)`, and returns `ActionScoreResult`. |
@@ -214,8 +214,10 @@ The default run follows this exact sequence.
 optional runtime dependencies listed above. If the request is not `--help`, `--json-only`,
 `--health-only`, or `--no-tui`, the wrapper adds `--tui` so the Textual report opens by default.
 
-The wrapper filters common native-library and simulation warning noise. Set
-`WORLDFORGE_SHOW_RUNTIME_WARNINGS=1` to see raw third-party stderr.
+The wrapper filters common native-library and simulation warning noise. Runtime device fallback
+warnings, such as LeRobot switching from CUDA to MPS, remain visible because they affect
+performance and reproducibility. Set `WORLDFORGE_SHOW_RUNTIME_WARNINGS=1` to see raw third-party
+stderr.
 
 ### 2. Polished CLI Resolves Defaults
 
@@ -246,6 +248,10 @@ If the default checkpoint is missing, the polished runner builds it from Hugging
 `worldforge.smoke.leworldmodel_checkpoint`. That builder downloads `config.json` and `weights.pt`
 from `quentinll/lewm-pusht`, instantiates the upstream model, loads the weights, freezes the
 module, and saves the object checkpoint where `AutoCostModel` expects it.
+
+This auto-build step runs only for normal showcase execution. With `--health-only`, the runner
+reports whether the checkpoint path exists and exits without downloading assets or writing to the
+cache.
 
 For reproducible artifact resolution, pass `--lewm-revision <tag-or-commit>` or set
 `LEWORLDMODEL_REVISION`; the same revision is passed to both Hugging Face downloads. The builder
@@ -297,7 +303,7 @@ The health checks verify runtime availability before planning:
 - LeWorldModel must be configured with a policy name and be able to import `torch` and
   `stable_worldmodel.policy.AutoCostModel`.
 
-`--health-only` stops here after reporting those checks.
+`--health-only` stops here after reporting those checks and the object-checkpoint presence bit.
 
 ### 5. Task Inputs Are Loaded
 
@@ -485,7 +491,7 @@ same summary and renders the staged visual report.
 scripts/robotics-showcase
   -> uv runtime with optional robotics dependencies
   -> worldforge-robotics-showcase
-  -> ensure LeWorldModel object checkpoint exists
+  -> ensure LeWorldModel object checkpoint exists for normal runs
   -> forward PushT hooks to lewm-lerobot-real
   -> build LeRobot observation
   -> build LeWorldModel score tensors
@@ -597,7 +603,7 @@ Common failure points and where to inspect them:
 | --- | --- | --- |
 | `missing optional dependency lerobot` | Host runtime | `scripts/robotics-showcase --health-only` |
 | `missing optional dependency torch` or `stable_worldmodel` | Host runtime | `scripts/robotics-showcase --health-only` |
-| checkpoint not found | LeWorldModel artifact cache | `worldforge-build-leworldmodel-checkpoint` or `--checkpoint` |
+| checkpoint not found | LeWorldModel artifact cache | `scripts/robotics-showcase --health-only`, then `worldforge-build-leworldmodel-checkpoint` or `--checkpoint` |
 | torch does not support `weights_only=True` | Checkpoint builder safety gate | upgrade torch or use `--allow-unsafe-pickle` only for trusted weights |
 | policy output cannot translate | Action translator | `--translator module:function` |
 | score provider rejects action candidates | Candidate bridge | `--candidate-builder module:function` and `--expected-action-dim` |

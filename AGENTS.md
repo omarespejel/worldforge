@@ -276,8 +276,10 @@ rm -f "$tmp_req"
   host-preprocessed and provider-native.
 - `scripts/robotics-showcase` is the prominent PushT real robotics entrypoint. It installs the
   optional host-owned runtime packages for the process, uses packaged PushT hooks, and filters
-  common macOS native-library warning noise. Set `WORLDFORGE_SHOW_RUNTIME_WARNINGS=1` to see raw
-  third-party stderr.
+  common macOS native-library warning noise while leaving runtime device fallback warnings visible.
+  Set `WORLDFORGE_SHOW_RUNTIME_WARNINGS=1` to see raw third-party stderr. `--health-only` is
+  non-mutating: it reports dependency and checkpoint status without auto-building or downloading a
+  missing LeWorldModel object checkpoint.
 - `lewm-lerobot-real` is an optional real policy-plus-score smoke. It requires a task-aligned
   LeRobot policy, observation builder, LeWorldModel score tensors, and candidate bridge. Do not
   pad, project, or otherwise reinterpret mismatched action spaces inside WorldForge.

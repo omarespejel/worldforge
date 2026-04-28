@@ -114,15 +114,19 @@ def _resolve_checkpoint(
     stablewm_home: Path,
     cache_dir: Path | None,
     checkpoint: Path | None,
+    require_exists: bool = True,
 ) -> tuple[Path, Path]:
     if checkpoint is None:
         resolved_cache_dir = (cache_dir or stablewm_home).expanduser()
-        return _require_object_checkpoint(
-            policy=policy, cache_dir=resolved_cache_dir
-        ), resolved_cache_dir
+        object_path = _checkpoint_path(resolved_cache_dir, policy)
+        if require_exists and not object_path.exists():
+            return _require_object_checkpoint(
+                policy=policy, cache_dir=resolved_cache_dir
+            ), resolved_cache_dir
+        return object_path, resolved_cache_dir
 
     object_path = checkpoint.expanduser()
-    if not object_path.exists():
+    if require_exists and not object_path.exists():
         raise SystemExit(f"LeWorldModel object checkpoint not found: {object_path}")
 
     inferred_cache_dir = _infer_cache_dir_from_checkpoint(object_path, policy)

@@ -259,7 +259,10 @@ class LeRobotPolicyProvider(BaseProvider):
         return loaded
 
     def _load_policy_from_lerobot(self) -> Any:
-        assert self.policy_path is not None
+        if self.policy_path is None:
+            raise ProviderError(
+                f"Provider '{self.name}' is unavailable: set {LEROBOT_POLICY_PATH_ENV_VAR}."
+            )
         kwargs: dict[str, Any] = {}
         if self.cache_dir is not None:
             kwargs["cache_dir"] = self.cache_dir
@@ -269,7 +272,8 @@ class LeRobotPolicyProvider(BaseProvider):
         pretrained_module, dependency_error = _import_pretrained_policy_module()
         if dependency_error is not None:
             raise ProviderError(dependency_error)
-        assert pretrained_module is not None
+        if pretrained_module is None:
+            raise ProviderError("LeRobot PreTrainedPolicy module was not loaded.")
         base_class = pretrained_module.PreTrainedPolicy
         return base_class.from_pretrained(self.policy_path, **kwargs)
 

@@ -405,6 +405,20 @@ def test_print_provider_events_handles_empty_log(capsys: pytest.CaptureFixture[s
     assert "no provider events emitted" in capsys.readouterr().out
 
 
+def test_resolve_checkpoint_can_report_missing_path_without_requiring_it(tmp_path: Path) -> None:
+    object_path, cache_dir = lerobot_leworldmodel._resolve_checkpoint(
+        policy="pusht/lewm",
+        stablewm_home=tmp_path / "stablewm",
+        cache_dir=None,
+        checkpoint=None,
+        require_exists=False,
+    )
+
+    assert object_path == tmp_path / "stablewm/pusht/lewm_object.ckpt"
+    assert cache_dir == tmp_path / "stablewm"
+    assert not object_path.exists()
+
+
 def test_main_runs_policy_score_plan_with_fake_real_runtimes(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -589,5 +603,36 @@ def test_main_health_only_json_output_with_fake_real_runtimes(
 
     stdout_payload = json.loads(capsys.readouterr().out)
     file_payload = json.loads(json_output.read_text())
+    assert stdout_payload["checkpoint_exists"] is True
     assert stdout_payload["health"]["lerobot"]["healthy"] is True
     assert file_payload["health"]["leworldmodel"]["healthy"] is True
+
+
+def test_main_health_only_reports_missing_checkpoint_without_loading_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _patch_fake_providers(monkeypatch)
+    missing_home = tmp_path / "stablewm"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "lewm-lerobot-real",
+            "--policy-path",
+            "lerobot/diffusion_pusht",
+            "--stablewm-home",
+            str(missing_home),
+            "--health-only",
+            "--json-only",
+        ],
+    )
+
+    assert lerobot_leworldmodel.main() == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["checkpoint"] == str(missing_home / "pusht/lewm_object.ckpt")
+    assert payload["checkpoint_exists"] is False
+    assert payload["health"]["leworldmodel"]["healthy"] is False
+    assert "object checkpoint not found" in payload["health"]["leworldmodel"]["details"]

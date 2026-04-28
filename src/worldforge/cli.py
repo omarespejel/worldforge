@@ -260,7 +260,8 @@ def _print_world_objects_markdown(world, objects: list[dict[str, object]]) -> No
     print("| --- | --- | ---: | ---: | ---: | --- |")
     for obj in objects:
         position = obj["position"]
-        assert isinstance(position, dict)
+        if not isinstance(position, dict):
+            raise WorldForgeError("World object position must be a JSON object.")
         print(
             "| "
             f"`{obj['id']}` | "

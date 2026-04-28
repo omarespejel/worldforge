@@ -368,8 +368,10 @@ reveal pace, `--no-tui-animation` to disable sleeps and arm motion, `--no-tui` f
 terminal report, `--json-only` for automation, or `--health-only` for a dependency preflight. It
 requests LeRobot's `transformers-dep` extra so LeRobot controls the Transformers version while
 `stable-worldmodel[train]` is installed, and filters common macOS native-library duplicate class
-warnings from the user-facing output; set `WORLDFORGE_SHOW_RUNTIME_WARNINGS=1` to see raw
-third-party stderr.
+warnings from the user-facing output while leaving runtime device fallback warnings visible. The
+`--health-only` path does not auto-build or download missing LeWorldModel checkpoints; it reports
+whether the checkpoint is present and exits before inference. Set `WORLDFORGE_SHOW_RUNTIME_WARNINGS=1`
+to see raw third-party stderr.
 
 Use the lower-level runner when replacing the task observation, score tensors, translator, or
 candidate bridge:

@@ -52,7 +52,7 @@ By default, the script:
 Useful flags:
 
 ```bash
-scripts/robotics-showcase --health-only       # dependency and checkpoint preflight
+scripts/robotics-showcase --health-only       # non-mutating dependency/checkpoint preflight
 scripts/robotics-showcase --no-tui            # plain terminal report
 scripts/robotics-showcase --json-only         # machine-readable summary only
 scripts/robotics-showcase --tui-stage-delay 0.1
@@ -264,6 +264,8 @@ When the default LeWorldModel object checkpoint is missing, the polished command
 Hugging Face assets. Use `--lewm-revision <tag-or-commit>` or `LEWORLDMODEL_REVISION` for a pinned
 asset revision. The builder loads `weights.pt` with `torch.load(..., weights_only=True)` by default;
 the `--allow-unsafe-pickle` flag is an explicit trusted-artifact escape hatch for legacy weights.
+This auto-build path is skipped for `--health-only`, which only reports whether the checkpoint is
+present.
 
 WorldForge fails instead of padding, projecting, or silently reinterpreting mismatched action
 spaces.

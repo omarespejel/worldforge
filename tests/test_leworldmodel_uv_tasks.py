@@ -54,6 +54,8 @@ def test_leworldmodel_uv_commands_are_packaged_console_scripts() -> None:
     assert "showcase_args=(--tui" in showcase_task_text
     assert 'runtime_args+=(--with "textual>=8.2,<9")' in showcase_task_text
     assert "--no-tui" in showcase_task_text
+    assert "Device 'cuda' is not available" not in showcase_task_text
+    assert "lerobot\\.configs\\.policies" not in showcase_task_text
     assert 'worldforge-robotics-showcase "${showcase_args[@]}"' in showcase_task_text
 
 

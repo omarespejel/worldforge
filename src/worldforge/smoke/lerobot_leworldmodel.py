@@ -938,7 +938,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         stablewm_home=args.stablewm_home,
         cache_dir=args.lewm_cache_dir,
         checkpoint=args.checkpoint,
+        require_exists=not args.health_only,
     )
+    checkpoint_exists = object_path.exists()
     lerobot_device = args.lerobot_device or args.device
     lewm_device = args.lewm_device or args.device
     if not args.json_only:
@@ -992,6 +994,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     policy_health = policy_provider.health().to_dict()
     score_health = score_provider.health().to_dict()
+    if not checkpoint_exists:
+        score_health = dict(score_health)
+        checkpoint_details = (
+            f"LeWorldModel object checkpoint not found: {_display_path(object_path)}"
+        )
+        existing_details = score_health.get("details")
+        score_health["healthy"] = False
+        score_health["details"] = (
+            f"{existing_details}; {checkpoint_details}" if existing_details else checkpoint_details
+        )
     if not args.json_only:
         _log_step(
             2,
@@ -1008,16 +1020,25 @@ def main(argv: Sequence[str] | None = None) -> int:
                     _status_text(score_health.get("healthy"), color=color_enabled),
                 ),
                 ("LeWorldModel details", score_health.get("details")),
+                (
+                    "LeWorldModel checkpoint",
+                    _status_text(checkpoint_exists, color=color_enabled),
+                ),
             ],
             color=color_enabled,
         )
 
-    preflight_ok = bool(policy_health.get("healthy")) and bool(score_health.get("healthy"))
+    preflight_ok = (
+        bool(policy_health.get("healthy"))
+        and bool(score_health.get("healthy"))
+        and checkpoint_exists
+    )
     if args.health_only or not preflight_ok:
         payload = {
             "mode": "real_lerobot_policy_plus_real_leworldmodel_score",
             "checkpoint": str(object_path),
             "checkpoint_display": _display_path(object_path),
+            "checkpoint_exists": checkpoint_exists,
             "health": {"lerobot": policy_health, "leworldmodel": score_health},
             "metrics": {"total_latency_ms": (perf_counter() - total_started) * 1000},
         }
