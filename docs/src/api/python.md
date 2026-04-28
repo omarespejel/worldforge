@@ -3,7 +3,15 @@
 ## Entry points
 
 ```python
-from worldforge import Action, ActionPolicyResult, ActionScoreResult, CAPABILITY_NAMES, WorldForge
+from worldforge import (
+    Action,
+    ActionPolicyResult,
+    ActionScoreResult,
+    Cost,
+    Policy,
+    RunnableModel,
+    WorldForge,
+)
 ```
 
 ## `WorldForge`
@@ -32,6 +40,40 @@ print(doctor.issues)
 Provider capability filters are strict. Valid capability names are `predict`, `generate`,
 `reason`, `embed`, `plan`, `transfer`, `score`, and `policy`; unknown names raise
 `WorldForgeError` instead of producing an empty result by typo.
+
+## Capability protocols
+
+Provider adapters can still subclass `BaseProvider`, but small integrations can also register a
+single capability object. The object declares a non-empty `name`, optional `ProviderProfileSpec`,
+and the method for exactly the capability it implements.
+
+```python
+from worldforge import ActionScoreResult, WorldForge
+from worldforge.providers import ProviderProfileSpec
+
+
+class LocalCost:
+    name = "local-cost"
+    profile = ProviderProfileSpec(description="Local score model")
+
+    def score_actions(self, *, info, action_candidates):
+        return ActionScoreResult(provider=self.name, scores=[0.2, 0.7], best_index=0)
+
+
+forge = WorldForge()
+forge.register_cost(LocalCost())
+
+result = forge.score_actions(cost="local-cost", info={}, action_candidates=[{}, {}])
+print(result.best_index)
+```
+
+The same pattern is available through `register_policy`, `register_generator`,
+`register_predictor`, `register_reasoner`, `register_embedder`, and `register_transferer`.
+`forge.register(...)` dispatches a pure object by protocol membership, and
+`RunnableModel(...)` can group several capability implementations. Registered protocol
+implementations appear in `providers()`, `provider_profile(...)`, `doctor(...)`, planning, and the
+benchmark harness. Existing calls such as `forge.generate("prompt", "mock")` keep resolving
+through the legacy provider registry.
 
 ## Persistence
 

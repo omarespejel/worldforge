@@ -13,10 +13,15 @@ evaluation harnesses, and testable prototypes.
 
 - `src/worldforge/models.py`: domain models, serialization helpers, validation errors, request
   policies, provider metadata, media/result types, and structured planning goals.
+- `src/worldforge/capabilities/__init__.py`: runtime-checkable capability protocols for narrow
+  `Cost`, `Policy`, `Generator`, `Predictor`, `Reasoner`, `Embedder`, `Transferer`, and
+  `RunnableModel` integrations.
 - `src/worldforge/framework.py`: `WorldForge`, `World`, persistence, planning, prediction,
   comparison, diagnostics, and top-level evaluation helpers.
 - `src/worldforge/providers/base.py`: provider interfaces, `ProviderError`, remote-provider
   base behavior, and `PredictionPayload`.
+- `src/worldforge/providers/observable.py`: internal wrapper that adds `ProviderEvent`, health,
+  profile, info, and timing behavior around pure capability protocol implementations.
 - `src/worldforge/providers/catalog.py`: provider factories and auto-registration policy for the
   in-repo provider catalog.
 - `src/worldforge/providers/mock.py`: deterministic local provider used by tests, examples, and
@@ -102,6 +107,7 @@ uv run mkdocs build --strict
 uv run pytest
 uv run --extra harness pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
 bash scripts/test_package.sh
+uv build --out-dir dist --clear --no-build-logs
 ```
 
 Discover and run examples:
@@ -175,6 +181,12 @@ rm -f "$tmp_req"
   supported capability explicitly. Valid capability names are `predict`, `generate`, `reason`,
   `embed`, `plan`, `transfer`, `score`, and `policy`; reject unknown names instead of treating
   them as unsupported.
+- Use capability protocol registration for narrow one-surface integrations. A protocol
+  implementation declares `name`, optional `ProviderProfileSpec`, and the matching method; register
+  it with `WorldForge.register_cost`, `register_policy`, `register_generator`,
+  `register_predictor`, `register_reasoner`, `register_embedder`, `register_transferer`, or
+  structural `register(...)`. Use a full `BaseProvider` subclass when the adapter needs catalog
+  auto-registration, custom configuration/health behavior, or multiple provider-owned surfaces.
 - `leworldmodel` exposes `score`, not `predict`, `generate`, or `reason`; do not fake those
   capabilities around a cost model.
 - `gr00t` exposes `policy`, not `predict`, `score`, or `generate`; do not call an embodied policy

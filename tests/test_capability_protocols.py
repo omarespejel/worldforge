@@ -30,6 +30,7 @@ from worldforge.models import (
     VideoClip,
 )
 from worldforge.providers.base import ProviderProfileSpec
+from worldforge.providers.mock import MockProvider
 from worldforge.providers.observable import _ObservableCapability
 
 # --- Fixtures: minimal capability impls ---------------------------------------------------------
@@ -211,6 +212,13 @@ def test_register_dispatches_by_protocol_membership(tmp_path: Path):
     assert "multi" in forge._capability_registries["policy"]
     # Other registries untouched.
     assert "multi" not in forge._capability_registries["generator"]
+
+
+def test_register_base_provider_uses_legacy_provider_registry(tmp_path: Path):
+    forge = _isolated_forge(tmp_path)
+    forge.register(MockProvider(name="legacy-mock"))
+    assert "legacy-mock" in forge.providers()
+    assert all("legacy-mock" not in registry for registry in forge._capability_registries.values())
 
 
 def test_register_unpacks_runnable_model(tmp_path: Path):

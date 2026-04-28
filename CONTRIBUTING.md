@@ -24,9 +24,9 @@ make test-package
 make build
 ```
 
-`make test-package` is the packaging contract check. It builds a wheel with `uv`, installs that
-wheel into an isolated virtual environment, and runs the root test suite against the installed
-package.
+`make test-package` is the packaging contract check. It builds the wheel and sdist with `uv`,
+checks the distribution contents, installs the wheel into an isolated virtual environment, and runs
+the root test suite against the installed package.
 `make docs-check` verifies the generated provider catalog and builds the MkDocs Material site in
 strict mode.
 

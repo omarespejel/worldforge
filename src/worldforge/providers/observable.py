@@ -18,6 +18,7 @@ from collections.abc import Callable
 from time import perf_counter
 from typing import Any
 
+from worldforge.capabilities import CAPABILITY_FIELD_TO_NAME
 from worldforge.models import (
     JSONDict,
     ProviderEvent,
@@ -110,18 +111,8 @@ class _ObservableCapability:
         # render correctly during migration.
         from worldforge.models import CAPABILITY_NAMES
 
-        # Map our internal kinds to the user-visible capability flag names.
-        kind_to_flag = {
-            "cost": "score",
-            "policy": "policy",
-            "generator": "generate",
-            "predictor": "predict",
-            "reasoner": "reason",
-            "embedder": "embed",
-            "transferer": "transfer",
-            "planner": "plan",
-        }
-        return {flag: (flag == kind_to_flag[self._kind]) for flag in CAPABILITY_NAMES}
+        capability_name = CAPABILITY_FIELD_TO_NAME[self._kind]
+        return {flag: (flag == capability_name) for flag in CAPABILITY_NAMES}
 
     def required_env_vars(self) -> list[str]:
         spec = self._profile_spec()

@@ -48,6 +48,20 @@ CAPABILITY_FIELD_NAMES = (
     "planner",
 )
 
+CAPABILITY_FIELD_TO_NAME: dict[str, str] = {
+    "policy": "policy",
+    "cost": "score",
+    "generator": "generate",
+    "predictor": "predict",
+    "reasoner": "reason",
+    "embedder": "embed",
+    "transferer": "transfer",
+    "planner": "plan",
+}
+CAPABILITY_NAME_TO_FIELD: dict[str, str] = {
+    capability: field_name for field_name, capability in CAPABILITY_FIELD_TO_NAME.items()
+}
+
 
 # Each protocol is documented in its docstring, including the result type and the call shape the
 # framework dispatches. ``runtime_checkable`` enables ``isinstance(x, Cost)`` at registration time.
@@ -209,7 +223,9 @@ class RunnableModel:
 
 
 __all__ = [
+    "CAPABILITY_FIELD_TO_NAME",
     "CAPABILITY_FIELD_NAMES",
+    "CAPABILITY_NAME_TO_FIELD",
     "CAPABILITY_PROTOCOLS",
     "Cost",
     "Embedder",

@@ -208,6 +208,7 @@ uv run mkdocs build --strict
 uv run pytest
 uv run --extra harness pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
 bash scripts/test_package.sh
+uv build --out-dir dist --clear --no-build-logs
 ```
 
 Run the dependency audit before cutting the tag:
