@@ -25,6 +25,7 @@ evaluation, benchmarks, diagnostics, local state, and a CLI.
 [**Providers**](#provider-surfaces) ·
 [**Capability Model**](#capability-model) ·
 [**Architecture**](#architecture) ·
+[**Quality**](https://abdelstark.github.io/worldforge/quality/) ·
 [**Docs**](https://abdelstark.github.io/worldforge/) ·
 [**Playbooks**](https://abdelstark.github.io/worldforge/playbooks/) ·
 [**Support**](./SUPPORT.md) ·
@@ -148,7 +149,7 @@ application's responsibility.
 | **Deterministic by default** | Built-in `mock` provider, reusable contract assertions (`worldforge.testing`), and packaged demos that run from a clean checkout without credentials or GPUs. |
 | **Host-owned runtimes** | No torch, CUDA, robot controllers, or checkpoints in base dependencies. LeWorldModel, GR00T, LeRobot, Cosmos, and Runway integrate through their own surfaces. |
 | **Diagnostics** | `worldforge doctor`, provider events, benchmark and evaluation harnesses, and an optional Textual TUI (`TheWorldHarness`) for inspecting traces. |
-| **Quality gates** | `py.typed`, ruff, a 90% coverage floor, and wheel + sdist contract tests in CI on Python 3.13. |
+| **Quality gates** | `py.typed`, import-isolated pytest, ruff, a 90% coverage floor, strict docs, and wheel + sdist contract tests in CI on Python 3.13. |
 
 ## Install
 

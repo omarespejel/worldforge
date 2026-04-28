@@ -21,6 +21,9 @@ releases may still include breaking changes when the public API needs to tighten
 - Added capability-protocol registration for narrow `Cost`, `Policy`, `Generator`, `Predictor`,
   `Reasoner`, `Embedder`, and `Transferer` implementations, including diagnostics, planning, and
   benchmark routing without requiring a full `BaseProvider` subclass.
+- Added an engineering quality standards page that maps WorldForge's Python packaging, testing,
+  linting, typed-distribution, ML reproducibility, and robotics-runtime boundaries to upstream
+  Python and scientific-computing guidance.
 
 ### Fixed
 
@@ -49,6 +52,9 @@ releases may still include breaking changes when the public API needs to tighten
   3.13 only so the published support contract matches CI.
 - Package metadata now uses SPDX license metadata and an explicit `uv` package marker, while the
   Hatch wheel target is restricted to runtime package files.
+- Pytest now runs with importlib import mode and strict xfail handling, while Ruff enforces sorted
+  exports, explicit mutable class metadata annotations, literal exception-match patterns, and
+  clearer pytest imports/assertions.
 - Dedupe repeated provider scaffolding into shared `BaseProvider._emit_operation_event` and
   `BaseProvider._health` helpers, and move `no_grad_context` plus `prepare_model` into
   `providers/_policy.py`. The cosmos, runway, leworldmodel, lerobot, gr00t, and jepa-wms adapters

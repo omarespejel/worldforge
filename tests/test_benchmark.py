@@ -271,7 +271,7 @@ def test_benchmark_inputs_preview_provider_native_score_candidates() -> None:
     payload = inputs.to_dict()
 
     assert payload["score_action_candidates"] == {
-        "type": "test_benchmark._TensorLikeCandidates",
+        "type": f"{_TensorLikeCandidates.__module__}.{_TensorLikeCandidates.__qualname__}",
         "json_serializable": False,
         "shape": [1, 2, 2, 3],
     }

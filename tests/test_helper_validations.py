@@ -151,7 +151,7 @@ def test_framework_helpers_and_error_paths(tmp_path) -> None:
 
 
 def test_public_models_reject_non_finite_and_incoherent_values(tmp_path) -> None:
-    with pytest.raises(WorldForgeError, match="Position.x"):
+    with pytest.raises(WorldForgeError, match=r"Position\.x"):
         Position(math.nan, 0.0, 0.0)
 
     with pytest.raises(WorldForgeError, match="BBox min coordinates"):
@@ -336,7 +336,7 @@ def test_public_validation_guards_cover_boundary_failure_modes() -> None:
         HistoryEntry(step=0, state={}, summary="")
     with pytest.raises(WorldForgeError, match="action_json"):
         HistoryEntry(step=0, state={}, summary="bad", action_json="{broken")
-    with pytest.raises(WorldForgeError, match="Action.from_dict"):
+    with pytest.raises(WorldForgeError, match=r"Action\.from_dict"):
         HistoryEntry(step=0, state={}, summary="bad", action_json="[]")
     with pytest.raises(WorldForgeError):
         SceneObject(

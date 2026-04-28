@@ -10,7 +10,7 @@ from worldforge.smoke.lerobot_leworldmodel import (
     main,
 )
 
-__all__ = ["DEFAULT_LEWORLDMODEL_POLICY", "DEFAULT_LEROBOT_POLICY", "_parser", "main"]
+__all__ = ["DEFAULT_LEROBOT_POLICY", "DEFAULT_LEWORLDMODEL_POLICY", "_parser", "main"]
 
 
 if __name__ == "__main__":

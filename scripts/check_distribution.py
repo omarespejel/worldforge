@@ -35,6 +35,7 @@ SDIST_REQUIRED_SUFFIXES = (
     "docs/src/api/python.md",
     "docs/src/architecture.md",
     "docs/src/provider-authoring-guide.md",
+    "docs/src/quality.md",
     "docs/src/robotics-showcase-deep-dive.md",
     "scripts/check_distribution.py",
     "scripts/test_package.sh",

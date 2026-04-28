@@ -21,6 +21,7 @@
 - [Python API](./api/python.md)
 - [Evaluation](./evaluation.md)
 - [Benchmarking](./benchmarking.md)
+- [Engineering Quality](./quality.md)
 - [Operations](./operations.md)
 - [Security](./security.md)
 - [Support](./support.md)

@@ -159,7 +159,8 @@ def test_observable_capability_emits_success_event(tmp_path: Path):
     assert event.provider == "pure_cost"
     assert event.operation == "score"
     assert event.phase == "success"
-    assert event.duration_ms is not None and event.duration_ms >= 0
+    assert event.duration_ms is not None
+    assert event.duration_ms >= 0
 
 
 def test_observable_capability_emits_failure_event_on_exception():

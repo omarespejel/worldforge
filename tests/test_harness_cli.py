@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import sys
 
+import pytest
+
 from worldforge.cli import main as worldforge_main
 from worldforge.harness.cli import main as harness_main
 
@@ -39,10 +41,8 @@ def test_worldforge_harness_console_entry_lists_flows(capsys) -> None:
 
 def test_launch_harness_passes_home_when_no_flow(monkeypatch) -> None:
     """No --flow → initial_screen='home', resolved_flow_id falls back to leworldmodel."""
-    import pytest as _pytest
-
-    _pytest.importorskip("rich")
-    _pytest.importorskip("textual")
+    pytest.importorskip("rich")
+    pytest.importorskip("textual")
 
     captured: dict[str, object] = {}
 
@@ -67,10 +67,8 @@ def test_launch_harness_passes_home_when_no_flow(monkeypatch) -> None:
 
 def test_launch_harness_passes_run_inspector_when_flow_supplied(monkeypatch) -> None:
     """--flow X → initial_screen='run-inspector', initial_flow_id=X."""
-    import pytest as _pytest
-
-    _pytest.importorskip("rich")
-    _pytest.importorskip("textual")
+    pytest.importorskip("rich")
+    pytest.importorskip("textual")
 
     captured: dict[str, object] = {}
 
@@ -94,10 +92,8 @@ def test_launch_harness_passes_run_inspector_when_flow_supplied(monkeypatch) -> 
 
 
 def test_launch_harness_passes_eval_and_benchmark_screens(monkeypatch) -> None:
-    import pytest as _pytest
-
-    _pytest.importorskip("rich")
-    _pytest.importorskip("textual")
+    pytest.importorskip("rich")
+    pytest.importorskip("textual")
 
     captured: list[dict[str, object]] = []
 

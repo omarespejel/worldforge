@@ -223,8 +223,8 @@ class RunnableModel:
 
 
 __all__ = [
-    "CAPABILITY_FIELD_TO_NAME",
     "CAPABILITY_FIELD_NAMES",
+    "CAPABILITY_FIELD_TO_NAME",
     "CAPABILITY_NAME_TO_FIELD",
     "CAPABILITY_PROTOCOLS",
     "Cost",

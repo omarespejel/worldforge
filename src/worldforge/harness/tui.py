@@ -502,7 +502,7 @@ class JumpCard(Static, _ThemedRenderer):
     }
     """
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("enter", "activate", "Activate", show=False),
     ]
 
@@ -548,7 +548,7 @@ class JumpCard(Static, _ThemedRenderer):
 class HomeScreen(Screen):
     """Landing screen with a 30-second intro and three jump cards."""
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("n", "jump('worlds')", "Create a world", show=True),
         Binding("p", "jump('providers')", "Run a provider", show=True),
         Binding("e", "jump('eval')", "Run an eval", show=True),
@@ -707,7 +707,7 @@ class HomeScreen(Screen):
 class RunInspectorScreen(Screen):
     """Hosts the existing flow visualisation (hero, rail, timeline, inspector, transcript)."""
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("r", "run_selected", "Run", show=True),
         Binding("1", "select_flow('leworldmodel')", "LeWorldModel", show=True),
         Binding("2", "select_flow('lerobot')", "LeRobot", show=True),
@@ -959,7 +959,7 @@ class RunInspectorScreen(Screen):
 class HelpScreen(ModalScreen[None]):
     """Modal overlay that lists the bindings of the screen below it."""
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("escape", "dismiss", "Close", show=True),
         Binding("q", "dismiss", "Close", show=False),
     ]
@@ -1066,7 +1066,7 @@ class HelpScreen(ModalScreen[None]):
 class PlaceholderScreen(ModalScreen[None]):
     """Modal explaining a jump target that lands in a later milestone."""
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("escape", "dismiss", "Close", show=True),
         Binding("q", "dismiss", "Close", show=False),
         Binding("enter", "dismiss", "Close", show=False),
@@ -1166,7 +1166,7 @@ class WorldForked(Message):
 class ConfirmDeleteScreen(ModalScreen[bool]):
     """Yes/no overlay for destructive actions. Returns ``True`` only on confirm."""
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("escape", "deny", "Cancel", show=True),
     ]
 
@@ -1249,7 +1249,7 @@ class ConfirmDeleteScreen(ModalScreen[bool]):
 class NewWorldScreen(ModalScreen[WorldSpec | None]):
     """Collect name + provider + description for a brand-new world."""
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("escape", "cancel", "Cancel", show=True),
     ]
 
@@ -1370,7 +1370,7 @@ class NewWorldScreen(ModalScreen[WorldSpec | None]):
 class EditObjectScreen(ModalScreen[SceneObjectSpec | None]):
     """Collect name + position for a single scene object."""
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("escape", "cancel", "Cancel", show=True),
     ]
 
@@ -1507,7 +1507,7 @@ class WorldsScreen(Screen):
     the UI thread never blocks on filesystem I/O.
     """
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("n", "new_world", "New", show=True),
         Binding("enter", "open_selected", "Open", show=True),
         Binding("e", "open_selected", "Edit", show=False),
@@ -1872,7 +1872,7 @@ class WorldsScreen(Screen):
 class WorldEditScreen(Screen):
     """Form editor for a single in-memory ``World`` + single-shot preview pane."""
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("ctrl+s", "save_world", "Save", show=True),
         Binding("a", "add_object", "Add object", show=True),
         Binding("delete", "remove_object", "Remove", show=True),
@@ -2208,7 +2208,7 @@ class RegisterProviderModal(  # pragma: no cover - exercised by Pilot tests.
 ):
     """Register a deterministic mock provider variant for local testing."""
 
-    BINDINGS = [Binding("escape", "cancel", "Cancel", show=True)]
+    BINDINGS: ClassVar[list[Binding]] = [Binding("escape", "cancel", "Cancel", show=True)]
 
     DEFAULT_CSS = """
     RegisterProviderModal {
@@ -2281,7 +2281,7 @@ class RegisterProviderModal(  # pragma: no cover - exercised by Pilot tests.
 class ProvidersScreen(Screen):  # pragma: no cover - exercised by Pilot tests.
     """Capability matrix and live ``mock.predict`` execution surface."""
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("enter", "select_provider", "Use", show=True),
         Binding("p", "run_predict", "Predict", show=True),
         Binding("r", "register_provider", "Register", show=True),
@@ -2595,7 +2595,7 @@ class ProvidersScreen(Screen):  # pragma: no cover - exercised by Pilot tests.
 class EvalScreen(Screen):  # pragma: no cover - exercised by Pilot tests.
     """Run built-in deterministic evaluation suites from the TUI."""
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("r", "run_eval", "Run", show=True),
         Binding("escape", "cancel_or_back", "Cancel/Back", show=True),
     ]
@@ -2804,7 +2804,7 @@ class EvalScreen(Screen):  # pragma: no cover - exercised by Pilot tests.
 class BenchmarkScreen(Screen):  # pragma: no cover - exercised by Pilot tests.
     """Run capability-aware provider benchmarks from the TUI."""
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("r", "run_benchmark", "Run", show=True),
         Binding("escape", "cancel_or_back", "Cancel/Back", show=True),
     ]
@@ -3594,7 +3594,7 @@ class RoboticsEventPane(Static, _ThemedRenderer):
 class RoboticsTabletopHelpScreen(ModalScreen[None]):
     """Modal explainer for the standalone robotics tabletop replay."""
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("escape", "dismiss", "Close", show=True),
         Binding("q", "dismiss", "Close", show=False),
     ]
@@ -3666,7 +3666,7 @@ class RoboticsShowcaseApp(App[None]):
 
     TITLE = "WorldForge Robotics Showcase"
     SUB_TITLE = "LeRobot policy + LeWorldModel checkpoint scoring replay"
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("?", "show_tabletop_help", "Help", show=True),
         Binding("q", "quit", "Quit", show=True),
         Binding("ctrl+t", "toggle_theme", "Theme", show=True),
@@ -3885,7 +3885,7 @@ class TheWorldHarnessApp(App[None]):
     TITLE = "TheWorldHarness"
     SUB_TITLE = "WorldForge visual integration harness"
     COMMANDS = App.COMMANDS | {WorldForgeCommandProvider}
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("?", "show_help", "Help", show=True),
         Binding("q", "quit", "Quit", show=True),
         Binding("ctrl+t", "toggle_theme", "Theme", show=False),
@@ -3896,7 +3896,7 @@ class TheWorldHarnessApp(App[None]):
         Binding("g,e", "switch_screen('eval')", "Jump: Eval", show=False),
         Binding("g,b", "switch_screen('benchmark')", "Jump: Benchmark", show=False),
     ]
-    SCREENS = {
+    SCREENS: ClassVar[dict[str, type[Screen[Any]]]] = {
         "home": HomeScreen,
         "run-inspector": RunInspectorScreen,
         "worlds": WorldsScreen,

@@ -498,7 +498,7 @@ def test_jepa_wms_torchhub_runtime_requires_hub_loader() -> None:
         torch_module=FakeTorch(),
     )
 
-    with pytest.raises(ProviderError, match="torch.hub.load"):
+    with pytest.raises(ProviderError, match=r"torch\.hub\.load"):
         provider.score_actions(
             info=payload["info"],
             action_candidates=payload["action_candidates"],
