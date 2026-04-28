@@ -80,6 +80,119 @@ The polished runner forwards the default PushT hooks to the lower-level runner:
 | `mock` provider | `predict` | Replays the selected executable WorldForge action chunk in a local world state. |
 | TheWorldHarness Textual report | Report surface | Displays the completed run: pipeline stages, latency, tensor contract, scores, provider events, and tabletop replay. |
 
+## End-To-End Flow At A Glance
+
+The showcase has three distinct layers:
+
+1. **Host runtime and task bridge** prepare PushT-specific inputs and load optional robotics/model
+   dependencies.
+2. **Real model inference** runs LeRobot for policy actions and LeWorldModel for action-candidate
+   costs.
+3. **WorldForge orchestration** validates contracts, composes policy plus score planning, records
+   events, and replays the selected action chunk in a local mock world for inspection.
+
+```mermaid
+flowchart TD
+    Operator[Operator runs scripts/robotics-showcase]
+    Wrapper[uv wrapper\nPython 3.13 + host-owned optional deps]
+    Showcase[worldforge-robotics-showcase\nresolve defaults + checkpoint]
+    PushT[packaged PushT hooks\nobservation, score tensors, candidate bridge]
+    Runner[lewm-lerobot-real runner\nload hooks + register providers]
+    PolicyInput[build_observation\nLeRobot image/state input]
+    ScoreInfo[build_score_info\nLeWorldModel pixels/goal/action history]
+    LeRobot[LeRobotPolicyProvider\nreal PreTrainedPolicy inference]
+    RawPolicy[raw policy actions\nprovider-native tensor/array]
+    CandidateBridge[build_action_candidates\nraw action -> 1 x 3 x 4 x 10 tensor]
+    Translator[translate_candidates\nraw action -> WorldForge Action plans]
+    LeWM[LeWorldModelProvider\nreal AutoCostModel.get_cost inference]
+    Planner[World.plan policy+score\nvalidate cardinality + choose argmin]
+    MockReplay[mock execution\nlocal visual replay only]
+    Report[JSON summary + Textual report]
+
+    Operator --> Wrapper --> Showcase --> PushT --> Runner
+    Runner --> PolicyInput --> LeRobot --> RawPolicy
+    Runner --> ScoreInfo --> LeWM
+    RawPolicy --> CandidateBridge --> LeWM
+    RawPolicy --> Translator --> Planner
+    LeWM --> Planner --> MockReplay --> Report
+    Planner --> Report
+```
+
+Reading the diagram correctly matters: `LeRobotPolicyProvider` and `LeWorldModelProvider` are the
+real inference stages. `World.plan(...)` is the framework composition stage. `mock` is only the
+local replay stage; it is not replacing the policy or score model.
+
+## Inference Responsibility Matrix
+
+| Stage | Runs real model inference? | Input | Output | Purpose in the showcase |
+| --- | --- | --- | --- | --- |
+| PushT observation hook | No | Upstream PushT environment reset/render | LeRobot observation dict with image and state | Build task-aligned policy input. |
+| LeRobot policy provider | Yes, when host runtime/checkpoint is available | `policy_info["observation"]`, mode, policy path/type | Raw policy action tensor/array plus translated candidate action plans | Propose action(s) from the real task policy. |
+| Candidate bridge | No | Raw LeRobot action and provider info | LeWorldModel action-candidate tensor shaped `1 x 3 x 4 x 10` | Convert policy output into the score model's native candidate-action contract. |
+| LeWorldModel score provider | Yes, when host runtime/checkpoint is available | `pixels`, `goal`, `action` history, action candidates | Cost per candidate, `best_index = argmin(costs)` | Evaluate which policy-derived candidate is lowest cost under the real LeWorldModel checkpoint. |
+| WorldForge planner | No | Policy result, score result, typed goal, candidate action plans | `Plan` with selected action chunk and metadata | Compose the two model surfaces, validate score/candidate cardinality, and select the winning candidate. |
+| Mock replay | No | Selected WorldForge `Action` sequence | Local world-state update and visualization coordinates | Make the selected chunk inspectable without a robot controller. |
+| Textual report | No | Same JSON summary written to disk | Staged visual report | Explain what ran, what tensors were passed, what scores were returned, and what was selected. |
+
+The meaningful robotics work is the policy-plus-score composition: LeRobot proposes actions from a
+real policy, LeWorldModel scores compatible candidate action tensors from a real cost checkpoint,
+and WorldForge selects the lowest-cost candidate while preserving the raw model outputs in the run
+artifact.
+
+## Model Payload Flow
+
+The data path is intentionally split so each model receives the representation it was trained or
+configured to consume.
+
+```mermaid
+flowchart LR
+    subgraph PolicyInput[LeRobot policy input]
+        PImage[observation.image\n1 x 3 x 96 x 96]
+        PState[observation.state\n1 x 2]
+    end
+
+    subgraph PolicyInference[LeRobot inference]
+        PModel[PreTrainedPolicy or DiffusionPolicy\nselect_action / predict_action_chunk]
+        PRaw[raw policy action\nprovider-native tensor]
+    end
+
+    subgraph ScoreInput[LeWorldModel score input]
+        Pixels[pixels\n1 x 1 x 3 x 3 x 224 x 224]
+        Goal[goal\n1 x 1 x 3 x 3 x 224 x 224]
+        History[action history\n1 x 1 x 3 x 10]
+        Candidates[action_candidates\n1 x 3 x 4 x 10]
+    end
+
+    subgraph ScoreInference[LeWorldModel inference]
+        CostModel[AutoCostModel.get_cost]
+        Scores[costs\n3 candidate scores]
+    end
+
+    subgraph Selection[WorldForge selection + replay]
+        Plan[Plan metadata\npolicy_result + score_result]
+        Action[Action.move_to sequence]
+        Replay[local mock replay]
+    end
+
+    PImage --> PModel
+    PState --> PModel
+    PModel --> PRaw
+    PRaw --> Candidates
+    PRaw --> Action
+    Pixels --> CostModel
+    Goal --> CostModel
+    History --> CostModel
+    Candidates --> CostModel
+    CostModel --> Scores
+    Scores --> Plan
+    Action --> Plan
+    Plan --> Replay
+```
+
+The policy image/state and the score-model pixel/goal/history tensors are not interchangeable. They
+are separate task-specific views of the same PushT setup. The candidate bridge is what makes the
+raw policy action comparable under the LeWorldModel cost checkpoint.
+
 ## Data Contracts
 
 ### LeRobot Policy Input
@@ -207,6 +320,43 @@ joint-space command, impedance command, or controller message.
 ## End-To-End Sequence
 
 The default run follows this exact sequence.
+
+```mermaid
+sequenceDiagram
+    participant User as Operator
+    participant Wrapper as scripts/robotics-showcase
+    participant CLI as worldforge-robotics-showcase
+    participant Runner as lewm-lerobot-real
+    participant Bridge as PushT hooks
+    participant Policy as LeRobotPolicyProvider
+    participant Score as LeWorldModelProvider
+    participant Forge as World.plan(...)
+    participant Mock as mock provider
+    participant Report as JSON/TUI report
+
+    User->>Wrapper: run showcase command
+    Wrapper->>CLI: uv run with optional robotics deps
+    CLI->>Runner: forward policy, checkpoint, device, and PushT hook args
+    Runner->>Bridge: build_observation()
+    Bridge-->>Runner: LeRobot observation image/state
+    Runner->>Bridge: build_score_info()
+    Bridge-->>Runner: LeWorldModel pixels/goal/action history
+    Runner->>Forge: plan(policy_provider="lerobot", score_provider="leworldmodel")
+    Forge->>Policy: select_actions(policy_info)
+    Policy->>Policy: load policy and run select_action()/predict_action_chunk()
+    Policy->>Bridge: translate_candidates(raw policy actions)
+    Bridge->>Bridge: build_action_candidates(raw policy actions)
+    Bridge-->>Policy: translated candidate plans
+    Policy-->>Forge: raw policy actions + translated candidate plans
+    Bridge-->>Runner: score_action_candidates holder now contains LeWorldModel candidates
+    Forge->>Score: score_actions(score_info, action_candidates)
+    Score->>Score: load AutoCostModel and run get_cost(...)
+    Score-->>Forge: costs + best_index
+    Forge-->>Runner: selected Plan
+    Runner->>Mock: execute selected Action chunk
+    Mock-->>Runner: local replay state
+    Runner->>Report: write summary and render visual report
+```
 
 ### 1. Shell Wrapper Creates The Runtime
 

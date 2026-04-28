@@ -97,6 +97,9 @@ releases may still include breaking changes when the public API needs to tighten
 - Documentation now routes release validation through `make check` and `make release-check`, keeps
   robotics preflight commands visible from the README/CLI/examples pages, and splits long optional
   runtime commands into copy-pasteable blocks.
+- The robotics showcase deep dive now includes end-to-end flow, model payload, inference
+  responsibility, and sequence diagrams that show how LeRobot policy inference, LeWorldModel cost
+  inference, WorldForge planning, mock replay, and the visual report fit together.
 - `save_world` skips a redundant `json.dumps`/`json.loads` round trip; the validation call now
   runs directly against the serialized dict.
 - Documentation metadata and README links now point at the published GitHub Pages site.
