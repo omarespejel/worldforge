@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 
 import pytest
 
@@ -15,7 +16,12 @@ from worldforge import (
     list_eval_suites,
     run_eval,
 )
-from worldforge.evaluation import EvaluationSuite
+from worldforge.evaluation import (
+    EvaluationReport,
+    EvaluationResult,
+    EvaluationSuite,
+    ProviderSummary,
+)
 from worldforge.providers import MockProvider
 
 
@@ -104,6 +110,39 @@ def test_evaluation_reports_carry_claim_boundaries(tmp_path) -> None:
     assert "deterministic adapter contract checks" in payload["claim_boundary"]
     assert "typed contract" in payload["metric_semantics"]
     assert "Claim boundary:" in markdown
+
+
+def test_evaluation_result_contract_rejects_invalid_public_payloads() -> None:
+    result = EvaluationResult(
+        suite_id="suite",
+        suite="Suite",
+        scenario="scenario",
+        provider="mock",
+        score=0.5,
+        passed=True,
+        metrics={"nested": {"value": 1.0}},
+    )
+    result.metrics["nested"]["value"] = 0.25
+
+    assert result.score == 0.5
+    assert result.metrics == {"nested": {"value": 0.25}}
+
+    with pytest.raises(WorldForgeError, match="EvaluationResult score"):
+        EvaluationResult("suite", "Suite", "scenario", "mock", math.nan, True)
+    with pytest.raises(WorldForgeError, match="EvaluationResult passed"):
+        EvaluationResult("suite", "Suite", "scenario", "mock", 0.5, "yes")  # type: ignore[arg-type]
+    with pytest.raises(WorldForgeError, match="EvaluationResult metrics"):
+        EvaluationResult("suite", "Suite", "scenario", "mock", 0.5, True, {"bad": object()})
+    with pytest.raises(WorldForgeError, match="ProviderSummary passed and failed"):
+        ProviderSummary(
+            "mock",
+            0.5,
+            scenario_count=2,
+            passed_scenario_count=2,
+            failed_scenario_count=1,
+        )
+    with pytest.raises(WorldForgeError, match="EvaluationReport results"):
+        EvaluationReport("suite", "Suite", [object()])  # type: ignore[list-item]
 
 
 def test_structured_goal_targets_selected_object_and_validates_inputs(tmp_path) -> None:

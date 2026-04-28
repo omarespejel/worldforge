@@ -48,6 +48,9 @@ releases may still include breaking changes when the public API needs to tighten
 - Public JSON-carrying models now reject non-JSON-native action parameters, scene metadata,
   provider-event metadata, score metadata, policy raw actions, and policy metadata at construction
   time instead of allowing values that fail later during persistence or artifact serialization.
+- `PredictionPayload`, `EvaluationResult`, provider summaries, and `BenchmarkResult` now validate
+  their JSON fields, finite metrics, score ranges, counts, and result coherence at construction
+  time so invalid report artifacts fail before rendering.
 - World import/load validation now requires the persisted schema version, validates embedded scene
   object payloads, rejects `SceneObjectPatch` misuse, and treats a single provider string in
   `World.compare(...)` as one provider rather than a sequence of characters.
@@ -74,6 +77,8 @@ releases may still include breaking changes when the public API needs to tighten
   clearer pytest imports/assertions.
 - Ruff now also enforces comprehension, simplification, return, performance, pytest-style, and
   Ruff-native correctness rules across `src`, `tests`, `examples`, and `scripts`.
+- Provider contract helpers now use explicit `AssertionError` checks instead of Python `assert`
+  statements, so reusable adapter validation still runs under optimized Python.
 - Dedupe repeated provider scaffolding into shared `BaseProvider._emit_operation_event` and
   `BaseProvider._health` helpers, and move `no_grad_context` plus `prepare_model` into
   `providers/_policy.py`. The cosmos, runway, leworldmodel, lerobot, gr00t, and jepa-wms adapters

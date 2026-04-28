@@ -373,8 +373,10 @@ Important boundary checks:
 - `Position`, `Rotation`, `VideoClip`, request policies, provider events, embeddings, reasoning
   confidence, and prediction payload metrics reject non-finite numbers.
 - `Action.parameters`, `SceneObject.metadata`, provider-event metadata, score metadata, policy raw
-  actions, and policy metadata reject non-JSON-native values rather than accepting object instances
-  that only fail at persistence time.
+  actions, policy metadata, and prediction payload state/metadata reject non-JSON-native values
+  rather than accepting object instances that only fail at persistence time.
+- Evaluation and benchmark result objects validate finite metrics, score ranges, coherent counts,
+  and JSON-native metrics before JSON, Markdown, or CSV artifacts are rendered.
 - `World.add_object(...)` rejects duplicate scene object IDs.
 - Imported or provider-supplied world state rejects scene-object keys that disagree with embedded
   object IDs.

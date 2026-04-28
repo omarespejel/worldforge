@@ -530,6 +530,8 @@ Runtime contract
 Validation and errors
   [ ] caller inputs validated
   [ ] upstream responses parsed by typed helpers
+  [ ] returned PredictionPayload, EvaluationResult, BenchmarkResult, and provider-specific result
+      metadata are JSON-native and finite before artifacts are rendered
   [ ] malformed/partial/expired/bad-content responses rejected
   [ ] ProviderError messages are actionable and sanitized
 

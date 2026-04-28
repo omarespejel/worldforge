@@ -56,6 +56,8 @@ framework should track:
   handling.
 - Every provider capability must have both a positive contract test and a failure-mode test for the
   boundary it documents.
+- Reusable provider contract helpers must use explicit exceptions instead of Python `assert`, so
+  adapter validation does not disappear when tests run under optimized Python.
 - Public exception assertions should match literal messages precisely enough to catch regressions
   without depending on unrelated text.
 - `xfail` is strict. A test that starts passing should be investigated and either promoted or

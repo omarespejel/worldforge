@@ -24,6 +24,7 @@ from worldforge.models import (
     WorldForgeError,
     dump_json,
     require_finite_number,
+    require_json_dict,
     require_non_negative_int,
     require_positive_int,
     require_probability,
@@ -185,6 +186,10 @@ def _optional_non_negative_int(value: object, *, name: str) -> int | None:
 def _optional_non_negative_number(value: object, *, name: str) -> float | None:
     if value is None:
         return None
+    return _non_negative_number(value, name=name)
+
+
+def _non_negative_number(value: object, *, name: str) -> float:
     number = require_finite_number(value, name=name)
     if number < 0.0:
         raise WorldForgeError(f"{name} must be greater than or equal to 0.")
@@ -799,6 +804,73 @@ class BenchmarkResult:
     throughput_per_second: float
     operation_metrics: JSONDict = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.provider = _required_text(self.provider, name="BenchmarkResult provider")
+        self.operation = _required_text(self.operation, name="BenchmarkResult operation")
+        if self.operation not in BENCHMARKABLE_OPERATIONS:
+            known = ", ".join(BENCHMARKABLE_OPERATIONS)
+            raise WorldForgeError(f"BenchmarkResult operation must be one of: {known}.")
+        self.iterations = require_positive_int(self.iterations, name="BenchmarkResult iterations")
+        self.concurrency = require_positive_int(
+            self.concurrency,
+            name="BenchmarkResult concurrency",
+        )
+        self.success_count = require_non_negative_int(
+            self.success_count,
+            name="BenchmarkResult success_count",
+        )
+        self.error_count = require_non_negative_int(
+            self.error_count,
+            name="BenchmarkResult error_count",
+        )
+        if self.success_count + self.error_count != self.iterations:
+            raise WorldForgeError(
+                "BenchmarkResult success_count and error_count must sum to iterations."
+            )
+        self.retry_count = require_non_negative_int(
+            self.retry_count,
+            name="BenchmarkResult retry_count",
+        )
+        self.total_time_ms = _non_negative_number(
+            self.total_time_ms,
+            name="BenchmarkResult total_time_ms",
+        )
+        self.average_latency_ms = _optional_non_negative_number(
+            self.average_latency_ms,
+            name="BenchmarkResult average_latency_ms",
+        )
+        self.min_latency_ms = _optional_non_negative_number(
+            self.min_latency_ms,
+            name="BenchmarkResult min_latency_ms",
+        )
+        self.max_latency_ms = _optional_non_negative_number(
+            self.max_latency_ms,
+            name="BenchmarkResult max_latency_ms",
+        )
+        self.p50_latency_ms = _optional_non_negative_number(
+            self.p50_latency_ms,
+            name="BenchmarkResult p50_latency_ms",
+        )
+        self.p95_latency_ms = _optional_non_negative_number(
+            self.p95_latency_ms,
+            name="BenchmarkResult p95_latency_ms",
+        )
+        self.throughput_per_second = _non_negative_number(
+            self.throughput_per_second,
+            name="BenchmarkResult throughput_per_second",
+        )
+        self.operation_metrics = require_json_dict(
+            self.operation_metrics,
+            name="BenchmarkResult operation_metrics",
+        )
+        if not isinstance(self.errors, list) or not all(
+            isinstance(error, str) and error for error in self.errors
+        ):
+            raise WorldForgeError("BenchmarkResult errors must be a list of non-empty strings.")
+        if len(self.errors) != self.error_count:
+            raise WorldForgeError("BenchmarkResult errors length must match error_count.")
+        self.errors = list(self.errors)
 
     def to_dict(self) -> JSONDict:
         return {

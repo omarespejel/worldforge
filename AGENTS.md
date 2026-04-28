@@ -205,7 +205,12 @@ rm -f "$tmp_req"
 - Keep action parameters, scene metadata, provider-event metadata, score metadata, policy raw
   actions, and policy metadata JSON-native: string keys, finite numbers, lists, dicts, booleans,
   strings, and nulls only. Reject object instances or tuple-shaped values at construction time.
+- Keep prediction payloads, evaluation results, benchmark results, and rendered report metrics
+  internally coherent before artifact rendering: finite numbers, valid score ranges, matching
+  counts, and JSON-native metrics.
 - Add regression tests for every bug fix and every documented failure mode.
+- Provider contract helpers in `src/worldforge/testing/` must raise explicit `AssertionError`
+  messages instead of relying on Python `assert` statements.
 - Put remote provider payload fixtures under `tests/fixtures/providers/` and assert both parser
   errors and public provider errors.
 - Update README, docs, changelog, playbooks, and this file when public behavior changes.

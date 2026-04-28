@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import csv
 import io
-import json
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -22,6 +21,11 @@ from worldforge.models import (
     WorldForgeError,
     average,
     dump_json,
+    require_bool,
+    require_finite_number,
+    require_json_dict,
+    require_non_negative_int,
+    require_probability,
 )
 
 if TYPE_CHECKING:
@@ -39,7 +43,13 @@ EVALUATION_METRIC_SEMANTICS = (
 
 
 def _clamp_score(value: float) -> float:
-    return max(0.0, min(1.0, float(value)))
+    return max(0.0, min(1.0, require_finite_number(value, name="evaluation score")))
+
+
+def _required_text(value: object, *, name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise WorldForgeError(f"{name} must be a non-empty string.")
+    return value.strip()
 
 
 def _distance(a: Position, b: Position) -> float:
@@ -175,7 +185,13 @@ class EvaluationResult:
     metrics: JSONDict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        self.score = _clamp_score(self.score)
+        self.suite_id = _required_text(self.suite_id, name="EvaluationResult suite_id")
+        self.suite = _required_text(self.suite, name="EvaluationResult suite")
+        self.scenario = _required_text(self.scenario, name="EvaluationResult scenario")
+        self.provider = _required_text(self.provider, name="EvaluationResult provider")
+        self.score = require_probability(self.score, name="EvaluationResult score")
+        self.passed = require_bool(self.passed, name="EvaluationResult passed")
+        self.metrics = require_json_dict(self.metrics, name="EvaluationResult metrics")
 
     def to_dict(self) -> JSONDict:
         return {
@@ -198,6 +214,29 @@ class ProviderSummary:
     scenario_count: int
     passed_scenario_count: int
     failed_scenario_count: int
+
+    def __post_init__(self) -> None:
+        self.provider = _required_text(self.provider, name="ProviderSummary provider")
+        self.average_score = require_probability(
+            self.average_score,
+            name="ProviderSummary average_score",
+        )
+        self.scenario_count = require_non_negative_int(
+            self.scenario_count,
+            name="ProviderSummary scenario_count",
+        )
+        self.passed_scenario_count = require_non_negative_int(
+            self.passed_scenario_count,
+            name="ProviderSummary passed_scenario_count",
+        )
+        self.failed_scenario_count = require_non_negative_int(
+            self.failed_scenario_count,
+            name="ProviderSummary failed_scenario_count",
+        )
+        if self.passed_scenario_count + self.failed_scenario_count != self.scenario_count:
+            raise WorldForgeError(
+                "ProviderSummary passed and failed scenario counts must sum to scenario_count."
+            )
 
     @property
     def pass_rate(self) -> float:
@@ -225,9 +264,11 @@ class EvaluationReport:
         suite: str,
         results: Sequence[EvaluationResult],
     ) -> None:
-        self.suite_id = suite_id
-        self.suite = suite
+        self.suite_id = _required_text(suite_id, name="EvaluationReport suite_id")
+        self.suite = _required_text(suite, name="EvaluationReport suite")
         self.results = list(results)
+        if not all(isinstance(result, EvaluationResult) for result in self.results):
+            raise WorldForgeError("EvaluationReport results must contain only EvaluationResult.")
         self.provider_summaries = self._build_provider_summaries()
 
     def _build_provider_summaries(self) -> list[ProviderSummary]:
@@ -318,7 +359,7 @@ class EvaluationReport:
                     "scenario": result.scenario,
                     "score": f"{result.score:.4f}",
                     "passed": str(result.passed).lower(),
-                    "metrics_json": json.dumps(result.metrics, sort_keys=True),
+                    "metrics_json": dump_json(result.metrics),
                 }
             )
         return buffer.getvalue().strip()

@@ -18,6 +18,8 @@ from worldforge.models import (
     ReasoningResult,
     SceneObject,
     VideoClip,
+    WorldForgeError,
+    dump_json,
 )
 from worldforge.providers import BaseProvider, PredictionPayload, ProviderError
 
@@ -97,70 +99,141 @@ def _expect_provider_error[T](operation_name: str, call: Callable[[], T]) -> Non
     raise AssertionError(msg)
 
 
+def _contract_check(condition: bool, message: str) -> None:
+    if not condition:
+        raise AssertionError(message)
+
+
+def _contract_json(value: object, message: str) -> None:
+    try:
+        dump_json(value)
+    except WorldForgeError as exc:
+        raise AssertionError(message) from exc
+
+
 def _validate_prediction(provider: str, payload: PredictionPayload) -> None:
-    assert isinstance(payload.state, dict)
-    assert isinstance(payload.metadata, dict)
-    assert isinstance(payload.frames, list)
-    assert all(isinstance(frame, bytes) for frame in payload.frames)
-    assert isinstance(payload.confidence, float)
-    assert 0.0 <= payload.confidence <= 1.0
-    assert isinstance(payload.physics_score, float)
-    assert 0.0 <= payload.physics_score <= 1.0
-    assert payload.latency_ms >= 0.0
-    assert "scene" in payload.state
-    assert payload.metadata.get("provider") == provider
+    _contract_check(
+        isinstance(payload, PredictionPayload),
+        "predict must return PredictionPayload.",
+    )
+    try:
+        from worldforge.framework import _validate_world_state_payload
+
+        _validate_world_state_payload(payload.state, context="Provider contract prediction state")
+    except WorldForgeError as exc:
+        raise AssertionError("predict returned invalid world state.") from exc
+    _contract_check(isinstance(payload.metadata, dict), "predict metadata must be a JSON object.")
+    _contract_json(payload.metadata, "predict metadata must be JSON serializable.")
+    _contract_check(isinstance(payload.frames, list), "predict frames must be a list.")
+    _contract_check(
+        all(isinstance(frame, bytes) for frame in payload.frames),
+        "predict frames must contain only bytes.",
+    )
+    _contract_check(
+        isinstance(payload.confidence, float) and 0.0 <= payload.confidence <= 1.0,
+        "predict confidence must be a probability float.",
+    )
+    _contract_check(
+        isinstance(payload.physics_score, float) and 0.0 <= payload.physics_score <= 1.0,
+        "predict physics_score must be a probability float.",
+    )
+    _contract_check(payload.latency_ms >= 0.0, "predict latency_ms must be non-negative.")
+    _contract_check(
+        payload.metadata.get("provider") == provider,
+        "predict metadata provider must match provider name.",
+    )
 
 
 def _validate_reasoning(provider: str, result: ReasoningResult) -> None:
-    assert result.provider == provider
-    assert isinstance(result.answer, str)
-    assert result.answer
-    assert 0.0 <= result.confidence <= 1.0
-    assert isinstance(result.evidence, list)
+    _contract_check(isinstance(result, ReasoningResult), "reason must return ReasoningResult.")
+    _contract_check(result.provider == provider, "reason provider must match provider name.")
+    _contract_check(
+        isinstance(result.answer, str) and bool(result.answer),
+        "reason answer required.",
+    )
+    _contract_check(0.0 <= result.confidence <= 1.0, "reason confidence must be a probability.")
+    _contract_check(isinstance(result.evidence, list), "reason evidence must be a list.")
 
 
 def _validate_embedding(provider: str, result: EmbeddingResult) -> None:
-    assert result.provider == provider
-    assert isinstance(result.model, str)
-    assert result.model
-    assert isinstance(result.vector, list)
-    assert len(result.vector) >= 1
-    assert all(isinstance(value, float) for value in result.vector)
+    _contract_check(isinstance(result, EmbeddingResult), "embed must return EmbeddingResult.")
+    _contract_check(result.provider == provider, "embed provider must match provider name.")
+    _contract_check(isinstance(result.model, str) and bool(result.model), "embed model required.")
+    _contract_check(isinstance(result.vector, list), "embed vector must be a list.")
+    _contract_check(len(result.vector) >= 1, "embed vector must not be empty.")
+    _contract_check(
+        all(isinstance(value, float) for value in result.vector),
+        "embed vector values must be floats.",
+    )
 
 
 def _validate_clip(clip: VideoClip) -> None:
-    assert isinstance(clip.frames, list)
-    assert all(isinstance(frame, bytes) for frame in clip.frames)
-    assert clip.fps > 0.0
-    assert clip.resolution[0] > 0
-    assert clip.resolution[1] > 0
-    assert clip.duration_seconds >= 0.0
-    assert isinstance(clip.metadata, dict)
+    _contract_check(isinstance(clip, VideoClip), "media operation must return VideoClip.")
+    _contract_check(isinstance(clip.frames, list), "VideoClip frames must be a list.")
+    _contract_check(
+        all(isinstance(frame, bytes) for frame in clip.frames),
+        "VideoClip frames must contain only bytes.",
+    )
+    _contract_check(clip.fps > 0.0, "VideoClip fps must be positive.")
+    _contract_check(clip.resolution[0] > 0, "VideoClip width must be positive.")
+    _contract_check(clip.resolution[1] > 0, "VideoClip height must be positive.")
+    _contract_check(clip.duration_seconds >= 0.0, "VideoClip duration must be non-negative.")
+    _contract_check(isinstance(clip.metadata, dict), "VideoClip metadata must be a JSON object.")
+    _contract_json(clip.metadata, "VideoClip metadata must be JSON serializable.")
 
 
 def _validate_action_scores(provider: str, result: ActionScoreResult) -> None:
-    assert result.provider == provider
-    assert isinstance(result.scores, list)
-    assert result.scores
-    assert all(isinstance(score, float) for score in result.scores)
-    assert isinstance(result.best_index, int)
-    assert 0 <= result.best_index < len(result.scores)
-    assert result.best_score == result.scores[result.best_index]
-    assert isinstance(result.lower_is_better, bool)
-    assert isinstance(result.metadata, dict)
+    _contract_check(isinstance(result, ActionScoreResult), "score must return ActionScoreResult.")
+    _contract_check(result.provider == provider, "score provider must match provider name.")
+    _contract_check(isinstance(result.scores, list), "score scores must be a list.")
+    _contract_check(bool(result.scores), "score scores must not be empty.")
+    _contract_check(
+        all(isinstance(score, float) for score in result.scores),
+        "score values must be floats.",
+    )
+    _contract_check(isinstance(result.best_index, int), "score best_index must be an integer.")
+    _contract_check(
+        0 <= result.best_index < len(result.scores),
+        "score best_index must point at a score.",
+    )
+    _contract_check(
+        result.best_score == result.scores[result.best_index],
+        "score best_score must match scores[best_index].",
+    )
+    _contract_check(isinstance(result.lower_is_better, bool), "score direction flag must be bool.")
+    _contract_check(isinstance(result.metadata, dict), "score metadata must be a JSON object.")
 
 
 def _validate_action_policy(provider: str, result: ActionPolicyResult) -> None:
-    assert result.provider == provider
-    assert isinstance(result.actions, list)
-    assert result.actions
-    assert all(isinstance(action, Action) for action in result.actions)
-    assert isinstance(result.raw_actions, dict)
-    assert result.action_horizon is None or result.action_horizon >= 1
-    assert isinstance(result.metadata, dict)
-    assert isinstance(result.action_candidates, list)
-    assert result.action_candidates
-    assert all(candidate for candidate in result.action_candidates)
+    _contract_check(
+        isinstance(result, ActionPolicyResult),
+        "policy must return ActionPolicyResult.",
+    )
+    _contract_check(result.provider == provider, "policy provider must match provider name.")
+    _contract_check(isinstance(result.actions, list), "policy actions must be a list.")
+    _contract_check(bool(result.actions), "policy actions must not be empty.")
+    _contract_check(
+        all(isinstance(action, Action) for action in result.actions),
+        "policy actions must contain only Action objects.",
+    )
+    _contract_check(
+        isinstance(result.raw_actions, dict),
+        "policy raw_actions must be a JSON object.",
+    )
+    _contract_check(
+        result.action_horizon is None or result.action_horizon >= 1,
+        "policy action_horizon must be positive when provided.",
+    )
+    _contract_check(isinstance(result.metadata, dict), "policy metadata must be a JSON object.")
+    _contract_check(
+        isinstance(result.action_candidates, list),
+        "policy action_candidates must be a list.",
+    )
+    _contract_check(bool(result.action_candidates), "policy action_candidates must not be empty.")
+    _contract_check(
+        all(candidate for candidate in result.action_candidates),
+        "policy action candidate plans must not be empty.",
+    )
 
 
 def assert_provider_contract(
@@ -184,18 +257,33 @@ def assert_provider_contract(
     health = provider.health()
     configured = provider.configured()
 
-    assert profile.name == provider.name
-    assert info.name == provider.name
-    assert info.description == profile.description
-    assert info.is_local == profile.is_local
-    assert sorted(info.capabilities.enabled_names()) == sorted(profile.supported_tasks)
-    assert health.name == provider.name
+    _contract_check(profile.name == provider.name, "profile name must match provider name.")
+    _contract_check(info.name == provider.name, "provider info name must match provider name.")
+    _contract_check(
+        info.description == profile.description,
+        "provider info description must match profile description.",
+    )
+    _contract_check(
+        info.is_local == profile.is_local,
+        "provider info locality must match profile locality.",
+    )
+    _contract_check(
+        sorted(info.capabilities.enabled_names()) == sorted(profile.supported_tasks),
+        "provider info capabilities must match profile supported_tasks.",
+    )
+    _contract_check(health.name == provider.name, "provider health name must match provider name.")
     if health.healthy:
-        assert configured
+        _contract_check(configured, "healthy provider must report configured=True.")
     if not configured and profile.requires_credentials:
-        assert health.healthy is False
+        _contract_check(
+            health.healthy is False,
+            "credential-gated unconfigured provider must report unhealthy health.",
+        )
     if profile.capabilities.plan:
-        assert profile.capabilities.predict
+        _contract_check(
+            profile.capabilities.predict,
+            "provider-level plan capability requires predict capability.",
+        )
 
     sample_state = world_state or sample_contract_world_state()
     sample_action = action or sample_contract_action()

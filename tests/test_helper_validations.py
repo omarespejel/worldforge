@@ -497,6 +497,26 @@ def test_public_validation_guards_cover_boundary_failure_modes() -> None:
             metadata=[],  # type: ignore[arg-type]
             latency_ms=0.0,
         )
+    invalid_nested_state = dict(valid_state)
+    invalid_nested_state["metadata"] = {"bad": object()}
+    with pytest.raises(WorldForgeError, match="PredictionPayload state"):
+        PredictionPayload(
+            state=invalid_nested_state,
+            confidence=0.5,
+            physics_score=0.5,
+            frames=[],
+            metadata={},
+            latency_ms=0.0,
+        )
+    with pytest.raises(WorldForgeError, match="PredictionPayload metadata"):
+        PredictionPayload(
+            state=valid_state,
+            confidence=0.5,
+            physics_score=0.5,
+            frames=[],
+            metadata={"bad": object()},
+            latency_ms=0.0,
+        )
     with pytest.raises(WorldForgeError):
         PredictionPayload(
             state=valid_state,

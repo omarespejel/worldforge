@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import pytest
 
+from worldforge import ProviderCapabilities
 from worldforge.providers import (
+    BaseProvider,
     CosmosProvider,
     GenieProvider,
     JepaProvider,
     MockProvider,
+    PredictionPayload,
     ProviderError,
+    ProviderProfileSpec,
 )
 from worldforge.testing import assert_provider_contract
 
@@ -23,6 +27,29 @@ def test_mock_provider_passes_contract_checks() -> None:
         "generate",
         "transfer",
     }
+
+
+def test_provider_contract_uses_explicit_failure_for_invalid_prediction_state() -> None:
+    class BadPredictionProvider(BaseProvider):
+        def __init__(self) -> None:
+            super().__init__(
+                name="bad-predict",
+                capabilities=ProviderCapabilities(predict=True),
+                profile=ProviderProfileSpec(description="Invalid prediction provider"),
+            )
+
+        def predict(self, world_state, action, steps) -> PredictionPayload:
+            return PredictionPayload(
+                state={"scene": {"objects": {}}},
+                confidence=0.5,
+                physics_score=0.5,
+                frames=[],
+                metadata={"provider": self.name},
+                latency_ms=0.1,
+            )
+
+    with pytest.raises(AssertionError, match="invalid world state"):
+        assert_provider_contract(BadPredictionProvider())
 
 
 def test_scaffold_provider_reports_clear_unconfigured_contract(monkeypatch) -> None:

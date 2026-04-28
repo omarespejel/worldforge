@@ -21,6 +21,7 @@ from worldforge import (
 from worldforge.benchmark import (
     BenchmarkBudget,
     BenchmarkInputs,
+    BenchmarkResult,
     load_benchmark_budgets,
     load_benchmark_inputs,
 )
@@ -173,6 +174,100 @@ def test_benchmark_report_evaluates_budget_gates(tmp_path) -> None:
         "matching_results",
     }
     assert json.loads(failing.to_json())["violation_count"] == 2
+
+
+def test_benchmark_result_contract_rejects_incoherent_public_payloads() -> None:
+    result = BenchmarkResult(
+        provider="mock",
+        operation="generate",
+        iterations=2,
+        concurrency=1,
+        success_count=1,
+        error_count=1,
+        retry_count=0,
+        total_time_ms=2.0,
+        average_latency_ms=1.0,
+        min_latency_ms=0.5,
+        max_latency_ms=1.5,
+        p50_latency_ms=1.0,
+        p95_latency_ms=1.45,
+        throughput_per_second=0.5,
+        operation_metrics={"events": []},
+        errors=["simulated failure"],
+    )
+
+    assert result.to_dict()["operation"] == "generate"
+
+    with pytest.raises(WorldForgeError, match="operation must be one of"):
+        BenchmarkResult(
+            provider="mock",
+            operation="not-real",
+            iterations=1,
+            concurrency=1,
+            success_count=1,
+            error_count=0,
+            retry_count=0,
+            total_time_ms=1.0,
+            average_latency_ms=1.0,
+            min_latency_ms=1.0,
+            max_latency_ms=1.0,
+            p50_latency_ms=1.0,
+            p95_latency_ms=1.0,
+            throughput_per_second=1.0,
+        )
+    with pytest.raises(WorldForgeError, match="must sum to iterations"):
+        BenchmarkResult(
+            provider="mock",
+            operation="generate",
+            iterations=2,
+            concurrency=1,
+            success_count=2,
+            error_count=1,
+            retry_count=0,
+            total_time_ms=1.0,
+            average_latency_ms=1.0,
+            min_latency_ms=1.0,
+            max_latency_ms=1.0,
+            p50_latency_ms=1.0,
+            p95_latency_ms=1.0,
+            throughput_per_second=1.0,
+        )
+    with pytest.raises(WorldForgeError, match="operation_metrics"):
+        BenchmarkResult(
+            provider="mock",
+            operation="generate",
+            iterations=1,
+            concurrency=1,
+            success_count=1,
+            error_count=0,
+            retry_count=0,
+            total_time_ms=1.0,
+            average_latency_ms=1.0,
+            min_latency_ms=1.0,
+            max_latency_ms=1.0,
+            p50_latency_ms=1.0,
+            p95_latency_ms=1.0,
+            throughput_per_second=1.0,
+            operation_metrics={"bad": object()},
+        )
+    with pytest.raises(WorldForgeError, match="errors length"):
+        BenchmarkResult(
+            provider="mock",
+            operation="generate",
+            iterations=1,
+            concurrency=1,
+            success_count=0,
+            error_count=1,
+            retry_count=0,
+            total_time_ms=1.0,
+            average_latency_ms=1.0,
+            min_latency_ms=1.0,
+            max_latency_ms=1.0,
+            p50_latency_ms=1.0,
+            p95_latency_ms=1.0,
+            throughput_per_second=0.0,
+            errors=[],
+        )
 
 
 def test_documented_benchmark_fixtures_load_and_pass_gate(tmp_path) -> None:
