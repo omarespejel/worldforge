@@ -13,6 +13,8 @@ from .base import (
     ProviderError,
     ProviderProfileSpec,
     RemoteProvider,
+    validate_generation_request,
+    validate_transfer_request,
 )
 from .catalog import PROVIDER_CATALOG, ProviderCatalogEntry, create_known_providers
 from .cosmos import CosmosProvider
@@ -45,4 +47,6 @@ __all__ = [
     "RunwayProvider",
     "StubRemoteProvider",
     "create_known_providers",
+    "validate_generation_request",
+    "validate_transfer_request",
 ]

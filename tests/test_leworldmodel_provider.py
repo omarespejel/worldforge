@@ -304,6 +304,26 @@ def test_leworldmodel_doctor_reports_dependency_issue_after_configuration(
     assert any("missing optional dependency torch" in issue for issue in report.issues)
 
 
+def test_leworldmodel_provider_health_reports_native_import_failures(monkeypatch) -> None:
+    provider = LeWorldModelProvider(policy="pusht/lewm")
+
+    def fail_import(name: str) -> object:
+        if name == "torch":
+            raise OSError("native torch loader failed")
+        return __import__(name)
+
+    monkeypatch.setattr(
+        "worldforge.providers.leworldmodel.importlib.import_module",
+        fail_import,
+    )
+
+    health = provider.health()
+
+    assert health.healthy is False
+    assert "LeWorldModel optional dependency torch import failed" in health.details
+    assert "native torch loader failed" in health.details
+
+
 @pytest.mark.parametrize(
     ("fixture_name", "match"),
     [

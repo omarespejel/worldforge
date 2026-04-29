@@ -31,6 +31,12 @@ REQUIRED_INFO_FIELDS = ("pixels", "goal", "action")
 ModelLoader = Callable[[str, str | None], Any]
 
 
+def _import_failure_detail(module_name: str, exc: Exception) -> str:
+    message = str(exc).strip()
+    suffix = f": {message}" if message else ""
+    return f"{module_name}: {type(exc).__name__}{suffix}"
+
+
 class LeWorldModelProvider(BaseProvider):
     """Adapter for LeWorldModel JEPA action-candidate cost inference.
 
@@ -132,11 +138,23 @@ class LeWorldModelProvider(BaseProvider):
                 importlib.import_module("torch")
             except ImportError:
                 return "missing optional dependency torch"
+            except Exception as exc:
+                return (
+                    "LeWorldModel optional dependency torch import failed ("
+                    + _import_failure_detail("torch", exc)
+                    + ")"
+                )
         if self._model_loader is None:
             try:
                 stable_worldmodel = importlib.import_module("stable_worldmodel")
             except ImportError:
                 return "missing optional dependency stable_worldmodel"
+            except Exception as exc:
+                return (
+                    "LeWorldModel optional dependency stable_worldmodel import failed ("
+                    + _import_failure_detail("stable_worldmodel", exc)
+                    + ")"
+                )
             policy_module = getattr(stable_worldmodel, "policy", None)
             if policy_module is None or not hasattr(policy_module, "AutoCostModel"):
                 return "stable_worldmodel.policy.AutoCostModel is unavailable"
@@ -151,6 +169,12 @@ class LeWorldModelProvider(BaseProvider):
             raise ProviderError(
                 "Provider 'leworldmodel' requires optional dependency torch. "
                 "Run the documented host-owned uv wrapper with stable-worldmodel[train]."
+            ) from exc
+        except Exception as exc:
+            raise ProviderError(
+                "Provider 'leworldmodel' optional dependency torch import failed ("
+                + _import_failure_detail("torch", exc)
+                + ")."
             ) from exc
 
     def _load_model(self) -> Any:

@@ -180,6 +180,25 @@ def test_observable_capability_emits_failure_event_on_exception():
     assert "Provider 'boom' score failed: boom" in events[0].message
 
 
+def test_observable_capability_rejects_invalid_return_contract():
+    class _BadCost:
+        name = "bad_cost"
+        profile = None
+
+        def score_actions(self, *, info, action_candidates):
+            return {"scores": [1.0]}
+
+    events: list[ProviderEvent] = []
+    wrapped = _ObservableCapability(_BadCost(), kind="cost", event_handler=events.append)
+
+    with pytest.raises(ProviderError, match="expected ActionScoreResult"):
+        wrapped.call(info={}, action_candidates=[])
+
+    assert len(events) == 1
+    assert events[0].phase == "failure"
+    assert "expected ActionScoreResult" in events[0].message
+
+
 def test_observable_capability_synthesizes_diagnostics_surfaces():
     wrapped = _ObservableCapability(_PureCost(), kind="cost")
     info = wrapped.info()

@@ -256,7 +256,10 @@ Success signal:
 - benchmark budget files fail non-zero when success rate, error count, retry count, latency, or
   throughput thresholds regress.
 - `--input-file` fixtures reproduce benchmark inputs for prediction, generation, transfer,
-  embedding, score, and policy runs; transfer clip paths resolve relative to the fixture file.
+  embedding, score, and policy runs. The checked-in fixture is checkout-safe for `mock`
+  `predict`, `generate`, `transfer`, and `embed`; its score and policy fields are provider-specific
+  inputs for providers that advertise those capabilities. Transfer clip paths resolve relative to
+  the fixture file.
 - benchmark input files and result JSON are saved by the host when they are used for release or
   paper claims.
 

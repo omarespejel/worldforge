@@ -7,6 +7,10 @@ releases may still include breaking changes when the public API needs to tighten
 
 ## Unreleased
 
+No user-visible changes yet.
+
+## 0.5.0 - 2026-04-24
+
 ### Added
 
 - Added a MkDocs Material documentation site, strict docs-build validation, and a GitHub Pages

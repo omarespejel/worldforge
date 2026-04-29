@@ -336,10 +336,10 @@ def test_runway_provider_rejects_invalid_runtime_inputs(monkeypatch) -> None:
         max_polls=1,
     )
 
-    with pytest.raises(ProviderError, match="duration_seconds"):
+    with pytest.raises(WorldForgeError, match="duration_seconds"):
         provider.generate("a rainy alley at night", duration_seconds=0.0)
 
-    with pytest.raises(ProviderError, match="width and height"):
+    with pytest.raises(WorldForgeError, match="width"):
         provider.transfer(
             clip=_sample_clip(),
             width=0,
@@ -347,7 +347,7 @@ def test_runway_provider_rejects_invalid_runtime_inputs(monkeypatch) -> None:
             fps=24.0,
         )
 
-    with pytest.raises(ProviderError, match="fps"):
+    with pytest.raises(WorldForgeError, match="fps"):
         provider.transfer(
             clip=_sample_clip(),
             width=1280,
@@ -433,7 +433,7 @@ def test_runway_provider_does_not_retry_generation_post(monkeypatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "POST" and request.url.path == "/v1/image_to_video":
             attempts["post"] += 1
-            return httpx.Response(503, text="busy")
+            return httpx.Response(503, text='{"api_key":"post-secret","message":"busy"}')
         raise AssertionError(f"Unexpected request: {request.method} {request.url}")
 
     provider = RunwayProvider(
@@ -458,6 +458,7 @@ def test_runway_provider_does_not_retry_generation_post(monkeypatch) -> None:
     assert [(event.operation, event.phase, event.status_code) for event in events] == [
         ("generation request", "failure", 503)
     ]
+    assert "post-secret" not in json.dumps([event.to_dict() for event in events])
 
 
 def test_runway_provider_rejects_malformed_response_fixtures(monkeypatch) -> None:

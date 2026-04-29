@@ -31,7 +31,14 @@ _SENSITIVE_FIELD_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _SENSITIVE_ASSIGNMENT_PATTERN = re.compile(
-    r"\b(api[_-]?key|authorization|credential|password|secret|signature|token)=([^&\s,;]+)",
+    r"\b(api[_-]?key|authorization|credential|password|secret|signature|signed[_-]?url|token)=([^&\s,;]+)",
+    re.IGNORECASE,
+)
+_SENSITIVE_COLON_PATTERN = re.compile(
+    r"(?P<key_quote>[\"']?)"
+    r"(?P<key>api[_-]?key|authorization|bearer|credential|password|secret|signature|signed[_-]?url|token)"
+    r"(?P=key_quote)\s*:\s*"
+    r"(?P<value>\"[^\"]*\"|'[^']*'|[^,\s;}]+)",
     re.IGNORECASE,
 )
 _BEARER_VALUE_PATTERN = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE)
@@ -183,15 +190,23 @@ def _sanitize_observable_target(value: object | None) -> str | None:
 def _redact_observable_text(value: str) -> str:
     """Redact common secret shapes from provider event text."""
 
+    def _redact_colon_assignment(match: re.Match[str]) -> str:
+        raw_value = match.group("value")
+        quote = raw_value[0] if raw_value[:1] in {"'", '"'} else ""
+        redacted_value = f"{quote}{_REDACTED_OBSERVABLE_VALUE}{quote}"
+        key_quote = match.group("key_quote")
+        return f"{key_quote}{match.group('key')}{key_quote}: {redacted_value}"
+
     redacted = _URL_IN_TEXT_PATTERN.sub(
         lambda match: _sanitize_observable_target(match.group(0)) or _REDACTED_OBSERVABLE_VALUE,
         value,
     )
     redacted = _BEARER_VALUE_PATTERN.sub("Bearer [redacted]", redacted)
-    return _SENSITIVE_ASSIGNMENT_PATTERN.sub(
+    redacted = _SENSITIVE_ASSIGNMENT_PATTERN.sub(
         lambda match: f"{match.group(1)}={_REDACTED_OBSERVABLE_VALUE}",
         redacted,
     )
+    return _SENSITIVE_COLON_PATTERN.sub(_redact_colon_assignment, redacted)
 
 
 def _redact_observable_value(value: Any, *, key: str | None = None) -> Any:
@@ -207,8 +222,6 @@ def _redact_observable_value(value: Any, *, key: str | None = None) -> Any:
             for item_key, item_value in value.items()
         }
     if isinstance(value, list):
-        return [_redact_observable_value(item) for item in value]
-    if isinstance(value, tuple):
         return [_redact_observable_value(item) for item in value]
     return value
 
@@ -1367,6 +1380,21 @@ class ProviderHealth:
     healthy: bool
     latency_ms: float
     details: str = ""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str) or not self.name.strip():
+            raise WorldForgeError("ProviderHealth name must be a non-empty string.")
+        self.name = self.name.strip()
+        self.healthy = require_bool(self.healthy, name="ProviderHealth healthy")
+        self.latency_ms = require_finite_number(
+            self.latency_ms,
+            name="ProviderHealth latency_ms",
+        )
+        if self.latency_ms < 0.0:
+            raise WorldForgeError("ProviderHealth latency_ms must be non-negative.")
+        if not isinstance(self.details, str):
+            raise WorldForgeError("ProviderHealth details must be a string.")
+        self.details = _redact_observable_text(self.details)
 
     def to_dict(self) -> JSONDict:
         return {

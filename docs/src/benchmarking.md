@@ -61,7 +61,10 @@ uv run worldforge benchmark --provider mock --operation embed --input-file examp
 ```
 
 Use `--input-file` when a benchmark result needs to be reproducible from preserved inputs. The
-file can contain input fields directly, or an `inputs` object plus metadata:
+file can contain input fields directly, or an `inputs` object plus metadata. The checked-in
+`examples/benchmark-inputs.json` fixture is checkout-safe for the mock provider's `predict`,
+`generate`, `transfer`, and `embed` operations; score and policy entries require providers that
+advertise those capabilities.
 
 ```json
 {

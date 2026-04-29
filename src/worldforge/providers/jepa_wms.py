@@ -385,6 +385,12 @@ class JEPAWMSProvider(BaseProvider):
             model_path if model_path is not None else env_value(JEPA_WMS_ENV_VAR),
             name="JEPA-WMS model_path",
         )
+        if (
+            runtime is not None
+            and not callable(runtime)
+            and not callable(getattr(runtime, "score_actions", None))
+        ):
+            raise WorldForgeError("JEPA-WMS runtime must be callable or expose score_actions().")
         self._runtime = runtime
         super().__init__(
             name=name,

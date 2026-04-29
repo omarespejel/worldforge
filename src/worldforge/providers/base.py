@@ -25,12 +25,56 @@ from worldforge.models import (
     WorldForgeError,
     require_finite_number,
     require_json_dict,
+    require_positive_int,
     require_probability,
 )
 
 
 class ProviderError(RuntimeError):
     """Raised when a provider cannot satisfy a request."""
+
+
+def validate_generation_request(
+    prompt: object,
+    duration_seconds: object,
+    *,
+    options: object | None = None,
+) -> tuple[str, float, GenerationOptions | None]:
+    """Validate common provider generation inputs before adapter execution."""
+
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise WorldForgeError("generate() prompt must be a non-empty string.")
+    duration = require_finite_number(duration_seconds, name="generate() duration_seconds")
+    if duration <= 0.0:
+        raise WorldForgeError("generate() duration_seconds must be greater than 0.")
+    if options is not None and not isinstance(options, GenerationOptions):
+        raise WorldForgeError("generate() options must be a GenerationOptions instance.")
+    return prompt.strip(), duration, options
+
+
+def validate_transfer_request(
+    clip: object,
+    *,
+    width: object,
+    height: object,
+    fps: object,
+    prompt: object = "",
+    options: object | None = None,
+) -> tuple[VideoClip, int, int, float, str, GenerationOptions | None]:
+    """Validate common provider transfer inputs before adapter execution."""
+
+    if not isinstance(clip, VideoClip):
+        raise WorldForgeError("transfer() clip must be a VideoClip.")
+    resolved_width = require_positive_int(width, name="transfer() width")
+    resolved_height = require_positive_int(height, name="transfer() height")
+    resolved_fps = require_finite_number(fps, name="transfer() fps")
+    if resolved_fps <= 0.0:
+        raise WorldForgeError("transfer() fps must be greater than 0.")
+    if not isinstance(prompt, str):
+        raise WorldForgeError("transfer() prompt must be a string.")
+    if options is not None and not isinstance(options, GenerationOptions):
+        raise WorldForgeError("transfer() options must be a GenerationOptions instance.")
+    return clip, resolved_width, resolved_height, resolved_fps, prompt.strip(), options
 
 
 @dataclass(slots=True, frozen=True)

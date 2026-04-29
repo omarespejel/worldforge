@@ -17,7 +17,7 @@ from worldforge.models import (
 )
 
 from ._config import env_value, optional_bool, optional_non_empty, optional_positive_int
-from ._policy import json_object, normalize_policy_action_candidates
+from ._policy import json_compatible, json_object, normalize_policy_action_candidates
 from .base import BaseProvider, ProviderError, ProviderProfileSpec
 
 GROOT_POLICY_HOST_ENV_VAR = "GROOT_POLICY_HOST"
@@ -157,6 +157,13 @@ class GrootPolicyClientProvider(BaseProvider):
             policy_module = importlib.import_module("gr00t.policy.server_client")
         except ImportError:
             return "missing optional dependency gr00t.policy.server_client"
+        except Exception as exc:
+            message = str(exc).strip()
+            suffix = f": {message}" if message else ""
+            return (
+                "GR00T optional dependency import failed "
+                f"(gr00t.policy.server_client: {type(exc).__name__}{suffix})"
+            )
         if not hasattr(policy_module, "PolicyClient"):
             return "gr00t.policy.server_client.PolicyClient is unavailable"
         return None
@@ -242,7 +249,13 @@ class GrootPolicyClientProvider(BaseProvider):
                 raw_actions = response
                 raw_provider_info = {}
 
-            normalized_raw_actions = json_object(raw_actions, name="GR00T raw_actions")
+            raw_actions_value = json_compatible(raw_actions, name="GR00T raw_actions")
+            if isinstance(raw_actions_value, dict):
+                normalized_raw_actions = raw_actions_value
+            elif isinstance(raw_actions_value, list):
+                normalized_raw_actions = {"actions": raw_actions_value}
+            else:
+                raise ProviderError("GR00T raw_actions must be a JSON object or action array.")
             normalized_provider_info = json_object(
                 raw_provider_info,
                 name="GR00T provider_info",

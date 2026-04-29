@@ -6,6 +6,7 @@ import argparse
 import json
 import math
 from collections.abc import Callable
+from hashlib import sha256
 from pathlib import Path
 
 from worldforge import (
@@ -1244,10 +1245,12 @@ def _cmd_benchmark(args: argparse.Namespace, forge: WorldForge) -> int:
     harness = ProviderBenchmarkHarness(forge=forge)
     providers = args.providers or ["mock"]
     benchmark_inputs = None
+    input_file_metadata = None
     if args.input_file:
         input_path = args.input_file.expanduser()
         try:
-            input_payload = json.loads(input_path.read_text(encoding="utf-8"))
+            input_text = input_path.read_text(encoding="utf-8")
+            input_payload = json.loads(input_text)
         except OSError as exc:
             raise WorldForgeError(
                 f"Failed to read benchmark input file {args.input_file}: {exc}"
@@ -1258,6 +1261,16 @@ def _cmd_benchmark(args: argparse.Namespace, forge: WorldForge) -> int:
             input_payload,
             base_path=input_path.parent,
         )
+        input_metadata = (
+            input_payload.get("metadata")
+            if isinstance(input_payload, dict) and isinstance(input_payload.get("metadata"), dict)
+            else {}
+        )
+        input_file_metadata = {
+            "path": str(input_path.resolve()),
+            "sha256": sha256(input_text.encode("utf-8")).hexdigest(),
+            "metadata": input_metadata,
+        }
     report = harness.run(
         providers,
         operations=args.operations,
@@ -1265,16 +1278,30 @@ def _cmd_benchmark(args: argparse.Namespace, forge: WorldForge) -> int:
         concurrency=args.concurrency,
         inputs=benchmark_inputs,
     )
+    if input_file_metadata is not None:
+        report.run_metadata["input_file"] = input_file_metadata
     gate_report = None
     if args.budget_file:
+        budget_path = args.budget_file.expanduser()
         try:
-            budget_payload = json.loads(args.budget_file.expanduser().read_text(encoding="utf-8"))
+            budget_text = budget_path.read_text(encoding="utf-8")
+            budget_payload = json.loads(budget_text)
         except OSError as exc:
             raise WorldForgeError(
                 f"Failed to read benchmark budget file {args.budget_file}: {exc}"
             ) from exc
         except json.JSONDecodeError as exc:
             raise WorldForgeError(f"Benchmark budget file must contain valid JSON: {exc}") from exc
+        budget_metadata = (
+            budget_payload.get("metadata")
+            if isinstance(budget_payload, dict) and isinstance(budget_payload.get("metadata"), dict)
+            else {}
+        )
+        report.run_metadata["budget_file"] = {
+            "path": str(budget_path.resolve()),
+            "sha256": sha256(budget_text.encode("utf-8")).hexdigest(),
+            "metadata": budget_metadata,
+        }
         gate_report = report.evaluate_budgets(load_benchmark_budgets(budget_payload))
 
     if args.format == "json":

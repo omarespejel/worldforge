@@ -1,7 +1,13 @@
 {
   "metadata": {
     "purpose": "documented deterministic benchmark inputs",
-    "runtime": "mock provider"
+    "runtime": "mock provider for predict/generate/transfer/embed; score and policy fields require a provider that advertises those capabilities",
+    "checkout_safe_operations": [
+      "predict",
+      "generate",
+      "transfer",
+      "embed"
+    ]
   },
   "inputs": {
     "prediction_action": {

@@ -70,6 +70,8 @@ def test_provider_event_redacts_observable_secret_fields() -> None:
                 "signed_url": "https://downloads.example.com/generated.mp4?signature=secret",
                 "safe_url": "https://downloads.example.com/generated.mp4?signature=secret",
             },
+            "json_text": '{"api_key":"json-secret","token":"json-token"}',
+            "colon_text": "Authorization: colon-secret",
             "safe": "token=inline-secret",
         },
     )
@@ -82,6 +84,9 @@ def test_provider_event_redacts_observable_secret_fields() -> None:
     assert "query-token" not in json.dumps(payload)
     assert "raw-secret" not in json.dumps(payload)
     assert "bearer-secret" not in json.dumps(payload)
+    assert "json-secret" not in json.dumps(payload)
+    assert "json-token" not in json.dumps(payload)
+    assert "colon-secret" not in json.dumps(payload)
     assert payload["metadata"]["api_token"] == "[redacted]"
     assert payload["metadata"]["nested"]["signed_url"] == "[redacted]"
     assert (
@@ -129,6 +134,14 @@ def test_provider_event_validates_and_normalizes_observable_fields() -> None:
             operation="artifact download",
             phase="failure",
             message=object(),  # type: ignore[arg-type]
+        )
+
+    with pytest.raises(WorldForgeError, match="metadata"):
+        ProviderEvent(
+            provider="runway",
+            operation="artifact download",
+            phase="failure",
+            metadata={"shape": (1, 2, 3)},
         )
 
 

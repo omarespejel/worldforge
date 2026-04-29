@@ -834,13 +834,9 @@ def test_jepa_wms_rejects_missing_runtime_score_calls() -> None:
 
 def test_jepa_wms_rejects_runtime_without_score_contract() -> None:
     payload = _fixture("jepa_wms_success.json")
-    provider = JEPAWMSProvider(model_path=payload["model_path"], runtime=object())
 
-    with pytest.raises(ProviderError, match="runtime must be callable"):
-        provider.score_actions(
-            info=payload["info"],
-            action_candidates=payload["action_candidates"],
-        )
+    with pytest.raises(WorldForgeError, match="runtime must be callable"):
+        JEPAWMSProvider(model_path=payload["model_path"], runtime=object())
 
 
 def test_jepa_wms_wraps_unexpected_runtime_failures() -> None:

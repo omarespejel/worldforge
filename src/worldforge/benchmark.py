@@ -48,8 +48,9 @@ BENCHMARK_CLAIM_BOUNDARY = (
     "production load capacity."
 )
 BENCHMARK_METRIC_SEMANTICS = (
-    "Latency metrics are process-local wall-clock timings; retry counts come from emitted "
-    "ProviderEvent records; throughput is computed from successful samples over elapsed time."
+    "Latency metrics are process-local wall-clock timings for successful samples; retry counts "
+    "come from emitted ProviderEvent records; throughput is computed from successful samples over "
+    "elapsed time."
 )
 
 _BENCHMARK_INPUT_KEYS = (
@@ -87,7 +88,7 @@ _BENCHMARK_BUDGET_KEYS = {
     "max_p95_latency_ms",
     "min_throughput_per_second",
 }
-_BENCHMARK_BUDGET_WRAPPER_KEYS = {"budgets"}
+_BENCHMARK_BUDGET_WRAPPER_KEYS = {"budgets", "metadata"}
 
 
 def _sample_transfer_clip() -> VideoClip:
@@ -1005,11 +1006,19 @@ class BenchmarkReport:
     """Materialized benchmark report with export helpers."""
 
     results: list[BenchmarkResult]
+    run_metadata: JSONDict = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.run_metadata = require_json_dict(
+            self.run_metadata,
+            name="BenchmarkReport run_metadata",
+        )
 
     def to_dict(self) -> JSONDict:
         return {
             "claim_boundary": BENCHMARK_CLAIM_BOUNDARY,
             "metric_semantics": BENCHMARK_METRIC_SEMANTICS,
+            "run_metadata": dict(self.run_metadata),
             "results": [result.to_dict() for result in self.results],
         }
 
@@ -1346,16 +1355,17 @@ class ProviderBenchmarkHarness:
             ]
 
         total_time_ms = max(0.1, (perf_counter() - started) * 1000)
-        latencies = [sample.latency_ms for sample in samples]
         successful_latencies = [sample.latency_ms for sample in samples if sample.succeeded]
         errors = [sample.error for sample in samples if sample.error is not None]
         retry_count = sum(metric["retry_count"] for metric in provider_metrics)
         total_seconds = total_time_ms / 1000
         throughput = len(successful_latencies) / total_seconds if total_seconds > 0 else 0.0
 
-        average_latency_ms = sum(latencies) / len(latencies) if latencies else None
-        min_latency_ms = min(latencies) if latencies else None
-        max_latency_ms = max(latencies) if latencies else None
+        average_latency_ms = (
+            sum(successful_latencies) / len(successful_latencies) if successful_latencies else None
+        )
+        min_latency_ms = min(successful_latencies) if successful_latencies else None
+        max_latency_ms = max(successful_latencies) if successful_latencies else None
 
         return BenchmarkResult(
             provider=provider,
@@ -1369,8 +1379,8 @@ class ProviderBenchmarkHarness:
             average_latency_ms=average_latency_ms,
             min_latency_ms=min_latency_ms,
             max_latency_ms=max_latency_ms,
-            p50_latency_ms=_percentile(latencies, 0.50),
-            p95_latency_ms=_percentile(latencies, 0.95),
+            p50_latency_ms=_percentile(successful_latencies, 0.50),
+            p95_latency_ms=_percentile(successful_latencies, 0.95),
             throughput_per_second=throughput,
             operation_metrics={
                 "provider": provider,
@@ -1430,6 +1440,10 @@ class ProviderBenchmarkHarness:
                 )
             provider_plan.append((provider, selected_operations))
 
+        selected_operations_by_provider = {
+            provider: list(selected_operations) for provider, selected_operations in provider_plan
+        }
+
         def _run_provider(entry: tuple[str, list[str]]) -> list[BenchmarkResult]:
             # Run all operations for one provider sequentially. `_capture_metrics`
             # swaps the provider instance's `event_handler`, so two operations on
@@ -1456,7 +1470,17 @@ class ProviderBenchmarkHarness:
             with ThreadPoolExecutor(max_workers=min(8, len(provider_plan))) as pool:
                 for provider_results in pool.map(_run_provider, provider_plan):
                     results.extend(provider_results)
-        return BenchmarkReport(results)
+        return BenchmarkReport(
+            results,
+            run_metadata={
+                "providers": list(provider_names),
+                "requested_operations": list(requested_operations),
+                "selected_operations": selected_operations_by_provider,
+                "iterations": iterations,
+                "concurrency": concurrency,
+                "inputs": benchmark_inputs.to_dict(),
+            },
+        )
 
 
 def run_benchmark(

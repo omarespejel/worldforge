@@ -16,6 +16,7 @@ from worldforge.models import (
     ProviderEvent,
     RequestOperationPolicy,
     VideoClip,
+    _redact_observable_text,
 )
 
 from .base import ProviderError
@@ -88,8 +89,8 @@ def _response_summary(response: httpx.Response) -> str:
     if not text:
         return "empty response body"
     if len(text) > 200:
-        return f"{text[:197]}..."
-    return text
+        text = f"{text[:197]}..."
+    return _redact_observable_text(text)
 
 
 def _raise_status_error(

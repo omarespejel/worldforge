@@ -70,6 +70,8 @@ from worldforge.providers import (
     BaseProvider,
     PredictionPayload,
     ProviderError,
+    validate_generation_request,
+    validate_transfer_request,
 )
 from worldforge.providers.catalog import PROVIDER_CATALOG, create_known_providers
 from worldforge.providers.observable import CAPABILITY_METHOD_MAP, _ObservableCapability
@@ -1904,6 +1906,11 @@ class WorldForge:
         duration_seconds: float = 1.0,
         options: GenerationOptions | None = None,
     ) -> VideoClip:
+        prompt, duration_seconds, options = validate_generation_request(
+            prompt,
+            duration_seconds,
+            options=options,
+        )
         target = self._select_capability_target(
             provider,
             generator,
@@ -1966,6 +1973,14 @@ class WorldForge:
         prompt: str = "",
         options: GenerationOptions | None = None,
     ) -> VideoClip:
+        clip, width, height, fps, prompt, options = validate_transfer_request(
+            clip,
+            width=width,
+            height=height,
+            fps=fps,
+            prompt=prompt,
+            options=options,
+        )
         target = self._select_capability_target(
             provider,
             transferer,

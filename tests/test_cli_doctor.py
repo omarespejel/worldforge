@@ -423,6 +423,8 @@ def test_cli_supports_provider_listing_predict_transfer_and_eval(
     benchmark_payload = json.loads(capsys.readouterr().out)
     assert benchmark_payload["results"][0]["provider"] == "mock"
     assert benchmark_payload["results"][0]["operation"] == "generate"
+    assert benchmark_payload["run_metadata"]["providers"] == ["mock"]
+    assert benchmark_payload["run_metadata"]["iterations"] == 2
 
 
 def test_benchmark_cli_applies_budget_file(tmp_path, monkeypatch, capsys) -> None:
@@ -468,6 +470,10 @@ def test_benchmark_cli_applies_budget_file(tmp_path, monkeypatch, capsys) -> Non
     passing_payload = json.loads(capsys.readouterr().out)
     assert passing_payload["gate"]["passed"] is True
     assert passing_payload["benchmark"]["results"][0]["operation"] == "generate"
+    assert passing_payload["benchmark"]["run_metadata"]["budget_file"]["path"] == str(
+        passing_budget.resolve()
+    )
+    assert len(passing_payload["benchmark"]["run_metadata"]["budget_file"]["sha256"]) == 64
 
     failing_budget = tmp_path / "failing-budget.json"
     failing_budget.write_text(
@@ -517,11 +523,12 @@ def test_benchmark_cli_accepts_input_file(tmp_path, monkeypatch, capsys) -> None
     input_file.write_text(
         json.dumps(
             {
+                "metadata": {"fixture": "unit"},
                 "inputs": {
                     "generation_prompt": "fixture benchmark generation",
                     "generation_duration_seconds": 1.0,
                     "embedding_text": "fixture benchmark embedding",
-                }
+                },
             }
         ),
         encoding="utf-8",
@@ -552,3 +559,7 @@ def test_benchmark_cli_accepts_input_file(tmp_path, monkeypatch, capsys) -> None
     assert payload["results"][0]["provider"] == "mock"
     assert payload["results"][0]["operation"] == "generate"
     assert payload["results"][0]["success_count"] == 1
+    assert payload["run_metadata"]["input_file"]["path"] == str(input_file.resolve())
+    assert len(payload["run_metadata"]["input_file"]["sha256"]) == 64
+    assert payload["run_metadata"]["input_file"]["metadata"] == {"fixture": "unit"}
+    assert payload["run_metadata"]["inputs"]["generation_prompt"] == "fixture benchmark generation"

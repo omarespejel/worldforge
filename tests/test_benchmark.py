@@ -642,7 +642,16 @@ def test_provider_benchmark_harness_records_provider_error_samples(tmp_path) -> 
     result = report.results[0]
     assert result.success_count == 0
     assert result.error_count == 2
+    assert result.average_latency_ms is None
+    assert result.p95_latency_ms is None
     assert all("simulated provider outage" in message for message in result.errors)
+
+    gate = report.evaluate_budgets(
+        [BenchmarkBudget(provider="mock", operation="predict", max_average_latency_ms=1.0)]
+    )
+    assert gate.passed is False
+    assert gate.violations[0].metric == "average_latency_ms"
+    assert gate.violations[0].observed is None
 
 
 def test_provider_benchmark_harness_propagates_unexpected_exceptions(tmp_path) -> None:

@@ -106,7 +106,7 @@ release tag, run:
 make release-check
 ```
 
-`make release-check` adds the dependency audit. The equivalent expanded commands are:
+`make release-check` adds the dependency audit. The `make check` portion expands to:
 
 ```bash
 uv lock --check

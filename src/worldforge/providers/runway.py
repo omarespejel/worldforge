@@ -20,7 +20,13 @@ from worldforge.models import (
 )
 
 from ._config import env_value, first_env_value
-from .base import ProviderError, ProviderProfileSpec, RemoteProvider
+from .base import (
+    ProviderError,
+    ProviderProfileSpec,
+    RemoteProvider,
+    validate_generation_request,
+    validate_transfer_request,
+)
 from .http_utils import (
     asset_to_uri,
     clip_to_data_uri,
@@ -382,14 +388,17 @@ class RunwayProvider(RemoteProvider):
         *,
         options: GenerationOptions | None = None,
     ) -> VideoClip:
+        prompt, duration_seconds, options = validate_generation_request(
+            prompt,
+            duration_seconds,
+            options=options,
+        )
         self._require_credentials()
         if options and options.video:
             raise ProviderError(
                 "Runway image_to_video does not accept `options.video`; "
                 "use transfer() for video inputs."
             )
-        if duration_seconds <= 0.0:
-            raise ProviderError("Runway duration_seconds must be greater than 0.")
 
         duration = max(2, min(10, round(duration_seconds or _RUNWAY_DEFAULT_DURATION)))
         ratio = self._ratio(options=options)
@@ -459,11 +468,15 @@ class RunwayProvider(RemoteProvider):
         prompt: str = "",
         options: GenerationOptions | None = None,
     ) -> VideoClip:
+        clip, width, height, fps, prompt, options = validate_transfer_request(
+            clip,
+            width=width,
+            height=height,
+            fps=fps,
+            prompt=prompt,
+            options=options,
+        )
         self._require_credentials()
-        if width <= 0 or height <= 0:
-            raise ProviderError("Runway output width and height must be greater than 0.")
-        if fps <= 0.0:
-            raise ProviderError("Runway fps must be greater than 0.")
         model = options.model if options and options.model else "gen4_aleph"
         references: list[dict[str, str]] = []
         if options:

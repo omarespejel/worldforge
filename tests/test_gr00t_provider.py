@@ -157,6 +157,27 @@ def test_gr00t_policy_client_provider_passes_contract_and_emits_events() -> None
     assert events[-1].phase == "success"
 
 
+@pytest.mark.parametrize(
+    ("raw_actions", "expected_raw"),
+    [
+        ([[[0.1, 0.5, 0.0]]], {"actions": [[[0.1, 0.5, 0.0]]]}),
+        (FakeArray([[[0.2, 0.5, 0.0]]]), {"actions": [[[0.2, 0.5, 0.0]]]}),
+    ],
+)
+def test_gr00t_policy_preserves_raw_action_arrays(
+    raw_actions: object,
+    expected_raw: JSONDict,
+) -> None:
+    provider = GrootPolicyClientProvider(
+        policy_client=FakeGrootClient((raw_actions, {})),
+        action_translator=lambda *_args: [Action.move_to(0.1, 0.5, 0.0)],
+    )
+
+    result = provider.select_actions(info=_policy_info())
+
+    assert result.raw_actions == expected_raw
+
+
 def test_gr00t_policy_only_planning_uses_policy_actions(tmp_path) -> None:
     client = FakeGrootClient(({"arm": [[[0.3, 0.5, 0.0]]]}, {}))
     provider = GrootPolicyClientProvider(
@@ -294,6 +315,21 @@ def test_gr00t_provider_reads_env_configuration_and_reports_missing_dependency(
     assert provider.embodiment_tag == "SO100"
     assert provider.health().healthy is False
     assert "gr00t.policy.server_client" in provider.health().details
+
+
+def test_gr00t_provider_health_reports_native_import_failures(monkeypatch) -> None:
+    def fail_import(name: str) -> object:
+        if name == "gr00t.policy.server_client":
+            raise OSError("native loader failed")
+        return __import__(name)
+
+    monkeypatch.setattr("worldforge.providers.gr00t.importlib.import_module", fail_import)
+
+    health = GrootPolicyClientProvider(host="127.0.0.1").health()
+
+    assert health.healthy is False
+    assert "GR00T optional dependency import failed" in health.details
+    assert "native loader failed" in health.details
 
 
 def test_gr00t_provider_lazily_constructs_policy_client_from_import(monkeypatch) -> None:

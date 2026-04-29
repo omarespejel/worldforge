@@ -9,8 +9,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
-from worldforge.benchmark import BenchmarkReport, ProviderBenchmarkHarness
-from worldforge.evaluation import EvaluationReport, EvaluationSuite
+from worldforge.benchmark import BenchmarkReport, BenchmarkResult, ProviderBenchmarkHarness
+from worldforge.evaluation import EvaluationReport, EvaluationResult, EvaluationSuite
 from worldforge.framework import WorldForge
 from worldforge.harness.models import HarnessFlow, HarnessMetric, HarnessRun, HarnessStep
 from worldforge.models import JSONDict
@@ -319,11 +319,7 @@ def _eval_run_from_payload(payload: JSONDict, *, path: Path, state_dir: Path) ->
         ),
         kind="eval",
         report_path=path,
-        artifacts={
-            "json": json.dumps(payload, indent=2, sort_keys=True),
-            "markdown": _markdown_from_eval_payload(payload),
-            "csv": _csv_placeholder("eval", path),
-        },
+        artifacts=_eval_artifacts_from_payload(payload),
     )
 
 
@@ -375,56 +371,58 @@ def _benchmark_run_from_payload(payload: JSONDict, *, path: Path, state_dir: Pat
         ),
         kind="benchmark",
         report_path=path,
-        artifacts={
-            "json": json.dumps(payload, indent=2, sort_keys=True),
-            "markdown": _markdown_from_benchmark_payload(payload),
-            "csv": _csv_placeholder("benchmark", path),
-        },
+        artifacts=_benchmark_artifacts_from_payload(payload),
     )
 
 
-def _markdown_from_eval_payload(payload: JSONDict) -> str:
-    lines = [
-        "# Evaluation Report",
-        "",
-        f"Suite: {payload.get('suite')} ({payload.get('suite_id')})",
-        "",
-        "| provider | average_score | passed | scenarios |",
-        "| --- | ---: | ---: | ---: |",
-    ]
-    lines.extend(
-        (
-            f"| {summary.get('provider')} | {float(summary.get('average_score', 0.0)):.2f} | "
-            f"{summary.get('passed_scenario_count', 0)}/{summary.get('scenario_count', 0)} | "
-            f"{summary.get('scenario_count', 0)} |"
-        )
-        for summary in payload.get("provider_summaries", [])
+def _eval_artifacts_from_payload(payload: JSONDict) -> dict[str, str]:
+    suite_id = str(payload.get("suite_id", "evaluation"))
+    suite = str(payload.get("suite", suite_id))
+    report = EvaluationReport(
+        suite_id=suite_id,
+        suite=suite,
+        results=[
+            EvaluationResult(
+                suite_id=str(result.get("suite_id", suite_id)),
+                suite=str(result.get("suite", suite)),
+                scenario=str(result.get("scenario", "scenario")),
+                provider=str(result.get("provider", "provider")),
+                score=result.get("score", 0.0),
+                passed=result.get("passed", False),
+                metrics=dict(result.get("metrics", {})),
+            )
+            for result in payload.get("results", [])
+        ],
     )
-    return "\n".join(lines)
+    return report.artifacts()
 
 
-def _markdown_from_benchmark_payload(payload: JSONDict) -> str:
-    lines = [
-        "# Benchmark Report",
-        "",
-        "| provider | operation | ok | retries | avg_ms | p95_ms | throughput/s |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
-    ]
-    lines.extend(
-        (
-            f"| {result.get('provider')} | {result.get('operation')} | "
-            f"{result.get('success_count')}/{result.get('iterations')} | "
-            f"{result.get('retry_count')} | {float(result.get('average_latency_ms') or 0.0):.2f} | "
-            f"{float(result.get('p95_latency_ms') or 0.0):.2f} | "
-            f"{float(result.get('throughput_per_second') or 0.0):.2f} |"
-        )
-        for result in payload.get("results", [])
+def _benchmark_artifacts_from_payload(payload: JSONDict) -> dict[str, str]:
+    report = BenchmarkReport(
+        results=[
+            BenchmarkResult(
+                provider=str(result.get("provider", "provider")),
+                operation=str(result.get("operation", "predict")),
+                iterations=result.get("iterations", 1),
+                concurrency=result.get("concurrency", 1),
+                success_count=result.get("success_count", 0),
+                error_count=result.get("error_count", 1),
+                retry_count=result.get("retry_count", 0),
+                total_time_ms=result.get("total_time_ms", 0.0),
+                average_latency_ms=result.get("average_latency_ms"),
+                min_latency_ms=result.get("min_latency_ms"),
+                max_latency_ms=result.get("max_latency_ms"),
+                p50_latency_ms=result.get("p50_latency_ms"),
+                p95_latency_ms=result.get("p95_latency_ms"),
+                throughput_per_second=result.get("throughput_per_second", 0.0),
+                operation_metrics=dict(result.get("operation_metrics", {})),
+                errors=list(result.get("errors", [])),
+            )
+            for result in payload.get("results", [])
+        ],
+        run_metadata=dict(payload.get("run_metadata", {})),
     )
-    return "\n".join(lines)
-
-
-def _csv_placeholder(kind: str, path: Path) -> str:
-    return f"kind,path\n{kind},{path}\n"
+    return report.artifacts()
 
 
 def _steps_for(flow_id: str, summary: JSONDict) -> tuple[HarnessStep, ...]:

@@ -82,6 +82,7 @@ include = [
     "/examples",
     "/docs",
     "/scripts",
+    "/.env.example",
     "/AGENTS.md",
     "/CHANGELOG.md",
     "/CITATION.cff",
@@ -93,6 +94,7 @@ include = [
     "/MAINTAINERS.md",
     "/LICENSE",
     "/Makefile",
+    "/mkdocs.yml",
 ]
 
 [tool.pytest.ini_options]

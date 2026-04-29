@@ -19,7 +19,7 @@ from worldforge.models import (
 )
 
 from ._config import env_value
-from .base import ProviderError, ProviderProfileSpec, RemoteProvider
+from .base import ProviderError, ProviderProfileSpec, RemoteProvider, validate_generation_request
 from .http_utils import asset_to_uri, parse_size, request_json_with_policy
 
 
@@ -209,9 +209,12 @@ class CosmosProvider(RemoteProvider):
         *,
         options: GenerationOptions | None = None,
     ) -> VideoClip:
+        prompt, duration_seconds, options = validate_generation_request(
+            prompt,
+            duration_seconds,
+            options=options,
+        )
         self._require_credentials()
-        if duration_seconds <= 0.0:
-            raise ProviderError("Cosmos duration_seconds must be greater than 0.")
 
         width, height = parse_size(options, fallback=(1280, 720))
         if width % 8 or height % 8:

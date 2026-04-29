@@ -27,10 +27,19 @@ WHEEL_FORBIDDEN_PREFIXES = (
 )
 
 SDIST_REQUIRED_SUFFIXES = (
+    ".env.example",
     "AGENTS.md",
     "CHANGELOG.md",
+    "CITATION.cff",
+    "CODE_OF_CONDUCT.md",
+    "CONTRIBUTING.md",
     "LICENSE",
+    "MAINTAINERS.md",
+    "Makefile",
     "README.md",
+    "SECURITY.md",
+    "SUPPORT.md",
+    "mkdocs.yml",
     "pyproject.toml",
     "docs/src/api/python.md",
     "docs/src/architecture.md",

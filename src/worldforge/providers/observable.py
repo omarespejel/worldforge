@@ -20,14 +20,19 @@ from typing import Any
 
 from worldforge.capabilities import CAPABILITY_FIELD_TO_NAME
 from worldforge.models import (
+    ActionPolicyResult,
+    ActionScoreResult,
+    EmbeddingResult,
     JSONDict,
     ProviderEvent,
     ProviderHealth,
     ProviderInfo,
     ProviderProfile,
+    ReasoningResult,
+    VideoClip,
     WorldForgeError,
 )
-from worldforge.providers.base import ProviderError, ProviderProfileSpec
+from worldforge.providers.base import PredictionPayload, ProviderError, ProviderProfileSpec
 
 ProviderEventHandler = Callable[[ProviderEvent], None]
 
@@ -44,6 +49,16 @@ CAPABILITY_METHOD_MAP: dict[str, tuple[str, str]] = {
     "embedder": ("embed", "embed"),
     "transferer": ("transfer", "transfer"),
     "planner": ("plan", "plan"),
+}
+_CAPABILITY_RESULT_TYPES: dict[str, type] = {
+    "policy": ActionPolicyResult,
+    "cost": ActionScoreResult,
+    "generator": VideoClip,
+    "predictor": PredictionPayload,
+    "reasoner": ReasoningResult,
+    "embedder": EmbeddingResult,
+    "transferer": VideoClip,
+    "planner": ActionPolicyResult,
 }
 
 
@@ -198,6 +213,14 @@ class _ObservableCapability:
         )
         self._event_handler(event)
 
+    def _validate_result_contract(self, result: object) -> None:
+        expected_type = _CAPABILITY_RESULT_TYPES[self._kind]
+        if not isinstance(result, expected_type):
+            raise ProviderError(
+                f"Provider '{self.name}' {self._operation} returned "
+                f"{type(result).__name__}; expected {expected_type.__name__}."
+            )
+
     def call(self, *args: Any, **kwargs: Any) -> Any:
         """Invoke the wrapped capability method, emitting timing and lifecycle events."""
 
@@ -214,6 +237,12 @@ class _ObservableCapability:
             wrapped = ProviderError(f"Provider '{self.name}' {self._operation} failed: {exc}")
             self._emit(phase="failure", duration_ms=duration_ms, message=str(wrapped))
             raise wrapped from exc
+        try:
+            self._validate_result_contract(result)
+        except ProviderError as exc:
+            duration_ms = max(0.1, (perf_counter() - started) * 1000)
+            self._emit(phase="failure", duration_ms=duration_ms, message=str(exc))
+            raise
         duration_ms = max(0.1, (perf_counter() - started) * 1000)
         self._emit(phase="success", duration_ms=duration_ms)
         return result

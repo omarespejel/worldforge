@@ -21,7 +21,14 @@ from worldforge.models import (
     deterministic_floats,
 )
 
-from .base import BaseProvider, PredictionPayload, ProviderError, ProviderProfileSpec
+from .base import (
+    BaseProvider,
+    PredictionPayload,
+    ProviderError,
+    ProviderProfileSpec,
+    validate_generation_request,
+    validate_transfer_request,
+)
 
 
 def _frame_bytes(seed: str, index: int) -> bytes:
@@ -150,8 +157,11 @@ class MockProvider(BaseProvider):
         *,
         options: GenerationOptions | None = None,
     ) -> VideoClip:
-        if duration_seconds <= 0.0:
-            raise ProviderError("Mock duration_seconds must be greater than 0.")
+        prompt, duration_seconds, options = validate_generation_request(
+            prompt,
+            duration_seconds,
+            options=options,
+        )
         started = perf_counter()
         frame_count = max(1, round(duration_seconds * 8))
         clip = VideoClip(
@@ -184,10 +194,14 @@ class MockProvider(BaseProvider):
         prompt: str = "",
         options: GenerationOptions | None = None,
     ) -> VideoClip:
-        if width <= 0 or height <= 0:
-            raise ProviderError("Mock output width and height must be greater than 0.")
-        if fps <= 0.0:
-            raise ProviderError("Mock fps must be greater than 0.")
+        clip, width, height, fps, prompt, options = validate_transfer_request(
+            clip,
+            width=width,
+            height=height,
+            fps=fps,
+            prompt=prompt,
+            options=options,
+        )
         started = perf_counter()
         transferred = VideoClip(
             frames=list(clip.frames),

@@ -17,6 +17,7 @@ from worldforge import (
     Position,
     ProviderCapabilities,
     ProviderEvent,
+    ProviderHealth,
     ProviderRequestPolicy,
     ReasoningResult,
     RetryPolicy,
@@ -139,6 +140,14 @@ def test_framework_helpers_and_error_paths(tmp_path) -> None:
     clip = forge.generate("a cube rolling across a table", "mock", duration_seconds=1.0)
     saved_clip_path = clip.save(tmp_path / "clip.bin")
     assert saved_clip_path.exists()
+    with pytest.raises(WorldForgeError, match="duration_seconds"):
+        forge.generate("a cube rolling across a table", "mock", duration_seconds=math.nan)
+    with pytest.raises(WorldForgeError, match="prompt"):
+        forge.generate(" ", "mock", duration_seconds=1.0)
+    with pytest.raises(WorldForgeError, match="width"):
+        forge.transfer(clip, "mock", width=True, height=180, fps=12.0)  # type: ignore[arg-type]
+    with pytest.raises(WorldForgeError, match="fps"):
+        forge.transfer(clip, "mock", width=320, height=180, fps=math.inf)
 
     assert Comparison([prediction]).prediction_count == 1
 
@@ -409,6 +418,32 @@ def test_public_validation_guards_cover_boundary_failure_modes() -> None:
             phase="success",
             metadata=[],  # type: ignore[arg-type]
         )
+    with pytest.raises(WorldForgeError, match="metadata"):
+        ProviderEvent(
+            provider="mock",
+            operation="predict",
+            phase="success",
+            metadata={"shape": (1, 2, 3)},
+        )
+
+    health = ProviderHealth(
+        name=" provider ",
+        healthy=True,
+        latency_ms=0.0,
+        details='{"api_key":"health-secret"}',
+    )
+    assert health.name == "provider"
+    assert health.healthy is True
+    assert health.latency_ms == 0.0
+    assert "health-secret" not in health.details
+    with pytest.raises(WorldForgeError, match="ProviderHealth name"):
+        ProviderHealth(name="", healthy=True, latency_ms=0.0)
+    with pytest.raises(WorldForgeError, match="ProviderHealth healthy"):
+        ProviderHealth(name="mock", healthy="yes", latency_ms=0.0)  # type: ignore[arg-type]
+    with pytest.raises(WorldForgeError, match="ProviderHealth latency_ms"):
+        ProviderHealth(name="mock", healthy=True, latency_ms=math.nan)
+    with pytest.raises(WorldForgeError, match="ProviderHealth details"):
+        ProviderHealth(name="mock", healthy=True, latency_ms=0.0, details=[])  # type: ignore[arg-type]
 
     with pytest.raises(WorldForgeError):
         VideoClip(frames=[object()], fps=1.0, resolution=(1, 1), duration_seconds=0.0)

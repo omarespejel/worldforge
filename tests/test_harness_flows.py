@@ -108,6 +108,26 @@ def test_write_report_and_recent_report_round_trip(tmp_path) -> None:
     run = report_run_from_path(path, state_dir=forge.state_dir)
     assert run.kind == "eval"
     assert run.report_path == path
+    assert run.artifacts == artifacts
+
+
+def test_write_benchmark_report_round_trips_canonical_artifacts(tmp_path) -> None:
+    forge = WorldForge(state_dir=tmp_path)
+    artifacts, _report = benchmark_run_artifacts(
+        forge,
+        "mock",
+        operations=("predict",),
+        iterations=1,
+    )
+
+    path = write_report(forge, "benchmark", artifacts)
+    run = report_run_from_path(path, state_dir=forge.state_dir)
+
+    assert run.kind == "benchmark"
+    assert run.report_path == path
+    assert run.artifacts == artifacts
+    assert "Claim boundary:" in run.artifacts["markdown"]
+    assert "operation_metrics_json" in run.artifacts["csv"]
 
 
 def test_eval_capability_mismatch_propagates(tmp_path) -> None:
