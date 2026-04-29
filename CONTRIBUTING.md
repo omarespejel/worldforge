@@ -3,6 +3,19 @@
 WorldForge changes should keep the provider boundary truthful. A contribution is not complete when
 the code compiles; it is complete when the public contract, tests, docs, and agent context agree.
 
+## Workflow
+
+WorldForge follows the standard GitHub fork-and-pull-request flow against `main`.
+
+1. Fork the repository and clone your fork.
+2. Create a topic branch: `git checkout -b feat/<short-description>` (or `fix/`, `docs/`, `chore/`).
+3. Run `uv sync --group dev` and confirm `make check` passes locally before opening the PR.
+4. Open the pull request against `AbdelStark/worldforge:main`. Keep the title imperative and
+   under ~70 characters; describe user-visible changes and link related issues in the body.
+5. Address review feedback with new commits on the same branch; squash-merging is the default.
+
+Direct pushes to `main` are reserved for maintainers performing release operations.
+
 ## Setup
 
 ```bash

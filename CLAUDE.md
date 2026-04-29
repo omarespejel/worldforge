@@ -78,7 +78,7 @@ Capability names are strict: `predict`, `generate`, `reason`, `embed`, `plan`, `
 
 | Provider | Truthful surface | Registration trigger | Do not claim |
 | --- | --- | --- | --- |
-| `mock` | `predict`, `generate`, `transfer`, `reason`, `embed`, `plan` | always registered | real physical/media fidelity |
+| `mock` | `predict`, `generate`, `transfer`, `reason`, `embed` | always registered | real physical/media fidelity |
 | `cosmos` | `generate` | `COSMOS_BASE_URL` | planning, scoring, local runtime |
 | `runway` | `generate`, `transfer` | `RUNWAYML_API_SECRET` or `RUNWAY_API_SECRET` | durable artifact storage |
 | `leworldmodel` | `score` | `LEWORLDMODEL_POLICY` or `LEWM_POLICY` | predict/generate/reason |

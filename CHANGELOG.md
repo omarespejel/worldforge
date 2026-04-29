@@ -355,7 +355,9 @@ No user-visible changes yet.
 - HTTP-backed Cosmos and Runway beta adapters with typed request policy and retry behavior.
 - Reusable provider contract checks under `worldforge.testing`.
 
-### Known Limitations
+### Notes
+
+Constraints carried forward from this release; see the docs site for the current status of each:
 
 - JEPA and Genie remain scaffold adapters backed by deterministic mock behavior after credential
   checks.
