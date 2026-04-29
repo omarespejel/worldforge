@@ -347,25 +347,44 @@ class Prediction:
         self.world_state = _clone_state(self.world_state)
 
     def output_world(self) -> World:
+        """Return a fresh :class:`World` hydrated from this prediction's snapshot.
+
+        The new world is detached from the source: mutations on it do not affect the original.
+        Raises :class:`WorldStateError` if ``world_state`` cannot be parsed as a valid snapshot.
+        """
+
         return World.from_state(self._forge, _clone_state(self.world_state))
 
 
 class Comparison:
-    """Result of comparing multiple predictions."""
+    """Result of comparing predictions from multiple providers for the same input.
+
+    Use :meth:`best_prediction` to pick the highest-scoring result, or render the comparison via
+    :meth:`to_markdown`, :meth:`to_csv`, :meth:`to_json`, and :meth:`artifacts` for reports.
+    """
 
     def __init__(self, predictions: Sequence[Prediction]) -> None:
         self.results = list(predictions)
 
     @property
     def prediction_count(self) -> int:
+        """Number of provider predictions captured in this comparison."""
+
         return len(self.results)
 
     def best_prediction(self) -> Prediction:
+        """Return the prediction with the highest ``(physics_score, confidence)`` tuple.
+
+        Raises ``ValueError`` if the comparison has no predictions.
+        """
+
         if not self.results:
             raise ValueError("Comparison has no predictions.")
         return max(self.results, key=lambda item: (item.physics_score, item.confidence))
 
     def to_markdown(self) -> str:
+        """Render the comparison as a Markdown table sorted in result order."""
+
         lines = [
             "# WorldForge Comparison",
             "",
@@ -382,6 +401,8 @@ class Comparison:
         return "\n".join(lines)
 
     def to_csv(self) -> str:
+        """Render the comparison as CSV with a single header row."""
+
         rows = ["provider,physics_score,confidence,latency_ms"]
         rows.extend(
             (
@@ -393,6 +414,8 @@ class Comparison:
         return "\n".join(rows)
 
     def to_json(self) -> str:
+        """Render the comparison as a JSON document with one entry per prediction."""
+
         return dump_json(
             {
                 "predictions": [
@@ -409,6 +432,8 @@ class Comparison:
         )
 
     def artifacts(self) -> dict[str, str]:
+        """Return all renderings keyed by format name (``json``, ``markdown``, ``csv``)."""
+
         return {
             "json": self.to_json(),
             "markdown": self.to_markdown(),
@@ -483,13 +508,20 @@ class Plan:
 
 
 class PlanExecution:
-    """Execution result for a plan."""
+    """Result of applying a :class:`Plan` against a :class:`World`.
+
+    ``actions_applied`` is the subset of plan actions that were materialised onto the world (the
+    full action list when execution succeeds end to end). Use :meth:`final_world` to get the
+    post-execution world snapshot.
+    """
 
     def __init__(self, final_world: World, actions_applied: Sequence[Action]) -> None:
         self._final_world = final_world
         self.actions_applied = list(actions_applied)
 
     def final_world(self) -> World:
+        """Return the world after the plan's actions were applied."""
+
         return self._final_world
 
 
@@ -662,6 +694,12 @@ class World:
         return dump_json(self.to_dict())
 
     def add_object(self, obj: SceneObject) -> SceneObject:
+        """Insert ``obj`` into the world and append a history entry.
+
+        Returns a defensive copy of the inserted object. Raises :class:`WorldForgeError` if an
+        object with the same ``id`` is already present.
+        """
+
         if obj.id in self.scene_objects:
             raise WorldForgeError(f"Object id '{obj.id}' is already present in world '{self.id}'.")
         added = obj.copy()
@@ -682,12 +720,21 @@ class World:
         return added
 
     def list_objects(self) -> list[str]:
+        """Return the human-readable ``name`` of every scene object in insertion order."""
+
         return [obj.name for obj in self.scene_objects.values()]
 
     def objects(self) -> list[SceneObject]:
+        """Return defensive copies of every scene object in insertion order.
+
+        Mutating an entry in the returned list does not affect the world.
+        """
+
         return [obj.copy() for obj in self.scene_objects.values()]
 
     def get_object_by_id(self, object_id: str) -> SceneObject | None:
+        """Return a copy of the scene object with ``object_id``, or ``None`` if absent."""
+
         scene_object = self.scene_objects.get(object_id)
         return scene_object.copy() if scene_object else None
 
@@ -805,6 +852,16 @@ class World:
         )
 
     def compare(self, action: Action, providers: str | Sequence[str], steps: int = 1) -> Comparison:
+        """Predict the same ``(action, steps)`` against several providers and collect results.
+
+        ``providers`` may be a single provider name or a sequence of names. Predictions for
+        multiple providers are dispatched concurrently; each receives an independent snapshot
+        copy of the world state. Returns a :class:`Comparison` whose
+        :meth:`Comparison.best_prediction` selects the highest-scoring provider.
+
+        Raises :class:`WorldForgeError` if ``providers`` is empty or ``steps`` is non-positive.
+        """
+
         require_positive_int(steps, name="steps")
         if isinstance(providers, str):
             providers = [providers]
@@ -1218,6 +1275,16 @@ class World:
         *args: Any,
         provider: str | None = None,
     ) -> PlanExecution:
+        """Materialise ``plan.actions`` against a fresh copy of this world.
+
+        The execution provider is resolved in priority order: ``provider`` keyword, then the
+        first positional ``str`` in ``*args`` (legacy convenience), then
+        ``plan.metadata["execution_provider"]``, then ``plan.provider``. The resolved provider
+        must support ``predict``; otherwise :class:`WorldForgeError` is raised. The current
+        ``World`` instance is not mutated; the post-execution snapshot is returned in the
+        :class:`PlanExecution`.
+        """
+
         selected_provider = provider
         if selected_provider is None:
             selected_provider = next((arg for arg in args if isinstance(arg, str)), None)
@@ -1234,6 +1301,13 @@ class World:
         return PlanExecution(executed_world, plan.actions)
 
     def evaluate(self, suite: str = "physics") -> EvaluationReport:
+        """Run a built-in evaluation suite against this world's bound provider.
+
+        ``suite`` selects one of the names registered in :func:`list_eval_suites`. The suite
+        runs deterministic adapter-contract checks (not physical-fidelity measurements) and
+        returns an :class:`EvaluationReport` ready for rendering.
+        """
+
         from worldforge.evaluation import EvaluationSuite
 
         return EvaluationSuite.from_builtin(suite).run_report(

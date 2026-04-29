@@ -376,7 +376,14 @@ class EvaluationReport:
 
 
 class EvaluationSuite:
-    """Built-in or user-defined evaluation suite."""
+    """Group of :class:`EvaluationScenario` instances run against a single provider.
+
+    Use :meth:`from_builtin` to construct one of the bundled suites (``generation``,
+    ``physics``, ``planning``, ``reasoning``, ``transfer``); construct directly to assemble
+    custom scenario sequences. Suites are deterministic adapter-contract checks: a passing
+    score asserts the provider returns well-formed payloads, not that it has physical or
+    media fidelity.
+    """
 
     def __init__(
         self,
@@ -401,10 +408,18 @@ class EvaluationSuite:
 
     @classmethod
     def builtin_names(cls) -> list[str]:
+        """Return the sorted names of every suite that :meth:`from_builtin` accepts."""
+
         return sorted(cls._builtin_registry())
 
     @classmethod
     def from_builtin(cls, name: str) -> EvaluationSuite:
+        """Construct a built-in suite by name.
+
+        Accepted names are listed by :meth:`builtin_names`. Raises :class:`WorldForgeError`
+        for unknown names with a hint listing the valid set.
+        """
+
         registry = cls._builtin_registry()
         try:
             factory = registry[name]

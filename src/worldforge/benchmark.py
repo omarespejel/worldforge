@@ -606,7 +606,13 @@ class BenchmarkGateReport:
 
 
 def load_benchmark_budgets(payload: object) -> list[BenchmarkBudget]:
-    """Parse benchmark budget JSON from a list or ``{"budgets": [...]}`` object."""
+    """Parse benchmark budget JSON from a list or ``{"budgets": [...]}`` object.
+
+    Each entry's ``provider`` and ``operation`` fields are optional: omit them to apply the
+    budget's thresholds as a wildcard across every provider/operation pair in the run. Raises
+    :class:`WorldForgeError` if the payload is empty, the wrapper carries unknown keys, or any
+    individual budget entry fails validation.
+    """
 
     budget_entries = payload
     if isinstance(payload, dict):
@@ -626,7 +632,15 @@ def load_benchmark_budgets(payload: object) -> list[BenchmarkBudget]:
 
 @dataclass(slots=True)
 class BenchmarkInputs:
-    """Default inputs used by the provider benchmark harness."""
+    """Inputs the benchmark harness drives into each provider operation.
+
+    Every field has a deterministic default so a benchmark run can succeed without
+    user-supplied JSON. Override any subset to tune the workload — for example, supply a
+    longer ``generation_prompt`` or a larger ``transfer_clip`` for media providers, or a
+    structured ``policy_info`` for embodied policy adapters. All fields are validated at
+    construction; pass invalid values and :class:`WorldForgeError` is raised before the
+    benchmark starts.
+    """
 
     prediction_action: Action = field(default_factory=lambda: Action.move_to(0.25, 0.5, 0.0))
     prediction_steps: int = 2
@@ -694,11 +708,14 @@ def load_benchmark_inputs(
     *,
     base_path: str | Path | None = None,
 ) -> BenchmarkInputs:
-    """Parse benchmark input JSON into ``BenchmarkInputs``.
+    """Parse benchmark input JSON into a validated :class:`BenchmarkInputs`.
 
     Omitted fields keep deterministic defaults. Relative ``transfer_clip.path`` values resolve
     against ``base_path`` when supplied, which lets benchmark input files carry portable media
-    references next to the JSON fixture.
+    references next to the JSON fixture. Raises :class:`WorldForgeError` if ``payload`` is not
+    a JSON object, contains unknown keys, or carries values that fail the same construction
+    checks :class:`BenchmarkInputs` enforces directly (positive sizes, finite durations,
+    JSON-serialisable score and policy info).
     """
 
     data = _benchmark_inputs_payload(payload)

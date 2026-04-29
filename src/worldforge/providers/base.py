@@ -184,6 +184,13 @@ class BaseProvider:
         self.event_handler = event_handler
 
     def info(self) -> ProviderInfo:
+        """Return the lightweight summary used by listings and CLI output.
+
+        :class:`ProviderInfo` carries only the fields needed to describe a provider in a list
+        (name, capabilities, locality, description); for the full declaration including
+        modalities, models, and request policy, use :meth:`profile`.
+        """
+
         return ProviderInfo(
             name=self.name,
             capabilities=self.capabilities,
@@ -192,6 +199,14 @@ class BaseProvider:
         )
 
     def profile(self) -> ProviderProfile:
+        """Return the full provider declaration used by diagnostics and contract tests.
+
+        :class:`ProviderProfile` includes the capability matrix, credential requirements,
+        supported modalities and models, request policy, and free-form notes. This is the
+        authoritative description of what an adapter promises and is the input to
+        :func:`worldforge.testing.assert_provider_contract`.
+        """
+
         return ProviderProfile(
             name=self.name,
             capabilities=self.capabilities,
@@ -212,6 +227,18 @@ class BaseProvider:
         )
 
     def configured(self) -> bool:
+        """Return whether the provider has every credential it needs to run.
+
+        Resolution order:
+
+        1. If a single ``env_var`` was declared, it must be set and non-empty.
+        2. Otherwise, every entry in ``required_env_vars`` must be set and non-empty.
+        3. Providers with no credential requirements always report ``True``.
+
+        Auto-registration in the catalog uses this signal: an unconfigured provider is not
+        registered automatically and surfaces in ``worldforge doctor`` as ``missing``.
+        """
+
         if self.env_var is not None:
             return bool(os.environ.get(self.env_var))
         if self.required_env_vars:
@@ -276,7 +303,20 @@ class BaseProvider:
             details=details,
         )
 
+    # Default capability stubs. Subclasses override the methods matching the capability flags
+    # they declared in ``ProviderCapabilities``. Calling an unsupported capability must raise
+    # ``ProviderError`` rather than returning empty or mock results, so callers see a fail-fast
+    # boundary instead of silently degraded behavior.
+
     def predict(self, world_state: JSONDict, action: Action, steps: int) -> PredictionPayload:
+        """Predict the world state ``steps`` ahead from ``world_state`` after applying ``action``.
+
+        Override when the adapter's capabilities declare ``predict=True``. Implementations
+        must return a :class:`PredictionPayload` with finite ``physics_score``,
+        ``confidence``, and ``latency_ms``. Adapters that do not support predict must leave
+        this method untouched so calls raise :class:`ProviderError`.
+        """
+
         raise ProviderError(f"Provider '{self.name}' does not implement predict().")
 
     def generate(
@@ -286,6 +326,13 @@ class BaseProvider:
         *,
         options: GenerationOptions | None = None,
     ) -> VideoClip:
+        """Generate a video clip from ``prompt`` with the given duration.
+
+        Override when ``generate=True``. Implementations should respect ``options.width``,
+        ``options.height``, and ``options.fps`` when supplied, and raise
+        :class:`ProviderError` on upstream failures, expired artifacts, or unsupported flows.
+        """
+
         raise ProviderError(f"Provider '{self.name}' does not implement generate().")
 
     def transfer(
@@ -298,18 +345,52 @@ class BaseProvider:
         prompt: str = "",
         options: GenerationOptions | None = None,
     ) -> VideoClip:
+        """Transfer the visual content of ``clip`` to a new style or modality.
+
+        Override when ``transfer=True``. The output clip dimensions and fps are caller-set
+        contract values; adapters that cannot honor them must raise :class:`ProviderError`
+        rather than silently returning a clip with different parameters.
+        """
+
         raise ProviderError(f"Provider '{self.name}' does not implement transfer().")
 
     def reason(self, query: str, *, world_state: JSONDict | None = None) -> ReasoningResult:
+        """Answer a structured reasoning ``query`` over an optional ``world_state``.
+
+        Override when ``reason=True``. Implementations should populate
+        :class:`ReasoningResult` with concrete evidence; placeholder or unverifiable evidence
+        is a contract violation.
+        """
+
         raise ProviderError(f"Provider '{self.name}' does not implement reason().")
 
     def embed(self, *, text: str) -> EmbeddingResult:
+        """Return a fixed-dimension embedding for ``text``.
+
+        Override when ``embed=True``. The embedding dimension must be stable per provider
+        configuration; callers rely on it for indexing and benchmarking.
+        """
+
         raise ProviderError(f"Provider '{self.name}' does not implement embed().")
 
     def score_actions(self, *, info: JSONDict, action_candidates: object) -> ActionScoreResult:
+        """Rank a batch of candidate actions for cost/score-model providers.
+
+        Override when ``score=True``. ``action_candidates`` is provider-shaped (typically a
+        nested tensor or sequence) and must be validated by the adapter; ``info`` carries the
+        observation context required to produce comparable scores across candidates.
+        """
+
         raise ProviderError(f"Provider '{self.name}' does not implement score_actions().")
 
     def select_actions(self, *, info: JSONDict) -> ActionPolicyResult:
+        """Propose actions for an embodied policy provider.
+
+        Override when ``policy=True``. ``info`` carries the observation payload required by
+        the policy server; the result must include the proposed action chunk and any policy
+        metadata callers need to log or replay the decision.
+        """
+
         raise ProviderError(f"Provider '{self.name}' does not implement select_actions().")
 
 

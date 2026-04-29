@@ -1,4 +1,24 @@
-"""WorldForge: testable world-model workflows for physical-AI systems."""
+"""WorldForge: testable world-model workflows for physical-AI systems.
+
+WorldForge is a Python integration layer that gives world-model providers, score models,
+embodied policies, and media generators explicit capability contracts. Planning, evaluation,
+benchmarks, diagnostics, local state, and CLI tooling are built on top of those contracts —
+optional model runtimes, robot stacks, credentials, and durable storage stay host-owned.
+
+Quick start::
+
+    from worldforge import WorldForge
+
+    forge = WorldForge()
+    world = forge.create_world("kitchen", provider="mock")
+    plan = world.plan("move the cube to x=0.4")
+    execution = world.execute_plan(plan)
+
+The package re-exports the public surface used by adapters, CLI commands, evaluations, and
+benchmarks. Every name is also covered by the strict capability matrix on
+:class:`ProviderCapabilities`, so calling an unsupported capability raises rather than
+returning silently empty results.
+"""
 
 from __future__ import annotations
 

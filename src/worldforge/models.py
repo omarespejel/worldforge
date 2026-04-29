@@ -1,4 +1,27 @@
-"""Core models and serialization helpers for WorldForge."""
+"""Public domain models, error hierarchy, and serialisation helpers for WorldForge.
+
+This module owns the typed contracts crossed by every public surface:
+
+- **Errors.** :class:`WorldForgeError` covers invalid caller input and public-model validation
+  failures, :class:`WorldStateError` covers malformed persisted or provider-supplied world
+  state, and :class:`ProviderError` (in :mod:`worldforge.providers.base`) covers runtime
+  failures inside an adapter.
+- **Geometry.** :class:`Position`, :class:`Rotation`, :class:`Pose`, and :class:`BBox` are the
+  numeric primitives shared by scene objects, predictions, and evaluation suites.
+- **Provider contracts.** :class:`ProviderCapabilities`, :class:`ProviderInfo`,
+  :class:`ProviderProfile`, :class:`ProviderRequestPolicy`, :class:`RetryPolicy`,
+  :class:`RequestOperationPolicy`, :class:`ProviderHealth`, and :class:`ProviderEvent` describe
+  what an adapter promises and how its calls are policed.
+- **Result payloads.** :class:`PredictionPayload`, :class:`VideoClip`, :class:`ReasoningResult`,
+  :class:`EmbeddingResult`, :class:`ActionScoreResult`, and :class:`ActionPolicyResult` are the
+  return types of capability calls.
+- **Validation helpers.** Construction-time validators reject NaN/Infinity, malformed JSON,
+  unknown capability names, and otherwise unsafe values before they reach persistence or
+  outbound HTTP.
+
+All public dataclasses use ``slots=True`` and validate their fields in ``__post_init__`` so
+boundary failures surface immediately, never as a confusing downstream error.
+"""
 
 from __future__ import annotations
 
@@ -275,6 +298,8 @@ class Position:
             ) from exc
 
     def distance_to(self, other: Position) -> float:
+        """Return the Euclidean distance to ``other`` in world-coordinate units."""
+
         return math.dist((self.x, self.y, self.z), (other.x, other.y, other.z))
 
 
@@ -1009,6 +1034,12 @@ class ProviderCapabilities:
         return bool(getattr(self, capability))
 
     def enabled_names(self) -> list[str]:
+        """Return the canonical names of every capability set to ``True``.
+
+        The order matches :data:`CAPABILITY_NAMES` so diagnostics, CLI output, and reports
+        render capabilities consistently across providers.
+        """
+
         return [name for name in CAPABILITY_NAMES if getattr(self, name)]
 
 
@@ -1501,17 +1532,25 @@ class VideoClip:
 
     @property
     def frame_count(self) -> int:
+        """Number of binary frames carried by the clip."""
+
         return len(self.frames)
 
     def blob(self) -> bytes:
-        """Return the clip as a single binary blob when possible."""
+        """Return the clip's frames as a single bytes payload.
+
+        A single-frame clip returns ``frames[0]`` unchanged, which is the right shape for
+        single-image content types such as ``image/jpeg`` or ``image/png``. Multi-frame clips
+        return the frames concatenated; callers that need per-frame access should iterate
+        ``frames`` directly rather than re-splitting the blob.
+        """
 
         if self.frame_count == 1:
             return self.frames[0]
         return b"".join(self.frames)
 
     def content_type(self) -> str:
-        """Return the best-known content type for the clip."""
+        """Return the clip's MIME type, or ``application/octet-stream`` if unknown."""
 
         return str(self.metadata.get("content_type", "application/octet-stream"))
 
