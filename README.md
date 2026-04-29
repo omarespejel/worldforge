@@ -43,6 +43,11 @@ candidates, WorldForge bridges those policy actions into LeWorldModel-native can
 LeWorldModel scores the candidates, and WorldForge selects and mock-replays the lowest-cost action
 chunk.
 
+The LeWorldModel runtime path intentionally follows the official LeWM loading contract:
+`stable_worldmodel.policy.AutoCostModel("pusht/lewm")` loads the Lucas Maes LeWM object checkpoint.
+`stable-worldmodel` is the runtime/evaluation library used by the official LeWorldModel repo, not
+a substitute score model.
+
 This is simulation/replay planning. It demonstrates policy inference, score-model inference,
 typed provider composition, candidate ranking, event capture, and visual replay. Hardware control,
 safety checks, robot-controller integration, and task-specific preprocessing stay host-owned.
@@ -318,7 +323,7 @@ observe state
 | `mock` | `predict`, `generate`, `transfer`, `reason`, `embed` | always registered | in-repo deterministic local provider |
 | [`cosmos`](https://abdelstark.github.io/worldforge/providers/cosmos/) | `generate` | `COSMOS_BASE_URL` | host supplies a reachable Cosmos deployment and optional `NVIDIA_API_KEY` |
 | [`runway`](https://abdelstark.github.io/worldforge/providers/runway/) | `generate`, `transfer` | `RUNWAYML_API_SECRET` or `RUNWAY_API_SECRET` | host supplies Runway credentials and persists returned artifacts |
-| [`leworldmodel`](https://abdelstark.github.io/worldforge/providers/leworldmodel/) | `score` | `LEWORLDMODEL_POLICY` or `LEWM_POLICY` | host installs `stable_worldmodel`, torch, and compatible checkpoints |
+| [`leworldmodel`](https://abdelstark.github.io/worldforge/providers/leworldmodel/) | `score` | `LEWORLDMODEL_POLICY` or `LEWM_POLICY` | host installs the official LeWM loading path (`stable_worldmodel.policy.AutoCostModel`), torch, and compatible checkpoints |
 | [`gr00t`](https://abdelstark.github.io/worldforge/providers/gr00t/) | `policy` | `GROOT_POLICY_HOST` | host runs or reaches an Isaac GR00T policy server |
 | [`lerobot`](https://abdelstark.github.io/worldforge/providers/lerobot/) | `policy` | `LEROBOT_POLICY_PATH` or `LEROBOT_POLICY` | host installs LeRobot and compatible policy checkpoints |
 | `jepa` | scaffold | `JEPA_MODEL_PATH` | capability-fail-closed reservation, not a real JEPA runtime |

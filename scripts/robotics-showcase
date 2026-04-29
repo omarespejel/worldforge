@@ -65,6 +65,7 @@ runtime_args=(
   --with "lerobot[transformers-dep]"
   --with "pygame"
   --with "opencv-python"
+  --with "imageio"
   --with "pymunk"
   --with "gymnasium"
   --with "shapely"

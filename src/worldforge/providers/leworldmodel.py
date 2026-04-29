@@ -22,6 +22,8 @@ from ._policy import no_grad_context, prepare_model
 from ._tensor_validation import _is_sequence, _shape
 from .base import BaseProvider, ProviderError, ProviderProfileSpec
 
+LEWORLDMODEL_OFFICIAL_REPO_URL = "https://github.com/lucas-maes/le-wm"
+LEWORLDMODEL_RUNTIME_API = "stable_worldmodel.policy.AutoCostModel"
 LEWORLDMODEL_POLICY_ENV_VAR = "LEWORLDMODEL_POLICY"
 LEWORLDMODEL_POLICY_ENV_ALIASES = (LEWORLDMODEL_POLICY_ENV_VAR, "LEWM_POLICY")
 LEWORLDMODEL_CACHE_DIR_ENV_VAR = "LEWORLDMODEL_CACHE_DIR"
@@ -35,6 +37,16 @@ def _import_failure_detail(module_name: str, exc: Exception) -> str:
     message = str(exc).strip()
     suffix = f": {message}" if message else ""
     return f"{module_name}: {type(exc).__name__}{suffix}"
+
+
+def _missing_import_detail(module_name: str, exc: ImportError) -> str:
+    missing = exc.name or module_name
+    if missing == module_name:
+        return f"missing optional dependency {module_name}"
+    return (
+        f"{module_name} import failed because optional dependency {missing} is missing "
+        f"({_import_failure_detail(missing, exc)})"
+    )
 
 
 class LeWorldModelProvider(BaseProvider):
@@ -92,7 +104,7 @@ class LeWorldModelProvider(BaseProvider):
                     "LeWorldModel JEPA adapter for scoring action candidates from pixel, "
                     "action, and goal tensors."
                 ),
-                package="worldforge + stable_worldmodel",
+                package="worldforge + stable_worldmodel AutoCostModel",
                 implementation_status="beta",
                 deterministic=True,
                 requires_credentials=False,
@@ -100,7 +112,9 @@ class LeWorldModelProvider(BaseProvider):
                 supported_modalities=("pixels", "actions", "goals"),
                 artifact_types=("action_scores",),
                 notes=(
-                    "Loads checkpoints with stable_worldmodel.policy.AutoCostModel.",
+                    "LeWorldModel official code: https://github.com/lucas-maes/le-wm.",
+                    "Loads LeWM object checkpoints with stable_worldmodel.policy.AutoCostModel, "
+                    "the loading API documented by the official LeWorldModel repository.",
                     "Runs real AutoCostModel.get_cost(...) inference when the host supplies the "
                     "optional runtime and checkpoint.",
                     "Set LEWORLDMODEL_POLICY to the checkpoint run name relative to STABLEWM_HOME.",
@@ -128,7 +142,11 @@ class LeWorldModelProvider(BaseProvider):
         dependency_error = self._runtime_dependency_error()
         if dependency_error is not None:
             return self._health(started, dependency_error, healthy=False)
-        return self._health(started, f"configured for policy {self.policy}", healthy=True)
+        return self._health(
+            started,
+            f"configured for LeWorldModel policy {self.policy}",
+            healthy=True,
+        )
 
     def _runtime_dependency_error(self) -> str | None:
         if self._model_loader is not None and self._tensor_module is not None:
@@ -147,8 +165,8 @@ class LeWorldModelProvider(BaseProvider):
         if self._model_loader is None:
             try:
                 stable_worldmodel = importlib.import_module("stable_worldmodel")
-            except ImportError:
-                return "missing optional dependency stable_worldmodel"
+            except ImportError as exc:
+                return _missing_import_detail("stable_worldmodel", exc)
             except Exception as exc:
                 return (
                     "LeWorldModel optional dependency stable_worldmodel import failed ("
@@ -366,6 +384,10 @@ class LeWorldModelProvider(BaseProvider):
                     "cache_dir": self.cache_dir,
                     "device": self.device,
                     "score_type": "cost",
+                    "model_family": "LeWorldModel (LeWM)",
+                    "official_code": LEWORLDMODEL_OFFICIAL_REPO_URL,
+                    "runtime_api": LEWORLDMODEL_RUNTIME_API,
+                    "checkpoint_format": "<policy>_object.ckpt",
                     "candidate_count": candidate_count,
                 },
             )

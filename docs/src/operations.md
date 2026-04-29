@@ -159,8 +159,9 @@ include those IDs in surrounding application logs.
 - For expired Runway artifact URLs, regenerate or persist downloaded outputs immediately after
   task completion.
 - For LeWorldModel failures, run `worldforge provider health leworldmodel`, verify
-  `stable-worldmodel[train]` and `torch` are installed in the host environment, then confirm the
-  configured policy exists under `$STABLEWM_HOME` or `LEWORLDMODEL_CACHE_DIR`.
+  `stable-worldmodel[train]`, `torch`, `opencv-python`, and `imageio` are installed in the host
+  environment, then confirm the configured policy exists under `$STABLEWM_HOME` or
+  `LEWORLDMODEL_CACHE_DIR`.
 - To smoke-test a real LeWorldModel checkpoint, run
   `scripts/lewm-real --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt --device cpu`. This requires
   host-owned upstream dependencies and an extracted object checkpoint.
@@ -174,6 +175,8 @@ include those IDs in surrounding application logs.
     --with "datasets>=2.21" \
     --with huggingface_hub \
     --with matplotlib \
+    --with "opencv-python" \
+    --with "imageio" \
     worldforge-build-leworldmodel-checkpoint \
       --stablewm-home ~/.stable-wm \
       --policy pusht/lewm

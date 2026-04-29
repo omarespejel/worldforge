@@ -339,17 +339,22 @@ Equivalent explicit `uv` command:
 uv run --python 3.13 \
   --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
   --with "datasets>=2.21" \
+  --with "opencv-python" \
+  --with "imageio" \
   lewm-real \
     --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt \
     --device cpu
 ```
 
-The wrapper runs `uv run --python 3.13` with the upstream `stable-worldmodel` and `datasets`
-runtime requirements, then invokes the packaged `lewm-real` alias. The live smoke prints what the
-run demonstrates, a visual pipeline, tensor shapes, latency metrics, provider events, and a ranked
-candidate cost landscape. It exits non-zero before inference if the checkpoint, optional runtime,
-or provider health check is missing. Use `--json-only` for the machine-readable result payload, or
-`--json-output lewm-real-summary.json` to write the same run data while keeping the visual output.
+The wrapper runs `uv run --python 3.13` with the upstream `stable-worldmodel`, `datasets`, OpenCV,
+and imageio runtime requirements, then invokes the packaged `lewm-real` alias.
+`stable-worldmodel` is the official LeWorldModel loading/evaluation runtime used by `lucas-maes/le-wm`;
+`LeWorldModelProvider` loads the LeWM object checkpoint through
+`stable_worldmodel.policy.AutoCostModel`. The live smoke prints what the run demonstrates, a visual
+pipeline, tensor shapes, latency metrics, provider events, and a ranked candidate cost landscape.
+It exits non-zero before inference if the checkpoint, optional runtime, or provider health check is
+missing. Use `--json-only` for the machine-readable result payload, or `--json-output
+lewm-real-summary.json` to write the same run data while keeping the visual output.
 
 The live smoke uses deterministic synthetic PushT-shaped tensors. It proves the checkpoint loads
 and scores candidates through the WorldForge provider contract; it does not prove task-specific
@@ -415,6 +420,8 @@ Equivalent explicit `uv` command for the lower-level runner:
 uv run --python 3.13 \
   --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
   --with "datasets>=2.21" \
+  --with "opencv-python" \
+  --with "imageio" \
   --with "lerobot[transformers-dep]" \
   lewm-lerobot-real \
     --policy-path lerobot/diffusion_pusht \

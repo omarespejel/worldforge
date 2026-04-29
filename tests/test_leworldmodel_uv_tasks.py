@@ -27,6 +27,8 @@ def test_leworldmodel_uv_commands_are_packaged_console_scripts() -> None:
     task_text = task.read_text()
     assert "uv run --python 3.13" in task_text
     assert "stable-worldmodel[train]" in task_text
+    assert '"opencv-python"' in task_text
+    assert '"imageio"' in task_text
     assert 'lewm-real "$@"' in task_text
     robotics_task = root / "scripts" / "lewm-lerobot-real"
     assert robotics_task.exists()
@@ -35,6 +37,8 @@ def test_leworldmodel_uv_commands_are_packaged_console_scripts() -> None:
     assert "uv run --python 3.13" in robotics_task_text
     assert "stable-worldmodel[train]" in robotics_task_text
     assert '"datasets>=2.21"' in robotics_task_text
+    assert '"opencv-python"' in robotics_task_text
+    assert '"imageio"' in robotics_task_text
     assert '"lerobot[transformers-dep]"' in robotics_task_text
     assert 'lewm-lerobot-real "$@"' in robotics_task_text
     showcase_task = root / "scripts" / "robotics-showcase"
@@ -47,6 +51,7 @@ def test_leworldmodel_uv_commands_are_packaged_console_scripts() -> None:
     assert '"textual>=8.2,<9"' in showcase_task_text
     assert '"pygame"' in showcase_task_text
     assert '"opencv-python"' in showcase_task_text
+    assert '"imageio"' in showcase_task_text
     assert '"pymunk"' in showcase_task_text
     assert '"gymnasium"' in showcase_task_text
     assert '"shapely"' in showcase_task_text

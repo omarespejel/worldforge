@@ -86,10 +86,13 @@ def test_build_checkpoint_reuses_existing_checkpoint_without_optional_runtime(
 
     assert summary == {
         "created": False,
+        "model_family": "LeWorldModel (LeWM)",
+        "official_code": "https://github.com/lucas-maes/le-wm",
         "output": str(checkpoint),
         "policy": "pusht/lewm",
         "repo_id": "quentinll/lewm-pusht",
         "reason": "checkpoint already exists",
+        "runtime_api": "stable_worldmodel.policy.AutoCostModel",
     }
     assert checkpoint.read_text() == "existing"
 
@@ -163,7 +166,7 @@ def test_build_checkpoint_saves_object_checkpoint_with_injected_runtime(
         @staticmethod
         def load(path: Path) -> dict[str, str]:
             assert path.name == "config.json"
-            return {"_target_": "fake"}
+            return {"_target_": "stable_worldmodel.wm.lewm.LeWM"}
 
     model = FakeModel()
     torch = FakeTorch()
@@ -198,11 +201,15 @@ def test_build_checkpoint_saves_object_checkpoint_with_injected_runtime(
 
     assert summary == {
         "config": str(tmp_path / "assets/config.json"),
+        "config_target": "stable_worldmodel.wm.lewm.LeWM",
         "created": True,
+        "model_family": "LeWorldModel (LeWM)",
+        "official_code": "https://github.com/lucas-maes/le-wm",
         "output": str(tmp_path / "stablewm/pusht/lewm_object.ckpt"),
         "policy": "pusht/lewm",
         "repo_id": "quentinll/lewm-pusht",
         "revision": "abc123",
+        "runtime_api": "stable_worldmodel.policy.AutoCostModel",
         "weights": str(tmp_path / "assets/weights.pt"),
     }
     assert torch.saved_model is model
@@ -233,7 +240,7 @@ def test_build_checkpoint_rejects_incompatible_weights(
     class FakeOmegaConf:
         @staticmethod
         def load(path: Path) -> dict[str, str]:
-            return {"_target_": "fake"}
+            return {"_target_": "stable_worldmodel.wm.lewm.LeWM"}
 
     def hf_hub_download(
         *,
@@ -255,6 +262,42 @@ def test_build_checkpoint_rejects_incompatible_weights(
     )
 
     with pytest.raises(SystemExit, match="weights did not match"):
+        leworldmodel_checkpoint.build_checkpoint(
+            repo_id="quentinll/lewm-pusht",
+            policy="pusht/lewm",
+            stablewm_home=tmp_path / "stablewm",
+            cache_dir=tmp_path / "assets",
+        )
+
+
+def test_build_checkpoint_rejects_non_leworldmodel_config_target(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class FakeOmegaConf:
+        @staticmethod
+        def load(path: Path) -> dict[str, str]:
+            return {"_target_": "stable_worldmodel.wm.pldm.PLDM"}
+
+    def hf_hub_download(
+        *,
+        repo_id: str,
+        filename: str,
+        local_dir: str,
+        revision: str | None,
+    ) -> str:
+        path = Path(local_dir) / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(filename)
+        return str(path)
+
+    monkeypatch.setattr(
+        leworldmodel_checkpoint,
+        "_load_optional_build_dependencies",
+        lambda: (object(), hf_hub_download, lambda _config: object(), FakeOmegaConf),
+    )
+
+    with pytest.raises(SystemExit, match="did not describe a LeWM/JEPA model target"):
         leworldmodel_checkpoint.build_checkpoint(
             repo_id="quentinll/lewm-pusht",
             policy="pusht/lewm",
@@ -625,3 +668,5 @@ def test_smoke_main_reports_missing_runtime_before_tensor_build(
     assert "LeWorldModel runtime preflight failed: missing optional dependency torch" in message
     assert "scripts/lewm-real --checkpoint" in message
     assert 'uv run --python 3.13 --with "stable-worldmodel[train]' in message
+    assert '--with "opencv-python"' in message
+    assert '--with "imageio"' in message

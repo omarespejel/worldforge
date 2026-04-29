@@ -123,7 +123,10 @@ PROVIDER_CATALOG: tuple[ProviderCatalogEntry, ...] = (
         "leworldmodel",
         _leworldmodel,
         docs_page="leworldmodel.md",
-        runtime_ownership="host installs `stable_worldmodel`, torch, and compatible checkpoints",
+        runtime_ownership=(
+            "host installs the official LeWM loading path "
+            "(`stable_worldmodel.policy.AutoCostModel`), torch, and compatible checkpoints"
+        ),
     ),
     ProviderCatalogEntry(
         "gr00t",

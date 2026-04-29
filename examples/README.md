@@ -62,13 +62,16 @@ The explicit command behind the wrapper is:
 uv run --python 3.13 \
   --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
   --with "datasets>=2.21" \
+  --with "opencv-python" \
+  --with "imageio" \
   lewm-real \
     --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt \
     --device cpu
 ```
 
-It runs real checkpoint scoring over deterministic synthetic PushT-shaped tensors and prints a
-visual pipeline, tensor shapes, latency metrics, provider events, and ranked candidate costs.
+It runs real LeWorldModel checkpoint scoring over deterministic synthetic PushT-shaped tensors
+through the official `stable_worldmodel.policy.AutoCostModel` loading path and prints a visual
+pipeline, tensor shapes, latency metrics, provider events, and ranked candidate costs.
 
 The real robotics showcase composes LeRobot and LeWorldModel through WorldForge policy-plus-score
 planning with a packaged PushT bridge. The wrapper opens a Textual report by default and writes the

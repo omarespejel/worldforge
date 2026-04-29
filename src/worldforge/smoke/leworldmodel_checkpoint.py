@@ -3,7 +3,8 @@
 Run with the same upstream runtime used by the real smoke:
 
     uv run --python 3.13 --with "<git stable-worldmodel>" --with "datasets>=2.21"
-      --with huggingface_hub worldforge-build-leworldmodel-checkpoint
+      --with huggingface_hub --with "opencv-python" --with "imageio"
+      worldforge-build-leworldmodel-checkpoint
 
 The command downloads ``config.json`` and ``weights.pt`` from the model repo,
 instantiates the LeWM module, loads the weights, and saves the object checkpoint
@@ -21,6 +22,9 @@ from pathlib import Path
 from worldforge.smoke.leworldmodel import DEFAULT_STABLEWM_HOME, _checkpoint_path
 
 DEFAULT_REPO_ID = "quentinll/lewm-pusht"
+LEWORLDMODEL_OFFICIAL_REPO_URL = "https://github.com/lucas-maes/le-wm"
+LEWORLDMODEL_RUNTIME_API = "stable_worldmodel.policy.AutoCostModel"
+LEWORLDMODEL_HF_CONFIG_TARGET = "stable_worldmodel.wm.lewm"
 
 
 def _repo_cache_dir(repo_id: str) -> Path:
@@ -30,6 +34,10 @@ def _repo_cache_dir(repo_id: str) -> Path:
 
 def _load_optional_build_dependencies():
     try:
+        # Required by current stable_worldmodel top-level visual-wrapper imports.
+        importlib.import_module("cv2")
+        importlib.import_module("imageio")
+        importlib.import_module("stable_worldmodel")  # probe upstream runtime import envelope
         importlib.import_module("stable_pretraining")  # probe upstream transitive imports
         import torch
         from huggingface_hub import hf_hub_download
@@ -43,10 +51,23 @@ def _load_optional_build_dependencies():
                 "stable_pretraining imports it at module load time. Add `--with matplotlib` to "
                 "the uv run invocation (see docs/src/operations.md)."
             ) from exc
+        if missing == "cv2":
+            raise SystemExit(
+                "Building a LeWorldModel object checkpoint requires opencv-python because the "
+                "current upstream stable_worldmodel package imports cv2 at module load time. "
+                'Add `--with "opencv-python"` to the uv run invocation.'
+            ) from exc
+        if missing == "imageio":
+            raise SystemExit(
+                "Building a LeWorldModel object checkpoint requires imageio because the current "
+                "upstream stable_worldmodel package imports imageio at module load time. "
+                "Add `--with imageio` to the uv run invocation."
+            ) from exc
         raise SystemExit(
             "Building a LeWorldModel object checkpoint requires torch, huggingface_hub, "
-            "hydra-core, omegaconf, matplotlib, and the upstream stable-worldmodel LeWM modules. "
-            "Run the command with the dependency flags documented in docs/src/operations.md."
+            "hydra-core, omegaconf, matplotlib, opencv-python, imageio, and the upstream "
+            "stable-worldmodel LeWM modules. Run the command with the dependency flags "
+            "documented in docs/src/operations.md."
         ) from exc
     return torch, hf_hub_download, instantiate, OmegaConf
 
@@ -73,6 +94,30 @@ def _load_weights(torch: object, weights_path: Path, *, allow_unsafe_pickle: boo
         ) from exc
 
 
+def _config_target(config: object) -> str:
+    getter = getattr(config, "get", None)
+    target = getter("_target_") if callable(getter) else None
+    if not isinstance(target, str) or not target.strip():
+        raise SystemExit("LeWorldModel config.json must contain a non-empty _target_ field.")
+    return target.strip()
+
+
+def _ensure_leworldmodel_target(target: str) -> None:
+    normalized = target.lower()
+    if "lewm" not in normalized and "jepa" not in normalized:
+        raise SystemExit(
+            f"LeWorldModel config.json did not describe a LeWM/JEPA model target: {target!r}."
+        )
+
+
+def _checkpoint_provenance() -> dict[str, object]:
+    return {
+        "model_family": "LeWorldModel (LeWM)",
+        "official_code": LEWORLDMODEL_OFFICIAL_REPO_URL,
+        "runtime_api": LEWORLDMODEL_RUNTIME_API,
+    }
+
+
 def build_checkpoint(
     *,
     repo_id: str,
@@ -93,6 +138,7 @@ def build_checkpoint(
             "policy": policy,
             "repo_id": repo_id,
             "reason": "checkpoint already exists",
+            **_checkpoint_provenance(),
         }
 
     torch, hf_hub_download, instantiate, omega_conf = _load_optional_build_dependencies()
@@ -115,6 +161,8 @@ def build_checkpoint(
     )
 
     config = omega_conf.load(config_path)
+    target = _config_target(config)
+    _ensure_leworldmodel_target(target)
     model = instantiate(config)
     weights = _load_weights(torch, weights_path, allow_unsafe_pickle=allow_unsafe_pickle)
     incompatible = model.load_state_dict(weights, strict=False)
@@ -138,6 +186,8 @@ def build_checkpoint(
         "policy": policy,
         "repo_id": repo_id,
         "weights": str(weights_path),
+        "config_target": target,
+        **_checkpoint_provenance(),
     }
     if revision is not None:
         summary["revision"] = revision

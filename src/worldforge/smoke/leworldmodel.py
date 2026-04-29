@@ -3,6 +3,7 @@
 Invoke this command through uv, for example:
 
     uv run --python 3.13 --with "<git stable-worldmodel>" --with "datasets>=2.21"
+      --with "opencv-python" --with "imageio"
       lewm-real --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt
 
 This smoke requires the upstream LeWorldModel runtime dependencies and an
@@ -309,7 +310,8 @@ def _runtime_command(*, checkpoint: Path, device: str) -> str:
         "or, without the wrapper:\n"
         'uv run --python 3.13 --with "stable-worldmodel[train] @ '
         'git+https://github.com/galilai-group/stable-worldmodel.git" '
-        f'--with "datasets>=2.21" lewm-real --checkpoint {checkpoint_text} --device {device}'
+        '--with "datasets>=2.21" --with "opencv-python" --with "imageio" '
+        f"lewm-real --checkpoint {checkpoint_text} --device {device}"
     )
 
 
@@ -468,7 +470,10 @@ def main() -> int:
             [
                 ("provider", "leworldmodel"),
                 ("capability", "score"),
-                ("runtime", "stable_worldmodel.policy.AutoCostModel"),
+                (
+                    "runtime",
+                    "stable_worldmodel.policy.AutoCostModel (official LeWM loading API)",
+                ),
             ],
             color=color_enabled,
         )

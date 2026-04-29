@@ -157,7 +157,8 @@ def _ensure_checkpoint(args: argparse.Namespace) -> None:
         return
     print(
         f"LeWorldModel checkpoint missing at {target}; "
-        f"downloading from Hugging Face ({leworldmodel_checkpoint.DEFAULT_REPO_ID})...",
+        f"building official LeWM checkpoint assets from Hugging Face "
+        f"({leworldmodel_checkpoint.DEFAULT_REPO_ID})...",
         file=sys.stderr,
         flush=True,
     )

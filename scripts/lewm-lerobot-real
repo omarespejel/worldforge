@@ -7,5 +7,7 @@ cd "$repo_root"
 exec uv run --python 3.13 \
   --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
   --with "datasets>=2.21" \
+  --with "opencv-python" \
+  --with "imageio" \
   --with "lerobot[transformers-dep]" \
   lewm-lerobot-real "$@"

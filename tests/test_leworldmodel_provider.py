@@ -134,6 +134,9 @@ def test_leworldmodel_provider_scores_fixture_payload_and_routes_through_forge(t
     assert result.best_score == 0.15
     assert result.lower_is_better is True
     assert result.metadata["score_type"] == "cost"
+    assert result.metadata["model_family"] == "LeWorldModel (LeWM)"
+    assert result.metadata["official_code"] == "https://github.com/lucas-maes/le-wm"
+    assert result.metadata["runtime_api"] == "stable_worldmodel.policy.AutoCostModel"
     assert result.to_dict()["best_score"] == 0.15
     assert loaded == [("pusht/lewm", "/tmp/stablewm")]
     assert model.device == "cpu"
@@ -280,6 +283,28 @@ def test_leworldmodel_provider_health_reports_missing_configuration_and_dependen
     health = configured.health()
     assert health.healthy is False
     assert "stable_worldmodel" in health.details
+
+
+def test_leworldmodel_provider_health_reports_transitive_stable_worldmodel_imports(
+    monkeypatch,
+) -> None:
+    provider = LeWorldModelProvider(policy="pusht/lewm", tensor_module=FakeTorch())
+
+    def fail_import(name: str) -> object:
+        if name == "stable_worldmodel":
+            raise ModuleNotFoundError("No module named 'cv2'", name="cv2")
+        return __import__(name)
+
+    monkeypatch.setattr(
+        "worldforge.providers.leworldmodel.importlib.import_module",
+        fail_import,
+    )
+
+    health = provider.health()
+
+    assert health.healthy is False
+    assert "stable_worldmodel import failed" in health.details
+    assert "cv2" in health.details
 
 
 def test_leworldmodel_doctor_reports_dependency_issue_after_configuration(

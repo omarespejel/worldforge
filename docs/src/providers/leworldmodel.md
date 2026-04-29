@@ -130,6 +130,11 @@ This loads the host-owned upstream runtime and object checkpoint, then scores sy
 PushT-shaped candidate tensors through `LeWorldModelProvider`. It is real checkpoint scoring, not
 task-specific preprocessing or robot execution.
 
+The upstream dependency shown by the wrapper is `stable-worldmodel` because the official
+`lucas-maes/le-wm` repository documents `stable_worldmodel.policy.AutoCostModel("pusht/lewm")` as
+the loading path for LeWorldModel object checkpoints. WorldForge uses that runtime API to call the
+LeWM checkpoint's `get_cost(...)`; it does not replace LeWorldModel with a generic SWM baseline.
+
 LeRobot + LeWorldModel robotics replay showcase:
 
 ```bash

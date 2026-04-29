@@ -31,7 +31,7 @@ with host-owned optional dependencies supplied for that one process:
 | `huggingface_hub` | Downloads LeWorldModel `config.json` and `weights.pt` when building the object checkpoint. |
 | `matplotlib` | Required by upstream `stable_pretraining` imports during checkpoint build. |
 | `lerobot[transformers-dep]` | Provides the LeRobot policy classes and their Transformers dependency set. |
-| `pygame`, `opencv-python`, `pymunk`, `gymnasium`, `shapely` | Required by the upstream PushT simulation environment and rendering path. |
+| `pygame`, `opencv-python`, `imageio`, `pymunk`, `gymnasium`, `shapely` | Required by the upstream PushT simulation environment, visual-wrapper imports, and rendering path. |
 | `textual>=8.2,<9` | Added only when the visual report is requested. |
 
 These are not base package dependencies. WorldForge keeps them host-owned so `worldforge-ai`
