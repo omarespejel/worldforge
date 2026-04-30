@@ -56,6 +56,9 @@ worldforge-robotics-showcase = "worldforge.smoke.robotics_showcase:main"
 lewm-real = "worldforge.smoke.leworldmodel:main"
 lewm-lerobot-real = "worldforge.smoke.lerobot_leworldmodel:main"
 
+[project.entry-points.pytest11]
+worldforge-runtime-profiles = "worldforge.testing.pytest_plugin"
+
 [project.optional-dependencies]
 harness = [
     "textual>=8.2,<9",

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from importlib.metadata import entry_points
+
 import pytest
 
 from worldforge.testing.runtime_profiles import (
@@ -54,8 +56,17 @@ def test_marker_definitions_cover_runtime_profiles() -> None:
     }
 
 
+def test_pytest_plugin_entrypoint_is_registered() -> None:
+    pytest_plugins = entry_points(group="pytest11")
+
+    assert any(
+        plugin.name == "worldforge-runtime-profiles"
+        and plugin.value == "worldforge.testing.pytest_plugin"
+        for plugin in pytest_plugins
+    )
+
+
 def test_pytest_plugin_skips_live_tests_by_default(pytester: pytest.Pytester) -> None:
-    pytester.makeconftest('pytest_plugins = ("worldforge.testing.pytest_plugin",)')
     pytester.makepyfile("""
         import pytest
 
@@ -74,7 +85,6 @@ def test_pytest_plugin_runs_configured_provider_profile(
     pytester: pytest.Pytester,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    pytester.makeconftest('pytest_plugins = ("worldforge.testing.pytest_plugin",)')
     pytester.makepyfile("""
         import pytest
 
@@ -99,7 +109,6 @@ def test_pytest_plugin_runs_configured_provider_profile(
 
 
 def test_pytest_plugin_skips_unselected_provider_profile(pytester: pytest.Pytester) -> None:
-    pytester.makeconftest('pytest_plugins = ("worldforge.testing.pytest_plugin",)')
     pytester.makepyfile("""
         import pytest
 
