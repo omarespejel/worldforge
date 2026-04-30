@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import worldforge
 import worldforge.observability as observability
+import worldforge.testing as testing_helpers
 from worldforge.evaluation import EvaluationSuite
 from worldforge.providers import GrootPolicyClientProvider, MockProvider
 
@@ -55,3 +56,18 @@ def test_top_level_exports_and_subpackages_import() -> None:
     assert observability.InMemoryRecorderSink is not None
     assert observability.ProviderMetricsSink is not None
     assert observability.compose_event_handlers is not None
+
+
+def test_lazy_export_modules_have_expected_dir_and_attribute_errors() -> None:
+    assert "WorldForge" in dir(worldforge)
+    assert "ProviderContractReport" in dir(testing_helpers)
+    assert testing_helpers.ProviderContractReport is not None
+
+    missing = "missing_public_export"
+    for module in (worldforge, testing_helpers):
+        try:
+            getattr(module, missing)
+        except AttributeError as exc:
+            assert missing in str(exc)
+        else:  # pragma: no cover - assertion guard
+            raise AssertionError(f"{module.__name__} unexpectedly exposes {missing}")

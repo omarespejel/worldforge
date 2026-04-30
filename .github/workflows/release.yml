@@ -73,7 +73,7 @@ jobs:
 
       - name: Audit dependencies
         run: |
-          uv export --frozen --all-groups --no-emit-project --no-hashes -o requirements-ci.txt
+          uv export --all-groups --no-emit-project --no-hashes -o requirements-ci.txt
           uv run pip-audit -r requirements-ci.txt --no-deps --disable-pip --progress-spinner off
 
       - name: Validate package contract
