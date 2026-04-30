@@ -187,7 +187,30 @@ def test_robotics_showcase_app_stages_visual_report(tmp_path) -> None:
             animate_arm=True,
         )
         async with app.run_test(size=(150, 48)) as pilot:
-            await pilot.pause(0.05)
+            expected_panes = (
+                RoboticsArmPane,
+                RoboticsCandidatePane,
+                RoboticsTabletopPane,
+                RoboticsReportGuidePane,
+                RoboticsEventPane,
+            )
+
+            def staged_report_complete() -> bool:
+                try:
+                    for pane in expected_panes:
+                        app.query_one(pane)
+                    app.query_one(RoboticsProgressPane)
+                except NoMatches:
+                    return all(len(app.query(pane)) == 1 for pane in expected_panes)
+                return False
+
+            for _ in range(100):
+                if staged_report_complete():
+                    break
+                await pilot.pause(0.01)
+            else:
+                pytest.fail("staged robotics report did not finish mounting all panes")
+
             assert app.query_one(RoboticsArmPane) is not None
             assert app.query_one(RoboticsCandidatePane) is not None
             assert app.query_one(RoboticsTabletopPane) is not None
