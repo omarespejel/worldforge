@@ -18,12 +18,12 @@ see [Robotics Showcase Technical Deep Dive](./robotics-showcase-deep-dive.md).
 <table>
   <tr>
     <td width="50%">
-      <img src="assets/img/robotics-showcase-lerobot-leworldmodel-2.png" alt="WorldForge robotics showcase TUI with pipeline flow, runtime metrics, and tensor contract" width="100%" />
+      <img src="../assets/img/robotics-showcase-lerobot-leworldmodel-2.png" alt="WorldForge robotics showcase TUI with pipeline flow, runtime metrics, and tensor contract" width="100%" />
       <br />
       <sub><strong>Pipeline:</strong> real LeRobot policy, real LeWorldModel checkpoint scoring, WorldForge planning, local mock replay.</sub>
     </td>
     <td width="50%">
-      <img src="assets/img/robotics-showcase-lerobot-leworldmodel-1.png" alt="WorldForge robotics showcase TUI with robot-arm illustration, candidate ranking, and tabletop replay" width="100%" />
+      <img src="../assets/img/robotics-showcase-lerobot-leworldmodel-1.png" alt="WorldForge robotics showcase TUI with robot-arm illustration, candidate ranking, and tabletop replay" width="100%" />
       <br />
       <sub><strong>Decision:</strong> selected candidate, cost landscape, provider events, and tabletop replay.</sub>
     </td>
