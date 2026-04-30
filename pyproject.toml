@@ -102,6 +102,14 @@ include = [
 addopts = ["--import-mode=importlib"]
 testpaths = ["tests"]
 xfail_strict = true
+markers = [
+    "live: requires live provider/runtime access and is skipped unless --run-live is passed",
+    "gpu: requires GPU runtime access and is skipped unless --run-gpu is passed",
+    "network: may make network calls and is skipped unless --run-network is passed",
+    "robotics: requires robotics or simulator runtime and is skipped unless --run-robotics is passed",
+    "credentialed: requires credentials or private endpoints and is skipped unless --run-credentialed is passed",
+    "provider_profile(name): requires provider-specific live runtime environment",
+]
 
 [tool.ruff]
 target-version = "py313"

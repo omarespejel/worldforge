@@ -321,10 +321,51 @@ model, checkpoint, CUDA or robot stack, and task-specific preprocessing.
 Checkout-safe:
 
 ```bash
+uv run pytest
+uv run pytest -m "not live"
 uv run worldforge-demo-leworldmodel
 uv run worldforge-demo-lerobot
 uv run --extra harness worldforge-harness --flow diagnostics
 ```
+
+Runtime pytest profiles are opt-in. Mark live provider tests with the smallest truthful set of
+markers, for example `@pytest.mark.live`, `@pytest.mark.network`,
+`@pytest.mark.credentialed`, `@pytest.mark.gpu`, `@pytest.mark.robotics`, and
+`@pytest.mark.provider_profile("runway")`. Default `uv run pytest` skips marked tests before they
+can reach live endpoints, GPUs, robot stacks, credentials, or downloaded checkpoints.
+
+Prepared-host provider profiles:
+
+```bash
+# Cosmos: requires COSMOS_BASE_URL and a reachable deployment.
+COSMOS_BASE_URL=http://localhost:8000 \
+  uv run pytest -m "live and network and provider_profile" \
+    --run-live --run-network --provider-profile cosmos
+
+# Runway: requires RUNWAYML_API_SECRET or RUNWAY_API_SECRET.
+RUNWAYML_API_SECRET=... \
+  uv run pytest -m "live and network and credentialed and provider_profile" \
+    --run-live --run-network --run-credentialed --provider-profile runway
+
+# LeWorldModel: requires LEWORLDMODEL_POLICY or LEWM_POLICY and host-owned runtime deps.
+LEWORLDMODEL_POLICY=pusht/lewm \
+  uv run pytest -m "live and gpu and provider_profile" \
+    --run-live --run-gpu --provider-profile leworldmodel
+
+# GR00T: requires GROOT_POLICY_HOST and a reachable policy server.
+GROOT_POLICY_HOST=127.0.0.1 \
+  uv run pytest -m "live and network and robotics and provider_profile" \
+    --run-live --run-network --run-robotics --provider-profile gr00t
+
+# LeRobot: requires LEROBOT_POLICY_PATH or LEROBOT_POLICY and host-owned policy deps.
+LEROBOT_POLICY_PATH=lerobot/diffusion_pusht \
+  uv run pytest -m "live and robotics and provider_profile" \
+    --run-live --run-robotics --provider-profile lerobot
+```
+
+When a test is selected without the matching opt-in flag or provider environment, pytest reports a
+skip reason naming the missing flag or environment variable. Save stdout/stderr, JSON summaries, and
+provider-event logs from prepared-host runs when the result is used as release or issue evidence.
 
 Real LeWorldModel checkpoint:
 
