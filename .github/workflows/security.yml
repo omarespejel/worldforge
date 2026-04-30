@@ -52,7 +52,7 @@ jobs:
           cache-dependency-glob: uv.lock
 
       - name: Export locked dependencies
-        run: uv export --frozen --all-groups --no-emit-project --no-hashes -o requirements-ci.txt
+        run: uv export --all-groups --no-emit-project --no-hashes -o requirements-ci.txt
 
       - name: Audit dependencies
         run: uvx --from pip-audit pip-audit -r requirements-ci.txt

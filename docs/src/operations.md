@@ -211,6 +211,12 @@ include those IDs in surrounding application logs.
 - Starting the upstream GR00T server requires a compatible NVIDIA/Linux runtime for its CUDA and
   TensorRT dependencies. On unsupported hosts, point WorldForge at an already running remote GR00T
   policy server.
+- Pytest live runtime coverage is opt-in. Use `uv run pytest` or `uv run pytest -m "not live"` for
+  deterministic checkout validation. Prepared hosts can select one live provider profile at a time
+  with markers such as `live`, `network`, `credentialed`, `gpu`, `robotics`, and
+  `provider_profile`, plus the matching `--run-*` flags and `--provider-profile <name>`. See
+  [Run Optional Runtime Smokes](./playbooks.md#8-run-optional-runtime-smokes) for provider-specific
+  commands.
 
 ## Release Checklist
 
