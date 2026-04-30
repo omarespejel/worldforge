@@ -6,6 +6,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 SITE = ROOT / "site"
 
@@ -36,6 +38,7 @@ def _resolved_site_path(page: Path, source: str) -> Path | None:
 
 
 def test_built_docs_image_sources_resolve_to_site_files() -> None:
+    pytest.importorskip("mkdocs")
     subprocess.run(
         [sys.executable, "-m", "mkdocs", "build", "--strict"],
         cwd=ROOT,
