@@ -42,12 +42,13 @@ scripts/robotics-showcase
 By default, the script:
 
 - launches an ephemeral Python 3.13 `uv` runtime with host-owned optional dependencies;
-- requests LeRobot's `transformers-dep` extra so LeRobot controls the Transformers version while
-  the LeWorldModel runtime is also installed;
+- requests `lerobot[transformers-dep]==0.5.1` so the Python 3.13 policy import path is stable
+  while the LeWorldModel runtime is also installed;
 - runs real LeRobot policy inference and real LeWorldModel checkpoint scoring;
 - opens a staged Textual report with the pipeline trace, metric bars, tensor contract, candidate
-  ranking, provider event log, robot-arm illustration, and tabletop replay;
-- writes a JSON summary to `/tmp/worldforge-robotics-showcase/real-run.json`.
+  ranking, provider event log, robot-arm illustration, tabletop replay, and Rerun open shortcut;
+- writes a JSON summary to `/tmp/worldforge-robotics-showcase/real-run.json`;
+- writes a visual Rerun recording to `/tmp/worldforge-robotics-showcase/real-run.rrd`.
 
 Useful flags:
 
@@ -55,9 +56,17 @@ Useful flags:
 scripts/robotics-showcase --health-only       # non-mutating dependency/checkpoint preflight
 scripts/robotics-showcase --no-tui            # plain terminal report
 scripts/robotics-showcase --json-only         # machine-readable summary only
+scripts/robotics-showcase --no-rerun          # skip the default Rerun .rrd artifact
+scripts/robotics-showcase --rerun-output /tmp/pusht.rrd
 scripts/robotics-showcase --tui-stage-delay 0.1
 scripts/robotics-showcase --no-tui-animation
 scripts/robotics-showcase --lewm-revision <tag-or-commit>
+```
+
+Open the Rerun artifact from the TUI with `o`, or from the shell with:
+
+```bash
+uvx --from "rerun-sdk>=0.24,<0.32" rerun /tmp/worldforge-robotics-showcase/real-run.rrd
 ```
 
 ## What It Demonstrates

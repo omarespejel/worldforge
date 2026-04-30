@@ -13,8 +13,10 @@ PACKAGE_NAME = "worldforge-ai"
 WHEEL_REQUIRED_FILES = (
     "worldforge/__init__.py",
     "worldforge/py.typed",
+    "worldforge/rerun.py",
     "worldforge/capabilities/__init__.py",
     "worldforge/providers/observable.py",
+    "worldforge/demos/rerun_showcase.py",
     "worldforge/smoke/robotics_showcase.py",
 )
 
@@ -59,6 +61,7 @@ REQUIRED_CONSOLE_SCRIPTS = (
     "worldforge-harness",
     "worldforge-demo-leworldmodel",
     "worldforge-demo-lerobot",
+    "worldforge-demo-rerun",
     "worldforge-build-leworldmodel-checkpoint",
     "worldforge-smoke-leworldmodel",
     "worldforge-smoke-lerobot-leworldmodel",
@@ -151,8 +154,10 @@ def _check_wheel_metadata(wheel_path: Path) -> None:
             raise SystemExit(
                 f"{wheel_path.name} metadata field {field!r} is {actual!r}; expected {expected!r}"
             )
-    if "harness" not in metadata.get_all("Provides-Extra", []):
-        raise SystemExit(f"{wheel_path.name} metadata is missing the harness extra")
+    extras = set(metadata.get_all("Provides-Extra", []))
+    for extra in ("harness", "rerun"):
+        if extra not in extras:
+            raise SystemExit(f"{wheel_path.name} metadata is missing the {extra} extra")
 
 
 def _check_console_scripts(wheel_path: Path) -> None:

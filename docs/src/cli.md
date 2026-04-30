@@ -105,10 +105,13 @@ Checkout-safe demos use injected deterministic runtimes:
 ```bash
 uv run worldforge-demo-leworldmodel
 uv run worldforge-demo-lerobot
+uv run --extra rerun worldforge-demo-rerun
 ```
 
 They validate WorldForge's provider adapters, planning, execution, persistence, reload, and event
-paths without installing optional model runtimes or downloading checkpoints.
+paths without installing optional model runtimes or downloading checkpoints. The Rerun demo
+requires the `rerun` extra and records events, worlds, plans, 3D object boxes, and benchmark
+metrics to a `.rrd` artifact.
 
 ## Optional Runtime Smokes
 
@@ -123,6 +126,7 @@ LeRobot policy plus LeWorldModel checkpoint scoring replay:
 ```bash
 scripts/robotics-showcase --health-only
 scripts/robotics-showcase
+uvx --from "rerun-sdk>=0.24,<0.32" rerun /tmp/worldforge-robotics-showcase/real-run.rrd
 ```
 
 Live GR00T and LeRobot policy smoke helpers:

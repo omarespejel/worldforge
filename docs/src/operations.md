@@ -117,6 +117,7 @@ Use `compose_event_handlers(...)` to fan out events to:
 - `ProviderMetricsSink` for request, retry, error, and latency aggregates.
 - `OpenTelemetryProviderEventSink` for optional host-owned tracing spans.
 - `InMemoryRecorderSink` for tests and local debugging.
+- `RerunEventSink` for optional Rerun recordings of provider events.
 
 `ProviderEvent` sanitizes observable fields before they reach these sinks: HTTP targets keep
 scheme, host, port, and path but drop userinfo, query strings, and fragments; message and metadata
@@ -221,6 +222,17 @@ environment presence, runtime manifest id when available, input fixture digest, 
 digest, and artifact paths. Validation rejects raw secret-like fields and unsanitized signed URLs;
 artifact URLs are stored without query strings or fragments.
 
+For local run inspection, install the optional `rerun` extra and stream events plus artifacts into
+a Rerun recording:
+
+```bash
+uv run --extra rerun worldforge-demo-rerun
+```
+
+Expected success signal: `.worldforge/rerun/worldforge-rerun-showcase.rrd` exists, the command
+prints a byte count, and the recording opens in the Rerun viewer. First triage step: run
+`uv run --extra rerun python -c "import rerun; print(rerun.__version__)"`.
+
 ## Failure Modes
 
 - Invalid caller input raises `WorldForgeError`.
@@ -263,7 +275,7 @@ artifact URLs are stored without query strings or fragments.
 - For expired Runway artifact URLs, regenerate or persist downloaded outputs immediately after
   task completion.
 - For LeWorldModel failures, run `worldforge provider health leworldmodel`, verify
-  `stable-worldmodel[train]`, `torch`, `opencv-python`, and `imageio` are installed in the host
+  `stable-worldmodel`, `torch`, `opencv-python`, and `imageio` are installed in the host
   environment, then confirm the configured policy exists under `$STABLEWM_HOME` or
   `LEWORLDMODEL_CACHE_DIR`.
 - To smoke-test a real LeWorldModel checkpoint, run
@@ -275,9 +287,12 @@ artifact URLs are stored without query strings or fragments.
 
   ```bash
   uv run --python 3.13 \
-    --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
+    --with "stable-worldmodel @ git+https://github.com/galilai-group/stable-worldmodel.git" \
     --with "datasets>=2.21" \
     --with huggingface_hub \
+    --with hydra-core \
+    --with omegaconf \
+    --with transformers \
     --with matplotlib \
     --with "opencv-python" \
     --with "imageio" \
@@ -286,9 +301,9 @@ artifact URLs are stored without query strings or fragments.
       --policy pusht/lewm
   ```
 
-  `matplotlib` is required because upstream `stable_pretraining` imports it unconditionally at
-  module load time even though it is not declared as a runtime dependency. Pass `--revision <tag-or-commit>`
-  or set `LEWORLDMODEL_REVISION` when the run must be pinned to a specific Hugging Face revision.
+  `hydra-core`, `omegaconf`, and `transformers` are required to instantiate the official LeWM
+  PushT config. Pass `--revision <tag-or-commit>` or set `LEWORLDMODEL_REVISION` when the run
+  must be pinned to a specific Hugging Face revision.
   The builder loads downloaded `weights.pt` with `torch.load(..., weights_only=True)` by default;
   `--allow-unsafe-pickle` exists only for trusted legacy weights and older torch environments. The
   builder downloads assets to `~/.cache/worldforge/leworldmodel` by default and writes the object
@@ -305,8 +320,9 @@ artifact URLs are stored without query strings or fragments.
   injected deterministic policy runtime and exercises policy selection, score ranking, execution,
   persistence, and reload. It is not a real LeRobot checkpoint inference run.
 - To run the real LeRobot plus real LeWorldModel showcase, use `scripts/robotics-showcase`. It
-  launches the packaged PushT policy-plus-score bridge and opens the Textual report by default.
-  For the full walkthrough, see [Robotics Replay Showcase](./robotics-showcase.md).
+  launches the packaged PushT policy-plus-score bridge, opens the Textual report by default, and
+  writes `/tmp/worldforge-robotics-showcase/real-run.rrd` unless `--no-rerun` is passed. For the
+  full walkthrough, see [Robotics Replay Showcase](./robotics-showcase.md).
 - To smoke-test a real GR00T policy server, install or check out NVIDIA Isaac-GR00T, prepare a
   host-specific observation factory and action translator, then run
   `uv run python scripts/smoke_gr00t_policy.py --gr00t-root /path/to/Isaac-GR00T --start-server ...`.

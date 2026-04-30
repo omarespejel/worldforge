@@ -5,9 +5,9 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 cd "$repo_root"
 exec uv run --python 3.13 \
-  --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
+  --with "stable-worldmodel @ git+https://github.com/galilai-group/stable-worldmodel.git" \
   --with "datasets>=2.21" \
   --with "opencv-python" \
   --with "imageio" \
-  --with "lerobot[transformers-dep]" \
+  --with "lerobot[transformers-dep]==0.5.1" \
   lewm-lerobot-real "$@"

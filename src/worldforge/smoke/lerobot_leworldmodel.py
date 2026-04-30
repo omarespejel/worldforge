@@ -454,6 +454,82 @@ def _event_dicts(events: list[ProviderEvent]) -> list[dict[str, Any]]:
     return [event.to_dict() for event in events]
 
 
+def _has_rerun_sink(args: argparse.Namespace) -> bool:
+    return any(
+        (
+            args.rerun_output is not None,
+            args.rerun_spawn,
+            args.rerun_connect_url is not None,
+            args.rerun_serve_grpc_port is not None,
+        )
+    )
+
+
+def _recording_file_status(path: Path | None) -> tuple[bool | None, int | None]:
+    if path is None:
+        return None, None
+    resolved = path.expanduser()
+    if not resolved.is_file():
+        return False, None
+    return True, resolved.stat().st_size
+
+
+def _create_rerun_loggers(args: argparse.Namespace) -> tuple[object, object, object] | None:
+    if not _has_rerun_sink(args):
+        return None
+    from worldforge.rerun import (
+        RerunArtifactLogger,
+        RerunEventSink,
+        RerunRecordingConfig,
+        RerunSession,
+    )
+
+    session = RerunSession(
+        RerunRecordingConfig(
+            recording_name="WorldForge robotics showcase",
+            save_path=args.rerun_output,
+            spawn_viewer=args.rerun_spawn,
+            connect_url=args.rerun_connect_url,
+            serve_grpc_port=args.rerun_serve_grpc_port,
+        )
+    )
+    return session, RerunEventSink(session=session), RerunArtifactLogger(session=session)
+
+
+def _rerun_payload(args: argparse.Namespace, session: object | None) -> dict[str, Any] | None:
+    if not _has_rerun_sink(args):
+        return None
+    return {
+        "save_path": str(args.rerun_output) if args.rerun_output is not None else None,
+        "spawn_viewer": args.rerun_spawn,
+        "connect_url": args.rerun_connect_url,
+        "serve_grpc_port": args.rerun_serve_grpc_port,
+        "server_uri": getattr(session, "server_uri", None),
+        "recording_written": None,
+        "recording_size_bytes": None,
+    }
+
+
+def _finish_rerun_recording(
+    payload: dict[str, Any],
+    args: argparse.Namespace,
+    session: object,
+) -> None:
+    server_uri = getattr(session, "server_uri", None)
+    session.close()  # type: ignore[attr-defined]
+    rerun = payload.get("rerun")
+    if not isinstance(rerun, dict):
+        return
+    recording_written, recording_size = _recording_file_status(args.rerun_output)
+    rerun.update(
+        {
+            "server_uri": server_uri,
+            "recording_written": recording_written,
+            "recording_size_bytes": recording_size,
+        }
+    )
+
+
 def _print_header(*, color: bool) -> None:
     title = "WorldForge real robotics policy+world-model inference"
     print(_paint(title, "cyan", enabled=color, bold=True))
@@ -849,6 +925,28 @@ def _parser() -> argparse.ArgumentParser:
         default=None,
         help="Write a sanitized run_manifest.json evidence file for this live robotics smoke.",
     )
+    parser.add_argument(
+        "--rerun-output",
+        type=Path,
+        default=None,
+        help="Write a visual Rerun .rrd recording of the policy+score run.",
+    )
+    parser.add_argument(
+        "--rerun-spawn",
+        action="store_true",
+        help="Spawn a local Rerun Viewer and stream the policy+score run to it.",
+    )
+    parser.add_argument(
+        "--rerun-connect-url",
+        default=None,
+        help="Stream the policy+score run to a remote Rerun gRPC viewer URL.",
+    )
+    parser.add_argument(
+        "--rerun-serve-grpc-port",
+        type=int,
+        default=None,
+        help="Serve the Rerun policy+score recording over an in-process gRPC endpoint.",
+    )
     parser.add_argument("--json-only", action="store_true")
     parser.add_argument(
         "--color",
@@ -939,6 +1037,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     total_started = perf_counter()
     if not args.json_only:
         _print_header(color=color_enabled)
+    rerun_session: object | None = None
+    rerun_events: object | None = None
+    rerun_artifacts: object | None = None
+    rerun_logging = _create_rerun_loggers(args)
+    if rerun_logging is not None:
+        rerun_session, rerun_events, rerun_artifacts = rerun_logging
 
     object_path, lewm_cache_dir = _resolve_checkpoint(
         policy=args.lewm_policy,
@@ -968,6 +1072,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
     provider_events: list[ProviderEvent] = []
+
+    def record_provider_event(event: ProviderEvent) -> None:
+        provider_events.append(event)
+        if rerun_events is not None:
+            rerun_events(event)  # type: ignore[operator]
+
     translator = _load_callable(args.translator, name="translator")
     candidate_builder = (
         None
@@ -991,13 +1101,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         cache_dir=args.lerobot_cache_dir,
         embodiment_tag=args.embodiment_tag,
         action_translator=action_translator,
-        event_handler=provider_events.append,
+        event_handler=record_provider_event,
     )
     score_provider = LeWorldModelProvider(
         policy=args.lewm_policy,
         cache_dir=str(lewm_cache_dir),
         device=lewm_device,
-        event_handler=provider_events.append,
+        event_handler=record_provider_event,
     )
     policy_health = policy_provider.health().to_dict()
     score_health = score_provider.health().to_dict()
@@ -1049,6 +1159,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             "health": {"lerobot": policy_health, "leworldmodel": score_health},
             "metrics": {"total_latency_ms": (perf_counter() - total_started) * 1000},
         }
+        rerun_payload = _rerun_payload(args, rerun_session)
+        if rerun_payload is not None:
+            payload["rerun"] = rerun_payload
+        if rerun_artifacts is not None:
+            rerun_artifacts.log_json("robotics_showcase/preflight", payload)  # type: ignore[attr-defined]
+        if rerun_session is not None:
+            _finish_rerun_recording(payload, args, rerun_session)
         if args.json_output is not None:
             _write_json_output(args.json_output, payload)
         if args.run_manifest is not None:
@@ -1149,6 +1266,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     policy_info.setdefault("score_bridge", {})
     if isinstance(policy_info["score_bridge"], dict):
         policy_info["score_bridge"].setdefault("object_id", block.id)
+    if rerun_artifacts is not None:
+        rerun_artifacts.log_world(world, label="initial PushT tabletop state")  # type: ignore[attr-defined]
 
     if not args.json_only:
         _log_step(
@@ -1187,6 +1306,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     score_result = plan.metadata["score_result"]
     policy_result = plan.metadata["policy_result"]
     score_stats = _score_stats(score_result)
+    if rerun_artifacts is not None:
+        rerun_artifacts.log_plan(plan, label="LeRobot policy candidates ranked by LeWorldModel")  # type: ignore[attr-defined]
 
     execution_summary: dict[str, Any] | None = None
     if not args.no_execute:
@@ -1208,6 +1329,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 final_block.position.to_dict() if final_block is not None else None
             ),
         }
+        if rerun_artifacts is not None:
+            rerun_artifacts.log_world(final_world, label="mock replay final state")  # type: ignore[attr-defined]
     elif not args.json_only:
         _log_step(
             6,
@@ -1239,6 +1362,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     score_shapes = _input_shape_summary(score_info, score_action_candidates)
     score_shape_values = _input_shapes(score_info, score_action_candidates)
+    score_shape_payload = {
+        label: list(shape) if shape is not None else None
+        for label, shape in score_shape_values.items()
+    }
     input_stats = _input_stats(score_shape_values)
     event_payload = _event_dicts(provider_events)
     candidate_targets = _candidate_targets(policy_result)
@@ -1255,9 +1382,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             "lerobot_device": lerobot_device,
             "leworldmodel_policy": args.lewm_policy,
             "leworldmodel_device": lewm_device,
-            "score_shapes": score_shape_values,
+            "score_shapes": score_shape_payload,
             **input_stats,
-            "score_action_candidates_shape": _shape_tuple(score_action_candidates),
+            "score_action_candidates_shape": (list(_shape_tuple(score_action_candidates) or [])),
         },
         "plan": plan.to_dict(),
         "policy_result": policy_result,
@@ -1274,6 +1401,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             "total_latency_ms": total_latency_ms,
         },
     }
+    rerun_payload = _rerun_payload(args, rerun_session)
+    if rerun_payload is not None:
+        payload["rerun"] = rerun_payload
+    if rerun_artifacts is not None:
+        rerun_artifacts.log_robotics_showcase_summary(payload)  # type: ignore[attr-defined]
+    if rerun_session is not None:
+        _finish_rerun_recording(payload, args, rerun_session)
     json_output_path = _write_json_output(args.json_output, payload) if args.json_output else None
     run_manifest_path = None
     if args.run_manifest is not None:
@@ -1354,12 +1488,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"  mock final step        {execution_summary['final_step']}")
         print(f"  mock final block       {execution_summary['final_block_position']}")
     _print_provider_events(event_payload)
-    if json_output_path is not None:
+    rerun_artifact = payload.get("rerun")
+    if (
+        json_output_path is not None
+        or run_manifest_path is not None
+        or isinstance(rerun_artifact, dict)
+    ):
         print("\nArtifacts")
         print("---------")
-        print(f"  json summary           {_display_path(json_output_path)}")
+        if json_output_path is not None:
+            print(f"  json summary           {_display_path(json_output_path)}")
         if run_manifest_path is not None:
             print(f"  run manifest           {_display_path(run_manifest_path)}")
+        if isinstance(rerun_artifact, dict):
+            save_path = rerun_artifact.get("save_path")
+            server_uri = rerun_artifact.get("server_uri")
+            if save_path:
+                suffix = ""
+                if rerun_artifact.get("recording_written"):
+                    suffix = f" ({rerun_artifact.get('recording_size_bytes')} bytes written)"
+                print(f"  rerun recording        {_display_path(Path(str(save_path)))}{suffix}")
+            elif server_uri:
+                print(f"  rerun stream           {server_uri}")
+            else:
+                print("  rerun recording        viewer")
     print("\nCompleted real LeRobot + LeWorldModel policy+score inference.")
     print("Use --json-only for the machine-readable summary.")
     return 0

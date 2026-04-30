@@ -36,6 +36,22 @@ Available flows:
 | `lerobot` | Visual policy-plus-score path through the LeRobot provider surface. |
 | `diagnostics` | Visual provider diagnostics and benchmark comparison path. |
 
+## Rerun Recording
+
+| Example | Surface | Command |
+| --- | --- | --- |
+| `rerun-observability-showcase` | Provider events, world snapshots, 3D object boxes, plan artifacts, benchmark metrics | `uv run --extra rerun worldforge-demo-rerun` |
+| `rerun-robotics-showcase` | Real PushT policy+score run with candidate targets, selected trajectory, score bars, latency bars, provider events, and replay snapshots | `scripts/robotics-showcase` |
+
+The Rerun showcase writes `.worldforge/rerun/worldforge-rerun-showcase.rrd` by default. Open it
+with:
+
+```bash
+uv run --extra rerun rerun .worldforge/rerun/worldforge-rerun-showcase.rrd
+```
+
+See [Rerun Integration](./rerun.md) for live viewer modes and Python API usage.
+
 ## Prediction And Evaluation
 
 | Example | Command | Purpose |
@@ -70,7 +86,7 @@ checkpoint inference.
 | --- | --- | --- |
 | `leworldmodel-real-checkpoint-smoke` | `scripts/lewm-real --checkpoint ~/.stable-wm/pusht/lewm_object.ckpt --device cpu` | Requires host-owned `stable_worldmodel`, torch, datasets, OpenCV, imageio, and LeWM checkpoint assets; loads the official LeWorldModel object checkpoint through `stable_worldmodel.policy.AutoCostModel` and prints visual pipeline, tensor, latency, event, and candidate-cost output. |
 | `lerobot-leworldmodel-health` | `scripts/robotics-showcase --health-only` | Non-mutating preflight for LeRobot, LeWorldModel, and checkpoint presence before running the full showcase. |
-| `lerobot-leworldmodel-real-robotics` | `scripts/robotics-showcase` | Requires host-owned LeRobot, `stable_worldmodel`, torch, datasets, a real policy checkpoint, LeWM checkpoint assets, and PushT simulation dependencies; runs a packaged PushT bridge through real policy+score planning and opens a staged Textual visual report by default. See the [robotics replay showcase walkthrough](./robotics-showcase.md). |
+| `lerobot-leworldmodel-real-robotics` | `scripts/robotics-showcase` | Requires host-owned LeRobot, `stable_worldmodel`, torch, datasets, a real policy checkpoint, LeWM checkpoint assets, and PushT simulation dependencies; uses LeRobot's compatible `rerun-sdk` resolution for the default Rerun artifact path, opens a staged Textual report with an `o` shortcut for Rerun, and writes `/tmp/worldforge-robotics-showcase/real-run.rrd` by default. See the [robotics replay showcase walkthrough](./robotics-showcase.md). |
 
 ## Operational Commands
 

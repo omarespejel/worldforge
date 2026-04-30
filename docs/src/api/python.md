@@ -113,6 +113,7 @@ from worldforge.observability import (
     RunJsonLogSink,
     compose_event_handlers,
 )
+from worldforge.rerun import RerunArtifactLogger, RerunEventSink, RerunRecordingConfig, RerunSession
 
 run_id = "demo-run"
 metrics = ProviderMetricsSink()
@@ -134,6 +135,25 @@ redact obvious bearer tokens, API keys, signatures, passwords, and signed URLs. 
 appends one JSON object per line and stamps every record with `run_id` for manifest correlation.
 `OpenTelemetryProviderEventSink` is optional and accepts an injected host tracer, so the base
 package does not import OpenTelemetry or configure collectors.
+
+Rerun is available as an optional observability and artifact layer:
+
+```python
+session = RerunSession(RerunRecordingConfig(save_path=".worldforge/rerun/run.rrd"))
+rerun_events = RerunEventSink(session=session)
+artifacts = RerunArtifactLogger(session=session)
+
+forge = WorldForge(event_handler=rerun_events)
+world = forge.create_world("lab", provider="mock")
+plan = world.plan("move the first object right")
+
+artifacts.log_world(world)
+artifacts.log_plan(plan)
+session.close()
+```
+
+Install with `worldforge-ai[rerun]`. Rerun is not a provider and does not advertise WorldForge
+capabilities.
 
 ## Action Scoring
 

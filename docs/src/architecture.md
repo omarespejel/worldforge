@@ -32,6 +32,7 @@ worldforge/
 |   |   |-- runway.py      # HTTP video generation/transfer adapter
 |   |   `-- remote.py      # scaffold adapters for JEPA and Genie
 |   |-- observability.py   # ProviderEvent sinks
+|   |-- rerun.py           # optional Rerun event and artifact bridge
 |   |-- benchmark.py       # provider benchmark harness
 |   |-- evaluation/        # built-in suites and report rendering
 |   `-- testing/           # reusable provider contract assertions
@@ -184,10 +185,12 @@ boundaries.
 - Exposes only `policy=True`.
 - Requires an explicit action translator because robot actions are embodiment-specific.
 
-`observability.py`
+`observability.py` and `rerun.py`
 
 - Host-side provider event composition through `JsonLoggerSink`, `InMemoryRecorderSink`,
   `ProviderMetricsSink`, and `compose_event_handlers(...)`.
+- Optional Rerun SDK bridge through `RerunEventSink` and `RerunArtifactLogger` for events, world
+  snapshots, object boxes, plans, benchmark artifacts, and robotics-showcase visual layers.
 
 `evaluation/` and `benchmark.py`
 
@@ -671,7 +674,8 @@ Provider operation
         |-- JsonLoggerSink
         |-- RunJsonLogSink
         |-- InMemoryRecorderSink
-        `-- ProviderMetricsSink
+        |-- ProviderMetricsSink
+        `-- RerunEventSink
 ```
 
 Targets in provider events are intentionally route-level. They keep enough context to identify the
@@ -693,19 +697,23 @@ from worldforge.observability import (
     RunJsonLogSink,
     compose_event_handlers,
 )
+from worldforge.rerun import RerunEventSink, RerunRecordingConfig, RerunSession
 
 run_id = "demo-run"
 metrics = ProviderMetricsSink()
+rerun_session = RerunSession(RerunRecordingConfig(save_path=".worldforge/rerun/events.rrd"))
 forge = WorldForge(
     event_handler=compose_event_handlers(
         JsonLoggerSink(logger=logging.getLogger("demo.worldforge"), extra_fields={"run_id": run_id}),
         RunJsonLogSink(Path(".worldforge") / "runs" / run_id / "provider-events.jsonl", run_id),
+        RerunEventSink(session=rerun_session),
         metrics,
     )
 )
 
 forge.generate("orbiting cube", "mock", duration_seconds=1.0)
 print(metrics.get("mock", "generate").to_dict())
+rerun_session.close()
 ```
 
 ## Persistence Ownership

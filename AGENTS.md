@@ -45,10 +45,16 @@ evaluation harnesses, and testable prototypes.
 - `src/worldforge/benchmark.py`: capability-aware provider latency, retry, and throughput harness.
 - `src/worldforge/observability.py`: composable `ProviderEvent` sinks for JSON logging, in-memory
   recording, and metrics aggregation.
+- `src/worldforge/rerun.py`: optional Rerun SDK bridge for sanitized provider events, world
+  snapshots, plans, benchmark reports, robotics showcase visual layers, and JSON artifacts. Rerun
+  is not a provider capability and stays behind the `rerun` extra or host-owned optional runtimes
+  that already provide `rerun-sdk`.
 - `src/worldforge/testing/`: reusable adapter contract helpers.
 - `src/worldforge/demos/`: packaged demo entry points exposed through `uv run` console scripts.
 - `src/worldforge/demos/lerobot_e2e.py`: packaged LeRobot policy-plus-score planning demo exposed
   through `uv run worldforge-demo-lerobot`.
+- `src/worldforge/demos/rerun_showcase.py`: packaged Rerun observability and artifact showcase
+  exposed through `uv run --extra rerun worldforge-demo-rerun`.
 - `src/worldforge/harness/`: optional TheWorldHarness TUI package. Keep flow metadata and runners
   independent from Textual; `tui.py` is the only Textual-dependent module. Current flows cover
   LeWorldModel score planning, LeRobot policy-plus-score planning, and provider diagnostics plus
@@ -73,7 +79,7 @@ evaluation harnesses, and testable prototypes.
 - `scripts/scaffold_provider.py`: safe scaffold generator for new provider adapter files,
   fixture placeholders, tests, and docs stubs.
 - `scripts/smoke_leworldmodel.py`: compatibility wrapper for
-  `uv run --python 3.13 --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" worldforge-smoke-leworldmodel`.
+  `uv run --python 3.13 --with "stable-worldmodel @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" worldforge-smoke-leworldmodel`.
 - `scripts/smoke_gr00t_policy.py`: optional live GR00T PolicyClient smoke for host environments
   with Isaac-GR00T or a reachable policy server.
 - `scripts/smoke_lerobot_policy.py`: optional live LeRobot `PreTrainedPolicy` smoke for host
@@ -85,7 +91,9 @@ evaluation harnesses, and testable prototypes.
 - Packaging/build: `hatchling`, `uv`, `uv.lock`.
 - Runtime dependency: `httpx`.
 - Optional TheWorldHarness runtime: `textual`, supplied only by the `harness` extra.
-- Optional LeWorldModel runtime: `stable-worldmodel[train]` and `torch`, supplied by the host
+- Optional Rerun runtime: `rerun-sdk`, supplied by the `rerun` extra or by host-owned optional
+  runtimes such as LeRobot in the robotics showcase wrapper.
+- Optional LeWorldModel runtime: `stable-worldmodel` and `torch`, supplied by the host
   environment only when using `leworldmodel`.
 - Optional GR00T runtime: `gr00t.policy.server_client.PolicyClient`, CUDA/TensorRT/checkpoints,
   and robot-specific dependencies supplied by the host environment only when using `gr00t`.
@@ -127,7 +135,9 @@ uv run worldforge provider docs
 uv run --extra harness worldforge-harness
 uv run worldforge-demo-leworldmodel
 uv run worldforge-demo-lerobot
+uv run --extra rerun worldforge-demo-rerun
 scripts/robotics-showcase
+uvx --from rerun-sdk rerun /tmp/worldforge-robotics-showcase/real-run.rrd
 scripts/lewm-lerobot-real --help
 uv run worldforge benchmark --provider mock --operation generate --budget-file examples/benchmark-budget.json
 uv run worldforge benchmark --provider mock --operation embed --input-file examples/benchmark-inputs.json
@@ -259,6 +269,8 @@ generated documentation surfaces.
   dependencies to the base dependency set. Keep LeRobot host-owned and require explicit action
   translators.
 - Do not auto-register optional providers unless their required environment variables are present.
+- Do not add `rerun-sdk` to base dependencies or use Rerun as a provider capability; keep it as an
+  optional observability/artifact integration.
 - Do not add hardcoded credentials, test secrets, or environment-specific endpoints.
 - Do not weaken coverage gates or remove package validation from CI.
 - Do not silently coerce invalid world state. A loud failure is preferable to persisted
@@ -300,23 +312,24 @@ generated documentation surfaces.
   `score_provider="leworldmodel"` or another score provider; score tensors remain
   host-preprocessed and provider-native.
 - `scripts/robotics-showcase` is the prominent PushT real robotics entrypoint. It installs the
-  optional host-owned runtime packages for the process, uses packaged PushT hooks, and filters
-  common macOS native-library warning noise while leaving runtime device fallback warnings visible.
-  Set `WORLDFORGE_SHOW_RUNTIME_WARNINGS=1` to see raw third-party stderr. `--health-only` is
-  non-mutating: it reports dependency and checkpoint status without auto-building or downloading a
-  missing LeWorldModel object checkpoint.
+  optional host-owned runtime packages for the process, uses packaged PushT hooks, writes a Rerun
+  `.rrd` visual artifact by default for normal runs, and filters common macOS native-library
+  warning noise while leaving runtime device fallback warnings visible. Set
+  `WORLDFORGE_SHOW_RUNTIME_WARNINGS=1` to see raw third-party stderr. `--health-only` is
+  non-mutating: it reports dependency and checkpoint status without auto-building, downloading a
+  missing LeWorldModel object checkpoint, or writing a Rerun artifact.
 - `lewm-lerobot-real` is an optional real policy-plus-score smoke. It requires a task-aligned
   LeRobot policy, observation builder, LeWorldModel score tensors, and candidate bridge. Do not
   pad, project, or otherwise reinterpret mismatched action spaces inside WorldForge.
 - `worldforge-smoke-leworldmodel` is an optional real-checkpoint smoke. Run it through
-  `uv run --python 3.13 --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" ...`;
+  `uv run --python 3.13 --with "stable-worldmodel @ git+https://github.com/galilai-group/stable-worldmodel.git" --with "datasets>=2.21" ...`;
   do not add those dependencies to WorldForge's base package. The upstream default storage root is
   `~/.stable-wm`; object checkpoints must already be extracted there or supplied through
   `--cache-dir`.
 - `worldforge-build-leworldmodel-checkpoint` is an optional host-owned object-checkpoint builder
   for Hugging Face LeWM `config.json` and `weights.pt` assets. Run it with the same upstream
-  LeWorldModel runtime plus `huggingface_hub` and `matplotlib` (transitive import requirement of
-  `stable_pretraining`); use `--revision` or `LEWORLDMODEL_REVISION` to pin Hugging Face asset
+  LeWorldModel runtime plus `huggingface_hub`, `hydra-core`, `omegaconf`, and `transformers`;
+  use `--revision` or `LEWORLDMODEL_REVISION` to pin Hugging Face asset
   resolution, and keep the default `torch.load(..., weights_only=True)` behavior unless a trusted
   legacy artifact explicitly requires `--allow-unsafe-pickle`. Do not add those dependencies to
   WorldForge's base package or commit downloaded assets/checkpoints.

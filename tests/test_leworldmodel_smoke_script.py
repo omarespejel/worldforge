@@ -115,6 +115,49 @@ def test_checkpoint_builder_reports_missing_optional_runtime(
         )
 
 
+def test_checkpoint_builder_installs_stable_pretraining_backbone_shim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeConfig:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+            self.interpolate_pos_encoding = False
+
+    class FakeViTModel:
+        def __init__(
+            self,
+            config: FakeConfig,
+            *,
+            add_pooling_layer: bool,
+            use_mask_token: bool,
+        ) -> None:
+            self.config = config
+            self.add_pooling_layer = add_pooling_layer
+            self.use_mask_token = use_mask_token
+
+    transformers = ModuleType("transformers")
+    transformers.ViTConfig = FakeConfig
+    transformers.ViTModel = FakeViTModel
+    for name in (
+        "stable_pretraining",
+        "stable_pretraining.backbone",
+        "stable_pretraining.backbone.utils",
+    ):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    monkeypatch.setitem(sys.modules, "transformers", transformers)
+
+    leworldmodel_checkpoint._install_stable_pretraining_backbone_shim()
+
+    utils = importlib.import_module("stable_pretraining.backbone.utils")
+    model = utils.vit_hf(size="tiny", patch_size=14, image_size=224, use_mask_token=False)
+    assert model.config.kwargs["hidden_size"] == 192
+    assert model.config.kwargs["num_attention_heads"] == 3
+    assert model.config.kwargs["patch_size"] == 14
+    assert model.config.interpolate_pos_encoding is True
+    assert model.add_pooling_layer is False
+    assert model.use_mask_token is False
+
+
 def test_build_checkpoint_saves_object_checkpoint_with_injected_runtime(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -667,6 +710,7 @@ def test_smoke_main_reports_missing_runtime_before_tensor_build(
     message = capsys.readouterr().out
     assert "LeWorldModel runtime preflight failed: missing optional dependency torch" in message
     assert "scripts/lewm-real --checkpoint" in message
-    assert 'uv run --python 3.13 --with "stable-worldmodel[train]' in message
+    assert 'uv run --python 3.13 --with "stable-worldmodel @ git+' in message
+    assert "stable-worldmodel[train]" not in message
     assert '--with "opencv-python"' in message
     assert '--with "imageio"' in message

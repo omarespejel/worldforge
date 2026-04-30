@@ -7,8 +7,20 @@ releases may still include breaking changes when the public API needs to tighten
 
 ## Unreleased
 
+### Added
+
 - Added an optional OpenTelemetry provider-event sink that maps sanitized provider events to
   host-owned tracing spans without adding OpenTelemetry to the base dependency set.
+- Added an optional Rerun integration for sanitized `ProviderEvent` streams, world snapshots,
+  plans, benchmark reports, and arbitrary JSON artifacts through `RerunEventSink`,
+  `RerunArtifactLogger`, `RerunSession`, and `RerunRecordingConfig`.
+- Added the `rerun` optional extra and `worldforge-demo-rerun`, a checkout-safe showcase that
+  writes a local `.rrd` recording by default and supports spawned, remote, or in-process gRPC
+  Rerun viewer workflows. The extra accepts the Rerun SDK range needed to coexist with LeRobot
+  runtime environments.
+- Added Rerun visual layers for 3D world object boxes, robotics candidate targets, selected replay
+  paths, score bars, and latency bars. `scripts/robotics-showcase` now writes a Rerun `.rrd`
+  artifact for normal PushT policy+score runs unless `--no-rerun` is passed.
 
 ## 0.5.0 - 2026-04-24
 

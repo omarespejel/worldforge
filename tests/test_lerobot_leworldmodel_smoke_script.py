@@ -474,6 +474,50 @@ def test_main_runs_policy_score_plan_with_fake_real_runtimes(
     assert set(manifest["artifact_paths"]) == {"worldforge_state"}
 
 
+def test_main_json_flow_can_write_rerun_recording(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    pytest.importorskip("rerun")
+    checkpoint, observation_path, score_info_path = _write_common_inputs(tmp_path)
+    bridge_path = _write_candidate_builder(tmp_path)
+    rerun_output = tmp_path / "robotics.rrd"
+    _patch_fake_providers(monkeypatch)
+    monkeypatch.setenv("RERUN", "on")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "lewm-lerobot-real",
+            "--policy-path",
+            "lerobot/diffusion_pusht",
+            "--checkpoint",
+            str(checkpoint),
+            "--observation-json",
+            str(observation_path),
+            "--score-info-json",
+            str(score_info_path),
+            "--candidate-builder",
+            f"{bridge_path}:build",
+            "--expected-action-dim",
+            "2",
+            "--expected-horizon",
+            "2",
+            "--rerun-output",
+            str(rerun_output),
+            "--json-only",
+        ],
+    )
+
+    assert lerobot_leworldmodel.main() == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["rerun"]["recording_written"] is True
+    assert payload["rerun"]["recording_size_bytes"] > 0
+    assert rerun_output.is_file()
+
+
 def test_main_visual_static_candidate_path_skips_execution(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

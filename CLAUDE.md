@@ -18,6 +18,7 @@ WorldForge is a Python integration layer and CLI for physical-AI world-model pro
 | Build backend | hatchling | `pyproject.toml`: `>=1.27.0` | Wheel/sdist from `src/worldforge` |
 | Runtime dependency | httpx | `uv.lock`: `0.28.1` | HTTP provider adapters |
 | Optional extra | textual | `uv.lock`: `8.2.4`; extra `harness` | Only `src/worldforge/harness/tui.py` may import Textual |
+| Optional extra | rerun-sdk | `uv.lock`; extra `rerun`; LeRobot-resolved runtime in `scripts/robotics-showcase` | Optional event/artifact recording; not a provider capability |
 | Tests | pytest, pytest-cov | `uv.lock`: pytest `9.0.3`, pytest-cov `7.1.0` | Coverage gate: 90 percent |
 | Lint/format | ruff | `uv.lock`: `0.15.9`; target py313; line length 100 | Check and format `src tests examples scripts` |
 | CI | GitHub Actions | `.github/workflows/*.yml` | CI, release, security audit |
@@ -34,6 +35,7 @@ Top-level boundaries:
 | `src/worldforge/providers/` | Provider base classes, catalog, concrete adapters, optional runtimes | Modify with provider skill and fixture tests |
 | `src/worldforge/evaluation/` | Deterministic evaluation suites and renderers | Modify with evaluation skill |
 | `src/worldforge/harness/` | Optional TheWorldHarness package | Keep Textual isolated to `tui.py` |
+| `src/worldforge/rerun.py` | Optional Rerun bridge | Events, worlds, plans, benchmarks, robotics showcase visuals; keep out of base deps |
 | `src/worldforge/smoke/` | Packaged optional-runtime smoke entry points | Host-owned dependencies only |
 | `src/worldforge/testing/` | Reusable adapter contract helpers | Public testing API; modify carefully |
 | `tests/` | Unit, contract, CLI, docs, fixture, regression tests | Create/modify freely for changed behavior |

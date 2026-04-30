@@ -87,6 +87,10 @@ _EXPORTS: dict[str, str] = {  # pragma: no cover - initialized before pytest-cov
     "ProviderRequestPolicy": "worldforge.models",
     "ReasoningResult": "worldforge.models",
     "RequestOperationPolicy": "worldforge.models",
+    "RerunArtifactLogger": "worldforge.rerun",
+    "RerunEventSink": "worldforge.rerun",
+    "RerunRecordingConfig": "worldforge.rerun",
+    "RerunSession": "worldforge.rerun",
     "RetryPolicy": "worldforge.models",
     "Rotation": "worldforge.models",
     "SceneObject": "worldforge.models",
@@ -95,6 +99,7 @@ _EXPORTS: dict[str, str] = {  # pragma: no cover - initialized before pytest-cov
     "VideoClip": "worldforge.models",
     "WorldForgeError": "worldforge.models",
     "WorldStateError": "worldforge.models",
+    "create_rerun_event_handler": "worldforge.rerun",
 }
 
 __all__ = sorted((*_EXPORTS, "__version__"))

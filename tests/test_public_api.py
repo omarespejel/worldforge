@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import worldforge
 import worldforge.observability as observability
+import worldforge.rerun as rerun
 import worldforge.testing as testing_helpers
 from worldforge.evaluation import EvaluationSuite
 from worldforge.providers import GrootPolicyClientProvider, MockProvider
@@ -40,6 +41,10 @@ def test_top_level_exports_and_subpackages_import() -> None:
     assert worldforge.ProviderRequestPolicy is not None
     assert worldforge.RequestOperationPolicy is not None
     assert worldforge.RetryPolicy is not None
+    assert worldforge.RerunArtifactLogger is not None
+    assert worldforge.RerunEventSink is not None
+    assert worldforge.RerunRecordingConfig is not None
+    assert worldforge.RerunSession is not None
     assert worldforge.StructuredGoal is not None
     assert worldforge.TransferEvaluationSuite is not None
     assert worldforge.WorldForge is not None
@@ -60,6 +65,8 @@ def test_top_level_exports_and_subpackages_import() -> None:
     assert observability.RunJsonLogSink is not None
     assert observability.compose_event_handlers is not None
     assert observability.provider_event_span_attributes is not None
+    assert rerun.RerunArtifactLogger is not None
+    assert rerun.create_rerun_event_handler is not None
 
 
 def test_lazy_export_modules_have_expected_dir_and_attribute_errors() -> None:

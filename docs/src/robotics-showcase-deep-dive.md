@@ -26,11 +26,13 @@ with host-owned optional dependencies supplied for that one process:
 
 | Runtime package | Why it is loaded |
 | --- | --- |
-| `stable-worldmodel[train]` from Git | Provides `stable_worldmodel.policy.AutoCostModel` and the PushT environment modules. |
+| `stable-worldmodel` from Git | Provides `stable_worldmodel.policy.AutoCostModel` and the PushT environment modules. |
 | `datasets>=2.21` | Avoids upstream dataset import incompatibilities in the LeWorldModel runtime. |
 | `huggingface_hub` | Downloads LeWorldModel `config.json` and `weights.pt` when building the object checkpoint. |
-| `matplotlib` | Required by upstream `stable_pretraining` imports during checkpoint build. |
-| `lerobot[transformers-dep]` | Provides the LeRobot policy classes and their Transformers dependency set. |
+| `hydra-core`, `omegaconf` | Instantiate the official LeWM config when building the object checkpoint. |
+| `transformers` | Builds the ViT encoder referenced by the official PushT LeWM config. |
+| `matplotlib` | Kept available for upstream visual-wrapper imports in current LeWorldModel environments. |
+| `lerobot[transformers-dep]==0.5.1` | Provides the LeRobot policy classes and a Python 3.13-compatible policy import path. |
 | `pygame`, `opencv-python`, `imageio`, `pymunk`, `gymnasium`, `shapely` | Required by the upstream PushT simulation environment, visual-wrapper imports, and rendering path. |
 | `textual>=8.2,<9` | Added only when the visual report is requested. |
 
@@ -54,6 +56,7 @@ The default command is a PushT planning showcase:
 | LeWorldModel object checkpoint | `~/.stable-wm/pusht/lewm_object.ckpt` |
 | Device | `cpu`, unless `--device`, `--lerobot-device`, or `--lewm-device` override it |
 | JSON summary | `/tmp/worldforge-robotics-showcase/real-run.json` |
+| Rerun recording | `/tmp/worldforge-robotics-showcase/real-run.rrd` for normal `scripts/robotics-showcase` runs |
 
 The polished runner forwards the default PushT hooks to the lower-level runner:
 
@@ -70,15 +73,16 @@ The polished runner forwards the default PushT hooks to the lower-level runner:
 
 | Component | WorldForge capability | Exact role |
 | --- | --- | --- |
-| `scripts/robotics-showcase` | None | Shell wrapper that creates the uv runtime, filters noisy third-party native-library and simulation warnings, and enables the TUI by default. Runtime device fallback warnings remain visible. |
+| `scripts/robotics-showcase` | None | Shell wrapper that creates the uv runtime, filters noisy third-party native-library and simulation warnings, and enables the TUI plus Rerun recording by default. Runtime device fallback warnings remain visible. |
 | `worldforge.smoke.robotics_showcase` | None | Polished CLI entrypoint. Resolves defaults, ensures the checkpoint exists for normal runs, keeps `--health-only` non-mutating, forwards packaged PushT hooks, and optionally launches the Textual report. |
-| `worldforge.smoke.lerobot_leworldmodel` | Orchestration runner | Lower-level configurable runner. Loads task inputs, registers providers, calls `World.plan(...)`, executes local replay, and emits JSON/report data. |
+| `worldforge.smoke.lerobot_leworldmodel` | Orchestration runner | Lower-level configurable runner. Loads task inputs, registers providers, calls `World.plan(...)`, executes local replay, and emits JSON/report/Rerun data. |
 | `LeRobotPolicyProvider` | `policy` | Loads a LeRobot `PreTrainedPolicy` or policy-type-specific class, runs `select_action` or `predict_action_chunk`, and returns `ActionPolicyResult`. |
 | `LeWorldModelProvider` | `score` | Loads `stable_worldmodel.policy.AutoCostModel`, calls `get_cost(info, action_candidates)`, and returns `ActionScoreResult`. |
 | `pusht_showcase_inputs` | Task bridge | Builds PushT observation tensors, LeWorldModel score tensors, candidate tensors, and visual `Action` translations. |
 | `WorldForge` / `World` | Planning facade | Composes the `policy` and `score` surfaces through `World.plan(..., policy_provider=..., score_provider=...)`. |
 | `mock` provider | `predict` | Replays the selected executable WorldForge action chunk in a local world state. |
 | TheWorldHarness Textual report | Report surface | Displays the completed run: pipeline stages, latency, tensor contract, scores, provider events, and tabletop replay. |
+| Rerun recording | Artifact surface | Stores the same run as a visual `.rrd`: object boxes, candidate target points, selected path, score bars, latency bars, provider events, plan payload, and world snapshots. |
 
 ## End-To-End Flow At A Glance
 
@@ -363,6 +367,18 @@ sequenceDiagram
 `scripts/robotics-showcase` changes to the repo root and invokes `uv run --python 3.13` with the
 optional runtime dependencies listed above. If the request is not `--help`, `--json-only`,
 `--health-only`, or `--no-tui`, the wrapper adds `--tui` so the Textual report opens by default.
+If the request is not `--help`, `--json-only`, `--health-only`, or `--no-rerun`, the wrapper also
+adds `--rerun` so the run leaves a visual `.rrd` artifact under
+`/tmp/worldforge-robotics-showcase/real-run.rrd`. The wrapper does not force a separate Rerun SDK
+version; it uses the `rerun-sdk` version resolved by the LeRobot runtime to avoid dependency
+conflicts.
+
+When the Rerun artifact exists, the Textual report shows the exact viewer command and binds `o`
+to launch:
+
+```bash
+uvx --from "rerun-sdk>=0.24,<0.32" rerun /tmp/worldforge-robotics-showcase/real-run.rrd
+```
 
 The wrapper filters common native-library and simulation warning noise. Runtime device fallback
 warnings, such as LeRobot switching from CUDA to MPS, remain visible because they affect

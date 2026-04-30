@@ -18,6 +18,12 @@ Textual harness UI as an optional extra:
 uv add "worldforge-ai[harness]"
 ```
 
+Rerun event and artifact recording as an optional extra:
+
+```bash
+uv add "worldforge-ai[rerun]"
+```
+
 For local development:
 
 ```bash
@@ -116,8 +122,10 @@ Packaged checkout-safe demos:
 ```bash
 uv run worldforge-demo-leworldmodel
 uv run worldforge-demo-lerobot
+uv run --extra rerun worldforge-demo-rerun
 ```
 
 Both demos use real WorldForge provider surfaces with injected deterministic runtimes. They verify
 the adapter, planning, execution, persistence, and reload path without installing optional model
-runtimes or downloading checkpoints.
+runtimes or downloading checkpoints. The Rerun demo also writes a local `.rrd` artifact with event,
+world, plan, and benchmark layers.

@@ -241,7 +241,7 @@ class LeWorldModelProvider(BaseProvider):
         except ImportError as exc:
             raise ProviderError(
                 "Provider 'leworldmodel' requires optional dependency torch. "
-                "Run the documented host-owned uv wrapper with stable-worldmodel[train]."
+                "Run the documented host-owned uv wrapper with stable-worldmodel."
             ) from exc
         except Exception as exc:
             raise ProviderError(

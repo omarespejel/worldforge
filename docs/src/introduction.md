@@ -30,6 +30,7 @@ multi-writer persistence.
 | Find an exact CLI command or optional runtime smoke | [CLI Reference](./cli.md) |
 | Understand capability names and provider boundaries | [World Model Taxonomy](./world-model-taxonomy.md) |
 | See module responsibilities and planning pipelines | [Architecture](./architecture.md) |
+| Record events, worlds, plans, and benchmarks in Rerun | [Rerun Integration](./rerun.md) |
 | Validate a checkout, diagnose providers, run smokes, or prepare a release | [User And Operator Playbooks](./playbooks.md) |
 | Add or promote a provider adapter | [Provider Authoring Guide](./provider-authoring-guide.md) |
 | Check package, testing, typing, and ML-runtime quality rules | [Engineering Quality](./quality.md) |

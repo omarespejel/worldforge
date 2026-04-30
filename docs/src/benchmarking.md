@@ -22,6 +22,9 @@ report = harness.run(
 print(report.to_markdown())
 ```
 
+If the optional Rerun integration is installed, `RerunArtifactLogger.log_benchmark_report(report)`
+records the same report JSON plus per-result metric scalars into a `.rrd` inspection artifact.
+
 Score and policy providers use the same benchmark runner with provider-native inputs supplied by
 the host:
 

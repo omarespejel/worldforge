@@ -258,7 +258,7 @@ preserve these fields unless there is a better reviewed design.
   "capabilities": ["score"],
   "runtime": {
     "kind": "local-python",
-    "optional_packages": ["stable-worldmodel[train]", "torch"],
+    "optional_packages": ["stable-worldmodel", "torch"],
     "python": ">=3.13,<3.14",
     "devices": ["cpu", "cuda"]
   },

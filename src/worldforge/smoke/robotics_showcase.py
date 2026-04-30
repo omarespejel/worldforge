@@ -25,6 +25,7 @@ from .leworldmodel import DEFAULT_STABLEWM_HOME, _checkpoint_path
 from .pusht_showcase_inputs import DEFAULT_ACTION_DIM, DEFAULT_HORIZON
 
 DEFAULT_JSON_OUTPUT = Path("/tmp/worldforge-robotics-showcase/real-run.json")
+DEFAULT_RERUN_OUTPUT = Path("/tmp/worldforge-robotics-showcase/real-run.rrd")
 PUSHT_INPUT_MODULE = "worldforge.smoke.pusht_showcase_inputs"
 
 
@@ -105,6 +106,38 @@ def _parser() -> argparse.ArgumentParser:
         "--no-json-output",
         action="store_true",
         help="Skip writing the default /tmp JSON artifact.",
+    )
+    parser.add_argument(
+        "--rerun",
+        action="store_true",
+        help=("Write a visual Rerun recording to /tmp/worldforge-robotics-showcase/real-run.rrd."),
+    )
+    parser.add_argument(
+        "--rerun-output",
+        type=Path,
+        default=None,
+        help="Write a visual Rerun .rrd recording to this path.",
+    )
+    parser.add_argument(
+        "--rerun-spawn",
+        action="store_true",
+        help="Spawn a local Rerun Viewer for the policy+score run.",
+    )
+    parser.add_argument(
+        "--rerun-connect-url",
+        default=None,
+        help="Stream the policy+score run to a remote Rerun gRPC viewer URL.",
+    )
+    parser.add_argument(
+        "--rerun-serve-grpc-port",
+        type=int,
+        default=None,
+        help="Serve the Rerun policy+score recording over an in-process gRPC endpoint.",
+    )
+    parser.add_argument(
+        "--no-rerun",
+        action="store_true",
+        help="Disable the wrapper's default Rerun recording.",
     )
     parser.add_argument("--json-only", action="store_true")
     parser.add_argument(
@@ -219,6 +252,17 @@ def _forward_args(args: argparse.Namespace) -> list[str]:
     if not args.no_json_output:
         _append_optional_path(forwarded, "--json-output", args.json_output)
         _append_optional_path(forwarded, "--run-manifest", args.run_manifest)
+    if not args.no_rerun and not args.health_only:
+        if args.rerun_spawn:
+            forwarded.append("--rerun-spawn")
+        elif args.rerun_connect_url is not None:
+            forwarded.extend(["--rerun-connect-url", args.rerun_connect_url])
+        elif args.rerun_serve_grpc_port is not None:
+            forwarded.extend(["--rerun-serve-grpc-port", str(args.rerun_serve_grpc_port)])
+        elif args.rerun_output is not None:
+            forwarded.extend(["--rerun-output", str(args.rerun_output)])
+        elif args.rerun:
+            forwarded.extend(["--rerun-output", str(DEFAULT_RERUN_OUTPUT)])
     if args.json_only:
         forwarded.append("--json-only")
     if args.health_only:

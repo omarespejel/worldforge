@@ -286,6 +286,53 @@ def test_robotics_showcase_uses_tmp_json_output_by_default(monkeypatch) -> None:
     )
 
 
+def test_robotics_showcase_forwards_rerun_recording_when_requested(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_low_level_main(argv: list[str]) -> int:
+        captured["argv"] = argv
+        return 0
+
+    monkeypatch.setattr(robotics_showcase.lerobot_leworldmodel, "main", fake_low_level_main)
+
+    assert (
+        robotics_showcase.main(
+            ["--checkpoint", "/tmp/pusht/lewm_object.ckpt", "--rerun", "--no-json-output"]
+        )
+        == 0
+    )
+
+    forwarded = captured["argv"]
+    assert forwarded[forwarded.index("--rerun-output") + 1] == str(
+        robotics_showcase.DEFAULT_RERUN_OUTPUT
+    )
+
+
+def test_robotics_showcase_does_not_forward_rerun_for_health_only(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_low_level_main(argv: list[str]) -> int:
+        captured["argv"] = argv
+        return 0
+
+    monkeypatch.setattr(robotics_showcase.lerobot_leworldmodel, "main", fake_low_level_main)
+
+    assert (
+        robotics_showcase.main(
+            [
+                "--checkpoint",
+                "/tmp/pusht/lewm_object.ckpt",
+                "--rerun",
+                "--health-only",
+                "--no-json-output",
+            ]
+        )
+        == 0
+    )
+
+    assert "--rerun-output" not in captured["argv"]
+
+
 def test_robotics_showcase_auto_downloads_missing_checkpoint(
     monkeypatch,
     tmp_path: Path,

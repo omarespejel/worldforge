@@ -26,6 +26,7 @@ controllers, and deployment host-owned.
 [**Quickstart**](#quickstart) ·
 [**CLI**](https://abdelstark.github.io/worldforge/cli/) ·
 [**Providers**](#provider-surfaces) ·
+[**Rerun**](https://abdelstark.github.io/worldforge/rerun/) ·
 [**Capability Model**](#capability-model) ·
 [**Architecture**](#architecture) ·
 [**Quality**](https://abdelstark.github.io/worldforge/quality/) ·
@@ -75,9 +76,11 @@ safety checks, robot-controller integration, and task-specific preprocessing sta
 scripts/robotics-showcase
 ```
 
-The command launches a staged Textual report by default and writes the same run data to
-`/tmp/worldforge-robotics-showcase/real-run.json`. Use `--tui-stage-delay 0.1` for a faster reveal,
-`--no-tui-animation` to skip sleeps and arm motion, `--no-tui` for the plain terminal report,
+The command launches a staged Textual report by default, writes the same run data to
+`/tmp/worldforge-robotics-showcase/real-run.json`, and writes a visual Rerun recording to
+`/tmp/worldforge-robotics-showcase/real-run.rrd`. Press `o` in the TUI to open that recording in
+Rerun. Use `--tui-stage-delay 0.1` for a faster reveal, `--no-tui-animation` to skip sleeps and
+arm motion, `--no-tui` for the plain terminal report, `--no-rerun` to skip the Rerun artifact,
 `--json-only` for automation, or `--health-only` for a non-mutating dependency/checkpoint
 preflight. Use `--lewm-revision <tag-or-commit>` to pin auto-built LeWorldModel assets.
 
@@ -130,6 +133,29 @@ More detail: [TheWorldHarness docs](https://abdelstark.github.io/worldforge/thew
 
 </details>
 
+<details>
+<summary><strong>Rerun observability</strong> - optional recording layer for events, world snapshots, plans, and benchmark artifacts</summary>
+
+WorldForge can stream sanitized provider events and run artifacts into
+[Rerun](https://github.com/rerun-io/rerun) without making Rerun a provider or base dependency.
+
+```bash
+uv run --extra rerun worldforge-demo-rerun
+uv run --extra rerun rerun .worldforge/rerun/worldforge-rerun-showcase.rrd
+scripts/robotics-showcase
+uvx --from "rerun-sdk>=0.24,<0.32" rerun /tmp/worldforge-robotics-showcase/real-run.rrd
+```
+
+The checkout-safe Rerun demo records provider event logs, world snapshots, a predictive plan,
+3D object boxes, and benchmark metrics into a local `.rrd` file. The robotics showcase records the
+real PushT policy+score run with candidate target points, selected trajectory, score bars, latency
+bars, provider events, plan payload, and replay snapshots. Use `--spawn`, `--connect-url`, or
+`--serve-grpc-port` for live viewer workflows in the checkout-safe demo.
+
+More detail: [Rerun integration docs](https://abdelstark.github.io/worldforge/rerun/).
+
+</details>
+
 ---
 
 ## Overview
@@ -158,6 +184,7 @@ application's responsibility.
 | **Deterministic by default** | Built-in `mock` provider, reusable contract assertions (`worldforge.testing`), and packaged demos that run from a clean checkout without credentials or GPUs. |
 | **Host-owned runtimes** | No torch, CUDA, robot controllers, or checkpoints in base dependencies. LeWorldModel, GR00T, LeRobot, Cosmos, and Runway integrate through their own surfaces. |
 | **Diagnostics** | `worldforge doctor`, provider events, benchmark and evaluation harnesses, and an optional Textual TUI (`TheWorldHarness`) for inspecting traces. |
+| **Rerun observability** | Optional `rerun-sdk` bridge for event streams, world snapshots, plans, and benchmark artifacts. |
 | **Quality gates** | `py.typed`, import-isolated pytest, ruff, a 90% coverage floor, strict docs, and wheel + sdist contract tests in CI on Python 3.13. |
 
 ## Install
@@ -183,6 +210,12 @@ If you want the optional Textual harness UI:
 uv add "worldforge-ai[harness]"
 ```
 
+If you want Rerun-backed event and artifact recording:
+
+```bash
+uv add "worldforge-ai[rerun]"
+```
+
 ### From source (bleeding edge)
 
 ```bash
@@ -202,6 +235,7 @@ Optional extras:
 
 ```bash
 uv sync --group dev --extra harness   # TheWorldHarness Textual TUI
+uv sync --group dev --extra rerun     # Rerun event and artifact recording
 ```
 
 Python 3.13 only. Base install depends only on `httpx`. Optional runtimes are host-owned.
@@ -380,6 +414,7 @@ coverage, request limits, and docs. The active candidate is
 | `src/worldforge/evaluation/` | Deterministic evaluation suites and report renderers |
 | `src/worldforge/benchmark.py` | Capability-aware latency, retry, throughput, and event benchmark harness |
 | `src/worldforge/observability.py` | `ProviderEvent` sinks for logs, recording, and metrics |
+| `src/worldforge/rerun.py` | Optional Rerun SDK bridge for events, worlds, plans, and benchmark artifacts |
 | `src/worldforge/testing/` | Reusable provider contract assertions |
 
 Read [architecture](https://abdelstark.github.io/worldforge/architecture/) ·
@@ -398,6 +433,7 @@ surface and runtime-specific entrypoints:
 | Runnable example index | [Examples and CLI commands](https://abdelstark.github.io/worldforge/examples/) or `uv run worldforge examples` |
 | LeRobot + LeWorldModel replay showcase | [Robotics showcase walkthrough](https://abdelstark.github.io/worldforge/robotics-showcase/) |
 | Checkout-safe visual flows | [TheWorldHarness](https://abdelstark.github.io/worldforge/theworldharness/) |
+| Rerun event and artifact recording | [Rerun integration](https://abdelstark.github.io/worldforge/rerun/) or `uv run --extra rerun worldforge-demo-rerun` |
 | Optional runtime operations | [Operator playbooks](https://abdelstark.github.io/worldforge/playbooks/#8-run-optional-runtime-smokes) |
 | Support, security, citation | [Support](./SUPPORT.md), [Security](./SECURITY.md), [Citation](./CITATION.cff) |
 

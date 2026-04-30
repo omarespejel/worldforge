@@ -3,8 +3,8 @@
 Run with the same upstream runtime used by the real smoke:
 
     uv run --python 3.13 --with "<git stable-worldmodel>" --with "datasets>=2.21"
-      --with huggingface_hub --with "opencv-python" --with "imageio"
-      worldforge-build-leworldmodel-checkpoint
+      --with huggingface_hub --with hydra-core --with omegaconf --with transformers
+      --with "opencv-python" --with "imageio" worldforge-build-leworldmodel-checkpoint
 
 The command downloads ``config.json`` and ``weights.pt`` from the model repo,
 instantiates the LeWM module, loads the weights, and saves the object checkpoint
@@ -17,7 +17,10 @@ import argparse
 import importlib
 import json
 import os
+import sys
 from pathlib import Path
+from types import ModuleType
+from typing import Any
 
 from worldforge.smoke.leworldmodel import DEFAULT_STABLEWM_HOME, _checkpoint_path
 
@@ -25,6 +28,73 @@ DEFAULT_REPO_ID = "quentinll/lewm-pusht"
 LEWORLDMODEL_OFFICIAL_REPO_URL = "https://github.com/lucas-maes/le-wm"
 LEWORLDMODEL_RUNTIME_API = "stable_worldmodel.policy.AutoCostModel"
 LEWORLDMODEL_HF_CONFIG_TARGET = "stable_worldmodel.wm.lewm"
+LEWORLDMODEL_HF_BACKBONE_TARGET = "stable_pretraining.backbone.utils.vit_hf"
+
+
+def _vit_hf_backbone(
+    size: str = "tiny",
+    patch_size: int = 16,
+    image_size: int = 224,
+    pretrained: bool = False,
+    use_mask_token: bool = True,
+    **kwargs: Any,
+) -> object:
+    """Build the ViT backbone referenced by the official PushT LeWM config."""
+
+    from transformers import ViTConfig, ViTModel
+
+    size_configs: dict[str, dict[str, int]] = {
+        "tiny": {"hidden_size": 192, "num_hidden_layers": 12, "num_attention_heads": 3},
+        "small": {"hidden_size": 384, "num_hidden_layers": 12, "num_attention_heads": 6},
+        "base": {"hidden_size": 768, "num_hidden_layers": 12, "num_attention_heads": 12},
+        "large": {"hidden_size": 1024, "num_hidden_layers": 24, "num_attention_heads": 16},
+        "huge": {"hidden_size": 1280, "num_hidden_layers": 32, "num_attention_heads": 16},
+    }
+    if size not in size_configs:
+        raise ValueError(f"Invalid ViT size {size!r}; expected one of {sorted(size_configs)}.")
+
+    config_params = {
+        **size_configs[size],
+        "intermediate_size": size_configs[size]["hidden_size"] * 4,
+        "image_size": image_size,
+        "patch_size": patch_size,
+        **kwargs,
+    }
+    if pretrained:
+        model_name = f"google/vit-{size}-patch{patch_size}-{image_size}"
+        model = ViTModel.from_pretrained(
+            model_name,
+            add_pooling_layer=False,
+            use_mask_token=use_mask_token,
+        )
+    else:
+        model = ViTModel(
+            ViTConfig(**config_params),
+            add_pooling_layer=False,
+            use_mask_token=use_mask_token,
+        )
+    model.config.interpolate_pos_encoding = True
+    return model
+
+
+def _install_stable_pretraining_backbone_shim() -> None:
+    """Expose the single stable-pretraining backbone target used by LeWM configs."""
+
+    stable_pretraining = sys.modules.get("stable_pretraining") or ModuleType("stable_pretraining")
+    backbone = sys.modules.get("stable_pretraining.backbone") or ModuleType(
+        "stable_pretraining.backbone"
+    )
+    utils = sys.modules.get("stable_pretraining.backbone.utils") or ModuleType(
+        "stable_pretraining.backbone.utils"
+    )
+    stable_pretraining.__path__ = []  # type: ignore[attr-defined]
+    backbone.__path__ = []  # type: ignore[attr-defined]
+    utils.vit_hf = _vit_hf_backbone  # type: ignore[attr-defined]
+    stable_pretraining.backbone = backbone  # type: ignore[attr-defined]
+    backbone.utils = utils  # type: ignore[attr-defined]
+    sys.modules["stable_pretraining"] = stable_pretraining
+    sys.modules["stable_pretraining.backbone"] = backbone
+    sys.modules["stable_pretraining.backbone.utils"] = utils
 
 
 def _repo_cache_dir(repo_id: str) -> Path:
@@ -38,7 +108,11 @@ def _load_optional_build_dependencies():
         importlib.import_module("cv2")
         importlib.import_module("imageio")
         importlib.import_module("stable_worldmodel")  # probe upstream runtime import envelope
-        importlib.import_module("stable_pretraining")  # probe upstream transitive imports
+        importlib.import_module("transformers")
+        try:
+            importlib.import_module("stable_pretraining")  # use upstream package when present
+        except ImportError:
+            _install_stable_pretraining_backbone_shim()
         import torch
         from huggingface_hub import hf_hub_download
         from hydra.utils import instantiate
@@ -47,9 +121,9 @@ def _load_optional_build_dependencies():
         missing = exc.name or ""
         if missing == "matplotlib":
             raise SystemExit(
-                "Building a LeWorldModel object checkpoint requires matplotlib because upstream "
-                "stable_pretraining imports it at module load time. Add `--with matplotlib` to "
-                "the uv run invocation (see docs/src/operations.md)."
+                "Building a LeWorldModel object checkpoint requires matplotlib in current "
+                "upstream LeWorldModel runtime environments. Add `--with matplotlib` to the "
+                "uv run invocation (see docs/src/operations.md)."
             ) from exc
         if missing == "cv2":
             raise SystemExit(
@@ -63,9 +137,15 @@ def _load_optional_build_dependencies():
                 "upstream stable_worldmodel package imports imageio at module load time. "
                 "Add `--with imageio` to the uv run invocation."
             ) from exc
+        if missing == "transformers":
+            raise SystemExit(
+                "Building a LeWorldModel object checkpoint requires transformers because the "
+                "official LeWM PushT config constructs its ViT encoder through a Hugging Face "
+                "ViTModel. Add `--with transformers` to the uv run invocation."
+            ) from exc
         raise SystemExit(
             "Building a LeWorldModel object checkpoint requires torch, huggingface_hub, "
-            "hydra-core, omegaconf, matplotlib, opencv-python, imageio, and the upstream "
+            "hydra-core, omegaconf, transformers, opencv-python, imageio, and the upstream "
             "stable-worldmodel LeWM modules. Run the command with the dependency flags "
             "documented in docs/src/operations.md."
         ) from exc

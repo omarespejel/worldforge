@@ -134,6 +134,60 @@ def test_robotics_showcase_app_renders_visual_report(tmp_path) -> None:
     asyncio.run(scenario())
 
 
+def test_robotics_showcase_app_exposes_rerun_open_shortcut(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("textual")
+
+    import worldforge.harness.tui as tui
+
+    summary = _robotics_summary()
+    rerun_path = tmp_path / "real-run.rrd"
+    rerun_path.write_bytes(b"rerun")
+    summary["rerun"] = {
+        "save_path": str(rerun_path),
+        "recording_written": True,
+        "recording_size_bytes": rerun_path.stat().st_size,
+    }
+    launched: dict[str, object] = {}
+
+    def fake_popen(command: list[str], **kwargs: object) -> object:
+        launched["command"] = command
+        launched["kwargs"] = kwargs
+        return object()
+
+    monkeypatch.setattr(tui.subprocess, "Popen", fake_popen)
+
+    async def scenario() -> None:
+        app = tui.RoboticsShowcaseApp(
+            summary=summary,
+            summary_path=tmp_path / "summary.json",
+            stage_delay=0.0,
+            animate_arm=False,
+        )
+        async with app.run_test(size=(150, 52)) as pilot:
+            await pilot.pause()
+            assert app.query_one(tui.RoboticsRerunPane) is not None
+            await pilot.press("o")
+            await pilot.pause()
+
+    asyncio.run(scenario())
+
+    assert launched["command"] == [
+        "uvx",
+        "--from",
+        "rerun-sdk>=0.24,<0.32",
+        "rerun",
+        str(rerun_path),
+    ]
+    kwargs = launched["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs["stdout"] is tui.subprocess.DEVNULL
+    assert kwargs["stderr"] is tui.subprocess.DEVNULL
+    assert kwargs["start_new_session"] is True
+
+
 def test_robotics_showcase_help_overlay_explains_tabletop_replay(tmp_path) -> None:
     pytest.importorskip("textual")
 

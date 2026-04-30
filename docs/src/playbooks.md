@@ -348,6 +348,32 @@ slide.
 First triage step for a surprising number: open the saved JSON, confirm the provider and
 operation/suite, then rerun the matching CLI command with the same provider and operation.
 
+### 6b. Record A Rerun Inspection Artifact
+
+Use Rerun when you need a visual, time-indexed inspection artifact for provider events, world
+state, plans, and benchmark metrics:
+
+```bash
+uv run --extra rerun worldforge-demo-rerun
+uv run --extra rerun rerun .worldforge/rerun/worldforge-rerun-showcase.rrd
+```
+
+Success signal: the `.rrd` file contains provider event text logs, world snapshots, plan payloads,
+3D object/target markers, and mock benchmark metrics. First triage step: verify the optional SDK
+is available with `uv run --extra rerun python -c "import rerun; print(rerun.__version__)"`.
+
+For the real PushT policy+score showcase, the wrapper writes a Rerun artifact by default:
+
+```bash
+scripts/robotics-showcase
+uvx --from "rerun-sdk>=0.24,<0.32" rerun /tmp/worldforge-robotics-showcase/real-run.rrd
+```
+
+Success signal: the recording contains candidate target points, selected replay lines, score bars,
+latency bars, provider events, world snapshots, and the plan payload. Use `--no-rerun` for runs
+where only the TUI/JSON artifact is needed. In the robotics TUI, press `o` to open the persisted
+Rerun recording directly.
+
 ## 7. Handle Remote Media Artifacts
 
 Use this for Cosmos, Runway, or any future media adapter.
@@ -445,7 +471,7 @@ Equivalent explicit `uv` command:
 
 ```bash
 uv run --python 3.13 \
-  --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
+  --with "stable-worldmodel @ git+https://github.com/galilai-group/stable-worldmodel.git" \
   --with "datasets>=2.21" \
   --with "opencv-python" \
   --with "imageio" \
@@ -481,8 +507,8 @@ candidate ranking, provider events, and tabletop replay map, then writes the ful
 `/tmp/worldforge-robotics-showcase/real-run.json`. Pass `--tui-stage-delay <seconds>` to tune the
 reveal pace, `--no-tui-animation` to disable sleeps and arm motion, `--no-tui` for the plain
 terminal report, `--json-only` for automation, or `--health-only` for a dependency preflight. It
-requests LeRobot's `transformers-dep` extra so LeRobot controls the Transformers version while
-`stable-worldmodel[train]` is installed, and filters common macOS native-library duplicate class
+requests `lerobot[transformers-dep]==0.5.1` so the Python 3.13 policy import path is stable while
+the LeWorldModel runtime is installed, and filters common macOS native-library duplicate class
 warnings from the user-facing output while leaving runtime device fallback warnings visible. The
 `--health-only` path does not auto-build or download missing LeWorldModel checkpoints; it reports
 whether the checkpoint is present and exits before inference. Set `WORLDFORGE_SHOW_RUNTIME_WARNINGS=1`
@@ -510,12 +536,18 @@ Equivalent explicit `uv` command:
 
 ```bash
 uv run --python 3.13 \
-  --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
+  --with "stable-worldmodel @ git+https://github.com/galilai-group/stable-worldmodel.git" \
   --with "datasets>=2.21" \
-  --with "lerobot[transformers-dep]" \
+  --with "huggingface_hub" \
+  --with "hydra-core" \
+  --with "omegaconf" \
+  --with "matplotlib" \
+  --with "transformers" \
+  --with "lerobot[transformers-dep]==0.5.1" \
   --with "textual>=8.2,<9" \
   --with "pygame" \
   --with "opencv-python" \
+  --with "imageio" \
   --with "pymunk" \
   --with "gymnasium" \
   --with "shapely" \
@@ -526,11 +558,11 @@ Equivalent explicit `uv` command for the lower-level runner:
 
 ```bash
 uv run --python 3.13 \
-  --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git" \
+  --with "stable-worldmodel @ git+https://github.com/galilai-group/stable-worldmodel.git" \
   --with "datasets>=2.21" \
   --with "opencv-python" \
   --with "imageio" \
-  --with "lerobot[transformers-dep]" \
+  --with "lerobot[transformers-dep]==0.5.1" \
   lewm-lerobot-real \
     --policy-path lerobot/diffusion_pusht \
     --policy-type diffusion \

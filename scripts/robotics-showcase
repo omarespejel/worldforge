@@ -9,6 +9,8 @@ filter_runtime_warnings() {
     /This may cause spurious casting failures/ { next }
     /pygame\/pkgdata.py:.*pkg_resources is deprecated/ { next }
     /^[[:space:]]*from pkg_resources import resource_stream, resource_exists/ { next }
+    /stable_worldmodel\/envs\/__init__\.py:.*ale-py not found/ { next }
+    /^[[:space:]]*from stable_worldmodel\.envs import ale/ { next }
     /gymnasium\/spaces\/box.py:.*Casting input x to numpy array/ { next }
     /^[[:space:]]*gym\.logger\.warn\("Casting input x to numpy array\."\)/ { next }
     /WARNING:root:Unexpected key\(s\) when loading model:/ { next }
@@ -38,6 +40,28 @@ has_tui_arg() {
   return 1
 }
 
+has_rerun_sink_arg() {
+  for arg in "$@"; do
+    case "$arg" in
+      --rerun|--rerun-output|--rerun-spawn|--rerun-connect-url|--rerun-serve-grpc-port)
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+should_enable_rerun() {
+  for arg in "$@"; do
+    case "$arg" in
+      --help|-h|--health-only|--json-only|--no-rerun)
+        return 1
+        ;;
+    esac
+  done
+  return 0
+}
+
 is_help_request() {
   for arg in "$@"; do
     case "$arg" in
@@ -57,12 +81,18 @@ if is_help_request "$@"; then
 fi
 
 showcase_args=("$@")
+if should_enable_rerun "$@" && ! has_rerun_sink_arg "$@"; then
+  showcase_args=(--rerun "$@")
+fi
 runtime_args=(
-  --with "stable-worldmodel[train] @ git+https://github.com/galilai-group/stable-worldmodel.git"
+  --with "stable-worldmodel @ git+https://github.com/galilai-group/stable-worldmodel.git"
   --with "datasets>=2.21"
   --with "huggingface_hub"
+  --with "hydra-core"
+  --with "omegaconf"
   --with "matplotlib"
-  --with "lerobot[transformers-dep]"
+  --with "transformers"
+  --with "lerobot[transformers-dep]==0.5.1"
   --with "pygame"
   --with "opencv-python"
   --with "imageio"
@@ -74,7 +104,7 @@ runtime_args=(
 if should_launch_tui "$@"; then
   runtime_args+=(--with "textual>=8.2,<9")
   if ! has_tui_arg "$@"; then
-    showcase_args=(--tui "$@")
+    showcase_args=(--tui "${showcase_args[@]}")
   fi
 fi
 

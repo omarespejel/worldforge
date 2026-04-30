@@ -309,7 +309,7 @@ def _runtime_command(*, checkpoint: Path, device: str) -> str:
         f"scripts/lewm-real --checkpoint {checkpoint_text} --device {device}\n"
         "\n"
         "or, without the wrapper:\n"
-        'uv run --python 3.13 --with "stable-worldmodel[train] @ '
+        'uv run --python 3.13 --with "stable-worldmodel @ '
         'git+https://github.com/galilai-group/stable-worldmodel.git" '
         '--with "datasets>=2.21" --with "opencv-python" --with "imageio" '
         f"lewm-real --checkpoint {checkpoint_text} --device {device}"

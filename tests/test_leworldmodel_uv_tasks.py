@@ -26,7 +26,8 @@ def test_leworldmodel_uv_commands_are_packaged_console_scripts() -> None:
     assert task.stat().st_mode & 0o111
     task_text = task.read_text()
     assert "uv run --python 3.13" in task_text
-    assert "stable-worldmodel[train]" in task_text
+    assert "stable-worldmodel @ git+" in task_text
+    assert "stable-worldmodel[train]" not in task_text
     assert '"opencv-python"' in task_text
     assert '"imageio"' in task_text
     assert 'lewm-real "$@"' in task_text
@@ -35,19 +36,24 @@ def test_leworldmodel_uv_commands_are_packaged_console_scripts() -> None:
     assert robotics_task.stat().st_mode & 0o111
     robotics_task_text = robotics_task.read_text()
     assert "uv run --python 3.13" in robotics_task_text
-    assert "stable-worldmodel[train]" in robotics_task_text
+    assert "stable-worldmodel @ git+" in robotics_task_text
+    assert "stable-worldmodel[train]" not in robotics_task_text
     assert '"datasets>=2.21"' in robotics_task_text
     assert '"opencv-python"' in robotics_task_text
     assert '"imageio"' in robotics_task_text
-    assert '"lerobot[transformers-dep]"' in robotics_task_text
+    assert '"lerobot[transformers-dep]==0.5.1"' in robotics_task_text
     assert 'lewm-lerobot-real "$@"' in robotics_task_text
     showcase_task = root / "scripts" / "robotics-showcase"
     assert showcase_task.exists()
     assert showcase_task.stat().st_mode & 0o111
     showcase_task_text = showcase_task.read_text()
-    assert "stable-worldmodel[train]" in showcase_task_text
-    assert '"lerobot[transformers-dep]"' in showcase_task_text
+    assert "stable-worldmodel @ git+" in showcase_task_text
+    assert "stable-worldmodel[train]" not in showcase_task_text
+    assert '"lerobot[transformers-dep]==0.5.1"' in showcase_task_text
     assert "stable-worldmodel[env]" not in showcase_task_text
+    assert '"hydra-core"' in showcase_task_text
+    assert '"omegaconf"' in showcase_task_text
+    assert '"transformers"' in showcase_task_text
     assert '"textual>=8.2,<9"' in showcase_task_text
     assert '"pygame"' in showcase_task_text
     assert '"opencv-python"' in showcase_task_text
@@ -55,10 +61,13 @@ def test_leworldmodel_uv_commands_are_packaged_console_scripts() -> None:
     assert '"pymunk"' in showcase_task_text
     assert '"gymnasium"' in showcase_task_text
     assert '"shapely"' in showcase_task_text
+    assert '"rerun-sdk>=0.31,<0.32"' not in showcase_task_text
     assert "is_help_request" in showcase_task_text
+    assert "should_enable_rerun" in showcase_task_text
     assert "showcase_args=(--tui" in showcase_task_text
     assert 'runtime_args+=(--with "textual>=8.2,<9")' in showcase_task_text
     assert "--no-tui" in showcase_task_text
+    assert "ale-py not found" in showcase_task_text
     assert "Device 'cuda' is not available" not in showcase_task_text
     assert "lerobot\\.configs\\.policies" not in showcase_task_text
     assert 'worldforge-robotics-showcase "${showcase_args[@]}"' in showcase_task_text
