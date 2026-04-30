@@ -195,11 +195,11 @@ Safe to do without additional approval when aligned with the task:
 Project skills live in `.codex/skills/`; `.claude/skills` and `.agents/skills` must be symlinks to that directory.
 
 Load skills on demand:
-- `.codex/skills/provider-adapter-development/SKILL.md`: adding, promoting, or debugging providers (bundled `references/capability-matrix.md`).
-- `.codex/skills/testing-validation/SKILL.md`: test selection, coverage, package, docs, CI gates (bundled `references/release-gate.md`).
+- `.codex/skills/provider-adapter-development/SKILL.md`: adding, promoting, or debugging providers.
+- `.codex/skills/testing-validation/SKILL.md`: test selection, coverage, package, docs, CI gates.
 - `.codex/skills/evaluation-benchmarking/SKILL.md`: evaluation suites, benchmarks, report claims.
 - `.codex/skills/optional-runtime-smokes/SKILL.md`: LeWorldModel, GR00T, LeRobot live or injected runtime checks.
 - `.codex/skills/persistence-state/SKILL.md`: world IDs, local JSON state, history import/export.
-- `.codex/skills/tui-development/SKILL.md`: TheWorldHarness Textual TUI - screens, workers, command palette, snapshot tests (bundled `references/roadmap.md`).
+- `.codex/skills/tui-development/SKILL.md`: TheWorldHarness Textual TUI - screens, workers, command palette, snapshot tests.
 - `.codex/skills/public-docs-release/SKILL.md`: README/docs/changelog/release-surface synchronization and publish-gate checks.
 </skills>

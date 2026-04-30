@@ -1,53 +1,49 @@
 ---
 name: public-docs-release
-description: "Use for WorldForge README, docs, changelog, generated provider docs, MkDocs navigation, version/release metadata, public positioning, and release or publish readiness checks."
-prerequisites: "uv, mkdocs, ruff"
+description: "Use for WorldForge README, docs, changelog, generated provider docs, MkDocs navigation, version/release metadata, public positioning, and release or publish readiness checks. Keeps public surfaces synchronized without hype or generated-doc drift."
 ---
 
 # Public Docs And Release
 
-<purpose>
-Keep public-facing text, generated docs, package metadata, and release gates synchronized.
-</purpose>
+## Voice
 
-<context>
-WorldForge's public front face must stay serious and precise. The strongest current positioning is an integration layer for physical-AI world-model workflows; typed/local-first details support that claim but should not become hype. Public behavior changes usually touch README, docs, changelog, AGENTS, CLAUDE, CLI help snapshots, and generated provider catalog blocks together.
-</context>
+- Serious, precise, maintainer-style.
+- No hype, no tool branding, no inflated physical-fidelity claims.
+- Use "integration layer" for the project frame. Treat "typed" and "local JSON" as supporting details, not the headline.
+- README stays concise; route operational depth to `docs/src/playbooks.md`.
 
-<procedure>
-1. Identify whether the change affects public API, CLI, provider surface, runtime workflow, release process, or only wording.
-2. Edit source docs, not generated blocks. For provider tables, change provider metadata/catalog and run `uv run python scripts/generate_provider_docs.py`.
-3. Keep `mkdocs.yml` nav synchronized with `docs/src/SUMMARY.md` when adding or removing docs pages.
-4. Update `CHANGELOG.md` for user-visible behavior changes.
-5. For version/release changes, align `pyproject.toml`, `uv.lock`, README badges/text, `CITATION.cff`, changelog, docs, and release notes.
-6. Run docs check and the relevant validation gate from `testing-validation`.
-</procedure>
+## Synchronization Rules
 
-<patterns>
-<do>
-- Keep README concise and route detailed operations to `docs/src/playbooks.md`.
-- State command, expected success signal, and first triage step for operational docs.
-- Preserve claim boundaries around mock providers, deterministic suites, and optional runtimes.
-</do>
-<dont>
-- Do not duplicate generated provider catalog edits by hand.
-- Do not mention agent/tool branding in public contribution artifacts.
-- Do not present scaffold providers as real integrations or deterministic evaluations as fidelity evidence.
-</dont>
-</patterns>
+| Change | Usually update |
+| --- | --- |
+| Provider capability/env var | provider docs, generated catalog, README table, `.env.example`, changelog, AGENTS/CLAUDE if agent-relevant |
+| CLI command/help | README, `docs/src/cli.md`, `docs/src/examples.md`, help snapshots |
+| Public Python API/error behavior | `docs/src/api/python.md`, changelog, tests, AGENTS/CLAUDE if contract-relevant |
+| Runtime/smoke workflow | README, playbooks, operations, provider page, support docs |
+| Docs page add/remove | `mkdocs.yml` and `docs/src/SUMMARY.md` |
+| Release/version | `pyproject.toml`, `uv.lock`, README/version text, `CITATION.cff`, changelog, docs |
 
-<troubleshooting>
+## Generated Docs
+
+Do not hand-edit provider catalog blocks. Change provider profile/catalog metadata, then run:
+
+```bash
+uv run python scripts/generate_provider_docs.py
+uv run python scripts/generate_provider_docs.py --check
+```
+
+## Operational Docs Standard
+
+Every new runtime, provider, persistence, benchmark, or release workflow should include:
+
+1. Command to run.
+2. Expected success signal.
+3. First triage step when it fails.
+
+## Sharp Edges
+
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | MkDocs strict warning | Bad link/nav/SUMMARY drift | Fix source page and sync nav/SUMMARY |
 | Provider table changes disappear | Edited generated block by hand | Change catalog/profile metadata and regenerate |
 | CLI snapshot fails after copy edit | Help text changed | Update `tests/test_cli_help_snapshots.py` intentionally |
-</troubleshooting>
-
-<references>
-- `README.md`: front-door positioning and quickstart.
-- `docs/src/playbooks.md`: operational runbooks.
-- `docs/src/SUMMARY.md` and `mkdocs.yml`: docs navigation contract.
-- `scripts/generate_provider_docs.py`: generated provider docs.
-- `CHANGELOG.md`: public change log.
-</references>

@@ -1,51 +1,47 @@
 ---
 name: tui-development
-description: "Use for TheWorldHarness work: Textual screens, flows, launchpad, command palette, world editor, screenshots, visual tests, and any change under `src/worldforge/harness/`."
-prerequisites: "uv, pytest, textual extra"
+description: "Use for TheWorldHarness work: Textual screens, flows, launchpad, command palette, world editor, screenshots, visual tests, and changes under `src/worldforge/harness/`. Preserves the optional Textual boundary while keeping flow logic testable without the TUI."
 ---
 
 # TUI Development
 
-<purpose>
-Keep TheWorldHarness usable while preserving Textual as an optional dependency.
-</purpose>
+## Architecture Boundary
 
-<context>
-The harness split is intentional: `harness.models` contains dataclasses, `harness.flows` contains runnable logic and summaries, `harness.cli` lists/launches flows without importing Textual, and `harness.tui` is the only Textual import surface. Current flows cover LeWorldModel score planning, LeRobot policy-plus-score planning, and provider diagnostics with benchmark comparison.
-</context>
+- `src/worldforge/harness/models.py`: dataclasses only.
+- `src/worldforge/harness/flows.py`: runnable flow logic and summaries.
+- `src/worldforge/harness/cli.py`: list/launch surface that works without importing Textual.
+- `src/worldforge/harness/tui.py`: primary Textual import surface.
+- `src/worldforge/harness/worlds_view.py`: TUI-specific world editor/view code.
 
-<procedure>
-1. Read `src/worldforge/harness/models.py`, `flows.py`, `cli.py`, and only then `tui.py` or `worlds_view.py`.
-2. Keep flow metadata/runners independent from Textual so `worldforge harness --list --format json` works without the `harness` extra.
-3. Add or update tests in `tests/test_harness_cli.py`, `tests/test_harness_flows.py`, `tests/test_harness_guards.py`, `tests/test_harness_tui.py`, `tests/test_harness_worlds_view.py`, or `tests/test_harness_snapshots.py`.
-4. For visual polish, update screenshots through existing scripts only when the UI behavior actually changed.
-5. Run focused harness tests, then coverage with `--extra harness`.
-</procedure>
+Never import Textual from `worldforge.__init__`, `worldforge.cli`, or non-TUI harness modules.
 
-<patterns>
-<do>
-- Use deterministic `mock` provider and temporary state dirs for diagnostics flows.
-- Keep screen state, flow records, and summaries JSON-native where rendered or tested.
-- Preserve keyboard/help affordances covered by snapshots.
-</do>
-<dont>
-- Do not import Textual from `worldforge.__init__`, `worldforge.cli`, or non-TUI harness modules.
-- Do not require live optional runtimes for the default harness tests.
-- Do not commit generated screenshots unless they replace documented assets intentionally.
-</dont>
-</patterns>
+## Workflow
 
-<troubleshooting>
+1. Read `models.py`, `flows.py`, and `cli.py` before touching TUI modules.
+2. Keep `worldforge harness --list --format json` runnable without the `harness` extra.
+3. Use deterministic `mock` providers and temporary state dirs for diagnostics flows.
+4. Keep screen state, flow records, and summaries JSON-native where rendered or tested.
+5. Update the relevant tests: `test_harness_cli.py`, `test_harness_flows.py`, `test_harness_guards.py`, `test_harness_tui.py`, `test_harness_worlds_view.py`, or `test_harness_snapshots.py`.
+6. Update screenshots only when UI behavior or documented visual state changed.
+7. Validate with focused harness tests and the `--extra harness` coverage gate when behavior changes.
+
+## Spec Map
+
+Current harness spec triads live under:
+
+- `specs/theworldharness-M0-theme-chrome/`
+- `specs/theworldharness-M1-screen-architecture/`
+- `specs/theworldharness-M2-worlds-crud/`
+- `specs/theworldharness-M3-live-providers/`
+- `specs/theworldharness-M4-eval-benchmark/`
+- `specs/theworldharness-M5-polish-showcase/`
+
+Update the relevant `spec.md`, `plan.md`, or `tasks.md` before implementing a new milestone.
+
+## Sharp Edges
+
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | Base import fails without Textual | Optional import leaked | Move Textual import under `harness/tui.py` or guarded launch path |
 | Harness list command fails | Flow metadata coupled to TUI | Move metadata back into `models.py`/`flows.py` |
 | Snapshot drift | UI text or command surface changed | Update snapshot only after verifying behavior |
-</troubleshooting>
-
-<references>
-- `references/roadmap.md`: current M0-M5 spec map.
-- `src/worldforge/harness/flows.py`: flow logic.
-- `src/worldforge/harness/tui.py`: Textual app.
-- `docs/src/theworldharness.md`: public harness docs.
-</references>
