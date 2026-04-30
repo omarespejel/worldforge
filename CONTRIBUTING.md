@@ -9,7 +9,7 @@ WorldForge follows the standard GitHub fork-and-pull-request flow against `main`
 
 1. Fork the repository and clone your fork.
 2. Create a topic branch: `git checkout -b feat/<short-description>` (or `fix/`, `docs/`, `chore/`).
-3. Run `uv sync --group dev` and confirm `make check` passes locally before opening the PR.
+3. Run `uv sync --group dev` and the validation gate below before opening the PR.
 4. Open the pull request against `AbdelStark/worldforge:main`. Keep the title imperative and
    under ~70 characters; describe user-visible changes and link related issues in the body.
 5. Address review feedback with new commits on the same branch; squash-merging is the default.
@@ -29,22 +29,25 @@ uv run worldforge examples
 Run the focused gate while iterating, then run the full gate before publishing work.
 
 ```bash
-make lint
-make docs-check
-make test
-make test-cov
-make test-package
-make build
+uv lock --check
+uv run ruff check src tests examples scripts
+uv run ruff format --check src tests examples scripts
+uv run python scripts/generate_provider_docs.py --check
+uv run mkdocs build --strict
+uv run pytest
+uv run --extra harness pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
+bash scripts/test_package.sh
+uv build --out-dir dist --clear --no-build-logs
 ```
 
-`make check` runs that complete local gate in order. `make release-check` runs `make check` plus
-the dependency audit and is the command to use before tagging or publishing.
+Before tagging or publishing, run the same gate plus the locked dependency audit documented in
+[docs/src/playbooks.md](./docs/src/playbooks.md).
 
-`make test-package` is the packaging contract check. It builds the wheel and sdist with `uv`,
+`bash scripts/test_package.sh` is the packaging contract check. It builds the wheel and sdist with `uv`,
 checks the distribution contents, installs the wheel into an isolated virtual environment, and runs
 the root test suite against the installed package.
-`make docs-check` verifies the generated provider catalog and builds the MkDocs Material site in
-strict mode.
+`uv run python scripts/generate_provider_docs.py --check` plus `uv run mkdocs build --strict`
+verifies the generated provider catalog and builds the MkDocs Material site in strict mode.
 
 The exact release gate is documented in [docs/src/playbooks.md](./docs/src/playbooks.md).
 

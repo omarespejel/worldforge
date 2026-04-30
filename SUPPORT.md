@@ -9,7 +9,12 @@ Run the checkout-safe baseline first:
 
 ```bash
 uv sync --group dev
-make check
+uv lock --check
+uv run ruff check src tests examples scripts
+uv run ruff format --check src tests examples scripts
+uv run python scripts/generate_provider_docs.py --check
+uv run mkdocs build --strict
+uv run pytest
 ```
 
 For provider configuration problems, include:

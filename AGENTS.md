@@ -173,6 +173,30 @@ rm -f "$tmp_req"
 - `CONTRIBUTING.md` and `docs/src/contributing.md`: contributor setup, validation gates,
   repository map, provider rules, and documentation routing.
 
+## Agentic Context And Coordination
+
+- `CLAUDE.md` is the compact primary cognitive context for agent sessions.
+- `.codex/skills/` is the canonical project skill registry; `.claude/skills` and
+  `.agents/skills` must remain symlinks to it.
+- Do not create a separate lowercase `agents.md` on this macOS checkout. This `AGENTS.md` is the
+  canonical agent guide and multi-agent coordination surface.
+
+Use multi-agent delegation only when the harness and user request allow it. Keep file ownership
+disjoint and verify all merged results through the same local gates.
+
+| Role | Responsibility | Boundaries |
+| --- | --- | --- |
+| Orchestrator | Decompose work, assign file-scoped subtasks, integrate results, run final review | Owns planning and integration; avoid handing off immediate blockers |
+| Implementer | Make bounded code/docs/test changes in an explicit file set | Do not alter public API, dependencies, workflows, or release policy unless assigned |
+| Reviewer | Inspect diffs, tests, docs drift, security boundaries, and missing regressions | Reports findings first; does not rewrite unrelated work |
+| Specialist | Handle provider, benchmark, optional runtime, persistence, or TUI tasks using the matching skill | Stay inside declared domain and file ownership |
+
+Delegated task packets must include objective, files to read, files allowed to modify, forbidden
+files, acceptance criteria, exact validation commands, and handoff format. Parallelize only
+non-overlapping file sets. Serialize changes to `pyproject.toml`, `uv.lock`, `.github/workflows/*`,
+`src/worldforge/models.py`, `src/worldforge/framework.py`, provider catalog/base contracts, and
+generated documentation surfaces.
+
 ## Conventions
 
 - Public inputs fail explicitly with `WorldForgeError`; malformed persisted/provider state fails
@@ -313,10 +337,11 @@ rm -f "$tmp_req"
 - `.env.example` is tracked via an explicit `!.env.example` rule in `.gitignore` (the general
   `.env.*` pattern would otherwise exclude it). Keep both the template and the exception in sync
   when adding new provider environment variables.
-- `make lint` and `make format` run against `src tests examples scripts` to match CI and the
-  commands documented in `README.md`. Do not drop `scripts` from either target.
-- `make docs-check` checks generated provider docs and builds the MkDocs Material site with
-  `--strict`. A warning in the published docs build is a release blocker.
+- Ruff commands run against `src tests examples scripts` to match CI and the commands documented
+  in `README.md`. Do not drop `scripts` from either target.
+- `uv run python scripts/generate_provider_docs.py --check` plus
+  `uv run mkdocs build --strict` checks generated provider docs and builds the MkDocs Material
+  site. A warning in the published docs build is a release blocker.
 - `worldforge benchmark --budget-file <path>` evaluates direct provider benchmark results against
   JSON thresholds and exits non-zero on violations. Keep benchmark budgets tied to preserved run
   artifacts when using them for release or paper claims.

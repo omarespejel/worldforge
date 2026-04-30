@@ -430,12 +430,18 @@ Primary local gate (same as CI):
 
 ```bash
 uv sync --group dev
-make check
+uv lock --check
+uv run ruff check src tests examples scripts
+uv run ruff format --check src tests examples scripts
+uv run python scripts/generate_provider_docs.py --check
+uv run mkdocs build --strict
+uv run pytest
+uv run --extra harness pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
+bash scripts/test_package.sh
+uv build --out-dir dist --clear --no-build-logs
 ```
 
-`make check` runs the lock check, Ruff, strict docs build, full pytest, harness coverage gate,
-wheel/sdist package contract, and distribution build. Run `make release-check` before a tag; it
-adds the dependency audit. The expanded gate and triage steps live in the
+Before a tag, also run the locked dependency audit. The expanded gate and triage steps live in the
 [operator playbooks](https://abdelstark.github.io/worldforge/playbooks/#9-prepare-a-release-or-public-branch).
 
 Scaffold a new provider:

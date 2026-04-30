@@ -4,14 +4,22 @@ WorldForge contributions should keep code, tests, docs, and agent context in syn
 
 ```bash
 uv sync --group dev
-make check
+uv lock --check
+uv run ruff check src tests examples scripts
+uv run ruff format --check src tests examples scripts
+uv run python scripts/generate_provider_docs.py --check
+uv run mkdocs build --strict
+uv run pytest
+uv run --extra harness pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
+bash scripts/test_package.sh
+uv build --out-dir dist --clear --no-build-logs
 ```
 
-`make release-check` adds the dependency audit and should pass before tags or package publishing.
-`make docs-check` verifies generated provider docs and builds the MkDocs Material site in strict
-mode.
-`make test-package` checks the wheel/sdist contents before installing the built wheel and running
-tests against the installed package.
+Before tags or package publishing, also run the locked dependency audit from
+[Operations](./operations.md). `uv run python scripts/generate_provider_docs.py --check` plus
+`uv run mkdocs build --strict` verifies generated provider docs and builds the MkDocs Material site
+in strict mode. `bash scripts/test_package.sh` checks the wheel/sdist contents before installing
+the built wheel and running tests against the installed package.
 
 Key directories:
 

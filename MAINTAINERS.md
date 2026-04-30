@@ -18,5 +18,6 @@ WorldForge is currently maintained by:
 ## Release Ownership
 
 Only maintainers should cut release tags, publish distributions, or change trusted-publishing
-configuration. Release candidates should pass `make release-check` locally or in CI before a tag is
+configuration. Release candidates should pass the full release gate in `docs/src/playbooks.md`
+locally or in CI before a tag is
 pushed.

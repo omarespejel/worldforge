@@ -95,20 +95,6 @@ Run the full gate from the repository root before publishing behavior, docs, or 
 changes:
 
 ```bash
-make check
-```
-
-`make check` runs the lock check, Ruff, generated-provider-doc drift check, strict MkDocs build,
-full pytest, harness coverage gate, wheel/sdist package contract, and distribution build. Before a
-release tag, run:
-
-```bash
-make release-check
-```
-
-`make release-check` adds the dependency audit. The `make check` portion expands to:
-
-```bash
 uv lock --check
 uv run ruff check src tests examples scripts
 uv run ruff format --check src tests examples scripts
@@ -118,6 +104,17 @@ uv run pytest
 uv run --extra harness pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
 bash scripts/test_package.sh
 uv build --out-dir dist --clear --no-build-logs
+```
+
+The local gate runs the lock check, Ruff, generated-provider-doc drift check, strict MkDocs build,
+full pytest, harness coverage gate, wheel/sdist package contract, and distribution build. Before a
+release tag, also run:
+
+```bash
+tmp_req="$(mktemp requirements-audit.XXXXXX)"
+uv export --frozen --all-groups --no-emit-project --no-hashes -o "$tmp_req" >/dev/null
+uvx --from pip-audit pip-audit -r "$tmp_req" --no-deps --disable-pip --progress-spinner off
+rm -f "$tmp_req"
 ```
 
 For release hardening, use the dependency audit in [Operations](./operations.md).

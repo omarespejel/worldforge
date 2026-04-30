@@ -218,11 +218,18 @@ Before publishing a release:
 
 ```bash
 uv sync --group dev
-make release-check
+uv lock --check
+uv run ruff check src tests examples scripts
+uv run ruff format --check src tests examples scripts
+uv run python scripts/generate_provider_docs.py --check
+uv run mkdocs build --strict
+uv run pytest
+uv run --extra harness pytest --cov=src/worldforge --cov-report=term-missing --cov-fail-under=90
+bash scripts/test_package.sh
+uv build --out-dir dist --clear --no-build-logs
 ```
 
-`make release-check` runs the local release gate plus the dependency audit. To run the audit by
-itself:
+Then run the locked dependency audit:
 
 ```bash
 tmp_req="$(mktemp requirements-audit.XXXXXX)"

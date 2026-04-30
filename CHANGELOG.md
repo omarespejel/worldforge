@@ -98,7 +98,7 @@ No user-visible changes yet.
   classes into memory.
 - The robotics showcase wrapper no longer suppresses LeRobot runtime device fallback warnings, so
   CUDA-to-MPS or similar execution changes remain visible in the terminal.
-- Documentation now routes release validation through `make check` and `make release-check`, keeps
+- Documentation now routes release validation through explicit `uv`/`bash` gate commands, keeps
   robotics preflight commands visible from the README/CLI/examples pages, and splits long optional
   runtime commands into copy-pasteable blocks.
 - The robotics showcase deep dive now includes end-to-end flow, model payload, inference
@@ -111,8 +111,8 @@ No user-visible changes yet.
 - Documentation metadata and README links now point at the published GitHub Pages site.
 - Release tags now run the full quality gate before artifacts are built or published: lint,
   formatting, strict docs, coverage, dependency audit, package contract, and tests.
-- `make check` now includes the lockfile check, coverage gate, package contract, and build; `make
-  release-check` adds a dependency audit using the locked dev environment.
+- The release gate now includes the lockfile check, coverage gate, package contract, build, and
+  dependency audit using the locked dev environment.
 - JEPA and Genie scaffold providers now advertise no executable capabilities. Their deterministic
   mock-backed surrogate path remains available only for local adapter tests with
   `WORLDFORGE_ENABLE_SCAFFOLD_SURROGATES=1`.
@@ -277,8 +277,8 @@ No user-visible changes yet.
 - Updated package metadata around WorldForge's physical-AI world-model integration layer, removed
   the development-status classifier, and pointed documentation metadata at repository docs instead
   of a standalone project domain.
-- Aligned `make lint` and `make format` with CI, `README.md`, and `AGENTS.md` by adding
-  `scripts/` to `ruff check`, `ruff format`, and the `clean` sweep.
+- Aligned documented Ruff commands with CI, `README.md`, and `AGENTS.md` by keeping `scripts/` in
+  both `ruff check` and `ruff format` targets.
 
 ### Fixed
 

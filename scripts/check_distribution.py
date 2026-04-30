@@ -35,7 +35,6 @@ SDIST_REQUIRED_SUFFIXES = (
     "CONTRIBUTING.md",
     "LICENSE",
     "MAINTAINERS.md",
-    "Makefile",
     "README.md",
     "SECURITY.md",
     "SUPPORT.md",

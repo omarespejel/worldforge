@@ -4,7 +4,7 @@ WorldForge is a Python integration layer and CLI for physical-AI world-model pro
 
 <priority_rules>
 1. Keep provider capabilities truthful: advertise only callable, tested, typed WorldForge surfaces.
-2. Make the library fault tolerant, resilient, and forgiving, you should make the dev experience a top priority and help fixing issues and overcoming challenges. feel free to addadd torch, LeWorldModel, LeRobot, GR00T, CUDA, checkpoints, datasets, or robot controllers to base dependencies or the repo when relevant.
+2. Make the library fault tolerant and developer-friendly while preserving the optional-runtime boundary: never add torch, LeWorldModel, LeRobot, GR00T, CUDA, checkpoints, datasets, or robot controllers to base dependencies or the repo.
 3. Fail loudly at boundaries: invalid public inputs raise `WorldForgeError`; malformed persisted/provider state raises `WorldStateError`; provider/runtime failures raise `ProviderError`.
 4. Preserve local-first scope: no hosted service, production database, credential store, robot safety layer, telemetry backend, or durable multi-writer persistence unless explicitly designed and approved.
 5. Public contribution artifacts must be human, maintainer-style, and tool-neutral. Do not mention agent/tool branding in branch names, commits, PR titles, PR bodies, changelog, docs, or README copy.
@@ -40,11 +40,11 @@ Top-level boundaries:
 | `tests/fixtures/providers/` | Remote/provider parser fixtures | Create/modify for provider failure modes |
 | `examples/` | Runnable checkout examples and compatibility wrappers | Keep deterministic unless explicitly live-smoke |
 | `docs/src/` | User docs, architecture, playbooks, provider pages, API notes | Update with public behavior |
-| `specs/` | Per-feature spec triads (`<feature>/{spec.md, plan.md, tasks.md}`) following the GitHub Spec Kit pattern; today populated for the TheWorldHarness M0–M5 milestones | Author a new triad before implementing a multi-task feature; update the triad as scope changes |
+| `specs/` | Per-feature spec triads (`<feature>/{spec.md, plan.md, tasks.md}`) following the GitHub Spec Kit pattern; today populated for the TheWorldHarness M0-M5 milestones | Author a new triad before implementing a multi-task feature; update the triad as scope changes |
 | `scripts/` | Docs generator, provider scaffold, package check, smokes | Gated for workflow/CI-impacting changes |
 | `.github/workflows/` | CI, release, security pipelines | Explicit approval before modifying |
 | `pyproject.toml`, `uv.lock` | Package metadata, deps, lockfile | Explicit approval for dependency/version changes |
-| `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `AGENTS.md` | Public front face and repo guidance | Update when public behavior or agent context changes |
+| `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `AGENTS.md` | Public front face and canonical agent/multi-agent guide | Update when public behavior or agent context changes; do not create lowercase `agents.md` duplicate |
 | `.env.example` | Tracked provider env template | Modify only with provider env changes; never include secrets |
 | `.codex/skills/` | Project-local agent skills | Modify only when agent context is the task |
 | `.claude/skills`, `.agents/skills` | Symlinks to `.codex/skills` | Keep as symlinks |
@@ -164,7 +164,7 @@ Require explicit approval before modifying:
 - public model/error/capability contracts in `src/worldforge/models.py`
 - persistence contract in `src/worldforge/framework.py`
 - provider base/catalog registration semantics in `src/worldforge/providers/base.py` and `src/worldforge/providers/catalog.py`
-- release/publish behavior in `scripts/test_package.sh`, release workflow, or `Makefile`
+- release/publish behavior in `scripts/test_package.sh` or release workflow
 - deleting tracked files or changing branch/merge/release policy
 </gated>
 
@@ -200,6 +200,6 @@ Load skills on demand:
 - `.codex/skills/evaluation-benchmarking/SKILL.md`: evaluation suites, benchmarks, report claims.
 - `.codex/skills/optional-runtime-smokes/SKILL.md`: LeWorldModel, GR00T, LeRobot live or injected runtime checks.
 - `.codex/skills/persistence-state/SKILL.md`: world IDs, local JSON state, history import/export.
-- `.codex/skills/tui-development/SKILL.md`: TheWorldHarness Textual TUI — screens, workers, command palette, snapshot tests (bundled `references/roadmap.md`).
+- `.codex/skills/tui-development/SKILL.md`: TheWorldHarness Textual TUI - screens, workers, command palette, snapshot tests (bundled `references/roadmap.md`).
+- `.codex/skills/public-docs-release/SKILL.md`: README/docs/changelog/release-surface synchronization and publish-gate checks.
 </skills>
-
