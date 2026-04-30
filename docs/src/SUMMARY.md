@@ -28,4 +28,5 @@
 - [Changelog](./changelog.md)
 - [Citation](./citation.md)
 - [Roadmap](./roadmap.md)
+- [Provider And Platform Roadmap](./provider-platform-roadmap.md)
 - [Contributing](./contributing.md)

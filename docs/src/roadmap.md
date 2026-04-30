@@ -25,6 +25,11 @@ upstream runtimes or robot controllers are involved.
 | Harness | Continue world editing, run inspection, report export, and provider diagnostics through optional Textual screens. |
 | Release engineering | Prefer signed, attested, tag-verified releases and trusted publishing. |
 
+For issue planning, use the detailed [Provider And Platform Roadmap](./provider-platform-roadmap.md).
+It breaks real provider implementation, production harness work, reference host applications,
+observability, monitoring, logging, operations, and release hardening into issue-ready workstreams
+with dependencies and acceptance criteria.
+
 ## Non-Goals
 
 - WorldForge will not bundle LeWorldModel, LeRobot, GR00T, torch, CUDA, checkpoints, datasets, or
