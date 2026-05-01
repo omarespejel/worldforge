@@ -8,7 +8,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from worldforge.models import ProviderEvent
+from worldforge.models import ProviderEvent, WorldStateError
 from worldforge.smoke import leworldmodel, leworldmodel_checkpoint
 
 
@@ -156,6 +156,10 @@ def test_checkpoint_builder_installs_stable_pretraining_backbone_shim(
     assert model.config.interpolate_pos_encoding is True
     assert model.add_pooling_layer is False
     assert model.use_mask_token is False
+    with pytest.raises(ValueError, match="pretrained=False"):
+        utils.vit_hf(pretrained=True)
+    with pytest.raises(ValueError, match="Unsupported LeWM PushT ViT parameters"):
+        utils.vit_hf(hidden_size=999)
 
 
 def test_build_checkpoint_saves_object_checkpoint_with_injected_runtime(
@@ -252,6 +256,8 @@ def test_build_checkpoint_saves_object_checkpoint_with_injected_runtime(
     model = FakeModel()
     torch = FakeTorch()
 
+    revision = "22b330c28c27ead4bfd1888615af1340e3fe9052"
+
     def hf_hub_download(
         *,
         repo_id: str,
@@ -260,7 +266,7 @@ def test_build_checkpoint_saves_object_checkpoint_with_injected_runtime(
         revision: str | None,
     ) -> str:
         assert repo_id == "quentinll/lewm-pusht"
-        assert revision == "abc123"
+        assert revision == "22b330c28c27ead4bfd1888615af1340e3fe9052"
         path = Path(local_dir) / filename
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(filename)
@@ -269,7 +275,16 @@ def test_build_checkpoint_saves_object_checkpoint_with_injected_runtime(
     monkeypatch.setattr(
         leworldmodel_checkpoint,
         "_load_optional_build_dependencies",
-        lambda: (torch, hf_hub_download, lambda config: model, FakeOmegaConf),
+        lambda: (
+            torch,
+            hf_hub_download,
+            lambda config: (
+                model
+                if isinstance(config, dict)
+                else pytest.fail("instantiate should receive sanitized config dict")
+            ),
+            FakeOmegaConf,
+        ),
     )
 
     summary = leworldmodel_checkpoint.build_checkpoint(
@@ -277,7 +292,7 @@ def test_build_checkpoint_saves_object_checkpoint_with_injected_runtime(
         policy="pusht/lewm",
         stablewm_home=tmp_path / "stablewm",
         cache_dir=tmp_path / "assets",
-        revision="abc123",
+        revision=revision,
     )
 
     assert summary == {
@@ -289,7 +304,7 @@ def test_build_checkpoint_saves_object_checkpoint_with_injected_runtime(
         "output": str(tmp_path / "stablewm/pusht/lewm_object.ckpt"),
         "policy": "pusht/lewm",
         "repo_id": "quentinll/lewm-pusht",
-        "revision": "abc123",
+        "revision": revision,
         "runtime_api": "stable_worldmodel.policy.AutoCostModel",
         "weights": str(tmp_path / "assets/weights.pt"),
     }
@@ -351,7 +366,7 @@ def test_build_checkpoint_rejects_nested_disallowed_config_target_before_instant
         ),
     )
 
-    with pytest.raises(SystemExit, match="disallowed Hydra _target_"):
+    with pytest.raises(WorldStateError, match="disallowed Hydra _target_"):
         leworldmodel_checkpoint.build_checkpoint(
             repo_id="quentinll/lewm-pusht",
             policy="pusht/lewm",
@@ -405,7 +420,7 @@ def test_build_checkpoint_rejects_interpolated_config_target_before_instantiate(
         ),
     )
 
-    with pytest.raises(SystemExit, match="must not use interpolation"):
+    with pytest.raises(WorldStateError, match="must not use interpolation"):
         leworldmodel_checkpoint.build_checkpoint(
             repo_id="quentinll/lewm-pusht",
             policy="pusht/lewm",
@@ -421,13 +436,74 @@ def test_leworldmodel_config_validation_uses_unresolved_omegaconf_container() ->
             assert resolve is False
             return {
                 "_target_": "stable_worldmodel.wm.lewm.LeWM",
-                "encoder": {"_target_": "stable_pretraining.backbone.utils.vit_hf"},
+                "encoder": {
+                    "_target_": "stable_pretraining.backbone.utils.vit_hf",
+                    "size": "tiny",
+                    "patch_size": 14,
+                    "image_size": 224,
+                    "pretrained": False,
+                    "use_mask_token": False,
+                },
             }
 
     assert (
-        leworldmodel_checkpoint._validate_leworldmodel_config(FakeOmegaConf, object())
+        leworldmodel_checkpoint._validate_leworldmodel_config(FakeOmegaConf, object())[0]
         == "stable_worldmodel.wm.lewm.LeWM"
     )
+
+
+def test_leworldmodel_config_validation_rejects_non_target_interpolation() -> None:
+    config = {
+        "_target_": "stable_worldmodel.wm.lewm.LeWM",
+        "encoder": {
+            "_target_": "stable_pretraining.backbone.utils.vit_hf",
+            "size": "tiny",
+            "patch_size": 14,
+            "image_size": 224,
+            "pretrained": False,
+            "use_mask_token": "${mask_token}",
+        },
+    }
+
+    with pytest.raises(WorldStateError, match="must not use interpolation"):
+        leworldmodel_checkpoint._validate_leworldmodel_config(object(), config)
+
+
+def test_leworldmodel_config_validation_rejects_unsafe_vit_parameters() -> None:
+    config = {
+        "_target_": "stable_worldmodel.wm.lewm.LeWM",
+        "encoder": {
+            "_target_": "stable_pretraining.backbone.utils.vit_hf",
+            "size": "tiny",
+            "patch_size": 14,
+            "image_size": 224,
+            "pretrained": True,
+            "use_mask_token": False,
+        },
+    }
+
+    with pytest.raises(WorldStateError, match="pretrained"):
+        leworldmodel_checkpoint._validate_leworldmodel_config(object(), config)
+
+
+def test_build_checkpoint_requires_pinned_commit_revision(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        leworldmodel_checkpoint,
+        "_load_optional_build_dependencies",
+        lambda: pytest.fail("invalid revision should fail before optional dependency loading"),
+    )
+
+    with pytest.raises(WorldStateError, match="40-character commit SHA"):
+        leworldmodel_checkpoint.build_checkpoint(
+            repo_id="quentinll/lewm-pusht",
+            policy="pusht/lewm",
+            stablewm_home=tmp_path / "stablewm",
+            cache_dir=tmp_path / "assets",
+            revision="main",
+        )
 
 
 def test_build_checkpoint_rejects_incompatible_weights(
@@ -451,8 +527,18 @@ def test_build_checkpoint_rejects_incompatible_weights(
 
     class FakeOmegaConf:
         @staticmethod
-        def load(path: Path) -> dict[str, str]:
-            return {"_target_": "stable_worldmodel.wm.lewm.LeWM"}
+        def load(path: Path) -> dict[str, object]:
+            return {
+                "_target_": "stable_worldmodel.wm.lewm.LeWM",
+                "encoder": {
+                    "_target_": "stable_pretraining.backbone.utils.vit_hf",
+                    "size": "tiny",
+                    "patch_size": 14,
+                    "image_size": 224,
+                    "pretrained": False,
+                    "use_mask_token": False,
+                },
+            }
 
     def hf_hub_download(
         *,
@@ -461,7 +547,7 @@ def test_build_checkpoint_rejects_incompatible_weights(
         local_dir: str,
         revision: str | None,
     ) -> str:
-        assert revision is None
+        assert revision == "22b330c28c27ead4bfd1888615af1340e3fe9052"
         path = Path(local_dir) / filename
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(filename)
@@ -509,7 +595,7 @@ def test_build_checkpoint_rejects_non_leworldmodel_config_target(
         lambda: (object(), hf_hub_download, lambda _config: object(), FakeOmegaConf),
     )
 
-    with pytest.raises(SystemExit, match="disallowed Hydra _target_"):
+    with pytest.raises(WorldStateError, match="disallowed Hydra _target_"):
         leworldmodel_checkpoint.build_checkpoint(
             repo_id="quentinll/lewm-pusht",
             policy="pusht/lewm",
