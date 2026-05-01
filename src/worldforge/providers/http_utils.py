@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import base64
+import ipaddress
 import mimetypes
+import socket
 from collections.abc import Callable
 from pathlib import Path
 from time import perf_counter, sleep
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -22,6 +25,94 @@ from worldforge.models import (
 from .base import ProviderBudgetExceededError, ProviderError
 
 _RETRYABLE_EXCEPTIONS = (httpx.TransportError,)
+_LOCAL_HOST_NAMES = frozenset({"localhost", "localhost.localdomain"})
+
+
+def validate_remote_base_url(
+    base_url: str,
+    *,
+    provider_name: str,
+    env_var: str,
+    allow_local_network: bool = False,
+    resolve_dns: bool = True,
+) -> str:
+    """Return a normalized HTTP base URL after blocking local/private destinations."""
+
+    parsed = urlparse(base_url)
+    if parsed.scheme.lower() not in {"http", "https"}:
+        raise ProviderError(f"Provider '{provider_name}' {env_var} must use an http or https URL.")
+    if not parsed.hostname:
+        raise ProviderError(f"Provider '{provider_name}' {env_var} must include a hostname.")
+
+    host = parsed.hostname.strip().lower()
+    if not allow_local_network:
+        _reject_local_hostname(host, provider_name=provider_name, env_var=env_var)
+        _reject_local_ip_literal(host, provider_name=provider_name, env_var=env_var)
+        if resolve_dns:
+            _reject_local_resolved_addresses(
+                host,
+                port=parsed.port or (443 if parsed.scheme.lower() == "https" else 80),
+                provider_name=provider_name,
+                env_var=env_var,
+            )
+    return base_url.rstrip("/")
+
+
+def _reject_local_hostname(host: str, *, provider_name: str, env_var: str) -> None:
+    if host in _LOCAL_HOST_NAMES or host.endswith(".localhost"):
+        raise ProviderError(
+            f"Provider '{provider_name}' {env_var} resolves to a local/private destination. "
+            "Set the provider's explicit local-network opt-in only for trusted local servers."
+        )
+
+
+def _reject_local_ip_literal(host: str, *, provider_name: str, env_var: str) -> None:
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return
+    _reject_local_address(address, provider_name=provider_name, env_var=env_var)
+
+
+def _reject_local_resolved_addresses(
+    host: str,
+    *,
+    port: int,
+    provider_name: str,
+    env_var: str,
+) -> None:
+    try:
+        addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise ProviderError(
+            f"Provider '{provider_name}' {env_var} host could not be resolved: {host}."
+        ) from exc
+    for address in addresses:
+        _reject_local_address(
+            ipaddress.ip_address(address[4][0]),
+            provider_name=provider_name,
+            env_var=env_var,
+        )
+
+
+def _reject_local_address(
+    address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    *,
+    provider_name: str,
+    env_var: str,
+) -> None:
+    if (
+        address.is_loopback
+        or address.is_private
+        or address.is_link_local
+        or address.is_unspecified
+        or address.is_reserved
+        or address.is_multicast
+    ):
+        raise ProviderError(
+            f"Provider '{provider_name}' {env_var} resolves to a local/private destination. "
+            "Set the provider's explicit local-network opt-in only for trusted local servers."
+        )
 
 
 def asset_to_uri(value: str | None, *, default_content_type: str) -> str | None:
