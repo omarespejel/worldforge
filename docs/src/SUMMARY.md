@@ -15,6 +15,7 @@
 - [User And Operator Playbooks](./playbooks.md)
 - [Providers](./providers/README.md)
   - [Cosmos](./providers/cosmos.md)
+  - [Cosmos-Policy](./providers/cosmos-policy.md)
   - [Genie](./providers/genie.md)
   - [GR00T](./providers/gr00t.md)
   - [JEPA](./providers/jepa.md)

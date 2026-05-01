@@ -17,7 +17,15 @@ from worldforge.providers.runtime_manifest import (
     missing_optional_dependency_detail,
 )
 
-EXPECTED_MANIFEST_PROVIDERS = ("cosmos", "gr00t", "jepa", "lerobot", "leworldmodel", "runway")
+EXPECTED_MANIFEST_PROVIDERS = (
+    "cosmos-policy",
+    "cosmos",
+    "gr00t",
+    "jepa",
+    "lerobot",
+    "leworldmodel",
+    "runway",
+)
 
 
 def test_runtime_manifests_cover_real_optional_providers() -> None:
