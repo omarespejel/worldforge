@@ -5,7 +5,9 @@ from __future__ import annotations
 import base64
 import ipaddress
 import mimetypes
+import queue
 import socket
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from time import perf_counter, sleep
@@ -26,6 +28,7 @@ from .base import ProviderBudgetExceededError, ProviderError
 
 _RETRYABLE_EXCEPTIONS = (httpx.TransportError,)
 _LOCAL_HOST_NAMES = frozenset({"localhost", "localhost.localdomain"})
+_DNS_RESOLUTION_TIMEOUT_SECONDS = 2.0
 
 
 def validate_remote_base_url(
@@ -35,6 +38,7 @@ def validate_remote_base_url(
     env_var: str,
     allow_local_network: bool = False,
     resolve_dns: bool = True,
+    dns_resolution_timeout_seconds: float = _DNS_RESOLUTION_TIMEOUT_SECONDS,
 ) -> str:
     """Return a normalized HTTP base URL after blocking local/private destinations."""
 
@@ -54,6 +58,7 @@ def validate_remote_base_url(
                 port=parsed.port or (443 if parsed.scheme.lower() == "https" else 80),
                 provider_name=provider_name,
                 env_var=env_var,
+                timeout_seconds=dns_resolution_timeout_seconds,
             )
     return base_url.rstrip("/")
 
@@ -80,9 +85,18 @@ def _reject_local_resolved_addresses(
     port: int,
     provider_name: str,
     env_var: str,
+    timeout_seconds: float,
 ) -> None:
     try:
-        addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        addresses = _getaddrinfo_with_timeout(
+            host,
+            port,
+            timeout_seconds=timeout_seconds,
+        )
+    except TimeoutError as exc:
+        raise ProviderError(
+            f"Provider '{provider_name}' {env_var} host resolution timed out: {host}."
+        ) from exc
     except socket.gaierror as exc:
         raise ProviderError(
             f"Provider '{provider_name}' {env_var} host could not be resolved: {host}."
@@ -93,6 +107,41 @@ def _reject_local_resolved_addresses(
             provider_name=provider_name,
             env_var=env_var,
         )
+
+
+def _getaddrinfo_with_timeout(
+    host: str,
+    port: int,
+    *,
+    timeout_seconds: float,
+) -> list[tuple[Any, ...]]:
+    if timeout_seconds <= 0:
+        raise TimeoutError("DNS resolution timeout must be greater than 0.")
+
+    result_queue: queue.Queue[tuple[str, object]] = queue.Queue(maxsize=1)
+
+    def resolve() -> None:
+        try:
+            result_queue.put(("ok", socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)))
+        except Exception as exc:
+            result_queue.put(("error", exc))
+
+    resolver = threading.Thread(
+        target=resolve,
+        name=f"worldforge-dns-resolver-{host}",
+        daemon=True,
+    )
+    resolver.start()
+    resolver.join(timeout_seconds)
+    if resolver.is_alive():
+        raise TimeoutError(f"DNS resolution exceeded {timeout_seconds:.1f}s.")
+
+    status, value = result_queue.get_nowait()
+    if status == "error":
+        if isinstance(value, BaseException):
+            raise value
+        raise RuntimeError("DNS resolution failed without an exception.")
+    return list(value)
 
 
 def _reject_local_address(

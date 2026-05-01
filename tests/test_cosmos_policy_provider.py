@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import socket
 
 import httpx
 import pytest
@@ -14,6 +15,8 @@ from worldforge.providers import (
     ProviderProfileSpec,
 )
 from worldforge.testing import assert_provider_contract
+
+PUBLIC_BASE_URL = "http://93.184.216.34"
 
 
 def _row(seed: float) -> list[float]:
@@ -99,7 +102,7 @@ def test_cosmos_policy_provider_contract() -> None:
         )
 
     provider = CosmosPolicyProvider(
-        base_url="http://cosmos-policy.test",
+        base_url=PUBLIC_BASE_URL,
         transport=httpx.MockTransport(handler),
         action_translator=_translator,
     )
@@ -146,7 +149,7 @@ def test_cosmos_policy_select_actions_preserves_values_candidates_and_events() -
         )
 
     provider = CosmosPolicyProvider(
-        base_url="http://cosmos-policy.test",
+        base_url=PUBLIC_BASE_URL,
         api_token="test-token",
         transport=httpx.MockTransport(handler),
         return_all_query_results=True,
@@ -173,6 +176,30 @@ def test_cosmos_policy_select_actions_preserves_values_candidates_and_events() -
     assert events[-1].phase == "success"
     assert events[-1].method == "POST"
     assert events[-1].target == "/act"
+
+
+def test_cosmos_policy_action_horizon_uses_translated_selected_actions() -> None:
+    def one_step_translator(
+        _raw_actions: object,
+        _info: JSONDict,
+        _provider_info: JSONDict,
+    ) -> list[Action]:
+        return [Action.move_to(0.1, 0.2, 0.3)]
+
+    provider = CosmosPolicyProvider(
+        base_url=PUBLIC_BASE_URL,
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(200, json={"actions": _actions(0.1)})
+        ),
+        action_translator=one_step_translator,
+    )
+    info = _policy_info()
+    del info["action_horizon"]
+
+    result = provider.select_actions(info=info)
+
+    assert len(result.actions) == 1
+    assert result.action_horizon == 1
 
 
 def test_cosmos_policy_blocks_local_base_url_without_opt_in() -> None:
@@ -209,9 +236,40 @@ def test_cosmos_policy_allows_local_base_url_with_explicit_opt_in() -> None:
     assert result.provider == "cosmos-policy"
 
 
+def test_cosmos_policy_validates_dns_even_with_mock_transport(monkeypatch) -> None:
+    called = False
+
+    def fake_getaddrinfo(*_args: object, **_kwargs: object) -> list[tuple[object, ...]]:
+        return [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                6,
+                "",
+                ("127.0.0.1", 8777),
+            )
+        ]
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={"actions": _actions(0.1)})
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    provider = CosmosPolicyProvider(
+        base_url="http://cosmos-policy.example",
+        transport=httpx.MockTransport(handler),
+        action_translator=_translator,
+    )
+
+    with pytest.raises(ProviderError, match="local/private destination"):
+        provider.select_actions(info=_policy_info())
+    assert called is False
+
+
 def test_cosmos_policy_only_planning_uses_selected_actions(tmp_path) -> None:
     provider = CosmosPolicyProvider(
-        base_url="http://cosmos-policy.test",
+        base_url=PUBLIC_BASE_URL,
         transport=httpx.MockTransport(
             lambda _request: httpx.Response(200, json={"actions": _actions(0.3)})
         ),
@@ -239,7 +297,7 @@ def test_cosmos_policy_plus_score_planning_scores_translated_candidates(tmp_path
     candidate_a = _actions(0.1)
     candidate_b = _actions(2.0)
     policy_provider = CosmosPolicyProvider(
-        base_url="http://cosmos-policy.test",
+        base_url=PUBLIC_BASE_URL,
         transport=httpx.MockTransport(
             lambda _request: httpx.Response(
                 200,
@@ -273,7 +331,7 @@ def test_cosmos_policy_plus_score_planning_scores_translated_candidates(tmp_path
 
 def test_cosmos_policy_requires_translator() -> None:
     provider = CosmosPolicyProvider(
-        base_url="http://cosmos-policy.test",
+        base_url=PUBLIC_BASE_URL,
         transport=httpx.MockTransport(
             lambda _request: httpx.Response(200, json={"actions": _actions(0.1)})
         ),
@@ -294,7 +352,7 @@ def test_cosmos_policy_redacts_translator_exception_text() -> None:
         raise RuntimeError("token=cosmos-policy-secret")
 
     provider = CosmosPolicyProvider(
-        base_url="http://cosmos-policy.test",
+        base_url=PUBLIC_BASE_URL,
         transport=httpx.MockTransport(
             lambda _request: httpx.Response(200, json={"actions": _actions(0.1)})
         ),
@@ -318,7 +376,7 @@ def test_cosmos_policy_rejects_translator_candidate_mismatch() -> None:
     candidate_a = _actions(0.1)
     candidate_b = _actions(2.0)
     provider = CosmosPolicyProvider(
-        base_url="http://cosmos-policy.test",
+        base_url=PUBLIC_BASE_URL,
         transport=httpx.MockTransport(
             lambda _request: httpx.Response(
                 200,
@@ -341,7 +399,7 @@ def test_cosmos_policy_validates_observation_before_request() -> None:
         return httpx.Response(200, json={"actions": _actions(0.1)})
 
     provider = CosmosPolicyProvider(
-        base_url="http://cosmos-policy.test",
+        base_url=PUBLIC_BASE_URL,
         transport=httpx.MockTransport(handler),
         action_translator=_translator,
     )
@@ -372,7 +430,7 @@ def test_cosmos_policy_rejects_malformed_responses(payload: JSONDict, match: str
         )
 
     provider = CosmosPolicyProvider(
-        base_url="http://cosmos-policy.test",
+        base_url=PUBLIC_BASE_URL,
         transport=httpx.MockTransport(handler),
         action_translator=_translator,
     )
@@ -386,7 +444,7 @@ def test_cosmos_policy_config_summary_is_value_free(monkeypatch) -> None:
     monkeypatch.delenv("COSMOS_POLICY_API_TOKEN", raising=False)
     monkeypatch.delenv("COSMOS_POLICY_ALLOW_LOCAL_BASE_URL", raising=False)
     provider = CosmosPolicyProvider(
-        base_url="http://cosmos-policy.test",
+        base_url=PUBLIC_BASE_URL,
         api_token="secret-token",
     )
 
