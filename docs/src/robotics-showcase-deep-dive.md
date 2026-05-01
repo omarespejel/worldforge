@@ -416,8 +416,9 @@ For the default policy, that is:
 ```
 
 If the default checkpoint is missing, the polished runner builds it from Hugging Face assets using
-`worldforge.smoke.leworldmodel_checkpoint`. That builder downloads `config.json` and `weights.pt`
-from `quentinll/lewm-pusht`, instantiates the upstream model, loads the weights, freezes the
+`worldforge.smoke.leworldmodel_checkpoint`. That builder downloads `config.json` from
+`quentinll/lewm-pusht`, validates every Hydra `_target_` against the known official PushT LeWM
+allowlist, downloads `weights.pt`, instantiates the upstream model, loads the weights, freezes the
 module, and saves the object checkpoint where `AutoCostModel` expects it.
 
 This auto-build step runs only for normal showcase execution. With `--health-only`, the runner

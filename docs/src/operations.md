@@ -423,8 +423,10 @@ readiness, and safety certification.
   ```
 
   `hydra-core`, `omegaconf`, and `transformers` are required to instantiate the official LeWM
-  PushT config. Pass `--revision <tag-or-commit>` or set `LEWORLDMODEL_REVISION` when the run
-  must be pinned to a specific Hugging Face revision.
+  PushT config. Before Hydra is allowed to instantiate anything, the builder validates the
+  downloaded config against the known official PushT LeWM target allowlist and rejects nested or
+  interpolated `_target_` values outside that allowlist. Pass `--revision <tag-or-commit>` or set
+  `LEWORLDMODEL_REVISION` when the run must be pinned to a specific Hugging Face revision.
   The builder loads downloaded `weights.pt` with `torch.load(..., weights_only=True)` by default;
   `--allow-unsafe-pickle` exists only for trusted legacy weights and older torch environments. The
   builder downloads assets to `~/.cache/worldforge/leworldmodel` by default and writes the object
