@@ -6,9 +6,10 @@ Run with the same upstream runtime used by the real smoke:
       --with huggingface_hub --with hydra-core --with omegaconf --with transformers
       --with "opencv-python" --with "imageio" worldforge-build-leworldmodel-checkpoint
 
-The command downloads ``config.json`` and ``weights.pt`` from the model repo,
-instantiates the LeWM module, loads the weights, and saves the object checkpoint
-where ``stable_worldmodel.policy.AutoCostModel`` expects it.
+The command downloads ``config.json`` from the model repo, validates that every
+Hydra target is one of the known official PushT LeWM constructors, downloads
+``weights.pt``, instantiates the LeWM module, loads the weights, and saves the
+object checkpoint where ``stable_worldmodel.policy.AutoCostModel`` expects it.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ import importlib
 import json
 import os
 import sys
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -27,8 +29,19 @@ from worldforge.smoke.leworldmodel import DEFAULT_STABLEWM_HOME, _checkpoint_pat
 DEFAULT_REPO_ID = "quentinll/lewm-pusht"
 LEWORLDMODEL_OFFICIAL_REPO_URL = "https://github.com/lucas-maes/le-wm"
 LEWORLDMODEL_RUNTIME_API = "stable_worldmodel.policy.AutoCostModel"
-LEWORLDMODEL_HF_CONFIG_TARGET = "stable_worldmodel.wm.lewm"
+LEWORLDMODEL_HF_CONFIG_TARGET = "stable_worldmodel.wm.lewm.LeWM"
 LEWORLDMODEL_HF_BACKBONE_TARGET = "stable_pretraining.backbone.utils.vit_hf"
+# Hydra instantiates nested `_target_` values recursively, so this list must stay exact and narrow.
+LEWORLDMODEL_HF_ALLOWED_CONFIG_TARGETS = frozenset(
+    {
+        LEWORLDMODEL_HF_CONFIG_TARGET,
+        LEWORLDMODEL_HF_BACKBONE_TARGET,
+        "stable_worldmodel.wm.lewm.module.Embedder",
+        "stable_worldmodel.wm.lewm.module.MLP",
+        "stable_worldmodel.wm.lewm.module.Predictor",
+        "torch.nn.BatchNorm1d",
+    }
+)
 
 
 def _vit_hf_backbone(
@@ -175,19 +188,74 @@ def _load_weights(torch: object, weights_path: Path, *, allow_unsafe_pickle: boo
 
 
 def _config_target(config: object) -> str:
-    getter = getattr(config, "get", None)
-    target = getter("_target_") if callable(getter) else None
+    if not isinstance(config, Mapping):
+        raise SystemExit("LeWorldModel config.json must contain a JSON object.")
+    target = config.get("_target_")
     if not isinstance(target, str) or not target.strip():
         raise SystemExit("LeWorldModel config.json must contain a non-empty _target_ field.")
     return target.strip()
 
 
 def _ensure_leworldmodel_target(target: str) -> None:
-    normalized = target.lower()
-    if "lewm" not in normalized and "jepa" not in normalized:
+    if target != LEWORLDMODEL_HF_CONFIG_TARGET:
         raise SystemExit(
-            f"LeWorldModel config.json did not describe a LeWM/JEPA model target: {target!r}."
+            "LeWorldModel config.json root _target_ must be "
+            f"{LEWORLDMODEL_HF_CONFIG_TARGET!r}; got {target!r}."
         )
+
+
+def _config_to_container(omega_conf: object, config: object) -> object:
+    to_container = getattr(omega_conf, "to_container", None)
+    if callable(to_container):
+        return to_container(config, resolve=False)
+    return config
+
+
+def _target_path(path: str) -> str:
+    return f"{path}._target_" if path != "$" else "$._target_"
+
+
+def _child_path(path: str, key: object) -> str:
+    if isinstance(key, int):
+        return f"{path}[{key}]"
+    key_text = str(key)
+    return key_text if path == "$" else f"{path}.{key_text}"
+
+
+def _ensure_allowed_hydra_target(target: object, path: str) -> str:
+    target_path = _target_path(path)
+    if not isinstance(target, str) or not target.strip():
+        raise SystemExit(f"LeWorldModel config {target_path} must be a non-empty string.")
+    normalized = target.strip()
+    if "${" in normalized:
+        raise SystemExit(f"LeWorldModel config {target_path} must not use interpolation.")
+    if normalized not in LEWORLDMODEL_HF_ALLOWED_CONFIG_TARGETS:
+        allowed = ", ".join(sorted(LEWORLDMODEL_HF_ALLOWED_CONFIG_TARGETS))
+        raise SystemExit(
+            "LeWorldModel config contains disallowed Hydra _target_ "
+            f"at {target_path}: {normalized!r}. Allowed targets: {allowed}."
+        )
+    return normalized
+
+
+def _walk_hydra_targets(node: object, path: str = "$") -> None:
+    if isinstance(node, Mapping):
+        if "_target_" in node:
+            _ensure_allowed_hydra_target(node["_target_"], path)
+        for key, value in node.items():
+            _walk_hydra_targets(value, _child_path(path, key))
+        return
+    if isinstance(node, Sequence) and not isinstance(node, str | bytes | bytearray):
+        for index, value in enumerate(node):
+            _walk_hydra_targets(value, _child_path(path, index))
+
+
+def _validate_leworldmodel_config(omega_conf: object, config: object) -> str:
+    plain_config = _config_to_container(omega_conf, config)
+    target = _config_target(plain_config)
+    _walk_hydra_targets(plain_config)
+    _ensure_leworldmodel_target(target)
+    return target
 
 
 def _checkpoint_provenance() -> dict[str, object]:
@@ -231,6 +299,9 @@ def build_checkpoint(
             revision=revision,
         )
     )
+
+    config = omega_conf.load(config_path)
+    target = _validate_leworldmodel_config(omega_conf, config)
     weights_path = Path(
         hf_hub_download(
             repo_id=repo_id,
@@ -239,10 +310,6 @@ def build_checkpoint(
             revision=revision,
         )
     )
-
-    config = omega_conf.load(config_path)
-    target = _config_target(config)
-    _ensure_leworldmodel_target(target)
     model = instantiate(config)
     weights = _load_weights(torch, weights_path, allow_unsafe_pickle=allow_unsafe_pickle)
     incompatible = model.load_state_dict(weights, strict=False)

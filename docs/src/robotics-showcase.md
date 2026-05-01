@@ -275,10 +275,11 @@ For non-PushT tasks, the host must provide:
 
 When the default LeWorldModel object checkpoint is missing, the polished command can build it from
 Hugging Face assets. Use `--lewm-revision <tag-or-commit>` or `LEWORLDMODEL_REVISION` for a pinned
-asset revision. The builder loads `weights.pt` with `torch.load(..., weights_only=True)` by default;
-the `--allow-unsafe-pickle` flag is an explicit trusted-artifact escape hatch for legacy weights.
-This auto-build path is skipped for `--health-only`, which only reports whether the checkpoint is
-present.
+asset revision. The builder validates the downloaded Hydra config against the official PushT LeWM
+target allowlist before instantiating the model or downloading weights. It then loads `weights.pt`
+with `torch.load(..., weights_only=True)` by default; the `--allow-unsafe-pickle` flag is an
+explicit trusted-artifact escape hatch for legacy weights. This auto-build path is skipped for
+`--health-only`, which only reports whether the checkpoint is present.
 
 WorldForge fails instead of padding, projecting, or silently reinterpreting mismatched action
 spaces.
