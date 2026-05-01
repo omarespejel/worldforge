@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import base64
+import ipaddress
 import mimetypes
+import multiprocessing
+import queue
+import socket
 from collections.abc import Callable
 from pathlib import Path
 from time import perf_counter, sleep
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -22,6 +27,179 @@ from worldforge.models import (
 from .base import ProviderBudgetExceededError, ProviderError
 
 _RETRYABLE_EXCEPTIONS = (httpx.TransportError,)
+_LOCAL_HOST_NAMES = frozenset({"localhost", "localhost.localdomain"})
+_DNS_RESOLUTION_TIMEOUT_SECONDS = 2.0
+
+
+def validate_remote_base_url(
+    base_url: str,
+    *,
+    provider_name: str,
+    env_var: str,
+    allow_local_network: bool = False,
+    resolve_dns: bool = True,
+    dns_resolution_timeout_seconds: float = _DNS_RESOLUTION_TIMEOUT_SECONDS,
+) -> str:
+    """Return a normalized HTTP base URL after blocking local/private destinations."""
+
+    parsed = urlparse(base_url)
+    if parsed.scheme.lower() not in {"http", "https"}:
+        raise ProviderError(f"Provider '{provider_name}' {env_var} must use an http or https URL.")
+    if not parsed.hostname:
+        raise ProviderError(f"Provider '{provider_name}' {env_var} must include a hostname.")
+    if parsed.username or parsed.password:
+        raise ProviderError(
+            f"Provider '{provider_name}' {env_var} must not include embedded credentials."
+        )
+    if parsed.query or parsed.fragment:
+        raise ProviderError(
+            f"Provider '{provider_name}' {env_var} must not include query parameters or fragments."
+        )
+
+    host = parsed.hostname.strip().lower()
+    if not allow_local_network:
+        _reject_local_hostname(host, provider_name=provider_name, env_var=env_var)
+        is_ip_literal = _reject_local_ip_literal(
+            host,
+            provider_name=provider_name,
+            env_var=env_var,
+        )
+        if resolve_dns and not is_ip_literal:
+            _reject_local_resolved_addresses(
+                host,
+                port=parsed.port or (443 if parsed.scheme.lower() == "https" else 80),
+                provider_name=provider_name,
+                env_var=env_var,
+                timeout_seconds=dns_resolution_timeout_seconds,
+            )
+    return base_url.rstrip("/")
+
+
+def _reject_local_hostname(host: str, *, provider_name: str, env_var: str) -> None:
+    if host in _LOCAL_HOST_NAMES or host.endswith(".localhost"):
+        raise ProviderError(
+            f"Provider '{provider_name}' {env_var} resolves to a local/private destination. "
+            "Set the provider's explicit local-network opt-in only for trusted local servers."
+        )
+
+
+def _reject_local_ip_literal(host: str, *, provider_name: str, env_var: str) -> bool:
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    _reject_local_address(address, provider_name=provider_name, env_var=env_var)
+    return True
+
+
+def _reject_local_resolved_addresses(
+    host: str,
+    *,
+    port: int,
+    provider_name: str,
+    env_var: str,
+    timeout_seconds: float,
+) -> None:
+    try:
+        addresses = _getaddrinfo_with_timeout(
+            host,
+            port,
+            timeout_seconds=timeout_seconds,
+        )
+    except TimeoutError as exc:
+        raise ProviderError(
+            f"Provider '{provider_name}' {env_var} host resolution timed out: {host}."
+        ) from exc
+    except socket.gaierror as exc:
+        raise ProviderError(
+            f"Provider '{provider_name}' {env_var} host could not be resolved: {host}."
+        ) from exc
+    for address in addresses:
+        _reject_local_address(
+            ipaddress.ip_address(address),
+            provider_name=provider_name,
+            env_var=env_var,
+        )
+
+
+def _resolve_getaddrinfo_worker(
+    host: str,
+    port: int,
+    result_queue: multiprocessing.Queue,
+) -> None:
+    try:
+        addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        result_queue.put(("gaierror", (exc.errno, exc.strerror)))
+        return
+    result_queue.put(("ok", [address[4][0] for address in addresses]))
+
+
+def _getaddrinfo_with_timeout(
+    host: str,
+    port: int,
+    *,
+    timeout_seconds: float,
+) -> list[str]:
+    if timeout_seconds <= 0:
+        raise TimeoutError("DNS resolution timeout must be greater than 0.")
+
+    context = multiprocessing.get_context("spawn")
+    result_queue = context.Queue(maxsize=1)
+    resolver = context.Process(
+        target=_resolve_getaddrinfo_worker,
+        args=(host, port, result_queue),
+        name=f"worldforge-dns-resolver-{host}",
+    )
+    try:
+        resolver.start()
+        resolver.join(timeout_seconds)
+        if resolver.is_alive():
+            resolver.terminate()
+            resolver.join()
+            raise TimeoutError(f"DNS resolution exceeded {timeout_seconds:.1f}s.")
+
+        if resolver.exitcode not in (0, None):
+            raise socket.gaierror(
+                socket.EAI_FAIL,
+                f"DNS resolver process exited with code {resolver.exitcode}",
+            )
+        try:
+            status, value = result_queue.get(timeout=0.1)
+        except queue.Empty as exc:
+            raise socket.gaierror(socket.EAI_FAIL, "DNS resolver returned no result") from exc
+        if status == "gaierror":
+            error_number, error_text = value
+            raise socket.gaierror(error_number, error_text)
+        if status != "ok":
+            raise socket.gaierror(socket.EAI_FAIL, "DNS resolver returned an invalid result")
+        return list(value)
+    finally:
+        if resolver.is_alive():
+            resolver.terminate()
+            resolver.join()
+        result_queue.close()
+        result_queue.join_thread()
+
+
+def _reject_local_address(
+    address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    *,
+    provider_name: str,
+    env_var: str,
+) -> None:
+    if (
+        address.is_loopback
+        or address.is_private
+        or address.is_link_local
+        or address.is_unspecified
+        or address.is_reserved
+        or address.is_multicast
+    ):
+        raise ProviderError(
+            f"Provider '{provider_name}' {env_var} resolves to a local/private destination. "
+            "Set the provider's explicit local-network opt-in only for trusted local servers."
+        )
 
 
 def asset_to_uri(value: str | None, *, default_content_type: str) -> str | None:

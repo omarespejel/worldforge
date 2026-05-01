@@ -17,7 +17,15 @@ from worldforge.providers.runtime_manifest import (
     missing_optional_dependency_detail,
 )
 
-EXPECTED_MANIFEST_PROVIDERS = ("cosmos", "gr00t", "jepa", "lerobot", "leworldmodel", "runway")
+EXPECTED_MANIFEST_PROVIDERS = (
+    "cosmos-policy",
+    "cosmos",
+    "gr00t",
+    "jepa",
+    "lerobot",
+    "leworldmodel",
+    "runway",
+)
 
 
 def test_runtime_manifests_cover_real_optional_providers() -> None:
@@ -29,7 +37,15 @@ def test_runtime_manifests_cover_real_optional_providers() -> None:
     for manifest in manifests:
         profile = catalog[manifest.provider]
         assert manifest.schema_version == 1
-        assert set(manifest.capabilities) <= set(profile.capabilities.enabled_names())
+        missing_profile_capabilities = set(manifest.capabilities) - set(
+            profile.capabilities.enabled_names()
+        )
+        if missing_profile_capabilities:
+            assert missing_profile_capabilities == {"policy"}
+            assert any(
+                "action translator" in artifact.lower()
+                for artifact in manifest.host_owned_artifacts
+            )
         assert manifest.docs_path == f"docs/src/providers/{manifest.provider}.md"
         assert manifest.minimum_smoke_command
         assert manifest.expected_success_signal

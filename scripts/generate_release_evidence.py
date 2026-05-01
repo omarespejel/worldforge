@@ -47,6 +47,7 @@ VALIDATION_COMMANDS = (
 
 LIVE_PROVIDER_ENV = {
     "cosmos": ("COSMOS_BASE_URL",),
+    "cosmos-policy": ("COSMOS_POLICY_BASE_URL",),
     "runway": ("RUNWAYML_API_SECRET", "RUNWAY_API_SECRET"),
     "leworldmodel": ("LEWORLDMODEL_POLICY", "LEWM_POLICY"),
     "gr00t": ("GROOT_POLICY_HOST",),

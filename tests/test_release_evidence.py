@@ -26,6 +26,7 @@ def test_release_evidence_renders_without_credentials(
 ) -> None:
     for name in (
         "COSMOS_BASE_URL",
+        "COSMOS_POLICY_BASE_URL",
         "RUNWAYML_API_SECRET",
         "RUNWAY_API_SECRET",
         "LEWORLDMODEL_POLICY",
@@ -51,6 +52,7 @@ def test_release_evidence_renders_without_credentials(
         "| `runway` | not configured | missing `RUNWAYML_API_SECRET`, `RUNWAY_API_SECRET` |"
         in report
     )
+    assert "| `cosmos-policy` | not configured | missing `COSMOS_POLICY_BASE_URL` |" in report
     assert "uv run python scripts/generate_provider_docs.py --check" in report
     assert "uv run --extra harness pytest --cov=src/worldforge" in report
     assert "[`" in report
