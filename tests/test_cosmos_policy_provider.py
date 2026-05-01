@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import socket
 
 import httpx
 import pytest
@@ -13,6 +12,7 @@ from worldforge.providers import (
     CosmosPolicyProvider,
     ProviderError,
     ProviderProfileSpec,
+    http_utils,
 )
 from worldforge.testing import assert_provider_contract
 
@@ -239,23 +239,20 @@ def test_cosmos_policy_allows_local_base_url_with_explicit_opt_in() -> None:
 def test_cosmos_policy_validates_dns_even_with_mock_transport(monkeypatch) -> None:
     called = False
 
-    def fake_getaddrinfo(*_args: object, **_kwargs: object) -> list[tuple[object, ...]]:
-        return [
-            (
-                socket.AF_INET,
-                socket.SOCK_STREAM,
-                6,
-                "",
-                ("127.0.0.1", 8777),
-            )
-        ]
+    def fake_getaddrinfo(
+        _host: str,
+        _port: int,
+        *,
+        timeout_seconds: float,
+    ) -> list[str]:
+        return ["127.0.0.1"]
 
     def handler(_request: httpx.Request) -> httpx.Response:
         nonlocal called
         called = True
         return httpx.Response(200, json={"actions": _actions(0.1)})
 
-    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(http_utils, "_getaddrinfo_with_timeout", fake_getaddrinfo)
     provider = CosmosPolicyProvider(
         base_url="http://cosmos-policy.example",
         transport=httpx.MockTransport(handler),

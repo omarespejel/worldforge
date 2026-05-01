@@ -5,9 +5,8 @@ from __future__ import annotations
 import base64
 import ipaddress
 import mimetypes
-import queue
+import multiprocessing
 import socket
-import threading
 from collections.abc import Callable
 from pathlib import Path
 from time import perf_counter, sleep
@@ -47,12 +46,24 @@ def validate_remote_base_url(
         raise ProviderError(f"Provider '{provider_name}' {env_var} must use an http or https URL.")
     if not parsed.hostname:
         raise ProviderError(f"Provider '{provider_name}' {env_var} must include a hostname.")
+    if parsed.username or parsed.password:
+        raise ProviderError(
+            f"Provider '{provider_name}' {env_var} must not include embedded credentials."
+        )
+    if parsed.query or parsed.fragment:
+        raise ProviderError(
+            f"Provider '{provider_name}' {env_var} must not include query parameters or fragments."
+        )
 
     host = parsed.hostname.strip().lower()
     if not allow_local_network:
         _reject_local_hostname(host, provider_name=provider_name, env_var=env_var)
-        _reject_local_ip_literal(host, provider_name=provider_name, env_var=env_var)
-        if resolve_dns:
+        is_ip_literal = _reject_local_ip_literal(
+            host,
+            provider_name=provider_name,
+            env_var=env_var,
+        )
+        if resolve_dns and not is_ip_literal:
             _reject_local_resolved_addresses(
                 host,
                 port=parsed.port or (443 if parsed.scheme.lower() == "https" else 80),
@@ -71,12 +82,13 @@ def _reject_local_hostname(host: str, *, provider_name: str, env_var: str) -> No
         )
 
 
-def _reject_local_ip_literal(host: str, *, provider_name: str, env_var: str) -> None:
+def _reject_local_ip_literal(host: str, *, provider_name: str, env_var: str) -> bool:
     try:
         address = ipaddress.ip_address(host)
     except ValueError:
-        return
+        return False
     _reject_local_address(address, provider_name=provider_name, env_var=env_var)
+    return True
 
 
 def _reject_local_resolved_addresses(
@@ -103,10 +115,23 @@ def _reject_local_resolved_addresses(
         ) from exc
     for address in addresses:
         _reject_local_address(
-            ipaddress.ip_address(address[4][0]),
+            ipaddress.ip_address(address),
             provider_name=provider_name,
             env_var=env_var,
         )
+
+
+def _resolve_getaddrinfo_worker(
+    host: str,
+    port: int,
+    result_queue: multiprocessing.Queue,
+) -> None:
+    try:
+        addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        result_queue.put(("gaierror", (exc.errno, exc.strerror)))
+        return
+    result_queue.put(("ok", [address[4][0] for address in addresses]))
 
 
 def _getaddrinfo_with_timeout(
@@ -114,33 +139,36 @@ def _getaddrinfo_with_timeout(
     port: int,
     *,
     timeout_seconds: float,
-) -> list[tuple[Any, ...]]:
+) -> list[str]:
     if timeout_seconds <= 0:
         raise TimeoutError("DNS resolution timeout must be greater than 0.")
 
-    result_queue: queue.Queue[tuple[str, object]] = queue.Queue(maxsize=1)
-
-    def resolve() -> None:
-        try:
-            result_queue.put(("ok", socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)))
-        except Exception as exc:
-            result_queue.put(("error", exc))
-
-    resolver = threading.Thread(
-        target=resolve,
+    context = multiprocessing.get_context("spawn")
+    result_queue = context.Queue(maxsize=1)
+    resolver = context.Process(
+        target=_resolve_getaddrinfo_worker,
+        args=(host, port, result_queue),
         name=f"worldforge-dns-resolver-{host}",
-        daemon=True,
     )
     resolver.start()
     resolver.join(timeout_seconds)
     if resolver.is_alive():
+        resolver.terminate()
+        resolver.join()
         raise TimeoutError(f"DNS resolution exceeded {timeout_seconds:.1f}s.")
 
-    status, value = result_queue.get_nowait()
-    if status == "error":
-        if isinstance(value, BaseException):
-            raise value
-        raise RuntimeError("DNS resolution failed without an exception.")
+    if resolver.exitcode not in (0, None):
+        raise socket.gaierror(
+            socket.EAI_FAIL,
+            f"DNS resolver process exited with code {resolver.exitcode}",
+        )
+    if result_queue.empty():
+        raise socket.gaierror(socket.EAI_FAIL, "DNS resolver returned no result")
+
+    status, value = result_queue.get()
+    if status == "gaierror":
+        error_number, error_text = value
+        raise socket.gaierror(error_number, error_text)
     return list(value)
 
 
