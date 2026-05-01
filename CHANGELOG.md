@@ -21,6 +21,9 @@ releases may still include breaking changes when the public API needs to tighten
 - Added Rerun visual layers for 3D world object boxes, robotics candidate targets, selected replay
   paths, score bars, and latency bars. `scripts/robotics-showcase` now writes a Rerun `.rrd`
   artifact for normal PushT policy+score runs unless `--no-rerun` is passed.
+- Added a roadmap continuation document that defines the next three GitHub issue streams:
+  provider evidence and runtime cohorts, evaluation evidence and claim integrity, and operator
+  workflow plus adapter authoring.
 
 ## 0.5.0 - 2026-04-24
 

@@ -27,10 +27,14 @@ upstream runtimes or robot controllers are involved.
 | Harness | Continue world editing, run inspection, report export, and provider diagnostics through optional Textual screens. |
 | Release engineering | Prefer signed, attested, tag-verified releases and trusted publishing. |
 
-For issue planning, use the detailed [Provider And Platform Roadmap](./provider-platform-roadmap.md).
-It breaks real provider implementation, production harness work, reference host applications,
-observability, monitoring, logging, operations, and release hardening into issue-ready workstreams
-with dependencies and acceptance criteria.
+For historical issue planning, use the detailed
+[Provider And Platform Roadmap](./provider-platform-roadmap.md). That first production track is
+complete and should be treated as baseline infrastructure.
+
+For the next implementation batch, use the
+[Roadmap Continuation](./roadmap-continuation.md). It narrows the project to three current streams:
+provider evidence and runtime cohorts, evaluation evidence and claim integrity, and operator
+workflow plus adapter authoring.
 
 ## Non-Goals
 
