@@ -248,36 +248,6 @@ def test_cosmos_policy_accepts_live_json_numpy_action_rows() -> None:
     ]["future_image"] == {"shape": [1, 2, 3]}
 
 
-def test_cosmos_policy_tolerates_malformed_optional_prediction_summary() -> None:
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json={
-                "actions": _actions(0.1),
-                "future_image_predictions": {
-                    "future_image": {
-                        "__numpy__": "not-base64",
-                        "dtype": "|u1",
-                        "shape": ["bad"],
-                    }
-                },
-            },
-        )
-
-    provider = CosmosPolicyProvider(
-        base_url=PUBLIC_BASE_URL,
-        transport=httpx.MockTransport(handler),
-        action_translator=_translator,
-    )
-
-    result = provider.select_actions(info=_policy_info())
-
-    assert result.metadata["raw_action_summary"]["actions_shape"] == [2, 14]
-    assert result.metadata["provider_info"]["future_prediction_summary"][
-        "future_image_predictions"
-    ] == {"warning": "malformed optional prediction payload"}
-
-
 def test_cosmos_policy_action_horizon_uses_translated_selected_actions() -> None:
     def one_step_translator(
         _raw_actions: object,

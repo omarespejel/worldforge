@@ -790,10 +790,7 @@ def _future_prediction_summary(payload: JSONDict) -> JSONDict:
         "all_future_image_predictions_by_depth",
     ):
         if key in payload:
-            try:
-                summary[key] = _summarize_prediction_payload(payload[key])
-            except ProviderError:
-                summary[key] = {"warning": "malformed optional prediction payload"}
+            summary[key] = _summarize_prediction_payload(payload[key])
     return summary
 
 
