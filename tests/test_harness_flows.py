@@ -5,7 +5,6 @@ import json
 import pytest
 
 from worldforge import WorldForge, WorldForgeError
-from worldforge.evaluation import EvaluationSuite
 from worldforge.harness import available_flows, flow_index, run_flow
 from worldforge.harness.flows import (
     benchmark_run_artifacts,
@@ -107,9 +106,9 @@ def test_eval_run_artifacts_match_canonical_renderer(tmp_path) -> None:
     forge = WorldForge(state_dir=tmp_path)
     artifacts, report = eval_run_artifacts(forge, "planning", "mock")
 
-    direct = EvaluationSuite.from_builtin("planning").run_report("mock", forge=forge)
-    assert artifacts["json"] == direct.to_json()
+    assert artifacts["json"] == report.to_json()
     assert artifacts["markdown"] == report.to_markdown()
+    assert artifacts["csv"] == report.to_csv()
     assert json.loads(artifacts["json"])["suite_id"] == "planning"
 
 
