@@ -272,8 +272,9 @@ then check tunnel/firewall reachability before sending a full `/act` request.
 
 ### 5. Run the full `/act` smoke
 
-The full smoke requires prepared ALOHA policy information and a trusted action translator. The
-translator is host code, so the command requires `--allow-translator-code` as an explicit opt-in.
+The full smoke requires ALOHA policy information to be prepared and a trusted action translator to
+be provided. The translator is host code, so the command requires `--allow-translator-code` as an
+explicit opt-in.
 
 Connect to a running Cosmos-Policy ALOHA server:
 
