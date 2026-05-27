@@ -66,7 +66,8 @@ tool call. It explicitly records that WorldForge is not executing the robot:
   "selected_candidate_id": "detour_right",
   "action": "relative_move",
   "params": {"forward": 0.25, "left": -0.2},
-  "execute_with": "host_runtime:dimos",
+  "execute_with": "host_runtime:mock-dimos",
+  "live_execute_with": "host_runtime:dimos",
   "worldforge_executes_robot": false
 }
 ```

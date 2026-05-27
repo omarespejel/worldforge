@@ -47,9 +47,11 @@ def test_dimos_go2_trace_judge_writes_offline_artifacts(tmp_path) -> None:
     assert scores["worldforge_score_result"]["lower_is_better"] is False
     assert scores["selected_candidate_id"] == "detour_right"
     assert selected["worldforge_executes_robot"] is False
-    assert selected["execute_with"] == "host_runtime:dimos"
+    assert selected["execute_with"] == "host_runtime:mock-dimos"
+    assert selected["live_execute_with"] == "host_runtime:dimos"
     assert outcome["executed_by"] == "mock-dimos"
     assert manifest["kind"] == "dimos_go2_trace_judge"
+    assert manifest["artifact_paths"]["run_manifest"] == "run_manifest.json"
     assert manifest["safety_boundary"]["host_owns_emergency_stop"] is True
     assert manifest["safety_boundary"]["worldforge_certifies_robot_safety"] is False
     assert (output_dir / "report.md").read_text().startswith("# DimOS Go2 Trace Judge")
@@ -63,10 +65,29 @@ def test_transparent_go2_scorer_rejects_missing_candidate_features() -> None:
         "action": "relative_move",
         "params": {"forward": 0.2},
         "features": {"goal_alignment": 0.5},
+        "reason_hint": "incomplete candidate",
     }
 
     with pytest.raises(WorldForgeError, match="information_gain"):
         provider.score_actions(info={"task": {}}, action_candidates=[bad_candidate])
+
+
+def test_transparent_go2_scorer_rejects_missing_reason_hint() -> None:
+    app = _load_app()
+    provider = app.TransparentGo2ScoreProvider()
+    bad_candidate = app.sample_candidates()[0]
+    bad_candidate.pop("reason_hint")
+
+    with pytest.raises(WorldForgeError, match="reason_hint"):
+        provider.score_actions(info={"task": {}}, action_candidates=[bad_candidate])
+
+
+def test_transparent_go2_scorer_validates_score_weights(monkeypatch) -> None:
+    app = _load_app()
+    monkeypatch.setitem(app.SCORE_WEIGHTS, "progress", None)
+
+    with pytest.raises(WorldForgeError, match="score weight progress"):
+        app.TransparentGo2ScoreProvider()
 
 
 def test_dimos_go2_trace_judge_cli_defaults_to_offline_run(tmp_path, capsys) -> None:

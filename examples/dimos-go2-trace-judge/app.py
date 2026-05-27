@@ -27,6 +27,7 @@ SCORE_WEIGHTS: JSON = {
     "not_stuck": 0.05,
     "execution_cost": -0.05,
 }
+REQUIRED_SCORE_WEIGHT_KEYS = tuple(SCORE_WEIGHTS)
 REQUIRED_FEATURES = (
     "goal_alignment",
     "information_gain",
@@ -41,6 +42,7 @@ class TransparentGo2ScoreProvider(BaseProvider):
     """Deterministic utility scorer for mocked Unitree Go2 navigation candidates."""
 
     def __init__(self) -> None:
+        _validate_score_weights()
         super().__init__(
             name="transparent-go2-score",
             capabilities=ProviderCapabilities(predict=False, score=True),
@@ -218,7 +220,8 @@ def run_trace_judge(
         "action": selected["action"],
         "params": selected["params"],
         "score": score_result.best_score,
-        "execute_with": "host_runtime:dimos",
+        "execute_with": "host_runtime:mock-dimos",
+        "live_execute_with": "host_runtime:dimos",
         "worldforge_executes_robot": False,
     }
     outcome = _mock_outcome(run_id, selected["id"])
@@ -363,6 +366,7 @@ def _run_manifest(
             "candidate_scores": "candidate_scores.json",
             "selected_action": "selected_action.json",
             "outcome_after_execution": "outcome_after_execution.json",
+            "run_manifest": "run_manifest.json",
             "report": "report.md",
         },
         "safety_boundary": {
@@ -409,9 +413,22 @@ def _require_candidates(action_candidates: object) -> list[JSON]:
             raise WorldForgeError(f"candidate {index} params must be an object.")
         if not isinstance(candidate["features"], dict):
             raise WorldForgeError(f"candidate {index} features must be an object.")
+        reason_hint = candidate.get("reason_hint")
+        if not isinstance(reason_hint, str) or not reason_hint.strip():
+            raise WorldForgeError(
+                f"candidate {candidate['id']} reason_hint must be a non-empty string."
+            )
+        candidate["reason_hint"] = reason_hint.strip()
         _require_features(candidate["features"], candidate_id=candidate["id"])
         candidates.append(candidate)
     return candidates
+
+
+def _validate_score_weights() -> None:
+    for name in REQUIRED_SCORE_WEIGHT_KEYS:
+        value = SCORE_WEIGHTS.get(name)
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            raise WorldForgeError(f"score weight {name} must be numeric.")
 
 
 def _require_features(features: JSON, *, candidate_id: str) -> None:
