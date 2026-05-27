@@ -11,6 +11,9 @@ from worldforge import WorldForgeError
 
 ROOT = Path(__file__).resolve().parents[1]
 LIVE_BRIDGE = ROOT / "examples" / "dimos-go2-trace-judge" / "live_dimos_bridge.py"
+VENUE_INPUT_SAMPLE = (
+    ROOT / "examples" / "dimos-go2-trace-judge" / "fixtures" / "venue_input.sample.json"
+)
 
 
 def _load_bridge():
@@ -150,6 +153,24 @@ def test_dry_run_selected_can_include_probe(tmp_path) -> None:
 
     assert manifest["probe_summary"]["can_list_tools"] is True
     assert (Path(result["output_dir"]) / "probe" / "probe.json").exists()
+
+
+def test_dry_run_selected_passes_venue_input_to_trace_judge(tmp_path) -> None:
+    bridge = _load_bridge()
+
+    result = bridge.dry_run_selected(
+        output_dir=tmp_path / "dry",
+        run_id="dry-venue",
+        goal=None,
+        input_json=VENUE_INPUT_SAMPLE,
+    )
+    output_dir = Path(result["output_dir"])
+    score_info = json.loads((output_dir / "trace_judge" / "score_info.json").read_text())
+    selected = json.loads((output_dir / "selected_mcp_command.json").read_text())
+
+    assert score_info["score_info"]["input_source"] == "venue_input_json"
+    assert score_info["score_info"]["host_runtime"] == "dimos"
+    assert selected["candidate_id"] == "detour_right"
 
 
 def test_execute_selected_requires_env_gate(tmp_path) -> None:

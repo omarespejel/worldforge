@@ -32,6 +32,41 @@ host-owned so it can evolve before becoming a shared WorldForge artifact contrac
 `candidate_scores.json` records the goal, candidate actions, transparent scoring features, the
 selected candidate, and the raw WorldForge `ActionScoreResult`.
 
+## Score Info
+
+`score_info.json` records the exact score-provider boundary. This is the clearest artifact for
+debugging or replacing the transparent scorer with a learned score provider later:
+
+```json
+{
+  "provider": "transparent-go2-score",
+  "capability": "score",
+  "score_info": {
+    "embodiment": "unitree_go2",
+    "host_runtime": "dimos",
+    "task": {"human_goal": "inspect the area"},
+    "observation_summary": {}
+  },
+  "action_candidates": []
+}
+```
+
+The live bridge and collector can feed the trace judge with a venue input file:
+
+```json
+{
+  "schema_version": 1,
+  "embodiment": "unitree_go2",
+  "host_runtime": "dimos",
+  "task": {
+    "human_goal": "inspect the area and move toward the indicated target",
+    "goal_representation": {"type": "host_interpreted_goal"}
+  },
+  "observation_summary": {},
+  "candidates": []
+}
+```
+
 Candidate feature values are normalized to `[0, 1]`:
 
 | Feature | Meaning |

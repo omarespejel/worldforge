@@ -122,7 +122,8 @@ def dry_run_selected(
     *,
     output_dir: Path,
     run_id: str,
-    goal: str,
+    goal: str | None,
+    input_json: Path | None = None,
     dimos_bin: str = "dimos",
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     with_probe: bool = False,
@@ -132,7 +133,12 @@ def dry_run_selected(
 
     output_dir = _prepare_output_dir(output_dir)
     run_id = _require_non_empty(run_id, name="run_id")
-    trace_result = _run_trace_judge(output_dir=output_dir / "trace_judge", run_id=run_id, goal=goal)
+    trace_result = _run_trace_judge(
+        output_dir=output_dir / "trace_judge",
+        run_id=run_id,
+        goal=goal,
+        input_json=input_json,
+    )
     selected_action = _read_json(output_dir / "trace_judge" / "selected_action.json")
     selected_command = build_selected_mcp_command(
         selected_action=selected_action,
@@ -175,8 +181,9 @@ def execute_selected(
     *,
     output_dir: Path,
     run_id: str,
-    goal: str,
+    goal: str | None,
     confirm: str,
+    input_json: Path | None = None,
     dimos_bin: str = "dimos",
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     with_probe: bool = True,
@@ -192,6 +199,7 @@ def execute_selected(
         output_dir=output_dir,
         run_id=run_id,
         goal=goal,
+        input_json=input_json,
         dimos_bin=dimos_bin,
         timeout_seconds=timeout_seconds,
         with_probe=with_probe,
@@ -293,7 +301,14 @@ def build_parser() -> argparse.ArgumentParser:
     dry_run.add_argument("--run-id", default="dimos-go2-live-dry-run")
     dry_run.add_argument(
         "--goal",
-        default="inspect the area and move toward the indicated target",
+        default=None,
+        help="Optional human-readable goal override for the trace judge evidence.",
+    )
+    dry_run.add_argument(
+        "--input-json",
+        type=Path,
+        default=None,
+        help="Optional venue_input.json with real observation/candidate data.",
     )
     dry_run.add_argument("--with-probe", action="store_true")
 
@@ -305,7 +320,14 @@ def build_parser() -> argparse.ArgumentParser:
     execute.add_argument("--run-id", default="dimos-go2-live-execute")
     execute.add_argument(
         "--goal",
-        default="inspect the area and move toward the indicated target",
+        default=None,
+        help="Optional human-readable goal override for the trace judge evidence.",
+    )
+    execute.add_argument(
+        "--input-json",
+        type=Path,
+        default=None,
+        help="Optional venue_input.json with real observation/candidate data.",
     )
     execute.add_argument("--confirm", default="")
     execute.add_argument("--skip-probe", action="store_true")
@@ -334,6 +356,7 @@ def main(argv: list[str] | None = None) -> int:
                 output_dir=args.output_dir,
                 run_id=args.run_id,
                 goal=args.goal,
+                input_json=args.input_json,
                 dimos_bin=args.dimos_bin,
                 timeout_seconds=args.timeout_seconds,
                 with_probe=args.with_probe,
@@ -344,6 +367,7 @@ def main(argv: list[str] | None = None) -> int:
                 run_id=args.run_id,
                 goal=args.goal,
                 confirm=args.confirm,
+                input_json=args.input_json,
                 dimos_bin=args.dimos_bin,
                 timeout_seconds=args.timeout_seconds,
                 with_probe=not args.skip_probe,
@@ -500,9 +524,20 @@ def _execution_status(execution_result: JSON | None) -> str:
     return "succeeded" if result.get("exit_code") == 0 else "failed"
 
 
-def _run_trace_judge(*, output_dir: Path, run_id: str, goal: str) -> JSON:
+def _run_trace_judge(
+    *,
+    output_dir: Path,
+    run_id: str,
+    goal: str | None,
+    input_json: Path | None,
+) -> JSON:
     app = _load_trace_app()
-    return app.run_trace_judge(output_dir=output_dir, run_id=run_id, goal=goal)
+    return app.run_trace_judge(
+        output_dir=output_dir,
+        run_id=run_id,
+        goal=goal,
+        input_json=input_json,
+    )
 
 
 def _load_trace_app() -> Any:

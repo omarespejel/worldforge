@@ -188,33 +188,49 @@ def run_trace_judge(
     *,
     output_dir: Path,
     run_id: str = DEFAULT_RUN_ID,
-    goal: str = "inspect the area and move toward the indicated target",
+    goal: str | None = None,
+    input_json: Path | None = None,
 ) -> JSON:
     """Score mocked Go2 candidates and write issue-safe evidence artifacts."""
 
     run_id = _require_non_empty_str(run_id, name="run_id")
-    goal = _require_non_empty_str(goal, name="goal")
     output_dir = output_dir.expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    observation = sample_observation_summary()
-    task = sample_task(goal)
-    candidates = sample_candidates()
+    input_bundle = _load_trace_input(input_json=input_json, goal=goal)
+    goal = input_bundle["task"]["human_goal"]
+    observation = input_bundle["observation_summary"]
+    task = input_bundle["task"]
+    candidates = input_bundle["candidates"]
+    embodiment = input_bundle["embodiment"]
+    host_runtime = input_bundle["host_runtime"]
     provider = TransparentGo2ScoreProvider()
     forge = WorldForge(auto_register_remote=False)
     forge.register_provider(provider)
 
     score_info: JSON = {
+        "schema_version": 1,
         "run_id": run_id,
-        "embodiment": "unitree_go2",
-        "host_runtime": "mock-dimos",
+        "embodiment": embodiment,
+        "host_runtime": host_runtime,
+        "input_source": input_bundle["input_source"],
         "task": task,
         "observation_summary": observation,
+    }
+    score_info_artifact: JSON = {
+        "schema_version": 1,
+        "run_id": run_id,
+        "provider": provider.name,
+        "capability": "score",
+        "score_info": score_info,
+        "action_candidates": candidates,
     }
     score_result = forge.score_actions(provider.name, info=score_info, action_candidates=candidates)
     selected = candidates[score_result.best_index]
     candidate_scores = _candidate_scores_payload(
         run_id=run_id,
+        embodiment=embodiment,
+        host_runtime=host_runtime,
         task=task,
         observation=observation,
         candidates=candidates,
@@ -228,19 +244,22 @@ def run_trace_judge(
         "action": selected["action"],
         "params": selected["params"],
         "score": score_result.best_score,
-        "execute_with": "host_runtime:mock-dimos",
+        "execute_with": f"host_runtime:{host_runtime}",
         "live_execute_with": "host_runtime:dimos",
         "worldforge_executes_robot": False,
     }
-    outcome = _mock_outcome(run_id, selected["id"])
+    outcome = _mock_outcome(run_id, selected["id"], host_runtime=host_runtime)
     manifest = _run_manifest(
         run_id=run_id,
         goal=goal,
+        input_source=input_bundle["input_source"],
+        host_runtime=host_runtime,
         selected_action=selected_action,
         score_result=score_result,
     )
     report = _markdown_report(candidate_scores, selected_action, outcome)
 
+    _write_json(output_dir / "score_info.json", score_info_artifact)
     _write_json(output_dir / "observation_summary.json", observation)
     _write_json(output_dir / "candidate_scores.json", candidate_scores)
     _write_json(output_dir / "selected_action.json", selected_action)
@@ -255,6 +274,7 @@ def run_trace_judge(
         "selected_candidate_id": selected["id"],
         "selected_score": score_result.best_score,
         "artifact_paths": {
+            "score_info": "score_info.json",
             "observation_summary": "observation_summary.json",
             "candidate_scores": "candidate_scores.json",
             "selected_action": "selected_action.json",
@@ -272,9 +292,15 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     run.add_argument("--run-id", default=DEFAULT_RUN_ID)
     run.add_argument(
+        "--input-json",
+        type=Path,
+        default=None,
+        help="Optional venue_input.json with observation_summary, task, and candidates.",
+    )
+    run.add_argument(
         "--goal",
-        default="inspect the area and move toward the indicated target",
-        help="Human-readable goal recorded in the evidence artifacts.",
+        default=None,
+        help="Optional human-readable goal override recorded in the evidence artifacts.",
     )
     return parser
 
@@ -283,7 +309,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        result = run_trace_judge(output_dir=args.output_dir, run_id=args.run_id, goal=args.goal)
+        result = run_trace_judge(
+            output_dir=args.output_dir,
+            run_id=args.run_id,
+            goal=args.goal,
+            input_json=args.input_json,
+        )
     except WorldForgeError as exc:
         print(json.dumps({"error": {"type": "validation_error", "message": str(exc)}}))
         return 2
@@ -294,6 +325,8 @@ def main(argv: list[str] | None = None) -> int:
 def _candidate_scores_payload(
     *,
     run_id: str,
+    embodiment: str,
+    host_runtime: str,
     task: JSON,
     observation: JSON,
     candidates: list[JSON],
@@ -315,8 +348,8 @@ def _candidate_scores_payload(
     return {
         "schema_version": 1,
         "run_id": run_id,
-        "embodiment": "unitree_go2",
-        "host_runtime": "mock-dimos",
+        "embodiment": embodiment,
+        "host_runtime": host_runtime,
         "task": task,
         "observation_summary": observation,
         "candidates": [
@@ -333,12 +366,12 @@ def _candidate_scores_payload(
     }
 
 
-def _mock_outcome(run_id: str, candidate_id: str) -> JSON:
+def _mock_outcome(run_id: str, candidate_id: str, *, host_runtime: str) -> JSON:
     return {
         "schema_version": 1,
         "run_id": run_id,
         "selected_candidate_id": candidate_id,
-        "executed_by": "mock-dimos",
+        "executed_by": f"mock-{host_runtime.removeprefix('mock-')}",
         "worldforge_executes_robot": False,
         "outcome_after_execution": {
             "duration_s": 5.0,
@@ -355,6 +388,8 @@ def _run_manifest(
     *,
     run_id: str,
     goal: str,
+    input_source: str,
+    host_runtime: str,
     selected_action: JSON,
     score_result: ActionScoreResult,
 ) -> JSON:
@@ -367,9 +402,12 @@ def _run_manifest(
         "capability": "score",
         "operation": "candidate_trace_judge",
         "goal": goal,
+        "host_runtime": host_runtime,
+        "input_source": input_source,
         "selected_candidate_id": selected_action["selected_candidate_id"],
         "selected_score": selected_action["score"],
         "artifact_paths": {
+            "score_info": "score_info.json",
             "observation_summary": "observation_summary.json",
             "candidate_scores": "candidate_scores.json",
             "selected_action": "selected_action.json",
@@ -388,6 +426,90 @@ def _run_manifest(
         "experimental": True,
         "open_to_maintainer_changes": True,
     }
+
+
+def _load_trace_input(*, input_json: Path | None, goal: str | None) -> JSON:
+    if input_json is None:
+        resolved_goal = (
+            _require_non_empty_str(goal, name="goal")
+            if goal is not None
+            else "inspect the area and move toward the indicated target"
+        )
+        return {
+            "input_source": "built_in_sample",
+            "embodiment": "unitree_go2",
+            "host_runtime": "mock-dimos",
+            "task": sample_task(resolved_goal),
+            "observation_summary": sample_observation_summary(),
+            "candidates": sample_candidates(),
+        }
+
+    payload = _read_json_object(input_json)
+    observation = _require_json_object(
+        payload.get("observation_summary"),
+        name="observation_summary",
+    )
+    task = _require_task(payload.get("task"), goal=goal)
+    candidates = _require_candidates(payload.get("candidates"))
+    return {
+        "input_source": "venue_input_json",
+        "input_json": str(input_json),
+        "embodiment": _optional_non_empty_str(
+            payload.get("embodiment"),
+            name="embodiment",
+            default="unitree_go2",
+        ),
+        "host_runtime": _optional_non_empty_str(
+            payload.get("host_runtime"),
+            name="host_runtime",
+            default="dimos",
+        ),
+        "task": task,
+        "observation_summary": observation,
+        "candidates": candidates,
+    }
+
+
+def _read_json_object(path: Path) -> JSON:
+    path = path.expanduser()
+    if not path.exists():
+        raise WorldForgeError(f"input_json does not exist: {path}.")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise WorldForgeError(f"input_json must be valid JSON: {path}: {exc.msg}.") from exc
+    if not isinstance(payload, dict):
+        raise WorldForgeError("input_json must contain a JSON object.")
+    return payload
+
+
+def _require_json_object(value: object, *, name: str) -> JSON:
+    if not isinstance(value, dict):
+        raise WorldForgeError(f"{name} must be a JSON object.")
+    return dict(value)
+
+
+def _require_task(value: object, *, goal: str | None) -> JSON:
+    task = _require_json_object(value, name="task")
+    if goal is not None:
+        task["human_goal"] = _require_non_empty_str(goal, name="goal")
+    else:
+        task["human_goal"] = _require_non_empty_str(
+            task.get("human_goal"),
+            name="task.human_goal",
+        )
+    goal_representation = task.get("goal_representation")
+    if goal_representation is not None and not isinstance(goal_representation, dict):
+        raise WorldForgeError("task.goal_representation must be a JSON object when present.")
+    if goal_representation is None:
+        task["goal_representation"] = {"type": "host_interpreted_goal"}
+    return task
+
+
+def _optional_non_empty_str(value: object, *, name: str, default: str) -> str:
+    if value is None:
+        return default
+    return _require_non_empty_str(value, name=name)
 
 
 def _candidate_score(features: JSON) -> float:

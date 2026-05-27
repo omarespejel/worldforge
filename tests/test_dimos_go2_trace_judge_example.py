@@ -10,6 +10,9 @@ from worldforge import WorldForgeError
 
 ROOT = Path(__file__).resolve().parents[1]
 TRACE_JUDGE_APP = ROOT / "examples" / "dimos-go2-trace-judge" / "app.py"
+VENUE_INPUT_SAMPLE = (
+    ROOT / "examples" / "dimos-go2-trace-judge" / "fixtures" / "venue_input.sample.json"
+)
 
 
 def _load_app():
@@ -39,12 +42,15 @@ def test_dimos_go2_trace_judge_writes_offline_artifacts(tmp_path) -> None:
     output_dir = Path(result["output_dir"])
     observation = json.loads((output_dir / "observation_summary.json").read_text())
     scores = json.loads((output_dir / "candidate_scores.json").read_text())
+    score_info = json.loads((output_dir / "score_info.json").read_text())
     selected = json.loads((output_dir / "selected_action.json").read_text())
     outcome = json.loads((output_dir / "outcome_after_execution.json").read_text())
     manifest = json.loads((output_dir / "run_manifest.json").read_text())
 
     assert observation["costmap_summary"]["frontier_count"] == 4
     assert scores["schema_version"] == 1
+    assert score_info["score_info"]["input_source"] == "built_in_sample"
+    assert score_info["action_candidates"][0]["id"] == "scan_left"
     assert scores["worldforge_score_result"]["provider"] == "transparent-go2-score"
     assert scores["worldforge_score_result"]["lower_is_better"] is False
     assert scores["selected_candidate_id"] == "detour_right"
@@ -53,6 +59,7 @@ def test_dimos_go2_trace_judge_writes_offline_artifacts(tmp_path) -> None:
     assert selected["live_execute_with"] == "host_runtime:dimos"
     assert outcome["executed_by"] == "mock-dimos"
     assert manifest["kind"] == "dimos_go2_trace_judge"
+    assert manifest["artifact_paths"]["score_info"] == "score_info.json"
     assert manifest["artifact_paths"]["run_manifest"] == "run_manifest.json"
     assert manifest["safety_boundary"]["host_owns_emergency_stop"] is True
     assert manifest["safety_boundary"]["worldforge_certifies_robot_safety"] is False
@@ -133,3 +140,48 @@ def test_dimos_go2_trace_judge_cli_defaults_to_offline_run(tmp_path, capsys) -> 
     assert exit_code == 0
     assert payload["run_id"] == "cli-go2"
     assert payload["selected_candidate_id"] == "detour_right"
+
+
+def test_dimos_go2_trace_judge_accepts_venue_input_json(tmp_path) -> None:
+    app = _load_app()
+
+    result = app.run_trace_judge(
+        output_dir=tmp_path / "venue",
+        run_id="venue-go2",
+        input_json=VENUE_INPUT_SAMPLE,
+    )
+    output_dir = Path(result["output_dir"])
+    score_info = json.loads((output_dir / "score_info.json").read_text())
+    scores = json.loads((output_dir / "candidate_scores.json").read_text())
+    selected = json.loads((output_dir / "selected_action.json").read_text())
+    manifest = json.loads((output_dir / "run_manifest.json").read_text())
+
+    assert result["selected_candidate_id"] == "detour_right"
+    assert score_info["score_info"]["input_source"] == "venue_input_json"
+    assert score_info["score_info"]["host_runtime"] == "dimos"
+    assert scores["host_runtime"] == "dimos"
+    assert selected["execute_with"] == "host_runtime:dimos"
+    assert manifest["input_source"] == "venue_input_json"
+
+
+def test_dimos_go2_trace_judge_goal_overrides_venue_input(tmp_path) -> None:
+    app = _load_app()
+
+    result = app.run_trace_judge(
+        output_dir=tmp_path / "venue",
+        run_id="venue-goal",
+        goal="follow the operator hand direction",
+        input_json=VENUE_INPUT_SAMPLE,
+    )
+    score_info = json.loads((Path(result["output_dir"]) / "score_info.json").read_text())
+
+    assert score_info["score_info"]["task"]["human_goal"] == "follow the operator hand direction"
+
+
+def test_dimos_go2_trace_judge_rejects_malformed_venue_input(tmp_path) -> None:
+    app = _load_app()
+    bad_input = tmp_path / "bad.json"
+    bad_input.write_text(json.dumps({"task": {"human_goal": "inspect"}, "candidates": []}))
+
+    with pytest.raises(WorldForgeError, match="observation_summary"):
+        app.run_trace_judge(output_dir=tmp_path / "run", input_json=bad_input)

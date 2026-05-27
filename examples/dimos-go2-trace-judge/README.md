@@ -37,7 +37,7 @@ uv run python examples/dimos-go2-trace-judge/app.py run \
   --output-dir examples/dimos-go2-trace-judge/sample_run
 ```
 
-Expected: exit code `0`, with five JSON artifacts plus `report.md` written to the selected output
+Expected: exit code `0`, with six JSON artifacts plus `report.md` written to the selected output
 directory. For the default command, inspect `.worldforge/dimos-go2-trace-judge/run_manifest.json`.
 For the deterministic sample command, inspect
 `examples/dimos-go2-trace-judge/sample_run/run_manifest.json`.
@@ -46,12 +46,24 @@ If the run fails before writing artifacts, check the printed validation error. I
 but the result looks wrong, start with `run_manifest.json`, then compare `candidate_scores.json`
 and `selected_action.json`.
 
+Run against a venue input file:
+
+```bash
+uv run python examples/dimos-go2-trace-judge/app.py run \
+  --input-json examples/dimos-go2-trace-judge/fixtures/venue_input.sample.json \
+  --output-dir .worldforge/dimos-go2-trace-judge/venue-smoke
+```
+
+`--input-json` must contain `observation_summary`, `task`, and `candidates[]`. The optional
+`--goal` flag overrides `task.human_goal` while preserving the rest of the task representation.
+
 ## Artifacts
 
 The runner writes:
 
 | Artifact | Purpose |
 | --- | --- |
+| `score_info.json` | The exact score-provider input: task, observation summary, host runtime, and action candidates. |
 | `observation_summary.json` | Sanitized host observation summary: pose, costmap, visual target, navigation state. |
 | `candidate_scores.json` | Candidate actions, transparent features, WorldForge score result, selected candidate. |
 | `selected_action.json` | The action the host could execute through DimOS. |
@@ -124,6 +136,14 @@ Expected: the offline trace judge runs, `selected_mcp_command.json` is written, 
 `will_execute` is `false`. If this fails, inspect `bridge_manifest.json` first, then run the
 offline trace judge by itself to confirm the score path still works before debugging DimOS.
 
+Dry-run against a venue input file:
+
+```bash
+uv run python examples/dimos-go2-trace-judge/live_dimos_bridge.py dry-run-selected \
+  --input-json .worldforge/dimos-go2-live-bridge/venue/venue_input.json \
+  --with-probe
+```
+
 Live execution is intentionally harder:
 
 ```bash
@@ -138,6 +158,47 @@ and an emergency stop path available. This bridge is fork-only until the live as
 validated. A successful run exits `0` and writes `execution_result.json`, `bridge_manifest.json`,
 and `report.md`. If execution is blocked or fails, first verify the environment variable and
 confirmation flag, then inspect `execution_result.json` and `bridge_manifest.json` for details.
+
+## Venue Input Collector
+
+`collect_venue_input.py` prepares robot-time artifacts without moving the robot. It safely runs the
+same DimOS MCP probe commands as the live bridge:
+
+```bash
+uv run python examples/dimos-go2-trace-judge/collect_venue_input.py \
+  --output-dir .worldforge/dimos-go2-live-bridge/venue
+```
+
+Expected: `venue_probe.json`, `venue_input.json`, `run_manifest.json`, and `report.md`. The starter
+`venue_input.json` is intentionally editable. Before live execution, replace the sample feature
+values with current venue observations such as target bearing, obstacle risk, expected progress,
+frontier count, stuck risk, and information gain.
+
+The robot-time sequence should be:
+
+```bash
+uv run python examples/dimos-go2-trace-judge/live_dimos_bridge.py probe \
+  --output-dir .worldforge/dimos-go2-live-bridge/venue-probe
+
+uv run python examples/dimos-go2-trace-judge/collect_venue_input.py \
+  --output-dir .worldforge/dimos-go2-live-bridge/venue
+
+uv run python examples/dimos-go2-trace-judge/live_dimos_bridge.py dry-run-selected \
+  --input-json .worldforge/dimos-go2-live-bridge/venue/venue_input.json \
+  --with-probe \
+  --output-dir .worldforge/dimos-go2-live-bridge/venue-dry-run
+
+WORLDFORGE_DIMOS_ENABLE_EXECUTE=1 \
+uv run python examples/dimos-go2-trace-judge/live_dimos_bridge.py execute-selected \
+  --input-json .worldforge/dimos-go2-live-bridge/venue/venue_input.json \
+  --confirm LIVE_DIMOS_GO2_EXECUTE \
+  --output-dir .worldforge/dimos-go2-live-bridge/venue-execute
+```
+
+The collector is grounded in the DimOS Go2 source/docs that expose `unitree-go2-agentic`,
+`dimos mcp list-tools`, `dimos mcp call relative_move`, Rerun visualization, costmap navigation,
+and frontier exploration. It still keeps DimOS as a host-owned runtime and does not import DimOS
+into WorldForge.
 
 ## Related Work
 
