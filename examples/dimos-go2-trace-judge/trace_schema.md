@@ -60,10 +60,35 @@ The live bridge and collector can feed the trace judge with a venue input file:
   "host_runtime": "dimos",
   "task": {
     "human_goal": "inspect the area and move toward the indicated target",
-    "goal_representation": {"type": "host_interpreted_goal"}
+    "goal_representation": {
+      "type": "host_interpreted_goal",
+      "gesture_direction_degrees": 35
+    }
   },
-  "observation_summary": {},
-  "candidates": []
+  "observation_summary": {
+    "pose": {"x": 0.0, "y": 0.0, "yaw_degrees": 0.0},
+    "costmap_summary": {
+      "min_clearance_m": 0.8,
+      "unknown_area_ratio": 0.42,
+      "frontier_count": 4
+    }
+  },
+  "candidates": [
+    {
+      "id": "scan_left",
+      "action": "relative_move",
+      "params": {"degrees": 35},
+      "features": {
+        "goal_alignment": 0.88,
+        "information_gain": 0.83,
+        "progress": 0.21,
+        "obstacle_risk": 0.05,
+        "stuck_risk": 0.02,
+        "execution_cost": 0.16
+      },
+      "reason_hint": "high information gain and aligned with the gesture bearing"
+    }
+  ]
 }
 ```
 

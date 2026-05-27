@@ -54,6 +54,10 @@ uv run python examples/dimos-go2-trace-judge/app.py run \
   --output-dir .worldforge/dimos-go2-trace-judge/venue-smoke
 ```
 
+Expected: exit code `0`, with six JSON artifacts plus `report.md` written to
+`.worldforge/dimos-go2-trace-judge/venue-smoke`. `score_info.json` should record
+`input_source: venue_input_json` from `venue_input.sample.json`.
+
 `--input-json` must contain `observation_summary`, `task`, and `candidates[]`. The optional
 `--goal` flag overrides `task.human_goal` while preserving the rest of the task representation.
 
@@ -144,6 +148,11 @@ uv run python examples/dimos-go2-trace-judge/live_dimos_bridge.py dry-run-select
   --with-probe
 ```
 
+Expected: exit code `0`, `selected_mcp_command.json` with `will_execute` set to `false`, and
+score artifacts under `trace_judge/` reflecting the venue input source. If `dry-run-selected`
+fails, verify `venue_input.json` contains `observation_summary`, `task`, and `candidates`, then
+check `bridge_manifest.json`.
+
 Live execution is intentionally harder:
 
 ```bash
@@ -173,6 +182,11 @@ Expected: `venue_probe.json`, `venue_input.json`, `run_manifest.json`, and `repo
 `venue_input.json` is intentionally editable. Before live execution, replace the sample feature
 values with current venue observations such as target bearing, obstacle risk, expected progress,
 frontier count, stuck risk, and information gain.
+
+If the collector fails or writes an incomplete `venue_input.json`, first inspect
+`run_manifest.json` and `venue_probe.json` for probe command exit codes and results. Then verify the
+DimOS MCP server is reachable by running the live bridge `probe` command separately, fix
+connectivity or MCP errors, and rerun `collect_venue_input.py`.
 
 The robot-time sequence should be:
 

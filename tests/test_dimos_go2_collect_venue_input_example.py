@@ -4,6 +4,10 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
+from worldforge import WorldForgeError
+
 ROOT = Path(__file__).resolve().parents[1]
 COLLECTOR = ROOT / "examples" / "dimos-go2-trace-judge" / "collect_venue_input.py"
 
@@ -67,3 +71,12 @@ def test_collect_venue_input_writes_safe_probe_and_starter_input(tmp_path) -> No
     assert venue_input["host_runtime"] == "dimos"
     assert venue_input["candidates"][2]["id"] == "detour_right"
     assert manifest["artifact_paths"]["venue_input"] == "venue_input.json"
+
+
+def test_collect_venue_input_read_json_rejects_directory_without_path_leak(tmp_path) -> None:
+    collector = _load_collector()
+
+    with pytest.raises(WorldForgeError, match="missing a required probe artifact") as exc_info:
+        collector._read_json(tmp_path)
+
+    assert str(tmp_path) not in str(exc_info.value)

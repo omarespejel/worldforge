@@ -472,12 +472,25 @@ def _load_trace_input(*, input_json: Path | None, goal: str | None) -> JSON:
 
 def _read_json_object(path: Path) -> JSON:
     path = path.expanduser()
-    if not path.exists():
-        raise WorldForgeError(f"input_json does not exist: {path}.")
+    if not path.is_file():
+        raise WorldForgeError(
+            "host-owned DimOS trace judge input_json is not a readable file; "
+            "check --input-json points to a JSON object file and retry."
+        )
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise WorldForgeError(
+            "host-owned DimOS trace judge failed to read input_json; "
+            "check file permissions and retry."
+        ) from exc
+    try:
+        payload = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise WorldForgeError(f"input_json must be valid JSON: {path}: {exc.msg}.") from exc
+        raise WorldForgeError(
+            "host-owned DimOS trace judge input_json must be valid JSON; "
+            f"fix the JSON syntax near {exc.msg} and retry."
+        ) from exc
     if not isinstance(payload, dict):
         raise WorldForgeError("input_json must contain a JSON object.")
     return payload
@@ -576,7 +589,10 @@ def _require_features(features: JSON, *, candidate_id: str) -> None:
         value = features.get(name)
         if isinstance(value, bool) or not isinstance(value, int | float):
             raise WorldForgeError(f"candidate {candidate_id} feature {name} must be numeric.")
-        if value < 0.0 or value > 1.0:
+        numeric = float(value)
+        if not math.isfinite(numeric):
+            raise WorldForgeError(f"candidate {candidate_id} feature {name} must be finite.")
+        if numeric < 0.0 or numeric > 1.0:
             raise WorldForgeError(f"candidate {candidate_id} feature {name} must be in [0, 1].")
 
 
@@ -586,6 +602,7 @@ def _reason(candidate: JSON, *, selected: bool) -> str:
 
 
 def _markdown_report(candidate_scores: JSON, selected_action: JSON, outcome: JSON) -> str:
+    host_runtime = candidate_scores.get("host_runtime", "mock-dimos")
     lines = [
         "# DimOS Go2 Trace Judge",
         "",
@@ -593,7 +610,7 @@ def _markdown_report(candidate_scores: JSON, selected_action: JSON, outcome: JSO
         f"- selected_candidate_id: {selected_action['selected_candidate_id']}",
         f"- selected_score: {selected_action['score']}",
         "- worldforge_executes_robot: false",
-        "- host_runtime: mock-dimos",
+        f"- host_runtime: {host_runtime}",
         "",
         "| Candidate | Score | Decision | Reason |",
         "| --- | ---: | --- | --- |",

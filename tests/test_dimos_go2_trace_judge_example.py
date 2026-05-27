@@ -91,6 +91,16 @@ def test_transparent_go2_scorer_rejects_missing_reason_hint() -> None:
         provider.score_actions(info={"task": {}}, action_candidates=[bad_candidate])
 
 
+def test_transparent_go2_scorer_rejects_non_finite_candidate_features() -> None:
+    app = _load_app()
+    provider = app.TransparentGo2ScoreProvider()
+    bad_candidate = app.sample_candidates()[0]
+    bad_candidate["features"]["progress"] = float("nan")
+
+    with pytest.raises(WorldForgeError, match="progress must be finite"):
+        provider.score_actions(info={"task": {}}, action_candidates=[bad_candidate])
+
+
 def test_transparent_go2_scorer_validates_score_weights(monkeypatch) -> None:
     app = _load_app()
     monkeypatch.setitem(app.SCORE_WEIGHTS, "progress", None)
@@ -185,3 +195,10 @@ def test_dimos_go2_trace_judge_rejects_malformed_venue_input(tmp_path) -> None:
 
     with pytest.raises(WorldForgeError, match="observation_summary"):
         app.run_trace_judge(output_dir=tmp_path / "run", input_json=bad_input)
+
+
+def test_dimos_go2_trace_judge_rejects_directory_input_json(tmp_path) -> None:
+    app = _load_app()
+
+    with pytest.raises(WorldForgeError, match="input_json is not a readable file"):
+        app.run_trace_judge(output_dir=tmp_path / "run", input_json=tmp_path)

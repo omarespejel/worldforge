@@ -174,14 +174,30 @@ def _load_module(path: Path, module_name: str) -> Any:
 
 
 def _read_json(path: Path) -> JSON:
+    if not path.is_file():
+        raise WorldForgeError(
+            "host-owned DimOS venue collector missing a required probe artifact; "
+            "rerun collect_venue_input.py and inspect run_manifest.json."
+        )
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError as exc:
-        raise WorldForgeError(f"missing required artifact: {path}.") from exc
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise WorldForgeError(
+            "host-owned DimOS venue collector could not read a probe artifact; "
+            "check local file permissions and rerun the collector."
+        ) from exc
+    try:
+        payload = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise WorldForgeError(f"artifact must be valid JSON: {path}: {exc.msg}.") from exc
+        raise WorldForgeError(
+            "host-owned DimOS venue collector probe artifact must be valid JSON; "
+            f"fix the JSON syntax near {exc.msg} and rerun the collector."
+        ) from exc
     if not isinstance(payload, dict):
-        raise WorldForgeError(f"artifact must contain a JSON object: {path}.")
+        raise WorldForgeError(
+            "host-owned DimOS venue collector probe artifact must contain a JSON object; "
+            "rerun the collector after fixing probe output."
+        )
     return payload
 
 
