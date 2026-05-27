@@ -37,6 +37,15 @@ uv run python examples/dimos-go2-trace-judge/app.py run \
   --output-dir examples/dimos-go2-trace-judge/sample_run
 ```
 
+Expected: exit code `0`, with five JSON artifacts plus `report.md` written to the selected output
+directory. For the default command, inspect `.worldforge/dimos-go2-trace-judge/run_manifest.json`.
+For the deterministic sample command, inspect
+`examples/dimos-go2-trace-judge/sample_run/run_manifest.json`.
+
+If the run fails before writing artifacts, check the printed validation error. If artifacts exist
+but the result looks wrong, start with `run_manifest.json`, then compare `candidate_scores.json`
+and `selected_action.json`.
+
 ## Artifacts
 
 The runner writes:
@@ -61,11 +70,11 @@ See [trace_schema.md](./trace_schema.md) for the JSON shape.
 
 ## What This Does Not Claim
 
-- It does not claim a new Go2 world model.
-- It does not claim WorldForge controls or certifies the robot.
-- It does not add a DimOS dependency to WorldForge.
-- It does not expose robot IPs, credentials, venue labels, or private operator details.
-- It does not treat generated video as score evidence.
+- No new Go2 world model is claimed.
+- WorldForge is not claiming control or safety certification for the robot.
+- DimOS is not added as a WorldForge dependency.
+- Robot IPs, credentials, venue labels, and private operator details are not exposed.
+- Generated video is not treated as score evidence.
 
 ## Host-Owned Live Integration Sketch
 

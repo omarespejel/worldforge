@@ -19,8 +19,10 @@ def _load_app():
         "worldforge_dimos_go2_trace_judge_example",
         TRACE_JUDGE_APP,
     )
-    assert spec is not None
-    assert spec.loader is not None
+    if spec is None:
+        raise AssertionError(f"Failed to load module spec for {TRACE_JUDGE_APP}.")
+    if spec.loader is None:
+        raise AssertionError(f"No loader found on module spec for {TRACE_JUDGE_APP}.")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
