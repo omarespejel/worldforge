@@ -201,6 +201,34 @@ def test_execute_selected_runs_selected_command_when_gated(tmp_path) -> None:
     assert execution["worldforge_executes_robot"] is False
 
 
+def test_main_returns_nonzero_for_execute_failure(monkeypatch, tmp_path, capsys) -> None:
+    bridge = _load_bridge()
+
+    def fake_execute_selected(**_kwargs):
+        return {
+            "status": "execute_failed",
+            "run_id": "failed-run",
+            "output_dir": str(tmp_path),
+            "artifact_paths": {"execution_result": "execution_result.json"},
+        }
+
+    monkeypatch.setattr(bridge, "execute_selected", fake_execute_selected)
+
+    exit_code = bridge.main(
+        [
+            "execute-selected",
+            "--output-dir",
+            str(tmp_path),
+            "--confirm",
+            bridge.EXECUTE_CONFIRMATION,
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert payload["status"] == "execute_failed"
+
+
 def test_execute_selected_ignores_stale_saved_argv_when_gated(tmp_path) -> None:
     bridge = _load_bridge()
     runner = FakeRunner(bridge)

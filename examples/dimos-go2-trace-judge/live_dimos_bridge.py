@@ -354,7 +354,8 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"error": {"type": "validation_error", "message": str(exc)}}))
         return 2
     print(dump_json(result))
-    return 0
+    status = str(result.get("status") or "")
+    return 1 if status.endswith("_failed") else 0
 
 
 def _run_subprocess(argv: list[str], timeout_seconds: float) -> CommandResult:
