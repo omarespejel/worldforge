@@ -86,6 +86,31 @@ def test_probe_handles_missing_dimos_binary(tmp_path) -> None:
     assert probe["commands"]["status"]["error"].startswith("command not found")
 
 
+def test_sanitize_capture_redacts_json_secrets_and_signed_urls() -> None:
+    bridge = _load_bridge()
+
+    sanitized = bridge._sanitize_capture(
+        '{"token": "json-token", "api_key": "json-key", '
+        '"authorization": "Bearer json-bearer", '
+        '"signed_url": '
+        '"https://assets.example/video.mp4?X-Amz-Signature=sig-secret&token=url-secret"} '
+        "download=https://assets.example/clip.mp4?token=query-secret robot=192.168.12.1"
+    )
+
+    for secret in (
+        "json-token",
+        "json-key",
+        "json-bearer",
+        "sig-secret",
+        "url-secret",
+        "query-secret",
+        "192.168.12.1",
+    ):
+        assert secret not in sanitized
+    assert "[redacted]" in sanitized
+    assert "<redacted-ipv4>" in sanitized
+
+
 def test_dry_run_selected_builds_gated_mcp_command(tmp_path) -> None:
     bridge = _load_bridge()
 
@@ -175,6 +200,41 @@ def test_execute_selected_runs_selected_command_when_gated(tmp_path) -> None:
     assert execution["worldforge_executes_robot"] is False
 
 
+def test_execute_selected_ignores_stale_saved_argv_when_gated(tmp_path) -> None:
+    bridge = _load_bridge()
+    runner = FakeRunner(bridge)
+    output_dir = tmp_path / "execute"
+    output_dir.mkdir()
+    (output_dir / "selected_mcp_command.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "candidate_id": "tampered",
+                "action": "relative_move",
+                "params": {"forward": 99},
+                "argv": ["/tmp/not-dimos", "unsafe"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = bridge.execute_selected(
+        output_dir=output_dir,
+        run_id="execute-ignore-stale",
+        goal="inspect safely",
+        confirm=bridge.EXECUTE_CONFIRMATION,
+        with_probe=False,
+        runner=runner,
+        environ={bridge.EXECUTE_ENV_VAR: "1"},
+    )
+    selected = json.loads((Path(result["output_dir"]) / "selected_mcp_command.json").read_text())
+
+    assert runner.calls[0][0][:4] == ["dimos", "mcp", "call", "relative_move"]
+    assert "/tmp/not-dimos" not in runner.calls[0][0]
+    assert selected["candidate_id"] == "detour_right"
+    assert selected["params"] == {"forward": 0.25, "left": -0.2}
+
+
 def test_build_selected_mcp_command_rejects_unsafe_motion() -> None:
     bridge = _load_bridge()
 
@@ -199,3 +259,20 @@ def test_build_selected_mcp_command_rejects_unknown_action() -> None:
                 "params": {"seconds": 1.0},
             },
         )
+
+
+def test_read_json_translates_missing_and_malformed_artifacts(tmp_path) -> None:
+    bridge = _load_bridge()
+
+    with pytest.raises(WorldForgeError, match="missing required artifact"):
+        bridge._read_json(tmp_path / "missing.json")
+
+    malformed = tmp_path / "malformed.json"
+    malformed.write_text("{", encoding="utf-8")
+    with pytest.raises(WorldForgeError, match="valid JSON"):
+        bridge._read_json(malformed)
+
+    array_payload = tmp_path / "array.json"
+    array_payload.write_text("[]", encoding="utf-8")
+    with pytest.raises(WorldForgeError, match="JSON object"):
+        bridge._read_json(array_payload)

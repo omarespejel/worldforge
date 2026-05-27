@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from worldforge import WorldForgeError
-from worldforge.models import dump_json
+from worldforge.models import _redact_observable_text, dump_json
 
 JSON = dict[str, Any]
 TRACE_APP_PATH = Path(__file__).with_name("app.py")
@@ -45,11 +45,7 @@ SAFE_PROBE_COMMANDS = (
     ("list_tools", ("mcp", "list-tools")),
     ("modules", ("mcp", "modules")),
 )
-SECRET_PATTERNS = (
-    re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+"),
-    re.compile(r"(?i)(api[_-]?key|token|password|secret)(\s*[=:]\s*)[^\s,;]+"),
-    re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
-)
+IPV4_PATTERN = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 
 
 @dataclass(frozen=True)
@@ -68,7 +64,7 @@ class CommandResult:
             "stdout": _sanitize_capture(self.stdout),
             "stderr": _sanitize_capture(self.stderr),
             "timed_out": self.timed_out,
-            "error": self.error,
+            "error": _sanitize_capture(self.error) if self.error else None,
         }
 
 
@@ -200,7 +196,12 @@ def execute_selected(
         with_probe=with_probe,
         runner=runner,
     )
-    selected_command = _read_json(output_dir / "selected_mcp_command.json")
+    selected_action = _read_json(output_dir / "trace_judge" / "selected_action.json")
+    selected_command = build_selected_mcp_command(
+        selected_action=selected_action,
+        dimos_bin=dimos_bin,
+        will_execute=True,
+    )
     selected_command["will_execute"] = True
     selected_command["operator_confirmed"] = True
     execution = runner(selected_command["argv"], _require_positive_timeout(timeout_seconds))
@@ -571,15 +572,9 @@ def _execution_report(*, selected_command: JSON, execution_result: JSON) -> str:
 
 def _sanitize_capture(value: str | bytes) -> str:
     text = value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value
-    text = text[:MAX_CAPTURE_CHARS]
-    for pattern in SECRET_PATTERNS:
-        if pattern.pattern.startswith("\\b"):
-            text = pattern.sub("<redacted-ipv4>", text)
-        elif "bearer" in pattern.pattern.lower():
-            text = pattern.sub(r"\1<redacted>", text)
-        else:
-            text = pattern.sub(r"\1\2<redacted>", text)
-    return text
+    redacted = _redact_observable_text(text)
+    redacted = IPV4_PATTERN.sub("<redacted-ipv4>", redacted)
+    return redacted[:MAX_CAPTURE_CHARS]
 
 
 def _result_payload(*, output_dir: Path, run_id: str, status: str) -> JSON:
@@ -616,7 +611,12 @@ def _require_non_empty(value: object, *, name: str) -> str:
 
 
 def _read_json(path: Path) -> JSON:
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise WorldForgeError(f"missing required artifact: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise WorldForgeError(f"{path} must contain valid JSON.") from exc
     if not isinstance(payload, dict):
         raise WorldForgeError(f"{path} must contain a JSON object.")
     return payload
