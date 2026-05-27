@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +28,14 @@ SCORE_WEIGHTS: JSON = {
     "not_stuck": 0.05,
     "execution_cost": -0.05,
 }
-REQUIRED_SCORE_WEIGHT_KEYS = tuple(SCORE_WEIGHTS)
+REQUIRED_SCORE_WEIGHT_KEYS = (
+    "goal_alignment",
+    "information_gain",
+    "progress",
+    "clearance",
+    "not_stuck",
+    "execution_cost",
+)
 REQUIRED_FEATURES = (
     "goal_alignment",
     "information_gain",
@@ -425,10 +433,20 @@ def _require_candidates(action_candidates: object) -> list[JSON]:
 
 
 def _validate_score_weights() -> None:
+    required = set(REQUIRED_SCORE_WEIGHT_KEYS)
+    actual = set(SCORE_WEIGHTS)
+    missing = sorted(required - actual)
+    if missing:
+        raise WorldForgeError(f"missing score weights: {', '.join(missing)}.")
+    unexpected = sorted(actual - required)
+    if unexpected:
+        raise WorldForgeError(f"unexpected score weights: {', '.join(unexpected)}.")
     for name in REQUIRED_SCORE_WEIGHT_KEYS:
         value = SCORE_WEIGHTS.get(name)
         if isinstance(value, bool) or not isinstance(value, int | float):
             raise WorldForgeError(f"score weight {name} must be numeric.")
+        if not math.isfinite(float(value)):
+            raise WorldForgeError(f"score weight {name} must be finite.")
 
 
 def _require_features(features: JSON, *, candidate_id: str) -> None:

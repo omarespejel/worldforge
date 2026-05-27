@@ -92,6 +92,30 @@ def test_transparent_go2_scorer_validates_score_weights(monkeypatch) -> None:
         app.TransparentGo2ScoreProvider()
 
 
+def test_transparent_go2_scorer_rejects_non_finite_score_weight(monkeypatch) -> None:
+    app = _load_app()
+    monkeypatch.setitem(app.SCORE_WEIGHTS, "progress", float("nan"))
+
+    with pytest.raises(WorldForgeError, match="score weight progress must be finite"):
+        app.TransparentGo2ScoreProvider()
+
+
+def test_transparent_go2_scorer_rejects_missing_score_weight(monkeypatch) -> None:
+    app = _load_app()
+    monkeypatch.delitem(app.SCORE_WEIGHTS, "progress")
+
+    with pytest.raises(WorldForgeError, match="missing score weights: progress"):
+        app.TransparentGo2ScoreProvider()
+
+
+def test_transparent_go2_scorer_rejects_unexpected_score_weight(monkeypatch) -> None:
+    app = _load_app()
+    monkeypatch.setitem(app.SCORE_WEIGHTS, "unused", 0.1)
+
+    with pytest.raises(WorldForgeError, match="unexpected score weights: unused"):
+        app.TransparentGo2ScoreProvider()
+
+
 def test_dimos_go2_trace_judge_cli_defaults_to_offline_run(tmp_path, capsys) -> None:
     app = _load_app()
 
