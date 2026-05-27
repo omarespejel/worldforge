@@ -1,0 +1,1 @@
+{"action":"relative_move","candidate_index":2,"execute_with":"host_runtime:dimos","params":{"forward":0.25,"left":-0.2},"run_id":"dimos-go2-sample","schema_version":1,"score":0.8832,"selected_candidate_id":"detour_right","worldforge_executes_robot":false}

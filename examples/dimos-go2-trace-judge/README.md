@@ -1,0 +1,101 @@
+# DimOS Go2 Trace Judge
+
+Experimental checkout-safe example for
+[issue #329](https://github.com/AbdelStark/worldforge/issues/329).
+
+This example shows how a host-owned DimOS + Unitree Go2 integration can use WorldForge as an
+inspectable decision/evidence layer without making WorldForge responsible for robot networking,
+controller execution, or physical safety.
+
+```text
+DimOS observes/maps/exposes robot skills
+Host proposes candidate robot actions
+WorldForge scores and records the decision trace
+DimOS executes only if the host chooses to execute
+```
+
+The checked-in runner uses mocked, sanitized DimOS-style inputs. It does not import DimOS, connect
+to a robot, read credentials, or execute robot commands.
+
+## Run
+
+```bash
+uv run python examples/dimos-go2-trace-judge/app.py run
+```
+
+The default output directory is:
+
+```text
+.worldforge/dimos-go2-trace-judge/
+```
+
+For a deterministic sample run:
+
+```bash
+uv run python examples/dimos-go2-trace-judge/app.py run \
+  --run-id dimos-go2-sample \
+  --output-dir examples/dimos-go2-trace-judge/sample_run
+```
+
+## Artifacts
+
+The runner writes:
+
+| Artifact | Purpose |
+| --- | --- |
+| `observation_summary.json` | Sanitized host observation summary: pose, costmap, visual target, navigation state. |
+| `candidate_scores.json` | Candidate actions, transparent features, WorldForge score result, selected candidate. |
+| `selected_action.json` | The action the host could execute through DimOS. |
+| `outcome_after_execution.json` | Mocked post-action outcome shape for future learned-score training. |
+| `run_manifest.json` | Issue-safe manifest with capability, safety boundary, and artifact paths. |
+| `report.md` | Human-readable decision trace. |
+
+See [trace_schema.md](./trace_schema.md) for the JSON shape.
+
+## What This Proves
+
+- WorldForge can rank host-proposed robot action candidates through the `score` capability.
+- The decision can be preserved as JSON-native evidence before any physical robot execution.
+- The same trace shape can become future training data for a learned scorer:
+  `observation + goal + candidate action -> outcome quality`.
+
+## What This Does Not Claim
+
+- It does not claim a new Go2 world model.
+- It does not claim WorldForge controls or certifies the robot.
+- It does not add a DimOS dependency to WorldForge.
+- It does not expose robot IPs, credentials, venue labels, or private operator details.
+- It does not treat generated video as score evidence.
+
+## Host-Owned Live Integration Sketch
+
+A live host adapter can translate DimOS state into this example's input shape:
+
+```text
+DimOS map/costmap/frontiers/visual detections
+  -> observation_summary.json
+
+DimOS MCP or host planner action proposals
+  -> candidates[]
+
+WorldForge TransparentGo2ScoreProvider
+  -> candidate_scores.json + selected_action.json
+
+Host-side DimOS controller
+  -> optional execution + outcome_after_execution.json
+```
+
+The host must own operator supervision, emergency stop, velocity limits, obstacle avoidance,
+networking, authentication, and final execution approval. WorldForge remains the decision trace and
+scoring surface.
+
+## Related Work
+
+- Related to [#274](https://github.com/AbdelStark/worldforge/issues/274) for adopt-your-robot
+  guided demos.
+- Related to [#328](https://github.com/AbdelStark/worldforge/issues/328) for caller-owned
+  candidate generation and score-based planning.
+- Related to [#321](https://github.com/AbdelStark/worldforge/issues/321) for real hardware
+  showcase boundaries.
+
+This is intentionally experimental and open to maintainer changes.

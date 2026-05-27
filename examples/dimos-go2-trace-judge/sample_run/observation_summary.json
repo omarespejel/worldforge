@@ -1,0 +1,1 @@
+{"costmap_summary":{"blocked_ahead":false,"frontier_count":4,"min_clearance_m":0.8,"unknown_area_ratio":0.42},"navigation_state":{"active_goal":null,"localized":true,"stuck_probability":0.06},"pose":{"x":0.0,"y":0.0,"yaw_degrees":0.0},"visual_summary":{"gesture_direction_degrees":35,"target_bearing_degrees":30,"target_confidence":0.64}}

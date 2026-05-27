@@ -75,12 +75,20 @@ input or budget files. A benchmark budget violation exits `1` after preserving t
 | Example | Surface | Command |
 | --- | --- | --- |
 | `robotics-operator-host` | offline policy+score review, dry-run approval, replay artifacts | `uv run python examples/hosts/robotics-operator/app.py review --sample-translator` |
+| `dimos-go2-trace-judge` | offline host-owned Go2 candidate scoring, decision trace artifacts | `uv run python examples/dimos-go2-trace-judge/app.py run` |
 
 The robotics operator host is non-mutating by default and never talks to robot controllers. It
 requires an explicit action translator, records host-owned checklist and dry-run approval state, and
 writes selected action chunks, score rationale, provider events, and a replay artifact under
 `.worldforge/robotics-operator/runs/<run-id>/`. Controller execution is only an application hook:
 WorldForge does not certify robot safety, controller semantics, interlocks, or deployment readiness.
+
+The DimOS Go2 trace judge is an experimental issue #329 example. It uses mocked, sanitized
+DimOS-style observation summaries and candidate actions to write `observation_summary.json`,
+`candidate_scores.json`, `selected_action.json`, `outcome_after_execution.json`,
+`run_manifest.json`, and `report.md`. It does not import DimOS, connect to a robot, or execute
+controller commands; a live host owns networking, emergency stop, operator supervision, and final
+execution approval.
 
 Deployment recipes for the service host, batch evaluation host, and robotics operator host live in
 the public examples documentation. Each recipe includes an env template, process command, readiness
