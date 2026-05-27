@@ -121,7 +121,8 @@ uv run python examples/dimos-go2-trace-judge/live_dimos_bridge.py dry-run-select
 ```
 
 Expected: the offline trace judge runs, `selected_mcp_command.json` is written, and
-`will_execute` is `false`.
+`will_execute` is `false`. If this fails, inspect `bridge_manifest.json` first, then run the
+offline trace judge by itself to confirm the score path still works before debugging DimOS.
 
 Live execution is intentionally harder:
 
@@ -134,7 +135,9 @@ uv run python examples/dimos-go2-trace-judge/live_dimos_bridge.py execute-select
 Execution is bounded to a narrow allowlist (`relative_move` and `wait`) with conservative parameter
 limits. It should only be used with the robot on the floor, operator supervision, venue approval,
 and an emergency stop path available. This bridge is fork-only until the live assumptions are
-validated.
+validated. A successful run exits `0` and writes `execution_result.json`, `bridge_manifest.json`,
+and `report.md`. If execution is blocked or fails, first verify the environment variable and
+confirmation flag, then inspect `execution_result.json` and `bridge_manifest.json` for details.
 
 ## Related Work
 

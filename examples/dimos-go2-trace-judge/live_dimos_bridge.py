@@ -14,6 +14,7 @@ import json
 import math
 import os
 import re
+import shlex
 import subprocess
 import sys
 from collections.abc import Callable
@@ -244,15 +245,20 @@ def build_selected_mcp_command(
     dimos_bin: str = "dimos",
     will_execute: bool = False,
 ) -> JSON:
+    candidate_id = _require_non_empty(
+        selected_action.get("selected_candidate_id"),
+        name="selected_action.selected_candidate_id",
+    )
     action = _require_non_empty(selected_action.get("action"), name="selected_action.action")
     params = selected_action.get("params")
     if not isinstance(params, dict):
         raise WorldForgeError("selected_action.params must be an object.")
+    dimos_bin = _require_non_empty(dimos_bin, name="dimos_bin")
     safe_params = _validate_safe_action_params(action=action, params=params)
     argv = [dimos_bin, "mcp", "call", action, "--json-args", dump_json(safe_params)]
     return {
         "schema_version": 1,
-        "candidate_id": selected_action.get("selected_candidate_id"),
+        "candidate_id": candidate_id,
         "action": action,
         "params": safe_params,
         "argv": argv,
@@ -372,22 +378,25 @@ def _run_subprocess(argv: list[str], timeout_seconds: float) -> CommandResult:
         return CommandResult(
             argv=argv,
             exit_code=None,
-            stdout=_sanitize_capture(exc.stdout or ""),
-            stderr=_sanitize_capture(exc.stderr or ""),
+            stdout=exc.stdout or "",
+            stderr=exc.stderr or "",
             timed_out=True,
             error=f"timed out after {timeout_seconds:.1f}s",
         )
     return CommandResult(
         argv=argv,
         exit_code=completed.returncode,
-        stdout=_sanitize_capture(completed.stdout),
-        stderr=_sanitize_capture(completed.stderr),
+        stdout=completed.stdout,
+        stderr=completed.stderr,
     )
 
 
 def _validate_safe_action_params(*, action: str, params: JSON) -> JSON:
     if action not in SAFE_PARAM_LIMITS:
         raise WorldForgeError(f"unsupported live DimOS action: {action}.")
+    for name in params:
+        if not isinstance(name, str):
+            raise WorldForgeError(f"{action} params keys must be strings.")
     limits = SAFE_PARAM_LIMITS[action]
     unexpected = sorted(set(params) - set(limits))
     if unexpected:
@@ -541,7 +550,7 @@ def _dry_run_report(*, trace_result: JSON, selected_command: JSON, probe: JSON |
         "",
         "## Command",
         "",
-        f"`{' '.join(selected_command['argv'])}`",
+        f"`{shlex.join(selected_command['argv'])}`",
     ]
     if probe is not None:
         lines.extend(

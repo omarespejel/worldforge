@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -259,6 +260,62 @@ def test_build_selected_mcp_command_rejects_unknown_action() -> None:
                 "params": {"seconds": 1.0},
             },
         )
+
+
+@pytest.mark.parametrize(
+    ("selected_action", "match"),
+    (
+        (
+            {"action": "relative_move", "params": {"forward": 0.1}},
+            "selected_action.selected_candidate_id",
+        ),
+        (
+            {
+                "selected_candidate_id": "bad",
+                "action": "relative_move",
+                "params": ["forward", 0.1],
+            },
+            "selected_action.params",
+        ),
+        (
+            {
+                "selected_candidate_id": "bad",
+                "action": "relative_move",
+                "params": {"forward": math.nan},
+            },
+            "finite",
+        ),
+        (
+            {
+                "selected_candidate_id": "bad",
+                "action": "relative_move",
+                "params": {"forward": math.inf},
+            },
+            "finite",
+        ),
+        (
+            {
+                "selected_candidate_id": "bad",
+                "action": "relative_move",
+                "params": {"forward": b"0.1"},
+            },
+            "numeric",
+        ),
+        (
+            {
+                "selected_candidate_id": "bad",
+                "action": "relative_move",
+                "params": {1: 0.1},
+            },
+            "keys must be strings",
+        ),
+    ),
+)
+def test_build_selected_mcp_command_rejects_malformed_payloads(selected_action, match) -> None:
+    bridge = _load_bridge()
+
+    with pytest.raises(WorldForgeError, match=match):
+        bridge.build_selected_mcp_command(selected_action=selected_action)
 
 
 def test_read_json_translates_missing_and_malformed_artifacts(tmp_path) -> None:
