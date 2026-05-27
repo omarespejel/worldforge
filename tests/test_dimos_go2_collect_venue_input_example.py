@@ -89,3 +89,12 @@ def test_collect_venue_input_read_json_rejects_non_finite_json(tmp_path) -> None
 
     with pytest.raises(WorldForgeError, match="must not contain NaN or Infinity"):
         collector._read_json(bad_json)
+
+
+def test_collect_venue_input_read_json_rejects_overflow_json(tmp_path) -> None:
+    collector = _load_collector()
+    bad_json = tmp_path / "probe.json"
+    bad_json.write_text('{"elapsed_seconds": 1e309}', encoding="utf-8")
+
+    with pytest.raises(WorldForgeError, match="must contain only finite numbers"):
+        collector._read_json(bad_json)

@@ -485,7 +485,11 @@ def _read_json_object(path: Path) -> JSON:
             "check file permissions and retry."
         ) from exc
     try:
-        payload = json.loads(raw, parse_constant=_reject_non_finite_json_constant)
+        payload = json.loads(
+            raw,
+            parse_constant=_reject_non_finite_json_constant,
+            parse_float=_parse_finite_json_float,
+        )
     except json.JSONDecodeError as exc:
         raise WorldForgeError(
             "host-owned DimOS trace judge input_json must be valid JSON; "
@@ -501,6 +505,16 @@ def _reject_non_finite_json_constant(value: str) -> None:
         "host-owned DimOS trace judge input_json must not contain NaN or Infinity; "
         f"replace {value} with a finite number or null and retry."
     )
+
+
+def _parse_finite_json_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise WorldForgeError(
+            "host-owned DimOS trace judge input_json must contain only finite numbers; "
+            f"replace {value} with a finite number or null and retry."
+        )
+    return parsed
 
 
 def _require_json_object(value: object, *, name: str) -> JSON:

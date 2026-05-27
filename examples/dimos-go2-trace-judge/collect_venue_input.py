@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import math
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -187,7 +188,11 @@ def _read_json(path: Path) -> JSON:
             "check local file permissions and rerun the collector."
         ) from exc
     try:
-        payload = json.loads(raw, parse_constant=_reject_non_finite_json_constant)
+        payload = json.loads(
+            raw,
+            parse_constant=_reject_non_finite_json_constant,
+            parse_float=_parse_finite_json_float,
+        )
     except json.JSONDecodeError as exc:
         raise WorldForgeError(
             "host-owned DimOS venue collector probe artifact must be valid JSON; "
@@ -206,6 +211,16 @@ def _reject_non_finite_json_constant(value: str) -> None:
         "host-owned DimOS venue collector probe artifact must not contain NaN or Infinity; "
         f"replace {value} with a finite number or null and rerun the collector."
     )
+
+
+def _parse_finite_json_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise WorldForgeError(
+            "host-owned DimOS venue collector probe artifact must contain only finite numbers; "
+            f"replace {value} with a finite number or null and rerun the collector."
+        )
+    return parsed
 
 
 def _write_json(path: Path, payload: JSON) -> None:
