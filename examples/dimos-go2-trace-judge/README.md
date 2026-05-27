@@ -98,6 +98,44 @@ The host must own operator supervision, emergency stop, velocity limits, obstacl
 networking, authentication, and final execution approval. WorldForge remains the decision trace and
 scoring surface.
 
+## Fork-Only Live Bridge
+
+For hackathon testing, `live_dimos_bridge.py` adds a host-owned DimOS CLI wrapper on top of the
+offline trace judge. It shells out to the documented `dimos mcp` CLI and keeps execution gated.
+This is useful for proving connectivity before touching the real robot.
+
+Safe probe:
+
+```bash
+uv run python examples/dimos-go2-trace-judge/live_dimos_bridge.py probe
+```
+
+Expected: exit code `0`, `probe.json`, `bridge_manifest.json`, and `report.md` written under
+`.worldforge/dimos-go2-live-bridge/`. If the DimOS CLI or MCP server is missing, the command still
+writes artifacts with failed command results so the operator can inspect what is unavailable.
+
+Dry-run the selected WorldForge action as a DimOS MCP command:
+
+```bash
+uv run python examples/dimos-go2-trace-judge/live_dimos_bridge.py dry-run-selected --with-probe
+```
+
+Expected: the offline trace judge runs, `selected_mcp_command.json` is written, and
+`will_execute` is `false`.
+
+Live execution is intentionally harder:
+
+```bash
+WORLDFORGE_DIMOS_ENABLE_EXECUTE=1 \
+uv run python examples/dimos-go2-trace-judge/live_dimos_bridge.py execute-selected \
+  --confirm LIVE_DIMOS_GO2_EXECUTE
+```
+
+Execution is bounded to a narrow allowlist (`relative_move` and `wait`) with conservative parameter
+limits. It should only be used with the robot on the floor, operator supervision, venue approval,
+and an emergency stop path available. This bridge is fork-only until the live assumptions are
+validated.
+
 ## Related Work
 
 - Related to [#274](https://github.com/AbdelStark/worldforge/issues/274) for adopt-your-robot
