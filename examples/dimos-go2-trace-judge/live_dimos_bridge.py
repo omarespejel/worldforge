@@ -620,14 +620,21 @@ def _require_non_empty(value: object, *, name: str) -> str:
 
 
 def _read_json(path: Path) -> JSON:
+    artifact_name = path.name or "JSON artifact"
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
-        raise WorldForgeError(f"missing required artifact: {path}") from exc
+        raise WorldForgeError(
+            f"DimOS bridge missing required artifact {artifact_name}; rerun the previous "
+            "bridge step and inspect bridge_manifest.json."
+        ) from exc
     except json.JSONDecodeError as exc:
-        raise WorldForgeError(f"{path} must contain valid JSON.") from exc
+        raise WorldForgeError(
+            f"DimOS bridge artifact {artifact_name} must contain valid JSON; regenerate it "
+            "with the bridge command before retrying."
+        ) from exc
     if not isinstance(payload, dict):
-        raise WorldForgeError(f"{path} must contain a JSON object.")
+        raise WorldForgeError(f"DimOS bridge artifact {artifact_name} must contain a JSON object.")
     return payload
 
 
