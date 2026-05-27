@@ -197,6 +197,18 @@ def test_dimos_go2_trace_judge_rejects_malformed_venue_input(tmp_path) -> None:
         app.run_trace_judge(output_dir=tmp_path / "run", input_json=bad_input)
 
 
+def test_dimos_go2_trace_judge_rejects_non_finite_venue_input_json(tmp_path) -> None:
+    app = _load_app()
+    bad_input = tmp_path / "bad.json"
+    payload = json.loads(VENUE_INPUT_SAMPLE.read_text())
+    payload["observation_summary"]["pose"]["x"] = "__NaN__"
+    raw = json.dumps(payload).replace('"__NaN__"', "NaN")
+    bad_input.write_text(raw, encoding="utf-8")
+
+    with pytest.raises(WorldForgeError, match="must not contain NaN or Infinity"):
+        app.run_trace_judge(output_dir=tmp_path / "run", input_json=bad_input)
+
+
 def test_dimos_go2_trace_judge_rejects_directory_input_json(tmp_path) -> None:
     app = _load_app()
 

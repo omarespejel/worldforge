@@ -187,7 +187,7 @@ def _read_json(path: Path) -> JSON:
             "check local file permissions and rerun the collector."
         ) from exc
     try:
-        payload = json.loads(raw)
+        payload = json.loads(raw, parse_constant=_reject_non_finite_json_constant)
     except json.JSONDecodeError as exc:
         raise WorldForgeError(
             "host-owned DimOS venue collector probe artifact must be valid JSON; "
@@ -199,6 +199,13 @@ def _read_json(path: Path) -> JSON:
             "rerun the collector after fixing probe output."
         )
     return payload
+
+
+def _reject_non_finite_json_constant(value: str) -> None:
+    raise WorldForgeError(
+        "host-owned DimOS venue collector probe artifact must not contain NaN or Infinity; "
+        f"replace {value} with a finite number or null and rerun the collector."
+    )
 
 
 def _write_json(path: Path, payload: JSON) -> None:

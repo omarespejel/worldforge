@@ -80,3 +80,12 @@ def test_collect_venue_input_read_json_rejects_directory_without_path_leak(tmp_p
         collector._read_json(tmp_path)
 
     assert str(tmp_path) not in str(exc_info.value)
+
+
+def test_collect_venue_input_read_json_rejects_non_finite_json(tmp_path) -> None:
+    collector = _load_collector()
+    bad_json = tmp_path / "probe.json"
+    bad_json.write_text('{"elapsed_seconds": NaN}', encoding="utf-8")
+
+    with pytest.raises(WorldForgeError, match="must not contain NaN or Infinity"):
+        collector._read_json(bad_json)
