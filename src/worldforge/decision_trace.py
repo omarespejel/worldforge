@@ -227,7 +227,7 @@ def _validate_trace_urls(value: str, *, name: str) -> None:
 
 
 def _hostname_is_private_or_local(hostname: str) -> bool:
-    lowered = hostname.lower().strip("[]")
+    lowered = hostname.lower().strip("[]").rstrip(".")
     if lowered in {"localhost", "localhost.localdomain"}:
         return True
     try:

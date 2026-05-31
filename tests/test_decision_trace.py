@@ -357,6 +357,21 @@ def test_validate_decision_trace_allows_benign_url_paths_and_queries() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "local_url",
+    [
+        "https://localhost./model-card",
+        "https://localhost.localdomain./model-card",
+    ],
+)
+def test_validate_decision_trace_rejects_trailing_dot_localhost_urls(local_url: str) -> None:
+    trace = _valid_trace()
+    trace["reproducibility"]["model_card_ref"] = local_url
+
+    with pytest.raises(WorldForgeError, match="private or local URL host"):
+        validate_decision_trace(trace)
+
+
 def test_validate_decision_trace_rejects_sensitive_url_query() -> None:
     trace = _valid_trace()
     trace["reproducibility"]["model_card_ref"] = "https://example.com/model?token=hunter2"
