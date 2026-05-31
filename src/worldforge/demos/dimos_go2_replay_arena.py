@@ -278,14 +278,14 @@ def load_pimsim_go2_export(path: Path) -> JSONDict:
 
 def pimsim_export_to_go2_replay_fixture(payload: JSONDict) -> JSONDict:
     _validate_pimsim_export(payload)
-    episode_id = _non_empty_string(payload["episode_id"], "episode_id")
+    episode_id = _pimsim_non_empty_string(payload["episode_id"], "episode_id")
     frame_id = _pimsim_optional_identifier(payload.get("frame_id"), episode_id, "frame_id")
     scenario_id = _pimsim_optional_identifier(
         payload.get("scenario_id"),
         episode_id,
         "scenario_id",
     )
-    robot_entity_id = _non_empty_string(payload["robot_entity_id"], "robot_entity_id")
+    robot_entity_id = _pimsim_non_empty_string(payload["robot_entity_id"], "robot_entity_id")
     entity_state_batch = _require_mapping(
         payload["entity_state_batch"],
         "entity_state_batch",
@@ -476,53 +476,53 @@ def _optional_sequence(value: object, field_name: str) -> list[Any]:
     return list(_require_sequence(value, field_name))
 
 
-def _read_pimsim_export_text(path: Path) -> str:
-    safe_path = _safe_artifact_path(path)
+def _read_pimsim_export_text(export_path: Path) -> str:
+    display_path = _safe_artifact_path(export_path)
     try:
-        size_bytes = path.stat().st_size
+        size_bytes = export_path.stat().st_size
     except FileNotFoundError as exc:
         raise _pimsim_export_file_error(
             "PimSim export file was not found",
-            safe_path,
+            display_path,
             "pass --pimsim-export with a JSON export path or use the bundled default.",
         ) from exc
     except OSError as exc:
         raise _pimsim_export_file_error(
             "PimSim export file metadata could not be read",
-            safe_path,
+            display_path,
             "check file permissions and retry with a readable JSON snapshot.",
         ) from exc
     if size_bytes > _PIMSIM_EXPORT_MAX_BYTES:
         raise _pimsim_export_file_error(
             f"PimSim export exceeds maximum size {_PIMSIM_EXPORT_MAX_BYTES} bytes",
-            safe_path,
+            display_path,
             "export a single PimSim frame snapshot or trim the host-owned export before retrying.",
         )
     try:
-        return path.read_text(encoding="utf-8")
+        return export_path.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
         raise _pimsim_export_file_error(
             "PimSim export file was not found",
-            safe_path,
+            display_path,
             "pass --pimsim-export with a JSON export path or use the bundled default.",
         ) from exc
     except UnicodeDecodeError as exc:
         raise _pimsim_export_file_error(
             "PimSim export is not valid UTF-8 JSON text",
-            safe_path,
+            display_path,
             "re-export as UTF-8 encoded JSON and retry.",
         ) from exc
     except OSError as exc:
         raise _pimsim_export_file_error(
             "PimSim export file could not be read",
-            safe_path,
+            display_path,
             "check file permissions and retry with a readable JSON snapshot.",
         ) from exc
 
 
-def _pimsim_export_file_error(message: str, safe_path: str, triage: str) -> WorldForgeError:
+def _pimsim_export_file_error(message: str, display_path: str, triage: str) -> WorldForgeError:
     return WorldForgeError(
-        f"Go2 PimSim export adapter: {message} at {safe_path}. First triage step: {triage}"
+        f"Go2 PimSim export adapter: {message} at {display_path}. First triage step: {triage}"
     )
 
 
@@ -556,8 +556,8 @@ def _validate_pimsim_export(payload: object) -> None:
             raise WorldForgeError(f"PimSim Go2 export is missing '{field_name}'.")
     if payload.get("schema_version") != 1:
         raise WorldForgeError("PimSim Go2 export schema_version must be 1.")
-    _non_empty_string(payload["episode_id"], "episode_id")
-    robot_entity_id = _non_empty_string(payload["robot_entity_id"], "robot_entity_id")
+    _pimsim_non_empty_string(payload["episode_id"], "episode_id")
+    robot_entity_id = _pimsim_non_empty_string(payload["robot_entity_id"], "robot_entity_id")
 
     batch = _require_mapping(payload["entity_state_batch"], "entity_state_batch")
     _require_fields(batch, ("ts", "entities"), "entity_state_batch")
@@ -569,7 +569,7 @@ def _validate_pimsim_export(payload: object) -> None:
     for field_name in ("frame_id", "scenario_id"):
         field_value = payload.get(field_name)
         if field_value is not None:
-            _non_empty_string(field_value, field_name)
+            _pimsim_non_empty_string(field_value, field_name)
 
     localization_confidence = _number(
         payload.get("localization_confidence", 1.0),
@@ -588,9 +588,15 @@ def _pimsim_source_metadata(payload: JSONDict) -> JSONDict:
     sanitized: JSONDict = {}
     for field_name in ("runtime", "simulator", "branch_reference"):
         if field_name in source:
-            sanitized[field_name] = _non_empty_string(source[field_name], f"source.{field_name}")
+            sanitized[field_name] = _pimsim_non_empty_string(
+                source[field_name],
+                f"source.{field_name}",
+            )
     if "export_kind" in payload:
-        sanitized["export_kind"] = _non_empty_string(payload["export_kind"], "export_kind")
+        sanitized["export_kind"] = _pimsim_non_empty_string(
+            payload["export_kind"],
+            "export_kind",
+        )
     sanitized.update(
         {
             "mode": "pimsim-export",
@@ -604,7 +610,20 @@ def _pimsim_source_metadata(payload: JSONDict) -> JSONDict:
 def _pimsim_optional_identifier(value: object, fallback: str, field_name: str) -> str:
     if value is None:
         return fallback
-    return _non_empty_string(value, field_name)
+    return _pimsim_non_empty_string(value, field_name)
+
+
+def _pimsim_non_empty_string(value: object, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise WorldForgeError(f"PimSim Go2 export {field_name} must be a non-empty string.")
+    stripped = value.strip()
+    if not stripped:
+        raise WorldForgeError(f"PimSim Go2 export {field_name} must be a non-empty string.")
+    if stripped != value:
+        raise WorldForgeError(
+            f"PimSim Go2 export {field_name} must not include leading/trailing whitespace."
+        )
+    return value
 
 
 def _pimsim_entity_by_id(entities: object, entity_id: str) -> JSONDict:
@@ -733,6 +752,9 @@ def _validated_map_zones(value: object, field_name: str) -> list[JSONDict]:
     for index, zone in enumerate(_optional_sequence(value, field_name)):
         zone_map = _require_mapping(zone, f"{field_name}[{index}]")
         _require_fields(zone_map, ("x", "y", "radius_m", "cost"), f"{field_name}[{index}]")
+        cost = _number(zone_map["cost"], name=f"{field_name}[{index}].cost")
+        if cost < 0.0:
+            raise WorldForgeError(f"{field_name}[{index}].cost must be non-negative.")
         validated: JSONDict = {
             "x": _number(zone_map["x"], name=f"{field_name}[{index}].x"),
             "y": _number(zone_map["y"], name=f"{field_name}[{index}].y"),
@@ -740,7 +762,7 @@ def _validated_map_zones(value: object, field_name: str) -> list[JSONDict]:
                 zone_map["radius_m"],
                 name=f"{field_name}[{index}].radius_m",
             ),
-            "cost": _non_negative_number(zone_map["cost"], name=f"{field_name}[{index}].cost"),
+            "cost": cost,
         }
         if "id" in zone_map:
             validated["id"] = _non_empty_string(zone_map["id"], f"{field_name}[{index}].id")

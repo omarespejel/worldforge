@@ -199,7 +199,10 @@ def test_pimsim_go2_export_normalizes_optional_identifiers() -> None:
     payload = load_pimsim_go2_export(DEFAULT_PIMSIM_EXPORT_PATH)
     payload["frame_id"] = " "
 
-    with pytest.raises(WorldForgeError, match="frame_id must be a non-empty string"):
+    with pytest.raises(
+        WorldForgeError,
+        match="PimSim Go2 export frame_id must be a non-empty string",
+    ):
         pimsim_export_to_go2_replay_fixture(payload)
 
 
