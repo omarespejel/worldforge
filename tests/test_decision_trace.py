@@ -187,6 +187,34 @@ def test_validate_decision_trace_rejects_selected_margin_mismatch() -> None:
         validate_decision_trace(trace)
 
 
+def test_validate_decision_trace_allows_tied_best_selection_without_lexical_bias() -> None:
+    trace = _valid_trace()
+    trace["candidate_actions"][0]["candidate_id"] = "z-best"
+    trace["scores"][0]["candidate_id"] = "z-best"
+    trace["scores"][0]["score"] = 0.2
+    trace["scores"][0]["rank"] = 2
+    trace["candidate_actions"][1]["candidate_id"] = "a-best"
+    trace["scores"][1]["candidate_id"] = "a-best"
+    trace["scores"][1]["score"] = 0.2
+    trace["scores"][1]["rank"] = 1
+    trace["selected_action"]["candidate_id"] = "z-best"
+    trace["selected_action"]["score"] = 0.2
+    trace["selected_action"]["score_margin"] = 0.0
+    trace["counterfactuals"] = [
+        {
+            "candidate_id": "a-best",
+            "score": 0.2,
+            "delta_vs_selected": 0.0,
+            "why_rejected": "Tie broken by provider order.",
+        }
+    ]
+    trace["baseline"]["candidate_id"] = "a-best"
+    trace["baseline"]["score"] = 0.2
+    trace["baseline"]["regret_vs_selected"] = 0.0
+
+    assert validate_decision_trace(trace)["selected_action"]["candidate_id"] == "z-best"
+
+
 def test_validate_decision_trace_rejects_overclaimed_real_outcome() -> None:
     trace = _valid_trace()
     trace["claim_boundary"]["outcome_kind"] = "real_measured"
