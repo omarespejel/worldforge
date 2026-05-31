@@ -472,7 +472,10 @@ def _read_pimsim_export_text(path: Path) -> str:
         raise WorldForgeError(
             f"PimSim Go2 export exceeds maximum size {_PIMSIM_EXPORT_MAX_BYTES} bytes: {path}"
         )
-    return path.read_text(encoding="utf-8")
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise WorldForgeError(f"PimSim Go2 export not found: {path}") from exc
 
 
 def _validate_pimsim_export(payload: object) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -171,7 +172,7 @@ def test_pimsim_go2_export_converts_to_replay_fixture() -> None:
     assert fixture["observation"]["map"]["obstacles"][0]["id"] == "pimsim-chair-leg"
     assert fixture["observation"]["map"]["obstacles"][1]["id"] == "pimsim-supply-cart"
     assert fixture["observation"]["map"]["obstacles"][1]["radius_m"] == pytest.approx(
-        0.5 * (0.45**2 + 0.9**2) ** 0.5
+        0.5 * math.hypot(0.45, 0.9)
     )
     assert fixture["baseline_action_id"] == "baseline_forward"
     assert [candidate["id"] for candidate in fixture["candidate_actions"]] == [
