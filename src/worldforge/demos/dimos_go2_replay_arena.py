@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import stat
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -479,7 +480,7 @@ def _optional_sequence(value: object, field_name: str) -> list[Any]:
 def _read_pimsim_export_text(export_path: Path) -> str:
     display_path = _safe_artifact_path(export_path)
     try:
-        size_bytes = export_path.stat().st_size
+        file_info = export_path.stat()
     except FileNotFoundError as exc:
         raise _pimsim_export_file_error(
             "PimSim export file was not found",
@@ -492,6 +493,13 @@ def _read_pimsim_export_text(export_path: Path) -> str:
             display_path,
             "check file permissions and retry with a readable JSON snapshot.",
         ) from exc
+    if not stat.S_ISREG(file_info.st_mode):
+        raise _pimsim_export_file_error(
+            "PimSim export path must point to a regular JSON file",
+            display_path,
+            "write the PimSim snapshot to a regular file and retry.",
+        )
+    size_bytes = file_info.st_size
     if size_bytes > _PIMSIM_EXPORT_MAX_BYTES:
         raise _pimsim_export_file_error(
             f"PimSim export exceeds maximum size {_PIMSIM_EXPORT_MAX_BYTES} bytes",
@@ -499,24 +507,33 @@ def _read_pimsim_export_text(export_path: Path) -> str:
             "export a single PimSim frame snapshot or trim the host-owned export before retrying.",
         )
     try:
-        return export_path.read_text(encoding="utf-8")
+        with export_path.open("rb") as handle:
+            raw = handle.read(_PIMSIM_EXPORT_MAX_BYTES + 1)
     except FileNotFoundError as exc:
         raise _pimsim_export_file_error(
             "PimSim export file was not found",
             display_path,
             "pass --pimsim-export with a JSON export path or use the bundled default.",
         ) from exc
-    except UnicodeDecodeError as exc:
-        raise _pimsim_export_file_error(
-            "PimSim export is not valid UTF-8 JSON text",
-            display_path,
-            "re-export as UTF-8 encoded JSON and retry.",
-        ) from exc
     except OSError as exc:
         raise _pimsim_export_file_error(
             "PimSim export file could not be read",
             display_path,
             "check file permissions and retry with a readable JSON snapshot.",
+        ) from exc
+    if len(raw) > _PIMSIM_EXPORT_MAX_BYTES:
+        raise _pimsim_export_file_error(
+            f"PimSim export exceeds maximum size {_PIMSIM_EXPORT_MAX_BYTES} bytes",
+            display_path,
+            "export a single PimSim frame snapshot or trim the host-owned export before retrying.",
+        )
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise _pimsim_export_file_error(
+            "PimSim export is not valid UTF-8 JSON text",
+            display_path,
+            "re-export as UTF-8 encoded JSON and retry.",
         ) from exc
 
 

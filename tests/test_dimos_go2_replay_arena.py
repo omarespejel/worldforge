@@ -311,6 +311,19 @@ def test_pimsim_go2_export_rejects_invalid_json_with_redacted_path(tmp_path: Pat
     assert "First triage step:" in message
 
 
+def test_pimsim_go2_export_rejects_non_regular_file_with_redacted_path(tmp_path: Path) -> None:
+    directory_export = tmp_path / "directory-export.json"
+    directory_export.mkdir()
+
+    with pytest.raises(WorldForgeError) as exc_info:
+        load_pimsim_go2_export(directory_export)
+
+    message = str(exc_info.value)
+    assert "must point to a regular JSON file" in message
+    assert "<host-local-path>/directory-export.json" in message
+    assert str(tmp_path) not in message
+
+
 def test_pimsim_go2_export_rejects_non_utf8_with_redacted_path(tmp_path: Path) -> None:
     invalid = tmp_path / "latin1-export.json"
     invalid.write_bytes(b"\xff")
