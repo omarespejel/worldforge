@@ -308,8 +308,14 @@ def test_world_plan_latent_mpc_routes_through_score_provider(tmp_path: Path) -> 
     assert plan.metadata["workflow_trace"]["metadata"]["planning_mode"] == "latent-mpc"
     assert [step["status"] for step in plan.metadata["workflow_trace"]["steps"]] == [
         "success",
-        "skipped",
         "success",
+        "success",
+    ]
+    candidate_step = plan.metadata["workflow_trace"]["steps"][1]
+    assert candidate_step["operation"] == "sample action candidates"
+    assert candidate_step["provider"] == "worldforge.latent-mpc"
+    assert candidate_step["output_artifacts"] == [
+        {"label": "action-candidates", "safe_to_attach": True}
     ]
 
 

@@ -419,6 +419,8 @@ def _validate_baseline(
             lower_is_better=score_table.lower_is_better,
         )
     else:
+        if baseline.get("score") is not None:
+            raise WorldForgeError(f"{name}.score must be null or absent when candidate_id is null.")
         expected_regret = 0.0
     regret_vs_selected = require_finite_number(
         baseline["regret_vs_selected"], name=f"{name}.regret_vs_selected"

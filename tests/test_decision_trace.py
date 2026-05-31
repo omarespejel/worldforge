@@ -211,6 +211,25 @@ def test_validate_decision_trace_rejects_baseline_regret_mismatch() -> None:
         validate_decision_trace(trace)
 
 
+def test_validate_decision_trace_rejects_baseline_score_without_baseline_candidate() -> None:
+    trace = _valid_trace()
+    trace["baseline"]["candidate_id"] = None
+    trace["baseline"]["score"] = 123.0
+    trace["baseline"]["regret_vs_selected"] = 0.0
+
+    with pytest.raises(WorldForgeError, match=r"baseline\.score"):
+        validate_decision_trace(trace)
+
+
+def test_validate_decision_trace_allows_absent_baseline_candidate_without_score() -> None:
+    trace = _valid_trace()
+    trace["baseline"]["candidate_id"] = None
+    trace["baseline"]["score"] = None
+    trace["baseline"]["regret_vs_selected"] = 0.0
+
+    assert validate_decision_trace(trace)["baseline"]["candidate_id"] is None
+
+
 def test_validate_decision_trace_allows_rank_declared_tied_best_without_lexical_bias() -> None:
     trace = _valid_trace()
     trace["candidate_actions"][0]["candidate_id"] = "z-best"

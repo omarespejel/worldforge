@@ -281,7 +281,7 @@ def skipped_policy_trace_step(
     )
 
 
-def skipped_mpc_policy_trace_step(
+def mpc_candidate_trace_step(
     *,
     provider: str,
     selected_provider: str | None,
@@ -289,13 +289,11 @@ def skipped_mpc_policy_trace_step(
     return WorkflowTraceStep(
         step_id="policy",
         parent_id="plan",
-        operation="select action candidates",
-        status="skipped",
-        capability="policy",
-        error_summary=(
-            "Policy provider not requested; latent-MPC sampled action candidates locally "
-            "from planner_config."
-        ),
+        operation="sample action candidates",
+        status="success",
+        provider="worldforge.latent-mpc",
+        capability="control",
+        output_artifacts=(WorkflowArtifactRef(label="action-candidates"),),
     )
 
 
@@ -335,7 +333,7 @@ POLICY_TRACE_STEP_BUILDERS = {
     "policy": active_policy_trace_step,
     "policy+score": active_policy_trace_step,
     "score": skipped_policy_trace_step,
-    "latent-mpc": skipped_mpc_policy_trace_step,
+    "latent-mpc": mpc_candidate_trace_step,
 }
 SCORE_TRACE_STEP_BUILDERS = {
     "score": active_score_trace_step,

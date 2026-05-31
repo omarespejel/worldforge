@@ -311,6 +311,25 @@
       "type": "object",
       "additionalProperties": true,
       "required": ["candidate_id", "regret_vs_selected"],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "candidate_id": {
+                "type": "null"
+              }
+            },
+            "required": ["candidate_id"]
+          },
+          "then": {
+            "properties": {
+              "score": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ],
       "properties": {
         "candidate_id": {
           "anyOf": [
@@ -322,6 +341,9 @@
               "type": "null"
             }
           ]
+        },
+        "score": {
+          "type": ["number", "null"]
         },
         "regret_vs_selected": {
           "type": "number"
