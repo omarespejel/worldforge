@@ -187,16 +187,16 @@ def test_validate_decision_trace_rejects_selected_margin_mismatch() -> None:
         validate_decision_trace(trace)
 
 
-def test_validate_decision_trace_allows_tied_best_selection_without_lexical_bias() -> None:
+def test_validate_decision_trace_allows_rank_declared_tied_best_without_lexical_bias() -> None:
     trace = _valid_trace()
     trace["candidate_actions"][0]["candidate_id"] = "z-best"
     trace["scores"][0]["candidate_id"] = "z-best"
     trace["scores"][0]["score"] = 0.2
-    trace["scores"][0]["rank"] = 2
+    trace["scores"][0]["rank"] = 1
     trace["candidate_actions"][1]["candidate_id"] = "a-best"
     trace["scores"][1]["candidate_id"] = "a-best"
     trace["scores"][1]["score"] = 0.2
-    trace["scores"][1]["rank"] = 1
+    trace["scores"][1]["rank"] = 2
     trace["selected_action"]["candidate_id"] = "z-best"
     trace["selected_action"]["score"] = 0.2
     trace["selected_action"]["score_margin"] = 0.0
@@ -213,6 +213,30 @@ def test_validate_decision_trace_allows_tied_best_selection_without_lexical_bias
     trace["baseline"]["regret_vs_selected"] = 0.0
 
     assert validate_decision_trace(trace)["selected_action"]["candidate_id"] == "z-best"
+
+
+def test_validate_decision_trace_rejects_tied_best_when_selected_is_not_rank_one() -> None:
+    trace = _valid_trace()
+    trace["scores"][0]["score"] = 0.2
+    trace["scores"][0]["rank"] = 1
+    trace["scores"][1]["score"] = 0.2
+    trace["scores"][1]["rank"] = 2
+    trace["selected_action"]["candidate_id"] = "stop"
+    trace["selected_action"]["score"] = 0.2
+    trace["selected_action"]["score_margin"] = 0.0
+    trace["counterfactuals"] = [
+        {
+            "candidate_id": "forward",
+            "score": 0.2,
+            "delta_vs_selected": 0.0,
+            "why_rejected": "Trace declared stop as selected even though it is not rank 1.",
+        }
+    ]
+    trace["baseline"]["score"] = 0.2
+    trace["baseline"]["regret_vs_selected"] = 0.0
+
+    with pytest.raises(WorldForgeError, match="rank-1"):
+        validate_decision_trace(trace)
 
 
 def test_validate_decision_trace_rejects_overclaimed_real_outcome() -> None:

@@ -61,10 +61,8 @@ _REQUIRED_TOP_LEVEL_FIELDS: tuple[str, ...] = (
 class _ScoreTable:
     candidate_ids: set[str]
     score_by_candidate: dict[str, float]
+    rank_by_candidate: dict[str, int]
     lower_is_better: bool
-    ranked_candidate_ids: list[str]
-    ranked_scores: list[float]
-    best_candidate_ids: set[str]
     best_score: float
     runner_up_score: float
 
@@ -266,61 +264,36 @@ def _validate_scores(value: object, *, name: str) -> _ScoreTable:
         raise WorldForgeError(f"{name} ranks must be contiguous from 1 to {len(scores)}.")
     if lower_is_better is None:  # pragma: no cover - guarded by non-empty sequence
         raise WorldForgeError(f"{name} must not be empty.")
-    _validate_score_ranks_monotonic(ranked_rows, lower_is_better=lower_is_better, name=name)
     rank_sorted_rows = sorted(ranked_rows, key=lambda row: row[2])
-    ranked_candidate_ids = [candidate_id for candidate_id, _score, _rank in rank_sorted_rows]
-    ranked_scores = [score_value for _candidate_id, score_value, _rank in rank_sorted_rows]
-    if lower_is_better:
-        best_score = min(score_by_candidate.values())
-    else:
-        best_score = max(score_by_candidate.values())
-    best_candidate_ids = {
-        candidate_id
-        for candidate_id, score_value in score_by_candidate.items()
-        if _scores_equal(score_value, best_score)
+    _validate_score_ranks_monotonic(rank_sorted_rows, lower_is_better=lower_is_better, name=name)
+    rank_by_candidate = {
+        candidate_id: rank for candidate_id, _score_value, rank in rank_sorted_rows
     }
-    non_best_scores = [
-        score_value
-        for score_value in score_by_candidate.values()
-        if not _scores_equal(score_value, best_score)
-    ]
-    if not non_best_scores or len(best_candidate_ids) > 1:
-        runner_up_score = best_score
-    elif lower_is_better:
-        runner_up_score = min(non_best_scores)
-    else:
-        runner_up_score = max(non_best_scores)
+    best_score = rank_sorted_rows[0][1]
+    runner_up_score = rank_sorted_rows[1][1] if len(rank_sorted_rows) > 1 else best_score
     return _ScoreTable(
         candidate_ids=score_ids,
         score_by_candidate=score_by_candidate,
+        rank_by_candidate=rank_by_candidate,
         lower_is_better=lower_is_better,
-        ranked_candidate_ids=ranked_candidate_ids,
-        ranked_scores=ranked_scores,
-        best_candidate_ids=best_candidate_ids,
         best_score=best_score,
         runner_up_score=runner_up_score,
     )
 
 
 def _validate_score_ranks_monotonic(
-    ranked_rows: list[tuple[str, float, int]],
+    rank_sorted_rows: list[tuple[str, float, int]],
     *,
     lower_is_better: bool,
     name: str,
 ) -> None:
-    for candidate_id, score_value, rank in ranked_rows:
-        for other_id, other_score, other_rank in ranked_rows:
-            if candidate_id == other_id or _scores_equal(score_value, other_score):
-                continue
-            if _score_is_better(score_value, other_score, lower_is_better=lower_is_better):
-                if rank >= other_rank:
-                    raise WorldForgeError(
-                        f"{name} rank for candidate_id '{candidate_id}' must match score ordering."
-                    )
-            elif other_rank >= rank:
-                raise WorldForgeError(
-                    f"{name} rank for candidate_id '{other_id}' must match score ordering."
-                )
+    previous_score = rank_sorted_rows[0][1]
+    for candidate_id, score_value, _rank in rank_sorted_rows[1:]:
+        if _score_is_better(score_value, previous_score, lower_is_better=lower_is_better):
+            raise WorldForgeError(
+                f"{name} rank for candidate_id '{candidate_id}' must match score ordering."
+            )
+        previous_score = score_value
 
 
 def _validate_selected_action(
@@ -335,8 +308,8 @@ def _validate_selected_action(
     candidate_id = require_non_empty_text(selected["candidate_id"], name=f"{name}.candidate_id")
     if candidate_id not in candidate_ids:
         raise WorldForgeError(f"{name}.candidate_id '{candidate_id}' is not a candidate action.")
-    if candidate_id not in score_table.best_candidate_ids:
-        raise WorldForgeError(f"{name}.candidate_id must reference a best-scoring candidate.")
+    if score_table.rank_by_candidate[candidate_id] != 1:
+        raise WorldForgeError(f"{name}.candidate_id must reference the rank-1 score candidate.")
     selected_score = require_finite_number(selected["score"], name=f"{name}.score")
     _require_close(
         selected_score,
