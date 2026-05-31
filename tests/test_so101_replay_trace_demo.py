@@ -43,13 +43,36 @@ def test_so101_replay_trace_demo_selects_and_explains_best_candidate(tmp_path: P
     assert summary["dataset_reference"]["total_frames"] == 11939
 
     trace = summary["trace"]
-    assert trace["schema_version"] == "worldforge.robot_decision_trace.v0"
-    assert trace["embodiment"] == "so101_manipulation"
+    assert trace["schema_version"] == "worldforge.decision_trace.v1"
+    assert trace["artifact_kind"] == "worldforge.decision_trace"
+    assert trace["trace_id"].startswith("dt-so101-")
+    assert trace["run_id"] == "so101-replay-fixture-episode-7-frame-182"
+    assert trace["step_index"] == 0
+    assert trace["embodiment"] == {
+        "kind": "manipulator",
+        "platform": "so101",
+        "embodiment_id": "so101-follower-fixture",
+        "action_space": "6d_joint_delta",
+    }
+    assert trace["host_runtime"]["mode"] == "checkout_safe_replay_fixture"
+    assert [sub_goal["id"] for sub_goal in trace["goal"]["sub_goals"]] == [
+        "approach",
+        "pre_grasp",
+        "contact",
+        "lift",
+        "place",
+        "release",
+    ]
     assert len(trace["candidate_actions"]) == 4
-    assert len(trace["candidate_scores"]) == 4
+    assert len(trace["scores"]) == 4
+    first_action = trace["candidate_actions"][0]["action"]
+    assert first_action["type"] == "so101_joint_delta"
+    assert first_action["params"]["joint_names"] == list(so101_replay_trace.SO101_JOINT_NAMES)
+    assert first_action["units"]["duration_s"] == "s"
     assert trace["selected_action"]["candidate_id"] == "lift-place-stable"
+    assert trace["selected_action"]["action"]["type"] == "so101_joint_delta"
     assert trace["selected_action"]["score"] == min(summary["candidate_costs"])
-    assert trace["selected_action"]["score_margin_to_runner_up"] > 0
+    assert trace["selected_action"]["score_margin"] > 0
     assert "Lowest weighted replay cost" in trace["selected_action"]["why_selected"]
     assert summary["counterfactual_count"] == 3
     assert {item["candidate_id"] for item in trace["counterfactuals"]} == {
@@ -57,14 +80,43 @@ def test_so101_replay_trace_demo_selects_and_explains_best_candidate(tmp_path: P
         "overreach-place",
         "stop-relocalize",
     }
-    assert all(item["score_delta_vs_selected"] > 0 for item in trace["counterfactuals"])
+    assert all(item["delta_vs_selected"] > 0 for item in trace["counterfactuals"])
+    assert trace["baseline"]["candidate_id"] == "direct-side-push"
+    assert trace["baseline"]["regret_vs_selected"] > 0
+    assert "score_margin_to_runner_up" not in trace["selected_action"]
+    assert trace["predicted_outcome"]["kind"] == "replay_prediction"
+    assert trace["measured_or_analytic_outcome"] == trace["outcome"]
+    assert trace["outcome"]["kind"] == "analytic"
+    assert trace["outcome"]["status"] == "success"
     assert trace["outcome"]["success"] is True
+    assert trace["outcome"]["metrics"]["success"] is True
     assert trace["outcome"]["success_label"] == "placed_at_target"
     assert trace["outcome"]["hardware_executed"] is False
+    assert all("score_delta_vs_selected" not in item for item in trace["counterfactuals"])
     assert all(
         "total_cost_raw" in item["components"] and "total_cost_display" in item["components"]
-        for item in trace["candidate_scores"]
+        for item in trace["scores"]
     )
+    assert all(item["score_kind"] == "hand_cost" for item in trace["scores"])
+    assert all(0 <= item["normalized"]["value_signal"] <= 1 for item in trace["scores"])
+    assert trace["planner_diagnostics"]["score_provider"] == "so101-replay-score"
+    assert trace["reproducibility"]["input_digest"].startswith("sha256:")
+    assert trace["reproducibility"]["seed"] == 0
+    expected_limitations = [
+        "Replay fixture only; no real SO-101 controller, calibration, camera, or lab safety loop.",
+        "Scores are deterministic hand-costs, not learned latent world-model predictions.",
+        "Outcome is analytic over the mock replay final pose, not sim-measured or real-measured.",
+    ]
+    claim_boundary = trace["claim_boundary"]
+    assert claim_boundary == {
+        "score_kind": "hand_cost",
+        "outcome_kind": "analytic",
+        "hardware_executed": False,
+        "learned_model_used": False,
+        "safety_controller": None,
+        "limitations": expected_limitations,
+        "dataset_reference": trace["dataset_reference"],
+    }
     assert summary["final_object_position"] == {"x": 0.52, "y": 0.08, "z": 0.03}
     assert summary["persistence"]["state_dir_provided"] is True
     assert summary["persistence"]["saved_world_id"] in summary["persistence"]["saved_worlds"]
@@ -82,6 +134,53 @@ def test_so101_replay_trace_default_json_summary_is_deterministic() -> None:
         "saved_world_id": "<temporary-world-id>",
         "saved_worlds": ["<temporary-world-id>"],
     }
+
+
+def test_so101_replay_trace_baseline_candidate_is_required() -> None:
+    candidates = [
+        candidate
+        for candidate in so101_replay_trace._candidate_records()
+        if candidate["candidate_id"] != "direct-side-push"
+    ]
+
+    with pytest.raises(WorldForgeError, match="direct-side-push"):
+        so101_replay_trace._baseline(
+            candidates=candidates,
+            scores=[1.0 for _candidate in candidates],
+            selected_score=0.5,
+        )
+
+
+def test_so101_replay_trace_digest_uses_typed_json_errors() -> None:
+    with pytest.raises(WorldForgeError, match="JSON serializable"):
+        so101_replay_trace._json_digest({"bad": float("nan")})
+
+
+def test_so101_replay_trace_outcome_failure_labels_are_specific() -> None:
+    selected = dict(so101_replay_trace._candidate_records()[1])
+    target_pose = so101_replay_trace.SO101_TARGET_POSITION.to_dict()
+
+    high_contact = dict(selected, contact_risk=0.22)
+    assert so101_replay_trace._outcome(target_pose, selected=high_contact)["success_label"] == (
+        "high_contact_risk"
+    )
+    assert (
+        "contact_risk"
+        in so101_replay_trace._score_candidate(
+            high_contact,
+            target_pose=target_pose,
+        )["risk_flags"]
+    )
+
+    low_grasp = dict(selected, predicted_grasp_confidence=0.75)
+    assert so101_replay_trace._outcome(target_pose, selected=low_grasp)["success_label"] == (
+        "low_grasp_confidence"
+    )
+
+    missed_target = {"x": 0.8, "y": 0.2, "z": 0.03}
+    assert so101_replay_trace._outcome(missed_target, selected=selected)["success_label"] == (
+        "not_within_target_tolerance"
+    )
 
 
 def test_so101_replay_trace_default_state_dir_is_cleaned_up(

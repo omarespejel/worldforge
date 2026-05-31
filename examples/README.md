@@ -58,9 +58,10 @@ comparison flows.
 The SO-101 replay trace demo uses a deterministic pick-and-place decision point shaped after the
 public `lerobot/svla_so101_pickplace` metadata. It scores candidate 6D joint-action futures,
 selects the lowest-cost manipulation action, executes the selected object placement through the
-local mock provider, and emits an `observation -> goal -> candidate_actions -> candidate_scores ->
-selected_action -> outcome -> counterfactuals` trace without installing LeRobot, torch, DimOS, or
-connecting robot hardware.
+local mock provider, and emits a DecisionTrace v1
+`observation -> goal.sub_goals -> candidate_actions -> scores -> selected_action ->
+counterfactuals -> predicted_outcome -> outcome -> reproducibility` trace without installing
+LeRobot, torch, DimOS, or connecting robot hardware.
 
 ## Service Host Reference
 
