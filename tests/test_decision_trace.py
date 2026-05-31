@@ -331,6 +331,15 @@ def test_validate_decision_trace_rejects_private_ip_text() -> None:
         validate_decision_trace(trace)
 
 
+@pytest.mark.parametrize("ip_text", ["::1", "fe80::1", "[::1]"])
+def test_validate_decision_trace_rejects_private_ipv6_text(ip_text: str) -> None:
+    trace = _valid_trace()
+    trace["observation"]["robot_ip"] = ip_text
+
+    with pytest.raises(WorldForgeError, match="private or local IP"):
+        validate_decision_trace(trace)
+
+
 def test_validate_decision_trace_rejects_host_local_path_text() -> None:
     trace = _valid_trace()
     trace["observation"]["summary"] = "Loaded replay from /Users/secret/robot.key"
@@ -353,6 +362,14 @@ def test_validate_decision_trace_rejects_sensitive_url_query() -> None:
     trace["reproducibility"]["model_card_ref"] = "https://example.com/model?token=hunter2"
 
     with pytest.raises(WorldForgeError, match="sensitive URL query"):
+        validate_decision_trace(trace)
+
+
+def test_validate_decision_trace_rejects_sensitive_url_path() -> None:
+    trace = _valid_trace()
+    trace["reproducibility"]["model_card_ref"] = "https://example.com/token/hunter2"
+
+    with pytest.raises(WorldForgeError, match="sensitive URL path"):
         validate_decision_trace(trace)
 
 

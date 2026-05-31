@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from importlib import resources
 from typing import Any
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 from worldforge.models import (
     JSONDict,
@@ -68,7 +68,15 @@ _HOST_LOCAL_PATH_PATTERN = re.compile(
     r"[A-Za-z]:[\\/][^\s,;:)'\"]+)"
 )
 _IPV4_ADDRESS_PATTERN = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
+_IPV6_ADDRESS_PATTERN = re.compile(
+    r"(?<![0-9A-Fa-f:])\[?(?:[0-9A-Fa-f]{0,4}:){2,}[0-9A-Fa-f:.%]*\]?"
+    r"(?![0-9A-Fa-f:])"
+)
 _URL_IN_TEXT_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s\"'<>]+")
+_SENSITIVE_URL_PATH_SEGMENT_PATTERN = re.compile(
+    r"(api[_-]?key|authorization|bearer|credential|password|secret|signature|signed[_-]?url|token)",
+    re.IGNORECASE,
+)
 _REDACTED_OBSERVABLE_VALUE = "[redacted]"
 
 
@@ -207,6 +215,8 @@ def _validate_trace_urls(value: str, *, name: str) -> None:
             raise WorldForgeError(
                 f"{name} must not contain private or local URL host {parsed.hostname}."
             )
+        if _url_path_contains_sensitive_segment(parsed.path):
+            raise WorldForgeError(f"{name} must not contain sensitive URL path segments.")
         for key, item in parse_qsl(parsed.query, keep_blank_values=True):
             if _SENSITIVE_TRACE_KEY_PATTERN.search(key) or _SENSITIVE_TRACE_KEY_PATTERN.search(
                 item
@@ -227,9 +237,26 @@ def _hostname_is_private_or_local(hostname: str) -> bool:
     return _ip_address_is_non_shareable(address)
 
 
+def _url_path_contains_sensitive_segment(path: str) -> bool:
+    segments = [unquote(segment) for segment in path.split("/") if segment]
+    for segment in segments:
+        key = segment.split("=", maxsplit=1)[0]
+        if _SENSITIVE_URL_PATH_SEGMENT_PATTERN.fullmatch(key):
+            return True
+    return False
+
+
 def _first_non_shareable_ip(value: str) -> str | None:
     for match in _IPV4_ADDRESS_PATTERN.finditer(value):
         raw_ip = match.group(0)
+        try:
+            address = ipaddress.ip_address(raw_ip)
+        except ValueError:
+            continue
+        if _ip_address_is_non_shareable(address):
+            return raw_ip
+    for match in _IPV6_ADDRESS_PATTERN.finditer(value):
+        raw_ip = match.group(0).strip("[]().,;")
         try:
             address = ipaddress.ip_address(raw_ip)
         except ValueError:
