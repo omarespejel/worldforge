@@ -227,14 +227,70 @@ def _validate_trace_urls(value: str, *, name: str) -> None:
 
 
 def _hostname_is_private_or_local(hostname: str) -> bool:
-    lowered = hostname.lower().strip("[]").rstrip(".")
-    if lowered in {"localhost", "localhost.localdomain"}:
+    lowered = unquote(hostname.lower().strip("[]").rstrip("."))
+    if lowered in {"localhost", "localhost.localdomain"} or lowered.endswith(".localhost"):
         return True
+    candidates = [lowered]
+    if "%" in lowered and ":" in lowered:
+        candidates.append(lowered.split("%", maxsplit=1)[0])
+    for candidate in candidates:
+        try:
+            address = ipaddress.ip_address(candidate)
+        except ValueError:
+            continue
+        if _ip_address_is_non_shareable(address):
+            return True
+    legacy_ipv4_address = _parse_legacy_ipv4_address(lowered)
+    if legacy_ipv4_address is not None:
+        return _ip_address_is_non_shareable(legacy_ipv4_address)
+    return False
+
+
+def _parse_legacy_ipv4_address(hostname: str) -> ipaddress.IPv4Address | None:
+    parts = hostname.split(".")
+    if len(parts) > 4 or any(not part for part in parts):
+        return None
+    numbers: list[int] = []
+    for part in parts:
+        number = _parse_legacy_ipv4_part(part)
+        if number is None:
+            return None
+        numbers.append(number)
+    if len(numbers) == 1:
+        if numbers[0] > 0xFFFFFFFF:
+            return None
+        packed = numbers[0]
+    elif len(numbers) == 2:
+        if numbers[0] > 0xFF or numbers[1] > 0xFFFFFF:
+            return None
+        packed = (numbers[0] << 24) | numbers[1]
+    elif len(numbers) == 3:
+        if numbers[0] > 0xFF or numbers[1] > 0xFF or numbers[2] > 0xFFFF:
+            return None
+        packed = (numbers[0] << 24) | (numbers[1] << 16) | numbers[2]
+    else:
+        if any(number > 0xFF for number in numbers):
+            return None
+        packed = (numbers[0] << 24) | (numbers[1] << 16) | (numbers[2] << 8) | numbers[3]
+    return ipaddress.IPv4Address(packed)
+
+
+def _parse_legacy_ipv4_part(part: str) -> int | None:
+    if part.startswith("0x"):
+        digits = part[2:]
+        if not digits or not re.fullmatch(r"[0-9a-f]+", digits):
+            return None
+        return int(digits, 16)
+    if len(part) > 1 and part.startswith("0"):
+        if not re.fullmatch(r"[0-7]+", part):
+            return None
+        return int(part, 8)
+    if not re.fullmatch(r"[0-9]+", part):
+        return None
     try:
-        address = ipaddress.ip_address(lowered)
+        return int(part, 10)
     except ValueError:
-        return False
-    return _ip_address_is_non_shareable(address)
+        return None
 
 
 def _url_path_contains_sensitive_segment(path: str) -> bool:

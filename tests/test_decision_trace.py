@@ -362,9 +362,32 @@ def test_validate_decision_trace_allows_benign_url_paths_and_queries() -> None:
     [
         "https://localhost./model-card",
         "https://localhost.localdomain./model-card",
+        "https://internal.localhost/model-card",
     ],
 )
 def test_validate_decision_trace_rejects_trailing_dot_localhost_urls(local_url: str) -> None:
+    trace = _valid_trace()
+    trace["reproducibility"]["model_card_ref"] = local_url
+
+    with pytest.raises(WorldForgeError, match="private or local URL host"):
+        validate_decision_trace(trace)
+
+
+@pytest.mark.parametrize(
+    "local_url",
+    [
+        "https://[fe80::1%25eth0]/model-card",
+        "https://2130706433/model-card",
+        "https://0177.0.0.1/model-card",
+        "https://0x7f.0.0.1/model-card",
+        "https://127.1/model-card",
+        "https://192.168.1/model-card",
+        "https://0300.0250.0001.0001/model-card",
+    ],
+)
+def test_validate_decision_trace_rejects_noncanonical_local_ip_url_hosts(
+    local_url: str,
+) -> None:
     trace = _valid_trace()
     trace["reproducibility"]["model_card_ref"] = local_url
 
