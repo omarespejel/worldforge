@@ -540,10 +540,8 @@ def _decision_trace(
             "action": _candidate_action(selected),
             "score": selected_score,
             "score_margin": score_margin,
-            "score_margin_to_runner_up": score_margin,
             "action_plan": [action.to_dict() for action in plan.actions],
             "why_selected": _selection_reason(components[selected_index]),
-            "predicted_outcome": _predicted_outcome(selected),
         },
         "predicted_outcome": _predicted_outcome(selected),
         "measured_or_analytic_outcome": outcome,
@@ -676,18 +674,25 @@ def _score_records(
     components: list[JSONDict],
 ) -> list[JSONDict]:
     ranked_indices = sorted(range(len(scores)), key=scores.__getitem__)
+    rank_by_index = {index: rank + 1 for rank, index in enumerate(ranked_indices)}
+    score_min = min(float(score) for score in scores)
+    score_max = max(float(score) for score in scores)
     return [
         {
             "candidate_id": str(candidates[index]["candidate_id"]),
-            "rank": ranked_indices.index(index) + 1,
+            "rank": rank_by_index[index],
             "score": float(scores[index]),
             "lower_is_better": True,
             "score_kind": "hand_cost",
             "components": _score_components(components[index]),
             "normalized": {
-                "value_signal": _normalized_value_signal(float(scores[index]), scores=scores),
-                "score_min": min(float(score) for score in scores),
-                "score_max": max(float(score) for score in scores),
+                "value_signal": _normalized_value_signal(
+                    float(scores[index]),
+                    score_min=score_min,
+                    score_max=score_max,
+                ),
+                "score_min": score_min,
+                "score_max": score_max,
             },
         }
         for index in range(len(candidates))
@@ -713,9 +718,9 @@ def _score_components(component: JSONDict) -> JSONDict:
     }
 
 
-def _normalized_value_signal(score: float, *, scores: list[float]) -> float:
-    best = min(float(item) for item in scores)
-    worst = max(float(item) for item in scores)
+def _normalized_value_signal(score: float, *, score_min: float, score_max: float) -> float:
+    best = float(score_min)
+    worst = float(score_max)
     if math.isclose(best, worst):
         return 1.0
     return round(1.0 - ((score - best) / (worst - best)), 4)
@@ -741,20 +746,27 @@ def _baseline(
     scores: list[float],
     selected_score: float,
 ) -> JSONDict:
-    baseline_index = next(
-        (
-            index
-            for index, candidate in enumerate(candidates)
-            if candidate["candidate_id"] == "direct-side-push"
-        ),
-        0,
-    )
+    baseline_index: int | None = None
+    for index, candidate in enumerate(candidates):
+        if str(candidate.get("candidate_id", "")) == "direct-side-push":
+            baseline_index = index
+            break
+    fallback_used = baseline_index is None
+    if baseline_index is None:
+        baseline_index = 0
     return {
         "candidate_id": str(candidates[baseline_index]["candidate_id"]),
-        "baseline_kind": "naive_direct_side_push",
+        "baseline_kind": (
+            "fallback_first_candidate" if fallback_used else "naive_direct_side_push"
+        ),
+        "fallback_used": fallback_used,
         "score": float(scores[baseline_index]),
         "regret_vs_selected": round(float(scores[baseline_index]) - selected_score, 4),
-        "description": "Naive direct motion baseline used to show value over a hardcoded action.",
+        "description": (
+            "Fallback first-candidate baseline; intended direct-side-push baseline was missing."
+            if fallback_used
+            else "Naive direct motion baseline used to show value over a hardcoded action."
+        ),
     }
 
 
@@ -886,7 +898,6 @@ def _counterfactuals(
                 "action": _candidate_action(candidate),
                 "score": float(scores[index]),
                 "delta_vs_selected": score_delta,
-                "score_delta_vs_selected": score_delta,
                 "predicted_outcome": _predicted_outcome(candidate),
                 "why_rejected": _rejection_reason(component),
                 "risk_flags": list(component["risk_flags"]),

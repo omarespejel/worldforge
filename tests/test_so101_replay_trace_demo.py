@@ -82,7 +82,9 @@ def test_so101_replay_trace_demo_selects_and_explains_best_candidate(tmp_path: P
     }
     assert all(item["delta_vs_selected"] > 0 for item in trace["counterfactuals"])
     assert trace["baseline"]["candidate_id"] == "direct-side-push"
+    assert trace["baseline"]["fallback_used"] is False
     assert trace["baseline"]["regret_vs_selected"] > 0
+    assert "score_margin_to_runner_up" not in trace["selected_action"]
     assert trace["predicted_outcome"]["kind"] == "replay_prediction"
     assert trace["measured_or_analytic_outcome"] == trace["outcome"]
     assert trace["outcome"]["kind"] == "analytic"
@@ -91,6 +93,7 @@ def test_so101_replay_trace_demo_selects_and_explains_best_candidate(tmp_path: P
     assert trace["outcome"]["metrics"]["success"] is True
     assert trace["outcome"]["success_label"] == "placed_at_target"
     assert trace["outcome"]["hardware_executed"] is False
+    assert all("score_delta_vs_selected" not in item for item in trace["counterfactuals"])
     assert all(
         "total_cost_raw" in item["components"] and "total_cost_display" in item["components"]
         for item in trace["scores"]
