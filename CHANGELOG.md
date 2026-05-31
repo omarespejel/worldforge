@@ -18,6 +18,12 @@ releases may still include breaking changes when the public API needs to tighten
   `optimizer="cem"`, candidate counts, and per-iteration score/cost diagnostics in plan
   metadata, and leaves tensor encoding, environment stepping, robot execution, optional ML
   runtimes, and policy warm-start outside the base package.
+- Added a checkout-safe DimOS Go2 PimSim export adapter for the replay arena. The
+  `examples/dimos-go2-replay-arena/run.py --pimsim-export` path converts a PimSim-shaped JSON
+  entity snapshot into the existing Go2 decision-trace fixture contract, writes
+  `converted-replay-fixture.json`, then produces the same selected-action, score-margin,
+  baseline-regret, and counterfactual report artifacts without importing DimOS, starting PimSim,
+  or connecting to hardware.
 - Added a non-interactive TensorBoard launcher CLI:
   `worldforge-open-tensorboard --logdir <path> [--probe] [--no-browser]
   [--keep-running] [--ready-timeout 60] [--poll-interval 0.5]`. Wraps the
