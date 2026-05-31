@@ -24,9 +24,16 @@ DEFAULT_CACHE_PATH = Path(
 DEFAULT_SIDECAR_PATH = DEFAULT_CACHE_PATH.with_name("latent_cache_meta.json")
 DEFAULT_OUTPUT_DIR = Path(".worldforge/so101-latent-scorer")
 GRIPPER_INDEX = 5
+HISTORY_FRAME_COUNT = 3
 DECOY_NAMES = ("no_motion", "reverse", "scale_half", "overshoot", "random_other", "jitter")
 LATENT_DYNAMICS_VARIANTS = {"vision_mlp", "vision_proprio_mlp"}
-GOAL_CONDITIONED_SCORE_VARIANTS = {"goal_score_mlp", "goal_proprio_score_mlp"}
+GOAL_CONDITIONED_SCORE_VARIANTS = {
+    "goal_score_mlp",
+    "goal_proprio_score_mlp",
+    "goal_history_score_mlp",
+    "goal_history_proprio_score_mlp",
+}
+GOAL_HISTORY_SCORE_VARIANTS = {"goal_history_score_mlp", "goal_history_proprio_score_mlp"}
 SUPPORTED_VARIANTS = LATENT_DYNAMICS_VARIANTS | GOAL_CONDITIONED_SCORE_VARIANTS
 
 
@@ -353,8 +360,12 @@ def _build_goal_conditioned_score_pairs(
             }
             for candidate in candidates.values():
                 action_delta = candidate - current_state
-                parts = [latents[global_t], latents[global_goal], action_delta]
-                if variant == "goal_proprio_score_mlp":
+                if variant in GOAL_HISTORY_SCORE_VARIANTS:
+                    observation = _history_latents(latents, rows, local_t, np=np)
+                else:
+                    observation = latents[global_t]
+                parts = [observation, latents[global_goal], action_delta]
+                if variant in {"goal_proprio_score_mlp", "goal_history_proprio_score_mlp"}:
                     parts.append(current_state)
                 xs.append(np.concatenate(parts))
                 ys.append([float(np.linalg.norm(candidate - goal_state))])
@@ -374,6 +385,14 @@ def _subgoal_frames(states: Any, *, np: Any) -> list[int]:
         return [len(gripper) - 1]
     transition_indices = [int(index) + 1 for index in np.argsort(-np.abs(deltas))[:2]]
     return sorted({*transition_indices, len(gripper) - 1})
+
+
+def _history_latents(latents: Any, episode_rows: Any, local_index: int, *, np: Any) -> Any:
+    indices = [
+        int(episode_rows[max(0, local_index - offset)])
+        for offset in range(HISTORY_FRAME_COUNT - 1, -1, -1)
+    ]
+    return latents[np.asarray(indices, dtype=np.int64)].reshape(-1)
 
 
 def _fit_mlp(data: dict[str, Any], *, config: TrainingConfig, rng: Any, np: Any) -> dict[str, Any]:

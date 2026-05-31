@@ -165,6 +165,7 @@ def _make_provider_scorer(
             info={
                 "current_latent": cache[item["cur_g"]].tolist(),
                 "goal_latent": cache[item["goal_g"]].tolist(),
+                "history_latents": _history_latents(cache, item).tolist(),
                 "current_state": item["cur"].tolist(),
             },
             action_candidates=candidates,
@@ -172,6 +173,14 @@ def _make_provider_scorer(
         return dict(zip(names, result.scores, strict=True))
 
     return scorer
+
+
+def _history_latents(cache: Any, item: dict[str, Any]) -> Any:
+    np = _import_numpy()
+    local_index = int(item["t"])
+    current_index = int(item["cur_g"])
+    indices = [current_index - min(offset, local_index) for offset in (2, 1, 0)]
+    return cache[np.asarray(indices, dtype=np.int64)]
 
 
 def _load_referee(path: Path) -> Any:

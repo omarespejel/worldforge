@@ -13,6 +13,8 @@ from typing import Any
 from worldforge.capability_results import ActionScoreResult
 from worldforge.models import JSONDict, WorldForgeError, require_json_dict
 
+HISTORY_FRAME_COUNT = 3
+
 
 class SO101LatentScoreProvider:
     """Score SO-101 candidate actions by predicted latent distance to a goal latent."""
@@ -70,12 +72,14 @@ class SO101LatentScoreProvider:
             frame_key="goal_frame_index",
         )
         current_state = _optional_vector(info.get("current_state"), name="current_state")
+        history_latents = _optional_history_latents(info.get("history_latents"))
         scores = [
             self._score_candidate(
                 candidate,
                 current_latent=current_latent,
                 goal_latent=goal_latent,
                 current_state=current_state,
+                history_latents=history_latents,
             )
             for candidate in candidates
         ]
@@ -130,6 +134,7 @@ class SO101LatentScoreProvider:
         current_latent: Any,
         goal_latent: Any,
         current_state: Any | None,
+        history_latents: Any | None,
     ) -> float:
         action_delta = _candidate_action_delta(candidate, current_state=current_state)
         target = str(self._model_meta.get("target", "future_latent_residual"))
@@ -139,6 +144,7 @@ class SO101LatentScoreProvider:
                 goal_latent=goal_latent,
                 action_delta=action_delta,
                 current_state=current_state,
+                history_latents=history_latents,
             )
         predicted = self._predict(
             current_latent=current_latent,
@@ -180,14 +186,19 @@ class SO101LatentScoreProvider:
         goal_latent: Any,
         action_delta: Any,
         current_state: Any | None,
+        history_latents: Any | None,
     ) -> float:
         variant = str(self._model_meta["variant"])
-        parts = [current_latent, goal_latent, action_delta]
-        if variant == "goal_proprio_score_mlp":
+        if variant in {"goal_history_score_mlp", "goal_history_proprio_score_mlp"}:
+            if history_latents is None:
+                raise WorldForgeError("SO-101 history goal scorer requires info.history_latents.")
+            observation = history_latents.reshape(-1)
+        else:
+            observation = current_latent
+        parts = [observation, goal_latent, action_delta]
+        if variant in {"goal_proprio_score_mlp", "goal_history_proprio_score_mlp"}:
             if current_state is None:
-                raise WorldForgeError(
-                    "SO-101 goal_proprio_score_mlp scorer requires info.current_state."
-                )
+                raise WorldForgeError(f"SO-101 {variant} scorer requires info.current_state.")
             parts.append(current_state)
         x = self._np.concatenate(parts).astype(self._np.float32)
         prediction = self._forward(x)
@@ -257,6 +268,22 @@ def _optional_vector(value: object, *, name: str) -> Any | None:
     if value is None:
         return None
     return _required_vector(value, name=name)
+
+
+def _optional_history_latents(value: object) -> Any | None:
+    if value is None:
+        return None
+    np = _import_numpy()
+    if not isinstance(value, (list, tuple)):
+        raise WorldForgeError("SO-101 latent scorer history_latents must be a numeric list.")
+    matrix = np.asarray(value, dtype=np.float32)
+    if matrix.ndim != 2 or matrix.shape[0] != HISTORY_FRAME_COUNT or matrix.shape[1] == 0:
+        raise WorldForgeError(
+            "SO-101 latent scorer history_latents must contain three latent vectors."
+        )
+    if not np.isfinite(matrix).all():
+        raise WorldForgeError("SO-101 latent scorer history_latents must contain finite numbers.")
+    return matrix
 
 
 def _import_numpy() -> Any:
