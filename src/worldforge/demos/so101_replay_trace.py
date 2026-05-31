@@ -16,6 +16,7 @@ rows later without changing the trace contract.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import tempfile
@@ -33,11 +34,12 @@ from worldforge.models import (
 )
 from worldforge.providers import BaseProvider, ProviderProfileSpec
 
-SO101_TRACE_SCHEMA_VERSION = "worldforge.robot_decision_trace.v0"
+SO101_TRACE_SCHEMA_VERSION = "worldforge.decision_trace.v1"
 SO101_SCORE_PROVIDER = "so101-replay-score"
 SO101_CUBE_ID = "so101-blue-cube"
 SO101_TARGET_POSITION = Position(0.52, 0.08, 0.03)
 SO101_GOAL_TOLERANCE_M = 0.025
+SO101_FIXTURE_RUN_ID = "so101-replay-fixture-episode-7-frame-182"
 
 SO101_JOINT_NAMES: tuple[str, ...] = (
     "shoulder_pan.pos",
@@ -498,32 +500,53 @@ def _decision_trace(
         float(scores[ranked_indices[1]]) if len(ranked_indices) > 1 else selected_score
     )
     outcome = _outcome(final_position, selected=selected)
+    reproducibility = _reproducibility(
+        observation=observation,
+        goal=goal,
+        candidates=candidates,
+    )
+    score_margin = round(runner_up_score - selected_score, 4)
     return {
         "schema_version": SO101_TRACE_SCHEMA_VERSION,
-        "embodiment": "so101_manipulation",
+        "artifact_kind": "worldforge.decision_trace",
+        "trace_id": _trace_id(reproducibility["input_digest"]),
+        "run_id": SO101_FIXTURE_RUN_ID,
+        "step_index": 0,
+        "prev_trace_id": None,
+        "embodiment": {
+            "kind": "manipulator",
+            "platform": "so101",
+            "embodiment_id": "so101-follower-fixture",
+            "action_space": "6d_joint_delta",
+        },
+        "host_runtime": {
+            "name": "worldforge",
+            "mode": "checkout_safe_replay_fixture",
+            "version": None,
+        },
+        "task": {
+            "task_id": "so101-pick-place-replay",
+            "description": "Move the blue cube to the target pose with a 6D SO-101 joint delta.",
+        },
         "source": "checkout_safe_replay_fixture",
         "dataset_reference": dict(SO101_DATASET_REFERENCE),
         "observation": observation,
-        "goal": goal.to_dict(),
+        "goal": _decision_goal(goal),
         "candidate_actions": [_candidate_trace_record(candidate) for candidate in candidates],
-        "candidate_scores": [
-            {
-                "candidate_id": str(candidates[index]["candidate_id"]),
-                "score": float(scores[index]),
-                "rank": ranked_indices.index(index) + 1,
-                "lower_is_better": True,
-                "components": components[index],
-            }
-            for index in range(len(candidates))
-        ],
+        "scores": _score_records(candidates, scores=scores, components=components),
         "selected_action": {
             "candidate_id": str(selected["candidate_id"]),
             "label": str(selected["label"]),
+            "action": _candidate_action(selected),
             "score": selected_score,
-            "score_margin_to_runner_up": round(runner_up_score - selected_score, 4),
+            "score_margin": score_margin,
+            "score_margin_to_runner_up": score_margin,
             "action_plan": [action.to_dict() for action in plan.actions],
             "why_selected": _selection_reason(components[selected_index]),
+            "predicted_outcome": _predicted_outcome(selected),
         },
+        "predicted_outcome": _predicted_outcome(selected),
+        "measured_or_analytic_outcome": outcome,
         "outcome": outcome,
         "counterfactuals": _counterfactuals(
             candidates=candidates,
@@ -532,10 +555,108 @@ def _decision_trace(
             selected_index=selected_index,
             selected_score=selected_score,
         ),
-        "claim_boundary": (
-            "Replay evidence only: no real SO-101 controller, calibration, camera, "
-            "or physical success claim."
+        "baseline": _baseline(
+            candidates=candidates,
+            scores=scores,
+            selected_score=selected_score,
         ),
+        "planner_diagnostics": {
+            "planner": "so101-replay-cem",
+            "planner_family": "candidate_score_select",
+            "score_provider": SO101_SCORE_PROVIDER,
+            "score_kind": "hand_cost",
+            "candidate_count": len(candidates),
+            "ranked_candidate_ids": [
+                str(candidates[index]["candidate_id"]) for index in ranked_indices
+            ],
+            "lower_is_better": True,
+            "score_margin": score_margin,
+            "learned_model_used": False,
+        },
+        "reproducibility": reproducibility,
+        "claim_boundary": _claim_boundary(),
+    }
+
+
+def _decision_goal(goal: StructuredGoal) -> JSONDict:
+    return {
+        "type": "pick_place",
+        "description": "Place the SO-101 blue cube inside the target tolerance.",
+        "structured_goal": goal.to_dict(),
+        "sub_goals": [
+            {
+                "id": "approach",
+                "description": "Move near the cube while preserving camera visibility.",
+                "required": True,
+                "weight": 0.1,
+            },
+            {
+                "id": "pre_grasp",
+                "description": "Align the wrist and gripper before contact.",
+                "required": True,
+                "weight": 0.15,
+            },
+            {
+                "id": "contact",
+                "description": "Close on the cube with bounded contact risk.",
+                "required": True,
+                "weight": 0.2,
+            },
+            {
+                "id": "lift",
+                "description": "Maintain grasp confidence while clearing the workspace.",
+                "required": True,
+                "weight": 0.2,
+            },
+            {
+                "id": "place",
+                "description": "Move the cube to the target pose.",
+                "required": True,
+                "weight": 0.25,
+            },
+            {
+                "id": "release",
+                "description": "Release without moving the cube outside tolerance.",
+                "required": True,
+                "weight": 0.1,
+            },
+        ],
+        "success_criteria": {
+            "metric": "placement_error_m_and_grasp_safety",
+            "partial_credit": True,
+            "target_pose": SO101_TARGET_POSITION.to_dict(),
+            "tolerance_m": SO101_GOAL_TOLERANCE_M,
+            "requires": [
+                f"placement_error_m <= {SO101_GOAL_TOLERANCE_M}",
+                "contact_risk < 0.2",
+                "predicted_grasp_confidence >= 0.85",
+            ],
+        },
+    }
+
+
+def _candidate_action(candidate: JSONDict) -> JSONDict:
+    return {
+        "type": "so101_joint_delta",
+        "params": {
+            "joint_names": list(SO101_JOINT_NAMES),
+            "joint_delta": list(candidate["joint_delta"]),
+            "duration_s": float(candidate["duration_s"]),
+            "predicted_object_pose": dict(candidate["predicted_object_pose"]),
+            "expected_outcome": str(candidate["expected_outcome"]),
+        },
+        "units": {
+            "joint_delta": {
+                "shoulder_pan.pos": "rad",
+                "shoulder_lift.pos": "rad",
+                "elbow_flex.pos": "rad",
+                "wrist_flex.pos": "rad",
+                "wrist_roll.pos": "rad",
+                "gripper.pos": "normalized_open_close_delta",
+            },
+            "duration_s": "s",
+            "predicted_object_pose": "m",
+        },
     }
 
 
@@ -543,11 +664,162 @@ def _candidate_trace_record(candidate: JSONDict) -> JSONDict:
     return {
         "candidate_id": str(candidate["candidate_id"]),
         "label": str(candidate["label"]),
-        "joint_names": list(SO101_JOINT_NAMES),
-        "joint_delta": list(candidate["joint_delta"]),
-        "duration_s": float(candidate["duration_s"]),
-        "predicted_object_pose": dict(candidate["predicted_object_pose"]),
+        "action": _candidate_action(candidate),
+        "predicted_outcome": _predicted_outcome(candidate),
+    }
+
+
+def _score_records(
+    candidates: list[JSONDict],
+    *,
+    scores: list[float],
+    components: list[JSONDict],
+) -> list[JSONDict]:
+    ranked_indices = sorted(range(len(scores)), key=scores.__getitem__)
+    return [
+        {
+            "candidate_id": str(candidates[index]["candidate_id"]),
+            "rank": ranked_indices.index(index) + 1,
+            "score": float(scores[index]),
+            "lower_is_better": True,
+            "score_kind": "hand_cost",
+            "components": _score_components(components[index]),
+            "normalized": {
+                "value_signal": _normalized_value_signal(float(scores[index]), scores=scores),
+                "score_min": min(float(score) for score in scores),
+                "score_max": max(float(score) for score in scores),
+            },
+        }
+        for index in range(len(candidates))
+    ]
+
+
+def _score_components(component: JSONDict) -> JSONDict:
+    contact_risk = float(component["contact_risk"])
+    occlusion_risk = float(component["occlusion_risk"])
+    clearance_penalty = float(component["clearance_penalty"])
+    return {
+        "placement_error_m": float(component["placement_error_m"]),
+        "contact_risk": contact_risk,
+        "joint_motion_cost": float(component["smoothness_cost"]),
+        "grasp_penalty": float(component["grasp_penalty"]),
+        "occlusion_risk": occlusion_risk,
+        "clearance_penalty": clearance_penalty,
+        "collision_risk": round(min(1.0, max(contact_risk, occlusion_risk) + clearance_penalty), 4),
+        "uncertainty": None,
+        "total_cost_raw": float(component["total_cost_raw"]),
+        "total_cost_display": float(component["total_cost_display"]),
+        "risk_flags": list(component["risk_flags"]),
+    }
+
+
+def _normalized_value_signal(score: float, *, scores: list[float]) -> float:
+    best = min(float(item) for item in scores)
+    worst = max(float(item) for item in scores)
+    if math.isclose(best, worst):
+        return 1.0
+    return round(1.0 - ((score - best) / (worst - best)), 4)
+
+
+def _predicted_outcome(candidate: JSONDict) -> JSONDict:
+    return {
+        "kind": "replay_prediction",
+        "object_pose": dict(candidate["predicted_object_pose"]),
         "expected_outcome": str(candidate["expected_outcome"]),
+        "metrics": {
+            "predicted_grasp_confidence": float(candidate["predicted_grasp_confidence"]),
+            "contact_risk": float(candidate["contact_risk"]),
+            "occlusion_risk": float(candidate["occlusion_risk"]),
+            "workspace_clearance_m": float(candidate["workspace_clearance_m"]),
+        },
+    }
+
+
+def _baseline(
+    *,
+    candidates: list[JSONDict],
+    scores: list[float],
+    selected_score: float,
+) -> JSONDict:
+    baseline_index = next(
+        (
+            index
+            for index, candidate in enumerate(candidates)
+            if candidate["candidate_id"] == "direct-side-push"
+        ),
+        0,
+    )
+    return {
+        "candidate_id": str(candidates[baseline_index]["candidate_id"]),
+        "baseline_kind": "naive_direct_side_push",
+        "score": float(scores[baseline_index]),
+        "regret_vs_selected": round(float(scores[baseline_index]) - selected_score, 4),
+        "description": "Naive direct motion baseline used to show value over a hardcoded action.",
+    }
+
+
+def _reproducibility(
+    *,
+    observation: JSONDict,
+    goal: StructuredGoal,
+    candidates: list[JSONDict],
+) -> JSONDict:
+    input_digest = _json_digest(
+        {
+            "schema_version": SO101_TRACE_SCHEMA_VERSION,
+            "score_provider": SO101_SCORE_PROVIDER,
+            "observation": observation,
+            "goal": goal.to_dict(),
+            "candidates": candidates,
+        }
+    )
+    return {
+        "provider_version": "checkout_fixture_v1",
+        "checkpoint_hash": None,
+        "model_card_ref": None,
+        "input_digest": input_digest,
+        "seed": 0,
+        "code_ref": "worldforge.demos.so101_replay_trace:run_demo",
+        "dataset_reference": dict(SO101_DATASET_REFERENCE),
+    }
+
+
+def _json_digest(payload: JSONDict) -> str:
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _trace_id(input_digest: object) -> str:
+    digest = str(input_digest)
+    if digest.startswith("sha256:"):
+        digest = digest.removeprefix("sha256:")
+    return f"dt-so101-{digest[:16]}"
+
+
+def _claim_boundary() -> JSONDict:
+    return {
+        "score_kind": "hand_cost",
+        "outcome_kind": "analytic",
+        "hardware_executed": False,
+        "learned_model_used": False,
+        "safety_controller": None,
+        "limitations": [
+            (
+                "Replay fixture only; no real SO-101 controller, calibration, camera, "
+                "or lab safety loop."
+            ),
+            "Scores are deterministic hand-costs, not learned latent world-model predictions.",
+            (
+                "Outcome is analytic over the mock replay final pose, not sim-measured "
+                "or real-measured."
+            ),
+        ],
+        "dataset_reference": dict(SO101_DATASET_REFERENCE),
     }
 
 
@@ -573,14 +845,23 @@ def _outcome(final_position: JSONDict, *, selected: JSONDict) -> JSONDict:
         and contact_risk < 0.2
         and grasp_confidence >= 0.85
     )
+    success_label = "placed_at_target" if success else "not_within_target_tolerance"
     return {
+        "kind": "analytic",
+        "status": "success" if success else "failure",
+        "metrics": {
+            "placement_error_m": round(placement_error_m, 4),
+            "contact_risk": round(contact_risk, 4),
+            "predicted_grasp_confidence": round(grasp_confidence, 4),
+            "success": success,
+        },
         "outcome_source": "mock_replay_execution",
         "hardware_executed": False,
         "final_object_pose": final_position,
         "target_pose": target_pose,
         "placement_error_m": round(placement_error_m, 4),
         "success": success,
-        "success_label": "placed_at_target" if success else "not_within_target_tolerance",
+        "success_label": success_label,
     }
 
 
@@ -597,14 +878,16 @@ def _counterfactuals(
         if index == selected_index:
             continue
         component = components[index]
+        score_delta = round(float(scores[index]) - selected_score, 4)
         records.append(
             {
                 "candidate_id": str(candidate["candidate_id"]),
                 "label": str(candidate["label"]),
+                "action": _candidate_action(candidate),
                 "score": float(scores[index]),
-                "score_delta_vs_selected": round(float(scores[index]) - selected_score, 4),
-                "predicted_object_pose": dict(candidate["predicted_object_pose"]),
-                "expected_outcome": str(candidate["expected_outcome"]),
+                "delta_vs_selected": score_delta,
+                "score_delta_vs_selected": score_delta,
+                "predicted_outcome": _predicted_outcome(candidate),
                 "why_rejected": _rejection_reason(component),
                 "risk_flags": list(component["risk_flags"]),
             }
@@ -634,7 +917,7 @@ def _print_summary(summary: JSONDict) -> None:
     print(f"Registered providers: {', '.join(summary['providers'])}")
     print()
     print("Candidate costs, lower is better:")
-    for score in trace["candidate_scores"]:
+    for score in trace["scores"]:
         marker = " <- selected" if score["candidate_id"] == summary["selected_candidate_id"] else ""
         print(f"  {score['candidate_id']}: {score['score']:.4f}{marker}")
     print()
