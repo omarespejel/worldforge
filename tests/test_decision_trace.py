@@ -299,6 +299,96 @@ def test_validate_decision_trace_rejects_real_measured_without_hardware() -> Non
         validate_decision_trace(trace)
 
 
+def test_validate_decision_trace_accepts_mixed_candidate_outcome_provenance() -> None:
+    trace = _valid_trace()
+    trace["claim_boundary"]["hardware_executed"] = True
+    trace["candidate_outcomes"] = [
+        {
+            "candidate_id": "forward",
+            "kind": "real_measured",
+            "status": "executed",
+            "outcome_source": "unitree_go2_live_odom",
+            "action_executed": True,
+            "commanded": {"x_mps": 0.25, "duration_s": 0.6},
+            "measured": {"dx_m": 0.146333, "dyaw_rad": 0.020067},
+            "metrics": {"planar_distance_m": 0.149587},
+        },
+        {
+            "candidate_id": "stop",
+            "kind": "analytic",
+            "status": "counterfactual_estimate",
+            "outcome_source": "hand_cost_fixture",
+            "action_executed": False,
+            "metrics": {"planar_distance_m": 0.0},
+        },
+    ]
+
+    validated = validate_decision_trace(trace)
+
+    assert validated["outcome"]["kind"] == "analytic"
+    assert validated["candidate_outcomes"][0]["kind"] == "real_measured"
+
+
+def test_validate_decision_trace_rejects_mixed_candidates_with_trace_level_real_outcome() -> None:
+    trace = _valid_trace()
+    trace["outcome"]["kind"] = "real_measured"
+    trace["claim_boundary"]["outcome_kind"] = "real_measured"
+    trace["claim_boundary"]["hardware_executed"] = True
+    trace["candidate_outcomes"] = [
+        {
+            "candidate_id": "forward",
+            "kind": "real_measured",
+            "status": "executed",
+            "metrics": {"planar_distance_m": 0.149587},
+        },
+        {
+            "candidate_id": "stop",
+            "kind": "analytic",
+            "status": "counterfactual_estimate",
+            "metrics": {"planar_distance_m": 0.0},
+        },
+    ]
+
+    with pytest.raises(WorldForgeError, match="must stay analytic"):
+        validate_decision_trace(trace)
+
+
+def test_validate_decision_trace_rejects_candidate_outcomes_missing_candidate() -> None:
+    trace = _valid_trace()
+    trace["candidate_outcomes"] = [
+        {
+            "candidate_id": "forward",
+            "kind": "analytic",
+            "status": "estimated",
+            "metrics": {},
+        }
+    ]
+
+    with pytest.raises(WorldForgeError, match="missing outcome row"):
+        validate_decision_trace(trace)
+
+
+def test_validate_decision_trace_rejects_real_candidate_outcome_without_hardware_flag() -> None:
+    trace = _valid_trace()
+    trace["candidate_outcomes"] = [
+        {
+            "candidate_id": "forward",
+            "kind": "real_measured",
+            "status": "executed",
+            "metrics": {},
+        },
+        {
+            "candidate_id": "stop",
+            "kind": "analytic",
+            "status": "estimated",
+            "metrics": {},
+        },
+    ]
+
+    with pytest.raises(WorldForgeError, match="any candidate outcome is real_measured"):
+        validate_decision_trace(trace)
+
+
 def test_validate_decision_trace_rejects_learned_score_without_model_flag() -> None:
     trace = _valid_trace()
     trace["claim_boundary"]["score_kind"] = "learned_latent"
@@ -328,6 +418,14 @@ def test_validate_decision_trace_rejects_private_ip_text() -> None:
     trace["observation"]["robot_ip"] = "10.0.0.5"
 
     with pytest.raises(WorldForgeError, match="private or local IP"):
+        validate_decision_trace(trace)
+
+
+def test_validate_decision_trace_rejects_unitree_serial_text() -> None:
+    trace = _valid_trace()
+    trace["embodiment"]["embodiment_id"] = "B42D1000PC4CC883"
+
+    with pytest.raises(WorldForgeError, match="Unitree robot serial"):
         validate_decision_trace(trace)
 
 

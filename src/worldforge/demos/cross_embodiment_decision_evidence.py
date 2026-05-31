@@ -227,6 +227,24 @@ def _normalize_go2_decision_trace(
             for candidate in scored
             if candidate["action_id"] != selected["action_id"]
         ],
+        "candidate_outcomes": [
+            {
+                "candidate_id": str(candidate["action_id"]),
+                "kind": "analytic",
+                "status": "predicted_endpoint",
+                "outcome_source": "analytic_replay_estimate",
+                "action_executed": False,
+                "commanded": _go2_action(candidate["action"])["params"],
+                "measured": {},
+                "metrics": {
+                    "total_cost": float(candidate["total_cost"]),
+                    "progress_m": float(candidate["components"]["progress_m"]),
+                    "obstacle_risk": float(candidate["components"]["obstacle_risk"]),
+                    "map_cost": float(candidate["components"]["map_cost"]),
+                },
+            }
+            for candidate in scored
+        ],
         "baseline": {
             "candidate_id": trace.get("baseline_action_id"),
             "score": float(baseline["total_cost"]) if baseline is not None else None,
@@ -403,6 +421,36 @@ def _normalize_so101_decision_trace(
                 "why_rejected": str(counterfactual["why_rejected"]),
             }
             for counterfactual in trace["counterfactuals"]
+        ],
+        "candidate_outcomes": [
+            {
+                "candidate_id": str(candidate["candidate_id"]),
+                "kind": "analytic",
+                "status": "mock_replay_estimate",
+                "outcome_source": str(
+                    trace["outcome"].get("outcome_source", "mock_replay_execution")
+                ),
+                "action_executed": False,
+                "commanded": {
+                    "joint_names": list(SO101_JOINT_NAMES),
+                    "joint_delta": list(candidate["joint_delta"]),
+                    "duration_s": float(candidate["duration_s"]),
+                },
+                "measured": {},
+                "metrics": {
+                    "placement_error_m": float(
+                        _candidate_score_by_id(scores, candidate["candidate_id"])["components"][
+                            "placement_error_m"
+                        ]
+                    ),
+                    "contact_risk": float(
+                        _candidate_score_by_id(scores, candidate["candidate_id"])["components"][
+                            "contact_risk"
+                        ]
+                    ),
+                },
+            }
+            for candidate in trace["candidate_actions"]
         ],
         "baseline": {
             "candidate_id": "stop-relocalize",
@@ -776,6 +824,13 @@ def _candidate_by_id(
         if str(candidate[id_key]) == str(candidate_id):
             return candidate
     return None
+
+
+def _candidate_score_by_id(candidates: list[JSONDict], candidate_id: object) -> JSONDict:
+    match = _candidate_by_id(candidates, candidate_id, id_key="candidate_id")
+    if match is None:
+        raise WorldForgeError(f"SO-101 candidate score not found for {candidate_id!r}.")
+    return match
 
 
 def _interop_block(

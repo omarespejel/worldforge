@@ -77,6 +77,7 @@ _SENSITIVE_URL_PATH_SEGMENT_PATTERN = re.compile(
     r"(api[_-]?key|authorization|bearer|credential|password|secret|signature|signed[_-]?url|token)",
     re.IGNORECASE,
 )
+_UNITREE_SERIAL_PATTERN = re.compile(r"\bB\d{2}D[A-Z0-9]{12}\b")
 _REDACTED_OBSERVABLE_VALUE = "[redacted]"
 
 
@@ -159,12 +160,26 @@ def validate_decision_trace(payload: object, *, name: str = "DecisionTrace v1") 
         score_table=score_table,
         name=f"{name}.baseline",
     )
+    candidate_outcome_kinds: dict[str, str] = {}
+    if "candidate_outcomes" in trace:
+        candidate_outcome_kinds = _validate_candidate_outcomes(
+            trace["candidate_outcomes"],
+            candidate_ids=candidate_ids,
+            selected_id=selected_id,
+            name=f"{name}.candidate_outcomes",
+        )
     outcome_kind = _validate_outcome(trace["outcome"], name=f"{name}.outcome")
+    _validate_outcome_kind_matches_candidate_outcomes(
+        outcome_kind=outcome_kind,
+        candidate_outcome_kinds=candidate_outcome_kinds,
+        name=f"{name}.outcome.kind",
+    )
     require_json_dict(trace["planner_diagnostics"], name=f"{name}.planner_diagnostics")
     _validate_reproducibility(trace["reproducibility"], name=f"{name}.reproducibility")
     _validate_claim_boundary(
         trace["claim_boundary"],
         outcome_kind=outcome_kind,
+        candidate_outcome_kinds=candidate_outcome_kinds,
         name=f"{name}.claim_boundary",
     )
     if "interop" in trace:
@@ -198,6 +213,8 @@ def _validate_shareable_trace_text(value: str, *, name: str) -> None:
     private_ip = _first_non_shareable_ip(value)
     if private_ip is not None:
         raise WorldForgeError(f"{name} must not contain private or local IP address {private_ip}.")
+    if _UNITREE_SERIAL_PATTERN.search(value):
+        raise WorldForgeError(f"{name} must not contain Unitree robot serial numbers.")
 
 
 def _validate_trace_urls(value: str, *, name: str) -> None:
@@ -627,6 +644,66 @@ def _validate_outcome(value: object, *, name: str) -> str:
     return outcome_kind
 
 
+def _validate_candidate_outcomes(
+    value: object,
+    *,
+    candidate_ids: set[str],
+    selected_id: str,
+    name: str,
+) -> dict[str, str]:
+    rows = _require_non_empty_sequence(value, name=name)
+    outcome_kinds: dict[str, str] = {}
+    for index, row_value in enumerate(rows):
+        row = require_json_dict(row_value, name=f"{name}[{index}]", allow_empty=False)
+        _require_fields(row, ("candidate_id", "kind", "status", "metrics"), name=f"{name}[{index}]")
+        candidate_id = require_non_empty_text(
+            row["candidate_id"],
+            name=f"{name}[{index}].candidate_id",
+        )
+        if candidate_id not in candidate_ids:
+            raise WorldForgeError(f"{name}[{index}].candidate_id '{candidate_id}' is unknown.")
+        if candidate_id in outcome_kinds:
+            raise WorldForgeError(f"{name} contains duplicate candidate_id '{candidate_id}'.")
+        outcome_kind = _require_enum(row["kind"], OUTCOME_KINDS, name=f"{name}[{index}].kind")
+        require_non_empty_text(row["status"], name=f"{name}[{index}].status")
+        require_json_dict(row["metrics"], name=f"{name}[{index}].metrics")
+        if "outcome_source" in row:
+            require_non_empty_text(row["outcome_source"], name=f"{name}[{index}].outcome_source")
+        if "action_executed" in row:
+            require_bool(row["action_executed"], name=f"{name}[{index}].action_executed")
+        if "commanded" in row:
+            require_json_dict(row["commanded"], name=f"{name}[{index}].commanded")
+        if "measured" in row:
+            require_json_dict(row["measured"], name=f"{name}[{index}].measured")
+        outcome_kinds[candidate_id] = outcome_kind
+    missing = sorted(candidate_ids - set(outcome_kinds))
+    if missing:
+        raise WorldForgeError(f"{name} is missing outcome row(s) for {', '.join(missing)}.")
+    if selected_id not in outcome_kinds:  # pragma: no cover - guarded by full-id coverage
+        raise WorldForgeError(f"{name} is missing selected candidate outcome.")
+    return outcome_kinds
+
+
+def _validate_outcome_kind_matches_candidate_outcomes(
+    *,
+    outcome_kind: str,
+    candidate_outcome_kinds: Mapping[str, str],
+    name: str,
+) -> None:
+    if not candidate_outcome_kinds or outcome_kind == "analytic":
+        return
+    mixed = sorted(
+        candidate_id
+        for candidate_id, candidate_kind in candidate_outcome_kinds.items()
+        if candidate_kind != outcome_kind
+    )
+    if mixed:
+        raise WorldForgeError(
+            f"{name} must stay analytic when candidate_outcomes mix analytic and measured "
+            f"provenance; mismatched candidate(s): {', '.join(mixed)}."
+        )
+
+
 def _validate_reproducibility(value: object, *, name: str) -> None:
     reproducibility = require_json_dict(value, name=name, allow_empty=False)
     _require_fields(
@@ -650,7 +727,13 @@ def _validate_reproducibility(value: object, *, name: str) -> None:
     require_non_empty_text(reproducibility["code_ref"], name=f"{name}.code_ref")
 
 
-def _validate_claim_boundary(value: object, *, outcome_kind: str, name: str) -> None:
+def _validate_claim_boundary(
+    value: object,
+    *,
+    outcome_kind: str,
+    candidate_outcome_kinds: Mapping[str, str],
+    name: str,
+) -> None:
     boundary = require_json_dict(value, name=name, allow_empty=False)
     _require_fields(
         boundary,
@@ -678,6 +761,10 @@ def _validate_claim_boundary(value: object, *, outcome_kind: str, name: str) -> 
     )
     if boundary_outcome_kind == "real_measured" and not hardware_executed:
         raise WorldForgeError(f"{name}.hardware_executed must be true for real_measured outcomes.")
+    if "real_measured" in set(candidate_outcome_kinds.values()) and not hardware_executed:
+        raise WorldForgeError(
+            f"{name}.hardware_executed must be true when any candidate outcome is real_measured."
+        )
     if score_kind == "learned_latent" and not learned_model_used:
         raise WorldForgeError(f"{name}.learned_model_used must be true for learned_latent scores.")
     if boundary["safety_controller"] is not None:

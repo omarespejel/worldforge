@@ -36,7 +36,7 @@ releases may still include breaking changes when the public API needs to tighten
   `examples/cross-embodiment-decision-evidence/run.py` demo writes normalized
   `decision-trace-go2.json`, `decision-trace-pimsim.json`, `decision-trace-so101.json`, and a
   compact report with score kind, outcome kind, baseline regret, score margin, counterfactuals,
-  reproducibility, and explicit claim boundaries.
+  candidate-level analytic outcomes, reproducibility, and explicit claim boundaries.
 - Added a non-interactive TensorBoard launcher CLI:
   `worldforge-open-tensorboard --logdir <path> [--probe] [--no-browser]
   [--keep-running] [--ready-timeout 60] [--poll-interval 0.5]`. Wraps the

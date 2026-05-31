@@ -307,6 +307,44 @@
         }
       }
     },
+    "candidate_outcomes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["candidate_id", "kind", "status", "metrics"],
+        "properties": {
+          "candidate_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "enum": ["analytic", "sim_measured", "real_measured"]
+          },
+          "status": {
+            "type": "string",
+            "minLength": 1
+          },
+          "outcome_source": {
+            "type": "string",
+            "minLength": 1
+          },
+          "action_executed": {
+            "type": "boolean"
+          },
+          "commanded": {
+            "type": "object"
+          },
+          "measured": {
+            "type": "object"
+          },
+          "metrics": {
+            "type": "object"
+          }
+        }
+      }
+    },
     "baseline": {
       "type": "object",
       "additionalProperties": true,

@@ -134,6 +134,106 @@
       }
     }
   ],
+  "candidate_outcomes": [
+    {
+      "action_executed": false,
+      "candidate_id": "stop_relocalize",
+      "commanded": {
+        "duration_s": 1.0,
+        "reason": "low_localization_confidence"
+      },
+      "kind": "analytic",
+      "measured": {},
+      "metrics": {
+        "map_cost": 0.0,
+        "obstacle_risk": 0.0,
+        "progress_m": 0.0,
+        "total_cost": 1.913712
+      },
+      "outcome_source": "analytic_replay_estimate",
+      "status": "predicted_endpoint"
+    },
+    {
+      "action_executed": false,
+      "candidate_id": "slow_probe_left",
+      "commanded": {
+        "duration_s": 1.2,
+        "dx_m": 0.45,
+        "dyaw_rad": 0.25,
+        "speed_mps": 0.35
+      },
+      "kind": "analytic",
+      "measured": {},
+      "metrics": {
+        "map_cost": 0.0,
+        "obstacle_risk": 0.770429,
+        "progress_m": 0.448661,
+        "total_cost": 2.119315
+      },
+      "outcome_source": "analytic_replay_estimate",
+      "status": "predicted_endpoint"
+    },
+    {
+      "action_executed": false,
+      "candidate_id": "arc_left_clear",
+      "commanded": {
+        "duration_s": 1.4,
+        "dx_m": 0.85,
+        "dyaw_rad": 0.32,
+        "speed_mps": 0.6
+      },
+      "kind": "analytic",
+      "measured": {},
+      "metrics": {
+        "map_cost": 0.0,
+        "obstacle_risk": 1.858318,
+        "progress_m": 0.849187,
+        "total_cost": 2.726547
+      },
+      "outcome_source": "analytic_replay_estimate",
+      "status": "predicted_endpoint"
+    },
+    {
+      "action_executed": false,
+      "candidate_id": "arc_right_glass",
+      "commanded": {
+        "duration_s": 1.3,
+        "dx_m": 0.9,
+        "dyaw_rad": -0.28,
+        "speed_mps": 0.7
+      },
+      "kind": "analytic",
+      "measured": {},
+      "metrics": {
+        "map_cost": 0.188506,
+        "obstacle_risk": 2.134002,
+        "progress_m": 0.807987,
+        "total_cost": 3.250237
+      },
+      "outcome_source": "analytic_replay_estimate",
+      "status": "predicted_endpoint"
+    },
+    {
+      "action_executed": false,
+      "candidate_id": "baseline_forward",
+      "commanded": {
+        "duration_s": 1.2,
+        "dx_m": 0.95,
+        "dyaw_rad": 0.0,
+        "speed_mps": 0.8
+      },
+      "kind": "analytic",
+      "measured": {},
+      "metrics": {
+        "map_cost": 0.112131,
+        "obstacle_risk": 2.4,
+        "progress_m": 0.914473,
+        "total_cost": 3.314751
+      },
+      "outcome_source": "analytic_replay_estimate",
+      "status": "predicted_endpoint"
+    }
+  ],
   "claim_boundary": {
     "hardware_executed": false,
     "learned_model_used": false,
