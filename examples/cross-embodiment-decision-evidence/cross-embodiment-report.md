@@ -4,11 +4,13 @@ This bundle validates Go2 replay, PimSim export, and SO-101 manipulation traces 
 
 The comparable cross-embodiment column is `Value Signal` on a normalized `[0, 1]` scale. `Local Margin` and `Local Baseline Regret` are embodiment-local hand-cost diagnostics and should not be compared across embodiments as raw units.
 
-| Trace | Embodiment | Selected | Value Signal | Desirability | Local Margin | Local Baseline Regret | Score Kind | Outcome Kind |
-| --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- |
-| `decision-trace-go2` | unitree_go2_air / quadruped_navigation | `stop_relocalize` | 0.656151 | 1.000000 | 0.205603 | 1.401039 | hand_cost | analytic |
-| `decision-trace-pimsim` | unitree_go2_air / quadruped_navigation | `arc_left_clear` | 0.696969 | 1.000000 | 0.066455 | 1.637225 | hand_cost | analytic |
-| `decision-trace-so101` | so101 / manipulation | `lift-place-stable` | 0.875163 | 1.000000 | 0.930300 | 1.197197 | hand_cost | analytic |
+`Outcome Kind` is the DecisionTrace measurement class. `Outcome Provenance` is the concrete source; `mock_replay_execution` under `analytic` means a fixture/mock analytic check, not sim-measured or real-measured success.
+
+| Trace | Embodiment | Selected | Value Signal | Desirability | Local Margin | Local Baseline Regret | Score Kind | Outcome Kind | Outcome Provenance |
+| --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| `decision-trace-go2` | unitree_go2_air / quadruped_navigation | `stop_relocalize` | 0.656151 | 1.000000 | 0.205603 | 1.401039 | hand_cost | analytic | analytic_replay_estimate |
+| `decision-trace-pimsim` | unitree_go2_air / quadruped_navigation | `arc_left_clear` | 0.696969 | 1.000000 | 0.066455 | 1.637225 | hand_cost | analytic | analytic_replay_estimate |
+| `decision-trace-so101` | so101 / manipulation | `lift-place-stable` | 0.875163 | 1.000000 | 0.930300 | 1.197197 | hand_cost | analytic | mock_replay_execution |
 
 ## DecisionTrace v1 Contract
 
@@ -29,7 +31,7 @@ If WorldForge cannot choose, explain, compare, or expose counterfactual robot ac
 - Value signal: 0.656151
 - Why: Lowest transparent replay cost after combining goal distance, obstacle risk, map cost, uncertainty, and relocalization terms; progress=0.000m.
 - Counterfactuals: 4
-- Outcome source: analytic_replay_estimate
+- Outcome provenance: analytic_replay_estimate
 - Limitations: No live Go2 command was sent.; Outcome is an analytic endpoint estimate from replay metadata.; The scorer is transparent hand cost, not a learned latent world model.
 
 ## pimsim
@@ -39,7 +41,7 @@ If WorldForge cannot choose, explain, compare, or expose counterfactual robot ac
 - Value signal: 0.696969
 - Why: Lowest transparent replay cost after combining goal distance, obstacle risk, map cost, uncertainty, and relocalization terms; progress=0.947m.
 - Counterfactuals: 4
-- Outcome source: analytic_replay_estimate
+- Outcome provenance: analytic_replay_estimate
 - Limitations: No live Go2 command was sent.; Outcome is an analytic endpoint estimate from replay metadata.; The scorer is transparent hand cost, not a learned latent world model.
 
 ## so101
@@ -49,5 +51,5 @@ If WorldForge cannot choose, explain, compare, or expose counterfactual robot ac
 - Value signal: 0.875163
 - Why: Lowest weighted replay cost: target placement inside tolerance with high grasp confidence and low contact risk.
 - Counterfactuals: 3
-- Outcome source: mock_replay_execution
+- Outcome provenance: mock_replay_execution
 - Limitations: No SO-101 hardware, camera, calibration, or LeRobot runtime was used.; Outcome is a replay/mock placement check, not a physical execution result.; Joint deltas are fixture units and must not be treated as calibrated commands.

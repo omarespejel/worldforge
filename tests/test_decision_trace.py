@@ -339,6 +339,23 @@ def test_validate_decision_trace_rejects_host_local_path_text() -> None:
         validate_decision_trace(trace)
 
 
+def test_validate_decision_trace_allows_benign_url_paths_and_queries() -> None:
+    trace = _valid_trace()
+    trace["reproducibility"]["model_card_ref"] = "https://example.com/tmp/model?view=full#card"
+
+    assert validate_decision_trace(trace)["reproducibility"]["model_card_ref"].startswith(
+        "https://example.com/tmp/model"
+    )
+
+
+def test_validate_decision_trace_rejects_sensitive_url_query() -> None:
+    trace = _valid_trace()
+    trace["reproducibility"]["model_card_ref"] = "https://example.com/model?token=hunter2"
+
+    with pytest.raises(WorldForgeError, match="sensitive URL query"):
+        validate_decision_trace(trace)
+
+
 def test_load_decision_trace_schema_wraps_resource_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     class MissingResource:
         def joinpath(self, _name: str) -> MissingResource:

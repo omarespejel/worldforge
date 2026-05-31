@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from importlib import resources
 from typing import Any
+from urllib.parse import parse_qsl, urlsplit
 
 from worldforge.models import (
     JSONDict,
@@ -63,10 +64,12 @@ _SENSITIVE_TRACE_KEY_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _HOST_LOCAL_PATH_PATTERN = re.compile(
-    r"(?P<path>(?:/Users|/private|/var/folders|/tmp|~)/[^\s,;:)'\"]+|"
-    r"(?<![A-Za-z])[A-Za-z]:[\\/][^\s,;:)'\"]+)"
+    r"(^|[\s=:(])(?P<path>(?:/Users|/private|/var/folders|/tmp|~)/[^\s,;:)'\"]+|"
+    r"[A-Za-z]:[\\/][^\s,;:)'\"]+)"
 )
 _IPV4_ADDRESS_PATTERN = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
+_URL_IN_TEXT_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s\"'<>]+")
+_REDACTED_OBSERVABLE_VALUE = "[redacted]"
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,14 +180,51 @@ def _validate_shareable_trace_content(value: object, *, name: str) -> None:
 
 
 def _validate_shareable_trace_text(value: str, *, name: str) -> None:
+    _validate_trace_urls(value, name=name)
     redacted = _redact_observable_text(value)
-    if redacted != value:
+    if _REDACTED_OBSERVABLE_VALUE in redacted:
         raise WorldForgeError(f"{name} must not contain credentials, signed URLs, or tokens.")
-    if _HOST_LOCAL_PATH_PATTERN.search(value):
+    non_url_text = _URL_IN_TEXT_PATTERN.sub(" ", value)
+    if _HOST_LOCAL_PATH_PATTERN.search(non_url_text):
         raise WorldForgeError(f"{name} must not contain host-local paths.")
     private_ip = _first_non_shareable_ip(value)
     if private_ip is not None:
         raise WorldForgeError(f"{name} must not contain private or local IP address {private_ip}.")
+
+
+def _validate_trace_urls(value: str, *, name: str) -> None:
+    for match in _URL_IN_TEXT_PATTERN.finditer(value):
+        raw_url = match.group(0).rstrip(".,;)")
+        try:
+            parsed = urlsplit(raw_url)
+        except ValueError as exc:
+            raise WorldForgeError(f"{name} contains an invalid URL.") from exc
+        if parsed.scheme.lower() == "file":
+            raise WorldForgeError(f"{name} must not contain host-local file URLs.")
+        if parsed.username or parsed.password:
+            raise WorldForgeError(f"{name} must not contain URL credentials.")
+        if parsed.hostname is not None and _hostname_is_private_or_local(parsed.hostname):
+            raise WorldForgeError(
+                f"{name} must not contain private or local URL host {parsed.hostname}."
+            )
+        for key, item in parse_qsl(parsed.query, keep_blank_values=True):
+            if _SENSITIVE_TRACE_KEY_PATTERN.search(key) or _SENSITIVE_TRACE_KEY_PATTERN.search(
+                item
+            ):
+                raise WorldForgeError(f"{name} must not contain sensitive URL query parameters.")
+        if parsed.fragment and _SENSITIVE_TRACE_KEY_PATTERN.search(parsed.fragment):
+            raise WorldForgeError(f"{name} must not contain sensitive URL fragments.")
+
+
+def _hostname_is_private_or_local(hostname: str) -> bool:
+    lowered = hostname.lower().strip("[]")
+    if lowered in {"localhost", "localhost.localdomain"}:
+        return True
+    try:
+        address = ipaddress.ip_address(lowered)
+    except ValueError:
+        return False
+    return _ip_address_is_non_shareable(address)
 
 
 def _first_non_shareable_ip(value: str) -> str | None:
@@ -194,16 +234,20 @@ def _first_non_shareable_ip(value: str) -> str | None:
             address = ipaddress.ip_address(raw_ip)
         except ValueError:
             continue
-        if (
-            address.is_private
-            or address.is_loopback
-            or address.is_link_local
-            or address.is_multicast
-            or address.is_reserved
-            or address.is_unspecified
-        ):
+        if _ip_address_is_non_shareable(address):
             return raw_ip
     return None
+
+
+def _ip_address_is_non_shareable(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_reserved
+        or address.is_unspecified
+    )
 
 
 def _validate_embodiment(value: object, *, name: str) -> None:

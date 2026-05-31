@@ -29,4 +29,6 @@ The packaged JSON Schema is available for external tooling shape checks, while t
 Python validator enforces the cross-field arithmetic, claim-boundary, and
 shareability invariants. The traces explicitly label their boundaries: hand-cost
 scoring, analytic/replay outcomes, no live robot command, and no learned latent
-scorer claim.
+scorer claim. `outcome.kind` is the coarse measurement class; `outcome_source`
+records concrete provenance such as `mock_replay_execution`, which remains an
+analytic fixture/mock check rather than sim-measured or real-measured success.

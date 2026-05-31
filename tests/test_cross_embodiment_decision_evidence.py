@@ -51,6 +51,7 @@ def test_cross_embodiment_report_contains_kill_criterion(tmp_path: Path) -> None
     assert "DecisionTrace v1" in report
     assert "Value Signal" in report
     assert "Local Margin" in report
+    assert "Outcome Provenance" in report
     assert "Kill Criterion" in report
     assert "stop pushing this integration and pivot" in report
     assert "mock_replay_execution" in report

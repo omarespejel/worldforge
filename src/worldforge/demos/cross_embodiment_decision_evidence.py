@@ -482,9 +482,13 @@ def render_cross_embodiment_report(traces: Mapping[str, JSONDict]) -> str:
         "scale. `Local Margin` and `Local Baseline Regret` are embodiment-local hand-cost "
         "diagnostics and should not be compared across embodiments as raw units.",
         "",
-        "| Trace | Embodiment | Selected | Value Signal | Desirability | Local Margin | "
-        "Local Baseline Regret | Score Kind | Outcome Kind |",
-        "| --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- |",
+        "`Outcome Kind` is the DecisionTrace measurement class. `Outcome Provenance` is the "
+        "concrete source; `mock_replay_execution` under `analytic` means a fixture/mock analytic "
+        "check, not sim-measured or real-measured success.",
+        "",
+        "| Trace | Embodiment | Selected | Value Signal | Desirability | Local Margin | Local "
+        "Baseline Regret | Score Kind | Outcome Kind | Outcome Provenance |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- |",
     ]
     lines.extend(
         "| "
@@ -497,6 +501,7 @@ def render_cross_embodiment_report(traces: Mapping[str, JSONDict]) -> str:
         f"{float(trace['baseline']['regret_vs_selected']):.6f} | "
         f"{trace['claim_boundary']['score_kind']} | "
         f"{trace['outcome']['kind']} |"
+        f" {trace['outcome']['metrics'].get('outcome_source', 'analytic_replay_estimate')} |"
         for trace in traces.values()
     )
     lines.extend(
@@ -534,7 +539,7 @@ def render_cross_embodiment_report(traces: Mapping[str, JSONDict]) -> str:
                 f"{float(_selected_score_record(trace)['normalized']['value_signal']):.6f}",
                 f"- Why: {trace['selected_action']['why_selected']}",
                 f"- Counterfactuals: {len(trace['counterfactuals'])}",
-                "- Outcome source: "
+                "- Outcome provenance: "
                 f"{trace['outcome']['metrics'].get('outcome_source', 'analytic_replay_estimate')}",
                 f"- Limitations: {'; '.join(trace['claim_boundary']['limitations'])}",
                 "",
