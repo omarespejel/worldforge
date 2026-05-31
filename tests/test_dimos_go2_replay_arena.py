@@ -322,6 +322,7 @@ def test_pimsim_go2_export_rejects_non_regular_file_with_redacted_path(tmp_path:
     assert "must point to a regular JSON file" in message
     assert "<host-local-path>/directory-export.json" in message
     assert str(tmp_path) not in message
+    assert "First triage step:" in message
 
 
 def test_pimsim_go2_export_rejects_non_utf8_with_redacted_path(tmp_path: Path) -> None:
@@ -335,6 +336,7 @@ def test_pimsim_go2_export_rejects_non_utf8_with_redacted_path(tmp_path: Path) -
     assert "not valid UTF-8 JSON text" in message
     assert "<host-local-path>/latin1-export.json" in message
     assert str(tmp_path) not in message
+    assert "First triage step:" in message
 
 
 def test_pimsim_go2_export_rejects_non_string_entity_metadata() -> None:
