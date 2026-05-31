@@ -3,10 +3,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from worldforge.decision_trace import DECISION_TRACE_SCHEMA_VERSION, validate_decision_trace
 from worldforge.demos.cross_embodiment_decision_evidence import (
+    normalize_go2_decision_trace,
+    normalize_so101_decision_trace,
     run_cross_embodiment_decision_evidence,
 )
+from worldforge.models import WorldForgeError
 
 ROOT = Path(__file__).resolve().parents[1]
 COMMITTED_BUNDLE = ROOT / "examples" / "cross-embodiment-decision-evidence"
@@ -36,6 +41,21 @@ def test_cross_embodiment_report_contains_kill_criterion(tmp_path: Path) -> None
     assert "DecisionTrace v1" in report
     assert "Kill Criterion" in report
     assert "stop pushing this integration and pivot" in report
+
+
+def test_go2_normalization_wraps_parse_errors() -> None:
+    with pytest.raises(WorldForgeError, match="Failed to normalize Go2 decision trace"):
+        normalize_go2_decision_trace(
+            {},
+            trace_id="bad-go2",
+            step_index=0,
+            host_runtime_name="bad fixture",
+        )
+
+
+def test_so101_normalization_wraps_parse_errors() -> None:
+    with pytest.raises(WorldForgeError, match="Failed to normalize SO-101 decision trace"):
+        normalize_so101_decision_trace({}, trace_id="bad-so101", step_index=0)
 
 
 def test_checked_in_cross_embodiment_evidence_bundle_matches_generator(

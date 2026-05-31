@@ -71,6 +71,13 @@ def test_so101_replay_trace_demo_selects_and_explains_best_candidate(tmp_path: P
     json.dumps(summary)
 
 
+def test_so101_score_provider_rejects_non_mapping_info() -> None:
+    provider = so101_replay_trace.SO101ReplayScoreProvider()
+
+    with pytest.raises(WorldForgeError, match="score info must be a JSON object"):
+        provider.score_actions(info=[], action_candidates=[])
+
+
 def test_so101_replay_trace_default_json_summary_is_deterministic() -> None:
     first = so101_replay_trace.run_demo(emit=False)
     second = so101_replay_trace.run_demo(emit=False)

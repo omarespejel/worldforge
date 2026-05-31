@@ -355,7 +355,14 @@ class LatentMPCController:
             info=batch.info,
             action_candidates=batch.action_candidates,
         )
+        if not isinstance(result, ActionScoreResult):
+            raise WorldForgeError("Latent MPC score provider must return ActionScoreResult.")
         _require_score_count_matches_candidates(
+            provider=self.score_provider,
+            score_result=result,
+            candidate_count=len(candidates),
+        )
+        _require_best_index_matches_candidates(
             provider=self.score_provider,
             score_result=result,
             candidate_count=len(candidates),
@@ -453,6 +460,22 @@ def _require_score_count_matches_candidates(
         raise WorldForgeError(
             f"Provider '{provider}' returned {score_count} score(s) for "
             f"{candidate_count} candidate action plan(s)."
+        )
+
+
+def _require_best_index_matches_candidates(
+    *,
+    provider: str,
+    score_result: ActionScoreResult,
+    candidate_count: int,
+) -> None:
+    best_index = score_result.best_index
+    if isinstance(best_index, bool) or not isinstance(best_index, int):
+        raise WorldForgeError(f"Provider '{provider}' returned a non-integer best_index.")
+    if best_index < 0 or best_index >= candidate_count:
+        raise WorldForgeError(
+            f"Provider '{provider}' returned best_index {best_index}, but only "
+            f"{candidate_count} candidate action plan(s) were scored."
         )
 
 

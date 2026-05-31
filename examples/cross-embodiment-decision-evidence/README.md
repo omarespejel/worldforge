@@ -16,6 +16,14 @@ It runs only checkout-safe replay paths:
 - Combined report -> `cross-embodiment-report.md`
 - Machine summary -> `summary.json`
 
+Success signal: the command exits successfully, prints `trace_count=3`, and all five artifacts
+listed above exist under the output directory. The generated traces should validate through
+`validate_decision_trace()` and the report should include Go2, PimSim, and SO-101 rows.
+
+First triage step on failure: confirm the output files exist, then inspect the command's stdout and
+stderr for the first `WorldForgeError`. If an artifact is missing, rerun the same command and keep
+the run log with the failing fixture or normalization error.
+
 The generated traces validate against the same schema and explicitly label their
 boundaries: hand-cost scoring, analytic/replay outcomes, no live robot command,
 and no learned latent scorer claim.

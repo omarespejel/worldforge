@@ -3,8 +3,8 @@
   "baseline": {
     "candidate_id": "baseline_forward",
     "policy": "fixture_baseline_command",
-    "regret_vs_selected": 1.6372246358719167,
-    "score": 2.5845839769088665
+    "regret_vs_selected": 1.637225,
+    "score": 2.584584
   },
   "candidate_actions": [
     {
@@ -20,15 +20,15 @@
           "duration_s": "s",
           "dx_m": "m",
           "dyaw_rad": "rad",
-          "speed_mps": "unitless"
+          "speed_mps": "m/s"
         }
       },
       "candidate_id": "arc_left_clear",
       "label": "arc_left_clear",
       "predicted_outcome": {
         "endpoint": {
-          "x": 0.9180704792277875,
-          "y": 0.24422652429754735,
+          "x": 0.91807,
+          "y": 0.244227,
           "yaw_rad": 0.52
         }
       }
@@ -46,15 +46,15 @@
           "duration_s": "s",
           "dx_m": "m",
           "dyaw_rad": "rad",
-          "speed_mps": "unitless"
+          "speed_mps": "m/s"
         }
       },
       "candidate_id": "slow_probe_left",
       "label": "slow_probe_left",
       "predicted_outcome": {
         "endpoint": {
-          "x": 0.444946985071219,
-          "y": 0.06724715961311965,
+          "x": 0.444947,
+          "y": 0.067247,
           "yaw_rad": 0.3
         }
       }
@@ -94,7 +94,7 @@
           "duration_s": "s",
           "dx_m": "m",
           "dyaw_rad": "rad",
-          "speed_mps": "unitless"
+          "speed_mps": "m/s"
         }
       },
       "candidate_id": "baseline_forward",
@@ -120,15 +120,15 @@
           "duration_s": "s",
           "dx_m": "m",
           "dyaw_rad": "rad",
-          "speed_mps": "unitless"
+          "speed_mps": "m/s"
         }
       },
       "candidate_id": "arc_right_cart_shadow",
       "label": "arc_right_cart_shadow",
       "predicted_outcome": {
         "endpoint": {
-          "x": 0.8838038116055433,
-          "y": -0.16997300547885053,
+          "x": 0.883804,
+          "y": -0.169973,
           "yaw_rad": -0.38
         }
       }
@@ -150,25 +150,25 @@
     {
       "candidate_id": "slow_probe_left",
       "delta_vs_selected": 0.066455,
-      "score": 1.0138143051738921,
+      "score": 1.013814,
       "why_rejected": "Higher replay cost, led by obstacle risk penalty."
     },
     {
       "candidate_id": "stop_relocalize",
       "delta_vs_selected": 0.466465,
-      "score": 1.4138246001537815,
+      "score": 1.413825,
       "why_rejected": "Higher replay cost with no useful goal progress."
     },
     {
       "candidate_id": "baseline_forward",
       "delta_vs_selected": 1.637225,
-      "score": 2.5845839769088665,
+      "score": 2.584584,
       "why_rejected": "Higher replay cost, led by obstacle risk penalty."
     },
     {
       "candidate_id": "arc_right_cart_shadow",
       "delta_vs_selected": 1.917416,
-      "score": 2.864775556210461,
+      "score": 2.864776,
       "why_rejected": "Higher replay cost, led by obstacle risk penalty."
     }
   ],
@@ -278,10 +278,10 @@
   "outcome": {
     "kind": "analytic",
     "metrics": {
-      "baseline_regret": 1.6372246358719167,
+      "baseline_regret": 1.637225,
       "candidate_count": 5,
       "partial_subgoal_credit": 1.0,
-      "score_margin": 0.0664549641369423
+      "score_margin": 0.066455
     },
     "status": "predicted_lower_cost_action"
   },
@@ -377,10 +377,10 @@
     {
       "candidate_id": "arc_left_clear",
       "components": {
-        "distance_cost": 0.4663254503831352,
+        "distance_cost": 0.466325,
         "map_cost": 0.0,
-        "obstacle_risk": 0.7179086780964761,
-        "progress_m": 0.9474991497706463,
+        "obstacle_risk": 0.717909,
+        "progress_m": 0.947499,
         "relocalization_cost": 0.0,
         "uncertainty_cost": 0.0
       },
@@ -393,15 +393,15 @@
         "value_signal": 0.696969
       },
       "rank": 1,
-      "score": 0.9473593410369499
+      "score": 0.947359
     },
     {
       "candidate_id": "slow_probe_left",
       "components": {
-        "distance_cost": 0.971367863495951,
+        "distance_cost": 0.971368,
         "map_cost": 0.0,
-        "obstacle_risk": 0.153060625842399,
-        "progress_m": 0.4424567366578306,
+        "obstacle_risk": 0.153061,
+        "progress_m": 0.442457,
         "relocalization_cost": 0.0,
         "uncertainty_cost": 0.0
       },
@@ -414,12 +414,12 @@
         "value_signal": 0.671926
       },
       "rank": 2,
-      "score": 1.0138143051738921
+      "score": 1.013814
     },
     {
       "candidate_id": "stop_relocalize",
       "components": {
-        "distance_cost": 1.4138246001537815,
+        "distance_cost": 1.413825,
         "map_cost": 0.0,
         "obstacle_risk": 0.0,
         "progress_m": 0.0,
@@ -435,15 +435,15 @@
         "value_signal": 0.521186
       },
       "rank": 3,
-      "score": 1.4138246001537815
+      "score": 1.413825
     },
     {
       "candidate_id": "baseline_forward",
       "components": {
-        "distance_cost": 0.5800000000000001,
-        "map_cost": 0.08092979739577788,
-        "obstacle_risk": 2.132110329551534,
-        "progress_m": 0.8338246001537815,
+        "distance_cost": 0.58,
+        "map_cost": 0.08093,
+        "obstacle_risk": 2.13211,
+        "progress_m": 0.833825,
         "relocalization_cost": 0.0,
         "uncertainty_cost": 0.0
       },
@@ -456,15 +456,15 @@
         "value_signal": 0.079997
       },
       "rank": 4,
-      "score": 2.5845839769088665
+      "score": 2.584584
     },
     {
       "candidate_id": "arc_right_cart_shadow",
       "components": {
-        "distance_cost": 0.7519355246743351,
-        "map_cost": 0.20397078168359883,
-        "obstacle_risk": 2.074341518722389,
-        "progress_m": 0.6618890754794464,
+        "distance_cost": 0.751936,
+        "map_cost": 0.203971,
+        "obstacle_risk": 2.074342,
+        "progress_m": 0.661889,
         "relocalization_cost": 0.0,
         "uncertainty_cost": 0.0
       },
@@ -477,13 +477,13 @@
         "value_signal": 0.006932
       },
       "rank": 5,
-      "score": 2.864775556210461
+      "score": 2.864776
     }
   ],
   "selected_action": {
     "candidate_id": "arc_left_clear",
-    "score": 0.9473593410369499,
-    "score_margin": 0.0664549641369423,
+    "score": 0.947359,
+    "score_margin": 0.066455,
     "why_selected": "Lowest transparent replay cost after combining goal distance, obstacle risk, map cost, uncertainty, and relocalization terms; progress=0.947m."
   },
   "step_index": 1,

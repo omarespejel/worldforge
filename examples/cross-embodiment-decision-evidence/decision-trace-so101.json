@@ -4,7 +4,7 @@
     "candidate_id": "stop-relocalize",
     "policy": "safe_hold_baseline",
     "regret_vs_selected": 1.197197,
-    "score": 1.5425302083767936
+    "score": 1.54253
   },
   "candidate_actions": [
     {
@@ -175,20 +175,20 @@
   "counterfactuals": [
     {
       "candidate_id": "direct-side-push",
-      "delta_vs_selected": 0.9303,
-      "score": 1.2756614906333081,
+      "delta_vs_selected": 0.930328,
+      "score": 1.275661,
       "why_rejected": "Higher expected risk around contact or workspace clearance."
     },
     {
       "candidate_id": "overreach-place",
-      "delta_vs_selected": 1.3073,
-      "score": 1.652614980554399,
+      "delta_vs_selected": 1.307282,
+      "score": 1.652615,
       "why_rejected": "Higher expected risk around contact or workspace clearance."
     },
     {
       "candidate_id": "stop-relocalize",
-      "delta_vs_selected": 1.1972,
-      "score": 1.5425302083767936,
+      "delta_vs_selected": 1.197197,
+      "score": 1.54253,
       "why_rejected": "Predicted placement stays outside the target tolerance."
     }
   ],
@@ -396,7 +396,7 @@
         "risk_flags": [],
         "smoothness_cost": 0.1167,
         "total_cost_display": 0.3453,
-        "total_cost_raw": 0.34533333333333344
+        "total_cost_raw": 0.345333
       },
       "lower_is_better": true,
       "normalized": {
@@ -407,7 +407,7 @@
         "value_signal": 0.875163
       },
       "rank": 1,
-      "score": 0.34533333333333344
+      "score": 0.345333
     },
     {
       "candidate_id": "direct-side-push",
@@ -427,7 +427,7 @@
         ],
         "smoothness_cost": 0.0867,
         "total_cost_display": 1.2757,
-        "total_cost_raw": 1.2756614906333081
+        "total_cost_raw": 1.275661
       },
       "lower_is_better": true,
       "normalized": {
@@ -438,7 +438,7 @@
         "value_signal": 0.338403
       },
       "rank": 2,
-      "score": 1.2756614906333081
+      "score": 1.275661
     },
     {
       "candidate_id": "stop-relocalize",
@@ -456,7 +456,7 @@
         ],
         "smoothness_cost": 0.0,
         "total_cost_display": 1.5425,
-        "total_cost_raw": 1.5425302083767936
+        "total_cost_raw": 1.54253
       },
       "lower_is_better": true,
       "normalized": {
@@ -467,7 +467,7 @@
         "value_signal": 0.18443
       },
       "rank": 3,
-      "score": 1.5425302083767936
+      "score": 1.54253
     },
     {
       "candidate_id": "overreach-place",
@@ -488,7 +488,7 @@
         ],
         "smoothness_cost": 0.225,
         "total_cost_display": 1.6526,
-        "total_cost_raw": 1.652614980554399
+        "total_cost_raw": 1.652615
       },
       "lower_is_better": true,
       "normalized": {
@@ -499,12 +499,12 @@
         "value_signal": 0.142326
       },
       "rank": 4,
-      "score": 1.652614980554399
+      "score": 1.652615
     }
   ],
   "selected_action": {
     "candidate_id": "lift-place-stable",
-    "score": 0.34533333333333344,
+    "score": 0.345333,
     "score_margin": 0.9303,
     "why_selected": "Lowest weighted replay cost: target placement inside tolerance with high grasp confidence and low contact risk."
   },

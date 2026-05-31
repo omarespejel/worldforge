@@ -281,6 +281,24 @@ def skipped_policy_trace_step(
     )
 
 
+def skipped_mpc_policy_trace_step(
+    *,
+    provider: str,
+    selected_provider: str | None,
+) -> WorkflowTraceStep:
+    return WorkflowTraceStep(
+        step_id="policy",
+        parent_id="plan",
+        operation="select action candidates",
+        status="skipped",
+        capability="policy",
+        error_summary=(
+            "Policy provider not requested; latent-MPC sampled action candidates locally "
+            "from planner_config."
+        ),
+    )
+
+
 def active_score_trace_step(
     *,
     provider: str,
@@ -317,7 +335,7 @@ POLICY_TRACE_STEP_BUILDERS = {
     "policy": active_policy_trace_step,
     "policy+score": active_policy_trace_step,
     "score": skipped_policy_trace_step,
-    "latent-mpc": skipped_policy_trace_step,
+    "latent-mpc": skipped_mpc_policy_trace_step,
 }
 SCORE_TRACE_STEP_BUILDERS = {
     "score": active_score_trace_step,

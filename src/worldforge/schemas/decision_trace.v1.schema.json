@@ -45,7 +45,15 @@
       "minimum": 0
     },
     "prev_trace_id": {
-      "type": ["string", "null"]
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "embodiment": {
       "type": "object",
@@ -61,7 +69,15 @@
           "minLength": 1
         },
         "embodiment_id": {
-          "type": "string"
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "action_space": {
           "type": "string",
@@ -83,7 +99,15 @@
           "minLength": 1
         },
         "version": {
-          "type": ["string", "null"]
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },
@@ -289,7 +313,15 @@
       "required": ["candidate_id", "regret_vs_selected"],
       "properties": {
         "candidate_id": {
-          "type": ["string", "null"]
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "regret_vs_selected": {
           "type": "number"
@@ -329,13 +361,37 @@
       ],
       "properties": {
         "provider_version": {
-          "type": ["string", "null"]
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "checkpoint_hash": {
-          "type": ["string", "null"]
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "model_card_ref": {
-          "type": ["string", "null"]
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "input_digest": {
           "type": "string",
@@ -375,12 +431,21 @@
           "type": "boolean"
         },
         "safety_controller": {
-          "type": ["string", "null"]
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "limitations": {
           "type": "array",
           "items": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           }
         }
       }

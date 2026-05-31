@@ -19,6 +19,7 @@ import argparse
 import json
 import math
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -87,6 +88,8 @@ class SO101ReplayScoreProvider(BaseProvider):
         return ProviderHealth(name=self.name, healthy=True, latency_ms=0.1, details="configured")
 
     def score_actions(self, *, info: JSONDict, action_candidates: object) -> ActionScoreResult:
+        if not isinstance(info, Mapping):
+            raise WorldForgeError("SO-101 replay score info must be a JSON object.")
         target_pose = _require_pose(info.get("target_pose"), name="score info target_pose")
         if not isinstance(action_candidates, list) or not action_candidates:
             raise WorldForgeError("SO-101 replay scoring requires a non-empty candidate list.")

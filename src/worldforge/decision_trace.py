@@ -125,9 +125,16 @@ def validate_decision_trace(payload: object, *, name: str = "DecisionTrace v1") 
         trace["counterfactuals"],
         candidate_ids=candidate_ids,
         selected_id=selected_id,
+        score_table=score_table,
         name=f"{name}.counterfactuals",
     )
-    _validate_baseline(trace["baseline"], candidate_ids=candidate_ids, name=f"{name}.baseline")
+    _validate_baseline(
+        trace["baseline"],
+        candidate_ids=candidate_ids,
+        selected_id=selected_id,
+        score_table=score_table,
+        name=f"{name}.baseline",
+    )
     outcome_kind = _validate_outcome(trace["outcome"], name=f"{name}.outcome")
     require_json_dict(trace["planner_diagnostics"], name=f"{name}.planner_diagnostics")
     _validate_reproducibility(trace["reproducibility"], name=f"{name}.reproducibility")
@@ -332,6 +339,7 @@ def _validate_counterfactuals(
     *,
     candidate_ids: set[str],
     selected_id: str,
+    score_table: _ScoreTable,
     name: str,
 ) -> None:
     counterfactuals = _require_sequence(value, name=name)
@@ -355,14 +363,40 @@ def _validate_counterfactuals(
         if candidate_id in counterfactual_ids:
             raise WorldForgeError(f"{name} contains duplicate candidate_id '{candidate_id}'.")
         counterfactual_ids.add(candidate_id)
-        require_finite_number(counterfactual["score"], name=f"{name}[{index}].score")
-        require_finite_number(
+        counterfactual_score = require_finite_number(
+            counterfactual["score"], name=f"{name}[{index}].score"
+        )
+        _require_close(
+            counterfactual_score,
+            score_table.score_by_candidate[candidate_id],
+            name=f"{name}[{index}].score",
+            tolerance=1e-6,
+        )
+        delta_vs_selected = require_finite_number(
             counterfactual["delta_vs_selected"], name=f"{name}[{index}].delta_vs_selected"
+        )
+        expected_delta = _score_delta_vs_selected(
+            candidate_score=score_table.score_by_candidate[candidate_id],
+            selected_score=score_table.score_by_candidate[selected_id],
+            lower_is_better=score_table.lower_is_better,
+        )
+        _require_close(
+            delta_vs_selected,
+            expected_delta,
+            name=f"{name}[{index}].delta_vs_selected",
+            tolerance=1e-5,
         )
         require_non_empty_text(counterfactual["why_rejected"], name=f"{name}[{index}].why_rejected")
 
 
-def _validate_baseline(value: object, *, candidate_ids: set[str], name: str) -> None:
+def _validate_baseline(
+    value: object,
+    *,
+    candidate_ids: set[str],
+    selected_id: str,
+    score_table: _ScoreTable,
+    name: str,
+) -> None:
     baseline = require_json_dict(value, name=name, allow_empty=False)
     _require_fields(baseline, ("candidate_id", "regret_vs_selected"), name=name)
     if baseline["candidate_id"] is not None:
@@ -371,7 +405,30 @@ def _validate_baseline(value: object, *, candidate_ids: set[str], name: str) -> 
             raise WorldForgeError(
                 f"{name}.candidate_id '{candidate_id}' is not a candidate action."
             )
-    require_finite_number(baseline["regret_vs_selected"], name=f"{name}.regret_vs_selected")
+        if "score" in baseline and baseline["score"] is not None:
+            baseline_score = require_finite_number(baseline["score"], name=f"{name}.score")
+            _require_close(
+                baseline_score,
+                score_table.score_by_candidate[candidate_id],
+                name=f"{name}.score",
+                tolerance=1e-6,
+            )
+        expected_regret = _score_delta_vs_selected(
+            candidate_score=score_table.score_by_candidate[candidate_id],
+            selected_score=score_table.score_by_candidate[selected_id],
+            lower_is_better=score_table.lower_is_better,
+        )
+    else:
+        expected_regret = 0.0
+    regret_vs_selected = require_finite_number(
+        baseline["regret_vs_selected"], name=f"{name}.regret_vs_selected"
+    )
+    _require_close(
+        regret_vs_selected,
+        expected_regret,
+        name=f"{name}.regret_vs_selected",
+        tolerance=1e-5,
+    )
 
 
 def _validate_outcome(value: object, *, name: str) -> str:
@@ -420,14 +477,22 @@ def _validate_claim_boundary(value: object, *, outcome_kind: str, name: str) -> 
         ),
         name=name,
     )
-    _require_enum(boundary["score_kind"], SCORE_KINDS, name=f"{name}.score_kind")
+    score_kind = _require_enum(boundary["score_kind"], SCORE_KINDS, name=f"{name}.score_kind")
     boundary_outcome_kind = _require_enum(
         boundary["outcome_kind"], OUTCOME_KINDS, name=f"{name}.outcome_kind"
     )
     if boundary_outcome_kind != outcome_kind:
         raise WorldForgeError(f"{name}.outcome_kind must match outcome.kind.")
-    require_bool(boundary["hardware_executed"], name=f"{name}.hardware_executed")
-    require_bool(boundary["learned_model_used"], name=f"{name}.learned_model_used")
+    hardware_executed = require_bool(
+        boundary["hardware_executed"], name=f"{name}.hardware_executed"
+    )
+    learned_model_used = require_bool(
+        boundary["learned_model_used"], name=f"{name}.learned_model_used"
+    )
+    if boundary_outcome_kind == "real_measured" and not hardware_executed:
+        raise WorldForgeError(f"{name}.hardware_executed must be true for real_measured outcomes.")
+    if score_kind == "learned_latent" and not learned_model_used:
+        raise WorldForgeError(f"{name}.learned_model_used must be true for learned_latent scores.")
     if boundary["safety_controller"] is not None:
         require_non_empty_text(boundary["safety_controller"], name=f"{name}.safety_controller")
     limitations = _require_sequence(boundary["limitations"], name=f"{name}.limitations")
@@ -481,6 +546,15 @@ def _require_same_ids(first: set[str], second: set[str], *, name: str) -> None:
 
 def _score_margin(*, selected: float, runner_up: float, lower_is_better: bool) -> float:
     return runner_up - selected if lower_is_better else selected - runner_up
+
+
+def _score_delta_vs_selected(
+    *,
+    candidate_score: float,
+    selected_score: float,
+    lower_is_better: bool,
+) -> float:
+    return candidate_score - selected_score if lower_is_better else selected_score - candidate_score
 
 
 def _score_is_better(candidate: float, incumbent: float, *, lower_is_better: bool) -> bool:

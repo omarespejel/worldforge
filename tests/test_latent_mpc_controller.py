@@ -70,6 +70,24 @@ class _BadScoreForge:
         return ActionScoreResult(provider=provider, scores=[0.0], best_index=0)
 
 
+class _BadBestIndexForge:
+    def score_actions(
+        self,
+        provider: str,
+        *,
+        info: JSONDict,
+        action_candidates: object,
+    ) -> ActionScoreResult:
+        candidates = _candidate_payloads(action_candidates)
+        result = object.__new__(ActionScoreResult)
+        result.provider = provider
+        result.scores = [0.0 for _ in candidates]
+        result.best_index = len(candidates)
+        result.lower_is_better = True
+        result.metadata = {}
+        return result
+
+
 class _FlatTieForge:
     def score_actions(
         self,
@@ -218,6 +236,17 @@ def test_latent_mpc_controller_rejects_score_count_mismatch() -> None:
     )
 
     with pytest.raises(WorldForgeError, match=r"returned 1 score\(s\) for 4 candidate"):
+        controller.plan_step(observation_info={}, goal_info={})
+
+
+def test_latent_mpc_controller_rejects_best_index_out_of_range() -> None:
+    controller = LatentMPCController(
+        forge=_BadBestIndexForge(),
+        score_provider="bad-index",
+        config=PlannerConfig(num_samples=4, num_iterations=1, num_elites=1, seed=3),
+    )
+
+    with pytest.raises(WorldForgeError, match="best_index"):
         controller.plan_step(observation_info={}, goal_info={})
 
 

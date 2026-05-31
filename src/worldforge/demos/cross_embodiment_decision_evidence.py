@@ -126,6 +126,30 @@ def normalize_go2_decision_trace(
 ) -> JSONDict:
     """Convert a Go2 replay/PimSim decision trace into DecisionTrace v1."""
 
+    try:
+        return _normalize_go2_decision_trace(
+            trace,
+            trace_id=trace_id,
+            step_index=step_index,
+            host_runtime_name=host_runtime_name,
+            prev_trace_id=prev_trace_id,
+        )
+    except WorldForgeError:
+        raise
+    except (KeyError, TypeError, ValueError, IndexError) as exc:
+        raise WorldForgeError(f"Failed to normalize Go2 decision trace: {exc}") from exc
+
+
+def _normalize_go2_decision_trace(
+    trace: JSONDict,
+    *,
+    trace_id: str,
+    step_index: int,
+    host_runtime_name: str,
+    prev_trace_id: str | None = None,
+) -> JSONDict:
+    """Convert a Go2 replay/PimSim decision trace into DecisionTrace v1."""
+
     scored = _scored_go2_candidates(trace)
     selected = scored[0]
     baseline = _candidate_by_id(scored, trace.get("baseline_action_id"))
@@ -254,10 +278,35 @@ def normalize_go2_decision_trace(
             },
         ),
     }
-    return validate_decision_trace(decision_trace, name=f"{trace_id} DecisionTrace")
+    return validate_decision_trace(
+        _round_json_floats(decision_trace),
+        name=f"{trace_id} DecisionTrace",
+    )
 
 
 def normalize_so101_decision_trace(
+    trace: JSONDict,
+    *,
+    trace_id: str,
+    step_index: int,
+    prev_trace_id: str | None = None,
+) -> JSONDict:
+    """Convert the SO-101 replay trace into DecisionTrace v1."""
+
+    try:
+        return _normalize_so101_decision_trace(
+            trace,
+            trace_id=trace_id,
+            step_index=step_index,
+            prev_trace_id=prev_trace_id,
+        )
+    except WorldForgeError:
+        raise
+    except (KeyError, TypeError, ValueError, IndexError) as exc:
+        raise WorldForgeError(f"Failed to normalize SO-101 decision trace: {exc}") from exc
+
+
+def _normalize_so101_decision_trace(
     trace: JSONDict,
     *,
     trace_id: str,
@@ -346,7 +395,7 @@ def normalize_so101_decision_trace(
             {
                 "candidate_id": str(counterfactual["candidate_id"]),
                 "score": float(counterfactual["score"]),
-                "delta_vs_selected": float(counterfactual["score_delta_vs_selected"]),
+                "delta_vs_selected": round(float(counterfactual["score"]) - selected_score, 6),
                 "why_rejected": str(counterfactual["why_rejected"]),
             }
             for counterfactual in trace["counterfactuals"]
@@ -406,7 +455,10 @@ def normalize_so101_decision_trace(
             },
         ),
     }
-    return validate_decision_trace(decision_trace, name=f"{trace_id} DecisionTrace")
+    return validate_decision_trace(
+        _round_json_floats(decision_trace),
+        name=f"{trace_id} DecisionTrace",
+    )
 
 
 def render_cross_embodiment_report(traces: Mapping[str, JSONDict]) -> str:
@@ -557,6 +609,8 @@ def _go2_action(action: JSONDict) -> JSONDict:
     for key in params:
         if key.endswith("_m"):
             units[key] = "m"
+        elif key.endswith("_mps"):
+            units[key] = "m/s"
         elif key.endswith("_rad"):
             units[key] = "rad"
         elif key.endswith("_s"):
@@ -579,6 +633,8 @@ def _normalized_score_records(
     baseline_score: float | None,
     score_margin: float,
 ) -> list[JSONDict]:
+    if not candidates:
+        raise WorldForgeError("Expected at least one candidate score record.")
     ranked_candidates = sorted(
         candidates,
         key=lambda candidate: (float(candidate[score_key]), str(candidate[id_key])),
@@ -614,6 +670,20 @@ def _normalized_score_records(
             }
         )
     return records
+
+
+def _round_json_floats(value: object) -> object:
+    if isinstance(value, bool) or value is None or isinstance(value, str):
+        return value
+    if isinstance(value, float):
+        return round(value, 6)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, list):
+        return [_round_json_floats(item) for item in value]
+    if isinstance(value, Mapping):
+        return {str(key): _round_json_floats(item) for key, item in value.items()}
+    return value
 
 
 def _go2_selection_reason(candidate: JSONDict) -> str:

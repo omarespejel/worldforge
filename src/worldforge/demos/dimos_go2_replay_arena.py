@@ -859,6 +859,8 @@ def _candidate_payloads(action_candidates: object) -> list[list[JSONDict]]:
 
 
 def _score_info_payload(info: JSONDict) -> tuple[JSONDict, JSONDict]:
+    if not isinstance(info, Mapping):
+        raise WorldForgeError("Go2 replay score info must be a JSON object.")
     for field_name in ("observation", "goal"):
         if field_name not in info:
             raise WorldForgeError(f"Go2 replay score info is missing '{field_name}'.")

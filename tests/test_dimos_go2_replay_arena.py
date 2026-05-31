@@ -73,6 +73,13 @@ def test_go2_replay_arena_selects_safer_counterfactual(tmp_path: Path) -> None:
     assert trace["scored_candidates"][0]["action_id"] == "stop_relocalize"
 
 
+def test_go2_replay_score_provider_rejects_non_mapping_info() -> None:
+    provider = Go2ReplayScoreProvider()
+
+    with pytest.raises(WorldForgeError, match="score info must be a JSON object"):
+        provider.score_actions(info=[], action_candidates=[])
+
+
 def test_go2_replay_arena_preserves_baseline_when_it_is_best(tmp_path: Path) -> None:
     result = run_dimos_go2_replay_arena(CLEAR_PATH_FIXTURE_PATH, tmp_path)
     trace = result.trace

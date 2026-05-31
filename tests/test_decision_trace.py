@@ -187,6 +187,30 @@ def test_validate_decision_trace_rejects_selected_margin_mismatch() -> None:
         validate_decision_trace(trace)
 
 
+def test_validate_decision_trace_rejects_counterfactual_score_mismatch() -> None:
+    trace = _valid_trace()
+    trace["counterfactuals"][0]["score"] = 0.6
+
+    with pytest.raises(WorldForgeError, match=r"counterfactuals\[0\]\.score"):
+        validate_decision_trace(trace)
+
+
+def test_validate_decision_trace_rejects_counterfactual_delta_mismatch() -> None:
+    trace = _valid_trace()
+    trace["counterfactuals"][0]["delta_vs_selected"] = 0.4
+
+    with pytest.raises(WorldForgeError, match=r"counterfactuals\[0\]\.delta_vs_selected"):
+        validate_decision_trace(trace)
+
+
+def test_validate_decision_trace_rejects_baseline_regret_mismatch() -> None:
+    trace = _valid_trace()
+    trace["baseline"]["regret_vs_selected"] = 0.4
+
+    with pytest.raises(WorldForgeError, match=r"baseline\.regret_vs_selected"):
+        validate_decision_trace(trace)
+
+
 def test_validate_decision_trace_allows_rank_declared_tied_best_without_lexical_bias() -> None:
     trace = _valid_trace()
     trace["candidate_actions"][0]["candidate_id"] = "z-best"
@@ -244,6 +268,23 @@ def test_validate_decision_trace_rejects_overclaimed_real_outcome() -> None:
     trace["claim_boundary"]["outcome_kind"] = "real_measured"
 
     with pytest.raises(WorldForgeError, match="outcome_kind must match"):
+        validate_decision_trace(trace)
+
+
+def test_validate_decision_trace_rejects_real_measured_without_hardware() -> None:
+    trace = _valid_trace()
+    trace["outcome"]["kind"] = "real_measured"
+    trace["claim_boundary"]["outcome_kind"] = "real_measured"
+
+    with pytest.raises(WorldForgeError, match="hardware_executed"):
+        validate_decision_trace(trace)
+
+
+def test_validate_decision_trace_rejects_learned_score_without_model_flag() -> None:
+    trace = _valid_trace()
+    trace["claim_boundary"]["score_kind"] = "learned_latent"
+
+    with pytest.raises(WorldForgeError, match="learned_model_used"):
         validate_decision_trace(trace)
 
 

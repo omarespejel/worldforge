@@ -63,6 +63,26 @@ The returned plan uses:
 - `plan.metadata["iteration_best_scores"]` for every CEM iteration
 - `plan.metadata["iteration_costs"]` when the score provider declares `lower_is_better=True`
 
+### Validate Locally
+
+Run the focused planner tests when changing the latent-MPC workflow:
+
+```bash
+uv run pytest -q tests/test_latent_mpc_controller.py
+```
+
+Expected success signal:
+
+- the command exits successfully
+- `plan.planner == "latent-mpc"` in the route test
+- `plan.metadata["planning_mode"] == "latent-mpc"`
+- `plan.metadata["control_mode"] == "mpc"`
+- `plan.metadata["optimizer"] == "cem"`
+- `plan.metadata["iteration_best_scores"]` and `plan.metadata["running_best_scores"]` are present
+
+First triage step on failure: confirm the call sets `planner="latent-mpc"` and an explicit
+`score_provider`, then inspect provider logs and `plan.metadata` for missing CEM iteration data.
+
 The host owns receding-horizon closure: execute up to `execute_k` actions, collect a new
 observation, then call `World.plan(planner="latent-mpc", ...)` again.
 

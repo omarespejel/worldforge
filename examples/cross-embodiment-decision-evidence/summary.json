@@ -7,20 +7,20 @@
   "trace_count": 3,
   "traces": {
     "go2": {
-      "baseline_regret": 1.4010390399075636,
+      "baseline_regret": 1.401039,
       "outcome_kind": "analytic",
       "path": "examples/cross-embodiment-decision-evidence/decision-trace-go2.json",
       "score_kind": "hand_cost",
-      "score_margin": 0.20560341778291247,
+      "score_margin": 0.205603,
       "selected_action_id": "stop_relocalize",
       "trace_id": "decision-trace-go2"
     },
     "pimsim": {
-      "baseline_regret": 1.6372246358719167,
+      "baseline_regret": 1.637225,
       "outcome_kind": "analytic",
       "path": "examples/cross-embodiment-decision-evidence/decision-trace-pimsim.json",
       "score_kind": "hand_cost",
-      "score_margin": 0.0664549641369423,
+      "score_margin": 0.066455,
       "selected_action_id": "arc_left_clear",
       "trace_id": "decision-trace-pimsim"
     },
