@@ -50,6 +50,16 @@ jobs:
       - name: Check formatting
         run: uv run ruff format --check src tests examples scripts
 
+      - name: Check cross-embodiment evidence drift
+        run: |
+          uv run python examples/cross-embodiment-decision-evidence/run.py \
+            --out examples/cross-embodiment-decision-evidence
+          rm -rf \
+            examples/cross-embodiment-decision-evidence/raw-go2-replay \
+            examples/cross-embodiment-decision-evidence/raw-pimsim-export \
+            examples/cross-embodiment-decision-evidence/so101-state
+          git diff --exit-code -- examples/cross-embodiment-decision-evidence
+
       - name: Check docs
         run: |
           uv run python scripts/generate_provider_docs.py --check
