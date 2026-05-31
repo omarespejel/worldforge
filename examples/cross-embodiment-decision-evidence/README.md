@@ -34,3 +34,10 @@ measurement class; per-candidate `candidate_outcomes` rows carry the analytic
 counterfactual provenance. `outcome_source` records concrete provenance such as
 `mock_replay_execution`, which remains an analytic fixture/mock check rather
 than sim-measured or real-measured success.
+
+Learned-scorer claims have a stricter gate than the replay evidence bundle:
+the scorer must clear an independent held-out referee, beat the proprio or
+hand-cost baselines, and land above chance on fair rank/progress metrics. A
+below-chance model that only beats a weaker baseline is negative evidence.
+The SO-101 latent scorer scripts are handoff tools for that referee lane; they
+do not grade their own output.

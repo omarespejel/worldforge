@@ -1,6 +1,6 @@
 {
   "artifact_kind": "worldforge.cross_embodiment_decision_evidence",
-  "kill_criterion": "If WorldForge cannot choose, explain, compare, or expose counterfactual robot actions better than a hardcoded command or plain script, stop pushing this integration.",
+  "kill_criterion": "If WorldForge cannot choose, explain, compare, or expose counterfactual robot actions better than a hardcoded command or plain script, stop pushing this integration. Learned-scorer value requires an independent held-out referee result that beats proprio/hand-cost baselines and clears chance; below-chance marginal improvements are negative evidence, not a win.",
   "report_path": "examples/cross-embodiment-decision-evidence/cross-embodiment-report.md",
   "run_id": "cross-embodiment-decision-evidence",
   "schema_version": 1,

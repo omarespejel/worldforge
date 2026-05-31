@@ -113,7 +113,9 @@ def run_cross_embodiment_decision_evidence(
         "kill_criterion": (
             "If WorldForge cannot choose, explain, compare, or expose counterfactual robot "
             "actions better than a hardcoded command or plain script, stop pushing this "
-            "integration."
+            "integration. Learned-scorer value requires an independent held-out referee result "
+            "that beats proprio/hand-cost baselines and clears chance; below-chance marginal "
+            "improvements are negative evidence, not a win."
         ),
     }
     write_json_artifact(output_dir / "summary.json", summary)
@@ -572,6 +574,12 @@ def render_cross_embodiment_report(traces: Mapping[str, JSONDict]) -> str:
                 "If WorldForge cannot choose, explain, compare, or expose counterfactual robot "
                 "actions better than a hardcoded DimOS command or plain script, stop pushing this "
                 "integration and pivot."
+            ),
+            "",
+            (
+                "For learned-scorer claims, the stricter gate is independent held-out referee "
+                "performance above chance and above the proprio/hand-cost baselines. A marginal "
+                "below-chance improvement is logged as negative evidence, not as value."
             ),
             "",
         ]

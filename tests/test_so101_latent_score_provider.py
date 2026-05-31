@@ -1,0 +1,67 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from worldforge.demos.so101_latent_score_provider import SO101LatentScoreProvider
+
+
+def test_so101_latent_score_provider_imports_without_loading_numpy() -> None:
+    assert SO101LatentScoreProvider.name == "so101-latent-score-provider"
+
+
+def test_so101_latent_score_provider_scores_candidate_deltas(tmp_path: Path) -> None:
+    np = pytest.importorskip("numpy")
+    model_name = "vision_mlp_h1"
+    weights_path = tmp_path / "weights.npz"
+    metadata_path = tmp_path / "metadata.json"
+    np.savez_compressed(
+        weights_path,
+        selected_model=np.asarray(model_name),
+        latent_dim=np.asarray(2, dtype=np.int64),
+        **{
+            f"{model_name}__x_mean": np.zeros(3, dtype=np.float32),
+            f"{model_name}__x_scale": np.ones(3, dtype=np.float32),
+            f"{model_name}__w1": np.asarray([[0.0], [0.0], [1.0]], dtype=np.float32),
+            f"{model_name}__b1": np.zeros(1, dtype=np.float32),
+            f"{model_name}__w2": np.asarray([[-1.0, 1.0]], dtype=np.float32),
+            f"{model_name}__b2": np.zeros(2, dtype=np.float32),
+        },
+    )
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "artifact_kind": "worldforge.so101_latent_score_provider",
+                "selected_model": model_name,
+                "models": {
+                    model_name: {
+                        "variant": "vision_mlp",
+                        "horizon": 1,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    provider = SO101LatentScoreProvider(
+        weights_path=weights_path,
+        metadata_path=metadata_path,
+    )
+
+    result = provider.score_actions(
+        info={
+            "current_latent": [1.0, 0.0],
+            "goal_latent": [0.0, 1.0],
+        },
+        action_candidates=[
+            {"candidate_id": "stay", "action_delta": [0.0]},
+            {"candidate_id": "toward_goal", "action_delta": [3.0]},
+        ],
+    )
+
+    assert result.best_index == 1
+    assert result.scores[1] < result.scores[0]
+    assert result.metadata["score_kind"] == "learned_latent"

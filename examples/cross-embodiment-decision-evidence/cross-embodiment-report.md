@@ -24,6 +24,8 @@ The comparable cross-embodiment column is `Value Signal` on a normalized `[0, 1]
 
 If WorldForge cannot choose, explain, compare, or expose counterfactual robot actions better than a hardcoded DimOS command or plain script, stop pushing this integration and pivot.
 
+For learned-scorer claims, the stricter gate is independent held-out referee performance above chance and above the proprio/hand-cost baselines. A marginal below-chance improvement is logged as negative evidence, not as value.
+
 ## go2
 
 - Task: move toward the inspection waypoint without clipping the chair leg
