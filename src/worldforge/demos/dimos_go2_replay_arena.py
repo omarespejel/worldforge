@@ -267,7 +267,11 @@ def load_pimsim_go2_export(path: Path) -> JSONDict:
     try:
         payload = json.loads(_read_pimsim_export_text(path))
     except json.JSONDecodeError as exc:
-        raise WorldForgeError(f"PimSim Go2 export is invalid JSON: {path}") from exc
+        raise _pimsim_export_file_error(
+            "PimSim export JSON could not be parsed",
+            path,
+            "rerun the DimOS/PimSim export and attach only the sanitized JSON snapshot.",
+        ) from exc
     _validate_pimsim_export(payload)
     return payload
 
@@ -467,15 +471,47 @@ def _read_pimsim_export_text(path: Path) -> str:
     try:
         size_bytes = path.stat().st_size
     except FileNotFoundError as exc:
-        raise WorldForgeError(f"PimSim Go2 export not found: {path}") from exc
+        raise _pimsim_export_file_error(
+            "PimSim export file was not found",
+            path,
+            "pass --pimsim-export with a JSON export path or use the bundled default.",
+        ) from exc
     if size_bytes > _PIMSIM_EXPORT_MAX_BYTES:
-        raise WorldForgeError(
-            f"PimSim Go2 export exceeds maximum size {_PIMSIM_EXPORT_MAX_BYTES} bytes: {path}"
+        raise _pimsim_export_file_error(
+            f"PimSim export exceeds maximum size {_PIMSIM_EXPORT_MAX_BYTES} bytes",
+            path,
+            "export a single PimSim frame snapshot or trim the host-owned export before retrying.",
         )
     try:
         return path.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
-        raise WorldForgeError(f"PimSim Go2 export not found: {path}") from exc
+        raise _pimsim_export_file_error(
+            "PimSim export file was not found",
+            path,
+            "pass --pimsim-export with a JSON export path or use the bundled default.",
+        ) from exc
+
+
+def _pimsim_export_file_error(message: str, path: Path, triage: str) -> WorldForgeError:
+    return WorldForgeError(
+        "Go2 PimSim export adapter: "
+        f"{message} at {_safe_artifact_path(path)}. First triage step: {triage}"
+    )
+
+
+def _safe_artifact_path(path: Path) -> str:
+    try:
+        resolved = path.resolve(strict=False)
+        workspace_root = Path.cwd().resolve(strict=False)
+    except OSError:
+        resolved = path.absolute()
+        workspace_root = Path.cwd().absolute()
+    if resolved.is_relative_to(workspace_root):
+        return resolved.relative_to(workspace_root).as_posix()
+    if not path.is_absolute():
+        return path.as_posix()
+    filename = path.name or "pimsim-export.json"
+    return f"<host-local-path>/{filename}"
 
 
 def _validate_pimsim_export(payload: object) -> None:
@@ -653,7 +689,7 @@ def _validated_map_zones(value: object, field_name: str) -> list[JSONDict]:
                 zone_map["radius_m"],
                 name=f"{field_name}[{index}].radius_m",
             ),
-            "cost": _number(zone_map["cost"], name=f"{field_name}[{index}].cost"),
+            "cost": _non_negative_number(zone_map["cost"], name=f"{field_name}[{index}].cost"),
         }
         if "id" in zone_map:
             validated["id"] = _non_empty_string(zone_map["id"], f"{field_name}[{index}].id")
@@ -665,6 +701,13 @@ def _positive_number(value: object, *, name: str) -> float:
     number = _number(value, name=name)
     if number <= 0.0:
         raise WorldForgeError(f"{name} must be greater than 0.")
+    return number
+
+
+def _non_negative_number(value: object, *, name: str) -> float:
+    number = _number(value, name=name)
+    if number < 0.0:
+        raise WorldForgeError(f"{name} must be non-negative.")
     return number
 
 

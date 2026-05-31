@@ -252,8 +252,27 @@ def test_pimsim_go2_export_rejects_oversized_file(tmp_path: Path) -> None:
     oversized = tmp_path / "oversized.json"
     oversized.write_text(" " * (_PIMSIM_EXPORT_MAX_BYTES + 1), encoding="utf-8")
 
-    with pytest.raises(WorldForgeError, match="exceeds maximum size"):
+    with pytest.raises(WorldForgeError, match="Go2 PimSim export adapter:"):
         load_pimsim_go2_export(oversized)
+    with pytest.raises(WorldForgeError) as exc_info:
+        load_pimsim_go2_export(oversized)
+    message = str(exc_info.value)
+    assert "<host-local-path>/oversized.json" in message
+    assert str(tmp_path) not in message
+    assert "First triage step:" in message
+
+
+def test_pimsim_go2_export_rejects_missing_file_with_redacted_path(tmp_path: Path) -> None:
+    missing = tmp_path / "missing-export.json"
+
+    with pytest.raises(WorldForgeError) as exc_info:
+        load_pimsim_go2_export(missing)
+
+    message = str(exc_info.value)
+    assert "Go2 PimSim export adapter:" in message
+    assert "<host-local-path>/missing-export.json" in message
+    assert str(tmp_path) not in message
+    assert "First triage step:" in message
 
 
 def test_pimsim_go2_export_rejects_malformed_map_entries(tmp_path: Path) -> None:
@@ -267,6 +286,12 @@ def test_pimsim_go2_export_rejects_malformed_map_entries(tmp_path: Path) -> None
     payload["map"]["cost_zones"] = [{"x": 0.0, "y": 0.0, "radius_m": 0.0, "cost": 1.0}]
 
     with pytest.raises(WorldForgeError, match=r"map\.cost_zones\[0\]\.radius_m"):
+        pimsim_export_to_go2_replay_fixture(payload)
+
+    payload = load_pimsim_go2_export(DEFAULT_PIMSIM_EXPORT_PATH)
+    payload["map"]["uncertainty_zones"] = [{"x": 0.0, "y": 0.0, "radius_m": 1.0, "cost": -0.1}]
+
+    with pytest.raises(WorldForgeError, match=r"map\.uncertainty_zones\[0\]\.cost"):
         pimsim_export_to_go2_replay_fixture(payload)
 
 
