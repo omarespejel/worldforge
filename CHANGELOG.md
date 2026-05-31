@@ -43,7 +43,8 @@ releases may still include breaking changes when the public API needs to tighten
   scorer artifacts for independent referee evaluation without adding numpy, pyarrow, torch,
   transformers, or LeRobot to the base package. The `SO101LatentScoreProvider` demo wrapper loads
   those local artifacts lazily and marks results as learned-latent scorer output, not as an
-  independent verdict.
+  independent verdict. `scripts/run_so101_referee_smoke.py` adapts those artifacts to an external
+  referee module for host-owned smoke checks without making WorldForge grade its own scorer.
 - Added a non-interactive TensorBoard launcher CLI:
   `worldforge-open-tensorboard --logdir <path> [--probe] [--no-browser]
   [--keep-running] [--ready-timeout 60] [--poll-interval 0.5]`. Wraps the

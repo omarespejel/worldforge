@@ -41,3 +41,5 @@ hand-cost baselines, and land above chance on fair rank/progress metrics. A
 below-chance model that only beats a weaker baseline is negative evidence.
 The SO-101 latent scorer scripts are handoff tools for that referee lane; they
 do not grade their own output.
+The scorer handoff runbook and latest negative smoke result are recorded in
+`SO101_LATENT_SCORER_HANDOFF.md`.

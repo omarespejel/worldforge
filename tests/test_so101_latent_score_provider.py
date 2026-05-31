@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 from pathlib import Path
 
@@ -11,6 +12,23 @@ from worldforge.models import WorldForgeError
 
 def test_so101_latent_score_provider_imports_without_loading_numpy() -> None:
     assert SO101LatentScoreProvider.name == "so101-latent-score-provider"
+
+
+def test_so101_referee_smoke_script_help_imports_without_referee(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    script_path = Path(__file__).resolve().parents[1] / "scripts" / "run_so101_referee_smoke.py"
+    spec = importlib.util.spec_from_file_location("run_so101_referee_smoke_test", script_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    with pytest.raises(SystemExit) as exc_info:
+        module.main(["--help"])
+
+    assert exc_info.value.code == 0
+    assert "external held-out referee" in capsys.readouterr().out
 
 
 def test_so101_latent_score_provider_scores_candidate_deltas(tmp_path: Path) -> None:
