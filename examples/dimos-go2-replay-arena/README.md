@@ -24,6 +24,14 @@ uv run python examples/dimos-go2-replay-arena/run.py \
   --out .worldforge/dimos-go2-replay-arena-batch
 ```
 
+Run the bundled PimSim-shaped JSON export through the same arena:
+
+```bash
+uv run python examples/dimos-go2-replay-arena/run.py \
+  --pimsim-export \
+  --out .worldforge/dimos-go2-pimsim-export
+```
+
 Expected success signal:
 
 - `.worldforge/dimos-go2-replay-arena/decision-trace.json` exists.
@@ -32,6 +40,8 @@ Expected success signal:
   counterfactual candidates.
 - Batch mode writes `batch-report.json`, `batch-report.md`, and one per-fixture trace/report
   directory.
+- PimSim export mode writes `converted-replay-fixture.json`, `decision-trace.json`, and
+  `report.md` without importing DimOS or starting PimSim.
 
 First triage step: open `decision-trace.json` and verify that the candidate count matches the
 fixture and that every scored candidate has `distance_cost`, `obstacle_risk`, `uncertainty_cost`,
@@ -43,6 +53,9 @@ The bundled fixtures exercise both sides of the decision-evidence claim:
   `stop_relocalize` because localization is weak and forward motion clips risky map geometry.
 - `go2_clear_hallway_replay_frame.json` should preserve `baseline_forward` because the hallway is
   clear and the baseline reaches the goal with the lowest transparent cost.
+- `pimsim_exports/go2_pimsim_hallway_snapshot.json` is shaped from DimOS `pim/dev` PimSim concepts
+  (`EntityStateBatch`, robot entity id, goal, and candidate actions) and should convert to a replay
+  fixture before scoring.
 
 ## Kill Criterion
 

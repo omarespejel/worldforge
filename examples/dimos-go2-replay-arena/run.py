@@ -7,6 +7,8 @@ from pathlib import Path
 
 from worldforge.demos.dimos_go2_replay_arena import (
     DEFAULT_FIXTURE_PATH,
+    DEFAULT_PIMSIM_EXPORT_PATH,
+    run_dimos_go2_pimsim_export_workflow,
     run_dimos_go2_replay_arena_workflow,
     run_dimos_go2_replay_batch,
 )
@@ -31,7 +33,30 @@ def main() -> None:
         action="store_true",
         help="Run every bundled replay fixture and emit a batch report.",
     )
+    parser.add_argument(
+        "--pimsim-export",
+        type=Path,
+        nargs="?",
+        const=DEFAULT_PIMSIM_EXPORT_PATH,
+        default=None,
+        help=(
+            "Run a PimSim JSON export through the replay arena. "
+            f"Default: {DEFAULT_PIMSIM_EXPORT_PATH}"
+        ),
+    )
     args = parser.parse_args()
+    if args.all_fixtures and args.pimsim_export is not None:
+        parser.error("--all-fixtures cannot be combined with --pimsim-export")
+    if args.pimsim_export is not None:
+        summary = run_dimos_go2_pimsim_export_workflow(args.pimsim_export, args.out)
+        print(f"selected_action={summary['selected_action_id']}")
+        print(f"score_margin={summary['score_margin']:.6f}")
+        print(f"baseline_regret={summary['baseline_regret']:.6f}")
+        print(f"converted_fixture={summary['converted_fixture_path']}")
+        print(f"trace={summary['decision_trace_path']}")
+        print(f"report={summary['report_path']}")
+        return
+
     if args.all_fixtures:
         fixtures = sorted(DEFAULT_FIXTURE_PATH.parent.glob("*.json"))
         summary = run_dimos_go2_replay_batch(fixtures, args.out)

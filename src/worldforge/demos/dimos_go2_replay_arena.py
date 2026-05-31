@@ -17,10 +17,21 @@ from worldforge.providers.base import ProviderProfileSpec
 _REPO_FIXTURE_RELATIVE_PATH = (
     Path("examples") / "dimos-go2-replay-arena" / "fixtures" / "go2_office_replay_frame.json"
 )
+_REPO_PIMSIM_EXPORT_RELATIVE_PATH = (
+    Path("examples")
+    / "dimos-go2-replay-arena"
+    / "pimsim_exports"
+    / "go2_pimsim_hallway_snapshot.json"
+)
 DEFAULT_FIXTURE_PATH = (
     Path.cwd() / _REPO_FIXTURE_RELATIVE_PATH
     if (Path.cwd() / _REPO_FIXTURE_RELATIVE_PATH).is_file()
     else Path(__file__).resolve().parents[3] / _REPO_FIXTURE_RELATIVE_PATH
+)
+DEFAULT_PIMSIM_EXPORT_PATH = (
+    Path.cwd() / _REPO_PIMSIM_EXPORT_RELATIVE_PATH
+    if (Path.cwd() / _REPO_PIMSIM_EXPORT_RELATIVE_PATH).is_file()
+    else Path(__file__).resolve().parents[3] / _REPO_PIMSIM_EXPORT_RELATIVE_PATH
 )
 
 _PROGRESS_REWARD_WEIGHT = 0.25
@@ -97,6 +108,33 @@ def run_dimos_go2_replay_arena_workflow(
         "decision_trace_path": str(result.decision_trace_path),
         "report_path": str(result.report_path),
     }
+
+
+def run_dimos_go2_pimsim_export_workflow(
+    export_path: Path = DEFAULT_PIMSIM_EXPORT_PATH,
+    output_dir: Path = Path(".worldforge/dimos-go2-pimsim-export"),
+) -> JSONDict:
+    result = run_dimos_go2_pimsim_export(export_path, output_dir)
+    return {
+        "selected_action_id": result.trace["selected_action"]["id"],
+        "score_margin": result.trace["score_margin"],
+        "baseline_regret": result.trace["baseline_regret"],
+        "converted_fixture_path": str(output_dir / "converted-replay-fixture.json"),
+        "decision_trace_path": str(result.decision_trace_path),
+        "report_path": str(result.report_path),
+    }
+
+
+def run_dimos_go2_pimsim_export(
+    export_path: Path = DEFAULT_PIMSIM_EXPORT_PATH,
+    output_dir: Path = Path(".worldforge/dimos-go2-pimsim-export"),
+) -> Go2ReplayArenaResult:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    pimsim_export = load_pimsim_go2_export(export_path)
+    fixture = pimsim_export_to_go2_replay_fixture(pimsim_export)
+    converted_fixture_path = output_dir / "converted-replay-fixture.json"
+    write_json_artifact(converted_fixture_path, fixture)
+    return run_dimos_go2_replay_arena(converted_fixture_path, output_dir)
 
 
 def run_dimos_go2_replay_batch(
@@ -222,6 +260,61 @@ def load_go2_replay_fixture(path: Path) -> JSONDict:
         raise WorldForgeError(f"Go2 replay fixture is invalid JSON: {path}") from exc
     _validate_fixture(payload)
     return payload
+
+
+def load_pimsim_go2_export(path: Path) -> JSONDict:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise WorldForgeError(f"PimSim Go2 export not found: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise WorldForgeError(f"PimSim Go2 export is invalid JSON: {path}") from exc
+    _validate_pimsim_export(payload)
+    return payload
+
+
+def pimsim_export_to_go2_replay_fixture(payload: JSONDict) -> JSONDict:
+    _validate_pimsim_export(payload)
+    robot_entity_id = _non_empty_string(payload["robot_entity_id"], "robot_entity_id")
+    entity_state_batch = _require_mapping(
+        payload["entity_state_batch"],
+        "entity_state_batch",
+    )
+    robot_entity = _pimsim_entity_by_id(entity_state_batch["entities"], robot_entity_id)
+    robot_pose = _require_mapping(robot_entity["pose"], f"entity '{robot_entity_id}'.pose")
+    map_payload = _pimsim_map_payload(payload, entity_state_batch, robot_entity_id)
+    observation = {
+        "frame_id": str(payload.get("frame_id", payload["episode_id"])),
+        "timestamp_s": _number(entity_state_batch["ts"], name="entity_state_batch.ts"),
+        "pose": {
+            "x": _number(robot_pose["x"], name="robot.pose.x"),
+            "y": _number(robot_pose["y"], name="robot.pose.y"),
+            "yaw_rad": _yaw_from_pimsim_pose(robot_pose),
+        },
+        "localization_confidence": _number(
+            payload.get("localization_confidence", 1.0),
+            name="localization_confidence",
+        ),
+        "map": map_payload,
+    }
+    fixture = {
+        "schema_version": 1,
+        "scenario_id": str(payload.get("scenario_id", payload["episode_id"])),
+        "source": {
+            **dict(_require_mapping(payload.get("source", {}), "source")),
+            "mode": "pimsim-export",
+            "hardware_required": False,
+            "adapter": "worldforge.dimos_go2_pimsim_export",
+        },
+        "observation": observation,
+        "goal": dict(_require_mapping(payload["goal"], "goal")),
+        "baseline_action_id": payload.get("baseline_action_id"),
+        "candidate_actions": list(
+            _require_sequence(payload["candidate_actions"], "candidate_actions")
+        ),
+    }
+    _validate_fixture(fixture)
+    return fixture
 
 
 def render_go2_replay_report(trace: JSONDict) -> str:
@@ -362,6 +455,159 @@ def _non_empty_string(value: object, field_name: str) -> str:
             f"Go2 replay fixture {field_name} must not include leading/trailing whitespace."
         )
     return value
+
+
+def _require_sequence(value: object, field_name: str) -> Sequence[Any]:
+    if not isinstance(value, list):
+        raise WorldForgeError(f"Go2 replay fixture {field_name} must be a JSON list.")
+    return value
+
+
+def _optional_sequence(value: object, field_name: str) -> list[Any]:
+    if value is None:
+        return []
+    return list(_require_sequence(value, field_name))
+
+
+def _validate_pimsim_export(payload: object) -> None:
+    if not isinstance(payload, dict):
+        raise WorldForgeError("PimSim Go2 export must be a JSON object.")
+    for field_name in (
+        "schema_version",
+        "episode_id",
+        "robot_entity_id",
+        "entity_state_batch",
+        "goal",
+        "candidate_actions",
+    ):
+        if field_name not in payload:
+            raise WorldForgeError(f"PimSim Go2 export is missing '{field_name}'.")
+    if payload.get("schema_version") != 1:
+        raise WorldForgeError("PimSim Go2 export schema_version must be 1.")
+    _non_empty_string(payload["episode_id"], "episode_id")
+    robot_entity_id = _non_empty_string(payload["robot_entity_id"], "robot_entity_id")
+
+    batch = _require_mapping(payload["entity_state_batch"], "entity_state_batch")
+    _require_fields(batch, ("ts", "entities"), "entity_state_batch")
+    _number(batch["ts"], name="entity_state_batch.ts")
+    entities = _require_sequence(batch["entities"], "entity_state_batch.entities")
+    if not entities:
+        raise WorldForgeError("PimSim Go2 export entity_state_batch.entities cannot be empty.")
+    _pimsim_entity_by_id(entities, robot_entity_id)
+
+    localization_confidence = _number(
+        payload.get("localization_confidence", 1.0),
+        name="localization_confidence",
+    )
+    if localization_confidence < 0.0 or localization_confidence > 1.0:
+        raise WorldForgeError("PimSim Go2 export localization_confidence must be between 0 and 1.")
+    _require_mapping(payload["goal"], "goal")
+    candidate_actions = _require_sequence(payload["candidate_actions"], "candidate_actions")
+    if not candidate_actions:
+        raise WorldForgeError("PimSim Go2 export candidate_actions cannot be empty.")
+
+
+def _pimsim_entity_by_id(entities: object, entity_id: str) -> JSONDict:
+    for index, entity in enumerate(_require_sequence(entities, "entity_state_batch.entities")):
+        entity_map = _require_mapping(entity, f"entity_state_batch.entities[{index}]")
+        _require_fields(entity_map, ("id", "pose"), f"entity_state_batch.entities[{index}]")
+        if str(entity_map["id"]) == entity_id:
+            pose = _require_mapping(
+                entity_map["pose"],
+                f"entity_state_batch.entities[{index}].pose",
+            )
+            _require_fields(pose, ("x", "y"), f"entity_state_batch.entities[{index}].pose")
+            for field_name in ("x", "y"):
+                _number(
+                    pose[field_name],
+                    name=f"entity_state_batch.entities[{index}].pose.{field_name}",
+                )
+            _yaw_from_pimsim_pose(pose)
+            return dict(entity_map)
+    raise WorldForgeError(f"PimSim Go2 export robot_entity_id '{entity_id}' was not found.")
+
+
+def _pimsim_map_payload(
+    payload: JSONDict,
+    entity_state_batch: Mapping[str, Any],
+    robot_entity_id: str,
+) -> JSONDict:
+    map_payload = dict(_require_mapping(payload.get("map", {}), "map"))
+    explicit_obstacles = _optional_sequence(map_payload.get("obstacles"), "map.obstacles")
+    entity_obstacles = _pimsim_entity_obstacles(entity_state_batch["entities"], robot_entity_id)
+    return {
+        "safety_margin_m": _number(
+            map_payload.get("safety_margin_m", 0.25),
+            name="map.safety_margin_m",
+        ),
+        "obstacles": [*explicit_obstacles, *entity_obstacles],
+        "cost_zones": _optional_sequence(map_payload.get("cost_zones"), "map.cost_zones"),
+        "uncertainty_zones": _optional_sequence(
+            map_payload.get("uncertainty_zones"),
+            "map.uncertainty_zones",
+        ),
+    }
+
+
+def _pimsim_entity_obstacles(entities: object, robot_entity_id: str) -> list[JSONDict]:
+    obstacles: list[JSONDict] = []
+    for index, entity in enumerate(_require_sequence(entities, "entity_state_batch.entities")):
+        entity_map = _require_mapping(entity, f"entity_state_batch.entities[{index}]")
+        entity_id = str(entity_map.get("id", ""))
+        if entity_id == robot_entity_id:
+            continue
+        kind = str(entity_map.get("kind", "static"))
+        if kind == "kinematic":
+            continue
+        pose = _require_mapping(
+            entity_map.get("pose"),
+            f"entity_state_batch.entities[{index}].pose",
+        )
+        _require_fields(pose, ("x", "y"), f"entity_state_batch.entities[{index}].pose")
+        obstacles.append(
+            {
+                "id": entity_id or f"pimsim-entity-{index}",
+                "x": _number(pose["x"], name=f"entity_state_batch.entities[{index}].pose.x"),
+                "y": _number(pose["y"], name=f"entity_state_batch.entities[{index}].pose.y"),
+                "radius_m": _pimsim_entity_radius(entity_map, index),
+            }
+        )
+    return obstacles
+
+
+def _pimsim_entity_radius(entity: Mapping[str, Any], index: int) -> float:
+    shape = str(entity.get("shape", entity.get("shape_hint", "box")))
+    extents_raw = entity.get("extents", [])
+    extents = [
+        _number(value, name=f"entity_state_batch.entities[{index}].extents[{extent_index}]")
+        for extent_index, value in enumerate(_require_sequence(extents_raw, "entity.extents"))
+    ]
+    if not extents:
+        return 0.25
+    if shape in {"sphere", "cylinder"}:
+        radius = extents[0]
+    elif shape == "box" and len(extents) >= 3:
+        radius = 0.5 * math.hypot(extents[0], extents[2])
+    else:
+        radius = max(extents) * 0.5
+    if radius <= 0.0:
+        raise WorldForgeError("PimSim Go2 export entity obstacle radius must be greater than 0.")
+    return radius
+
+
+def _yaw_from_pimsim_pose(pose: Mapping[str, Any]) -> float:
+    if "yaw_rad" in pose:
+        return _number(pose["yaw_rad"], name="pose.yaw_rad")
+    for field_name in ("qw", "qx", "qy", "qz"):
+        if field_name not in pose:
+            raise WorldForgeError(
+                "PimSim Go2 export pose must include yaw_rad or qw/qx/qy/qz quaternion fields."
+            )
+    qw = _number(pose["qw"], name="pose.qw")
+    qx = _number(pose["qx"], name="pose.qx")
+    qy = _number(pose["qy"], name="pose.qy")
+    qz = _number(pose["qz"], name="pose.qz")
+    return math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
 
 
 def _candidate_action_plans(fixture: JSONDict) -> list[list[Action]]:
@@ -652,11 +898,16 @@ def _scored_candidate_payload(candidate: _ScoredCandidate) -> JSONDict:
 
 __all__ = [
     "DEFAULT_FIXTURE_PATH",
+    "DEFAULT_PIMSIM_EXPORT_PATH",
     "Go2ReplayArenaResult",
     "Go2ReplayScoreProvider",
     "load_go2_replay_fixture",
+    "load_pimsim_go2_export",
+    "pimsim_export_to_go2_replay_fixture",
     "render_go2_replay_batch_report",
     "render_go2_replay_report",
+    "run_dimos_go2_pimsim_export",
+    "run_dimos_go2_pimsim_export_workflow",
     "run_dimos_go2_replay_arena",
     "run_dimos_go2_replay_arena_workflow",
     "run_dimos_go2_replay_batch",
