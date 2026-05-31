@@ -1,0 +1,495 @@
+{
+  "artifact_kind": "worldforge.decision_trace",
+  "baseline": {
+    "candidate_id": "baseline_forward",
+    "policy": "fixture_baseline_command",
+    "regret_vs_selected": 1.6372246358719167,
+    "score": 2.5845839769088665
+  },
+  "candidate_actions": [
+    {
+      "action": {
+        "params": {
+          "duration_s": 1.4,
+          "dx_m": 0.95,
+          "dyaw_rad": 0.52,
+          "speed_mps": 0.55
+        },
+        "type": "go2_base_command",
+        "units": {
+          "duration_s": "s",
+          "dx_m": "m",
+          "dyaw_rad": "rad",
+          "speed_mps": "unitless"
+        }
+      },
+      "candidate_id": "arc_left_clear",
+      "label": "arc_left_clear",
+      "predicted_outcome": {
+        "endpoint": {
+          "x": 0.9180704792277875,
+          "y": 0.24422652429754735,
+          "yaw_rad": 0.52
+        }
+      }
+    },
+    {
+      "action": {
+        "params": {
+          "duration_s": 1.2,
+          "dx_m": 0.45,
+          "dyaw_rad": 0.3,
+          "speed_mps": 0.35
+        },
+        "type": "go2_base_command",
+        "units": {
+          "duration_s": "s",
+          "dx_m": "m",
+          "dyaw_rad": "rad",
+          "speed_mps": "unitless"
+        }
+      },
+      "candidate_id": "slow_probe_left",
+      "label": "slow_probe_left",
+      "predicted_outcome": {
+        "endpoint": {
+          "x": 0.444946985071219,
+          "y": 0.06724715961311965,
+          "yaw_rad": 0.3
+        }
+      }
+    },
+    {
+      "action": {
+        "params": {
+          "duration_s": 1.0,
+          "reason": "sim_export_operator_pause"
+        },
+        "type": "go2_safety_action",
+        "units": {
+          "duration_s": "s",
+          "reason": "unitless"
+        }
+      },
+      "candidate_id": "stop_relocalize",
+      "label": "stop_relocalize",
+      "predicted_outcome": {
+        "endpoint": {
+          "x": 0.0,
+          "y": 0.0,
+          "yaw_rad": 0.0
+        }
+      }
+    },
+    {
+      "action": {
+        "params": {
+          "duration_s": 1.2,
+          "dx_m": 0.95,
+          "dyaw_rad": 0.0,
+          "speed_mps": 0.7
+        },
+        "type": "go2_base_command",
+        "units": {
+          "duration_s": "s",
+          "dx_m": "m",
+          "dyaw_rad": "rad",
+          "speed_mps": "unitless"
+        }
+      },
+      "candidate_id": "baseline_forward",
+      "label": "baseline_forward",
+      "predicted_outcome": {
+        "endpoint": {
+          "x": 0.95,
+          "y": 0.0,
+          "yaw_rad": 0.0
+        }
+      }
+    },
+    {
+      "action": {
+        "params": {
+          "duration_s": 1.4,
+          "dx_m": 0.9,
+          "dyaw_rad": -0.38,
+          "speed_mps": 0.55
+        },
+        "type": "go2_base_command",
+        "units": {
+          "duration_s": "s",
+          "dx_m": "m",
+          "dyaw_rad": "rad",
+          "speed_mps": "unitless"
+        }
+      },
+      "candidate_id": "arc_right_cart_shadow",
+      "label": "arc_right_cart_shadow",
+      "predicted_outcome": {
+        "endpoint": {
+          "x": 0.8838038116055433,
+          "y": -0.16997300547885053,
+          "yaw_rad": -0.38
+        }
+      }
+    }
+  ],
+  "claim_boundary": {
+    "hardware_executed": false,
+    "learned_model_used": false,
+    "limitations": [
+      "No live Go2 command was sent.",
+      "Outcome is an analytic endpoint estimate from replay metadata.",
+      "The scorer is transparent hand cost, not a learned latent world model."
+    ],
+    "outcome_kind": "analytic",
+    "safety_controller": null,
+    "score_kind": "hand_cost"
+  },
+  "counterfactuals": [
+    {
+      "candidate_id": "slow_probe_left",
+      "delta_vs_selected": 0.066455,
+      "score": 1.0138143051738921,
+      "why_rejected": "Higher replay cost, led by obstacle risk penalty."
+    },
+    {
+      "candidate_id": "stop_relocalize",
+      "delta_vs_selected": 0.466465,
+      "score": 1.4138246001537815,
+      "why_rejected": "Higher replay cost with no useful goal progress."
+    },
+    {
+      "candidate_id": "baseline_forward",
+      "delta_vs_selected": 1.637225,
+      "score": 2.5845839769088665,
+      "why_rejected": "Higher replay cost, led by obstacle risk penalty."
+    },
+    {
+      "candidate_id": "arc_right_cart_shadow",
+      "delta_vs_selected": 1.917416,
+      "score": 2.864775556210461,
+      "why_rejected": "Higher replay cost, led by obstacle risk penalty."
+    }
+  ],
+  "embodiment": {
+    "action_space": "planar_body_velocity",
+    "embodiment_id": "go2-replay",
+    "kind": "quadruped_navigation",
+    "platform": "unitree_go2_air"
+  },
+  "goal": {
+    "description": "navigate around the PimSim chair leg toward the inspection marker",
+    "sub_goals": [
+      {
+        "description": "Reduce planar distance to the goal.",
+        "id": "advance_to_goal",
+        "required": true,
+        "weight": 0.45
+      },
+      {
+        "description": "Avoid obstacle, cost, and uncertainty zones.",
+        "id": "avoid_obstacles",
+        "required": true,
+        "weight": 0.35
+      },
+      {
+        "description": "Prefer relocalization when confidence is low.",
+        "id": "maintain_localization",
+        "required": false,
+        "weight": 0.2
+      }
+    ],
+    "success_criteria": {
+      "metric": "partial_subgoal_credit",
+      "partial_credit": true,
+      "protocol": "WorldForge replay analytic scoring"
+    },
+    "target": {
+      "x": 1.35,
+      "y": 0.42
+    },
+    "type": "navigation"
+  },
+  "host_runtime": {
+    "mode": "checkout_safe_replay",
+    "name": "DimOS PimSim export adapter",
+    "version": null
+  },
+  "interop": {
+    "otel_span": {
+      "attributes": {
+        "gen_ai.operation.name": "invoke_agent",
+        "worldforge.schema_version": "worldforge.decision_trace.v1",
+        "worldforge.trace_id": "decision-trace-pimsim"
+      },
+      "name": "worldforge.decision_trace.score_and_select"
+    },
+    "prov": {
+      "activities": [
+        "score_candidates",
+        "select_action"
+      ],
+      "agents": [
+        "Go2ReplayScoreProvider",
+        "WorldForge"
+      ],
+      "entities": [
+        "observation",
+        "candidate_actions",
+        "scores",
+        "outcome"
+      ],
+      "selected_action_was_derived_from": [
+        "observation",
+        "candidate_actions",
+        "scores"
+      ]
+    },
+    "trajectory_ref": {
+      "frame_id": "pimsim-frame-001",
+      "standard": "DimOS/PimSim-derived replay fixture"
+    }
+  },
+  "observation": {
+    "ref": {
+      "frame_id": "pimsim-frame-001",
+      "source": {
+        "adapter": "worldforge.dimos_go2_pimsim_export",
+        "branch_reference": "pim/dev",
+        "export_kind": "dimos.pimsim.episode_snapshot",
+        "hardware_required": false,
+        "mode": "pimsim-export",
+        "runtime": "dimos",
+        "simulator": "pimsim"
+      }
+    },
+    "summary": {
+      "frame_id": "pimsim-frame-001",
+      "localization_confidence": 0.88,
+      "pose": {
+        "x": 0.0,
+        "y": 0.0,
+        "yaw_rad": 0.0
+      },
+      "timestamp_s": 84.25
+    }
+  },
+  "outcome": {
+    "kind": "analytic",
+    "metrics": {
+      "baseline_regret": 1.6372246358719167,
+      "candidate_count": 5,
+      "partial_subgoal_credit": 1.0,
+      "score_margin": 0.0664549641369423
+    },
+    "status": "predicted_lower_cost_action"
+  },
+  "planner_diagnostics": {
+    "candidate_count": 5,
+    "planner": "score",
+    "score_provider": "dimos-go2-replay-score",
+    "source_schema": "worldforge.dimos_go2_replay_decision_trace",
+    "workflow_trace": {
+      "metadata": {
+        "action_count": 1,
+        "candidate_count": 5,
+        "planner": "cem",
+        "planning_mode": "score"
+      },
+      "name": "World plan (score)",
+      "safe_to_attach": true,
+      "schema_version": 1,
+      "status": "success",
+      "status_counts": {
+        "failed": 0,
+        "pending": 0,
+        "running": 0,
+        "skipped": 1,
+        "success": 2
+      },
+      "step_count": 3,
+      "steps": [
+        {
+          "input_artifacts": [
+            {
+              "label": "world-state",
+              "safe_to_attach": true
+            }
+          ],
+          "operation": "score planning",
+          "output_artifacts": [
+            {
+              "label": "plan",
+              "safe_to_attach": true
+            }
+          ],
+          "provider": "dimos-go2-replay-score",
+          "status": "success",
+          "step_id": "plan"
+        },
+        {
+          "capability": "policy",
+          "error_summary": "Policy provider not requested; score planning used caller candidates.",
+          "input_artifacts": [],
+          "operation": "select action candidates",
+          "output_artifacts": [],
+          "parent_id": "plan",
+          "status": "skipped",
+          "step_id": "policy"
+        },
+        {
+          "capability": "score",
+          "input_artifacts": [
+            {
+              "label": "action-candidates",
+              "safe_to_attach": true
+            }
+          ],
+          "operation": "rank action candidates",
+          "output_artifacts": [
+            {
+              "label": "score-ranking",
+              "safe_to_attach": true
+            }
+          ],
+          "parent_id": "plan",
+          "provider": "dimos-go2-replay-score",
+          "status": "success",
+          "step_id": "score"
+        }
+      ],
+      "workflow_id": "plan:score"
+    }
+  },
+  "prev_trace_id": "decision-trace-go2",
+  "reproducibility": {
+    "checkpoint_hash": null,
+    "code_ref": "integration/worldforge-go2-so101-evidence",
+    "input_digest": "sha256:845fe984f22589b2c9cd8094b0c898135dddcb68a4f204f9730cb5104f6c97bf",
+    "model_card_ref": null,
+    "provider_version": "Go2ReplayScoreProvider deterministic hand-cost",
+    "seed": 0
+  },
+  "run_id": "cross-embodiment-decision-evidence",
+  "schema_version": "worldforge.decision_trace.v1",
+  "scores": [
+    {
+      "candidate_id": "arc_left_clear",
+      "components": {
+        "distance_cost": 0.4663254503831352,
+        "map_cost": 0.0,
+        "obstacle_risk": 0.7179086780964761,
+        "progress_m": 0.9474991497706463,
+        "relocalization_cost": 0.0,
+        "uncertainty_cost": 0.0
+      },
+      "lower_is_better": true,
+      "normalized": {
+        "calibration_target": "analytic_cost_gap",
+        "desirability": 1.0,
+        "regret_vs_baseline": 1.637225,
+        "separability": 0.034659,
+        "value_signal": 0.696969
+      },
+      "rank": 1,
+      "score": 0.9473593410369499
+    },
+    {
+      "candidate_id": "slow_probe_left",
+      "components": {
+        "distance_cost": 0.971367863495951,
+        "map_cost": 0.0,
+        "obstacle_risk": 0.153060625842399,
+        "progress_m": 0.4424567366578306,
+        "relocalization_cost": 0.0,
+        "uncertainty_cost": 0.0
+      },
+      "lower_is_better": true,
+      "normalized": {
+        "calibration_target": "analytic_cost_gap",
+        "desirability": 0.965341,
+        "regret_vs_baseline": 1.57077,
+        "separability": 0.034659,
+        "value_signal": 0.671926
+      },
+      "rank": 2,
+      "score": 1.0138143051738921
+    },
+    {
+      "candidate_id": "stop_relocalize",
+      "components": {
+        "distance_cost": 1.4138246001537815,
+        "map_cost": 0.0,
+        "obstacle_risk": 0.0,
+        "progress_m": 0.0,
+        "relocalization_cost": 0.0,
+        "uncertainty_cost": 0.0
+      },
+      "lower_is_better": true,
+      "normalized": {
+        "calibration_target": "analytic_cost_gap",
+        "desirability": 0.756722,
+        "regret_vs_baseline": 1.170759,
+        "separability": 0.034659,
+        "value_signal": 0.521186
+      },
+      "rank": 3,
+      "score": 1.4138246001537815
+    },
+    {
+      "candidate_id": "baseline_forward",
+      "components": {
+        "distance_cost": 0.5800000000000001,
+        "map_cost": 0.08092979739577788,
+        "obstacle_risk": 2.132110329551534,
+        "progress_m": 0.8338246001537815,
+        "relocalization_cost": 0.0,
+        "uncertainty_cost": 0.0
+      },
+      "lower_is_better": true,
+      "normalized": {
+        "calibration_target": "analytic_cost_gap",
+        "desirability": 0.14613,
+        "regret_vs_baseline": 0.0,
+        "separability": 0.034659,
+        "value_signal": 0.079997
+      },
+      "rank": 4,
+      "score": 2.5845839769088665
+    },
+    {
+      "candidate_id": "arc_right_cart_shadow",
+      "components": {
+        "distance_cost": 0.7519355246743351,
+        "map_cost": 0.20397078168359883,
+        "obstacle_risk": 2.074341518722389,
+        "progress_m": 0.6618890754794464,
+        "relocalization_cost": 0.0,
+        "uncertainty_cost": 0.0
+      },
+      "lower_is_better": true,
+      "normalized": {
+        "calibration_target": "analytic_cost_gap",
+        "desirability": 0.0,
+        "regret_vs_baseline": 0.0,
+        "separability": 0.034659,
+        "value_signal": 0.006932
+      },
+      "rank": 5,
+      "score": 2.864775556210461
+    }
+  ],
+  "selected_action": {
+    "candidate_id": "arc_left_clear",
+    "score": 0.9473593410369499,
+    "score_margin": 0.0664549641369423,
+    "why_selected": "Lowest transparent replay cost after combining goal distance, obstacle risk, map cost, uncertainty, and relocalization terms; progress=0.947m."
+  },
+  "step_index": 1,
+  "task": {
+    "description": "navigate around the PimSim chair leg toward the inspection marker",
+    "task_id": "pimsim-go2-hallway-export-001"
+  },
+  "trace_id": "decision-trace-pimsim"
+}

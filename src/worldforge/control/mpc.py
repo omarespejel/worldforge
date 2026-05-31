@@ -168,6 +168,7 @@ class MPCStepResult:
     lower_is_better: bool
     candidate_count: int
     iteration_best_scores: list[float]
+    running_best_scores: list[float]
     metadata: JSONDict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -193,6 +194,15 @@ class MPCStepResult:
         if not scores:
             raise WorldForgeError("MPCStepResult iteration_best_scores must not be empty.")
         object.__setattr__(self, "iteration_best_scores", scores)
+        running_scores = [
+            require_finite_number(score, name="MPCStepResult running_best_score")
+            for score in self.running_best_scores
+        ]
+        if len(running_scores) != len(scores):
+            raise WorldForgeError(
+                "MPCStepResult running_best_scores must match iteration_best_scores length."
+            )
+        object.__setattr__(self, "running_best_scores", running_scores)
         object.__setattr__(
             self,
             "metadata",
@@ -242,6 +252,7 @@ class LatentMPCController:
         best_score: float | None = None
         lower_is_better: bool | None = None
         iteration_best_scores: list[float] = []
+        running_best_scores: list[float] = []
         scored_candidate_count = 0
 
         for _ in range(self.config.num_iterations):
@@ -261,7 +272,8 @@ class LatentMPCController:
             ):
                 best_score = iteration_best_score
                 best_candidate = list(candidates[iteration_best_index])
-            iteration_best_scores.append(best_score)
+            iteration_best_scores.append(iteration_best_score)
+            running_best_scores.append(best_score)
             state = self._refit_gaussian_state(
                 state,
                 candidates,
@@ -277,6 +289,7 @@ class LatentMPCController:
             lower_is_better=lower_is_better,
             candidate_count=scored_candidate_count,
             iteration_best_scores=iteration_best_scores,
+            running_best_scores=running_best_scores,
             metadata={
                 "planning_mode": "latent-mpc",
                 "control_mode": "mpc",
@@ -285,7 +298,9 @@ class LatentMPCController:
                 "config": self.config.to_dict(),
                 "candidate_count": scored_candidate_count,
                 "iteration_best_scores": list(iteration_best_scores),
+                "running_best_scores": list(running_best_scores),
                 "iteration_costs": list(iteration_best_scores) if lower_is_better else [],
+                "running_costs": list(running_best_scores) if lower_is_better else [],
             },
         )
 

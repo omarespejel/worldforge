@@ -30,6 +30,13 @@ releases may still include breaking changes when the public API needs to tighten
   with candidate scores, selected action, measured replay outcome, and counterfactual rejected
   actions. The demo is shaped after public `lerobot/svla_so101_pickplace` metadata but does not
   install LeRobot, torch, DimOS, or connect robot hardware.
+- Added a fork-integration DecisionTrace v1 evidence contract and cross-embodiment example.
+  The packaged JSON Schema plus `worldforge.decision_trace.validate_decision_trace(...)`
+  validate one trace shape across Go2 replay, PimSim export, and SO-101 replay artifacts. The
+  `examples/cross-embodiment-decision-evidence/run.py` demo writes normalized
+  `decision-trace-go2.json`, `decision-trace-pimsim.json`, `decision-trace-so101.json`, and a
+  compact report with score kind, outcome kind, baseline regret, score margin, counterfactuals,
+  reproducibility, and explicit claim boundaries.
 - Added a non-interactive TensorBoard launcher CLI:
   `worldforge-open-tensorboard --logdir <path> [--probe] [--no-browser]
   [--keep-running] [--ready-timeout 60] [--poll-interval 0.5]`. Wraps the
@@ -44,6 +51,8 @@ releases may still include breaking changes when the public API needs to tighten
 
 ### Fixed
 
+- Latent MPC diagnostics now report per-iteration best scores separately from running best scores,
+  so CEM evidence does not look monotone by construction when an iteration fails to improve.
 - Provider routing failed-attempt records now redact exception messages before
   serialization. `RoutingAttempt` validates optional reason/error text and
   `route_capability(...)` stores a sanitized `str(exc)` so bearer tokens, API

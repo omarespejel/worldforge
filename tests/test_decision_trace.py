@@ -1,0 +1,169 @@
+from __future__ import annotations
+
+import pytest
+
+from worldforge.decision_trace import (
+    DECISION_TRACE_ARTIFACT_KIND,
+    DECISION_TRACE_SCHEMA_VERSION,
+    decision_trace_digest,
+    load_decision_trace_schema,
+    validate_decision_trace,
+)
+from worldforge.models import JSONDict, WorldForgeError
+
+
+def _valid_trace() -> JSONDict:
+    return {
+        "schema_version": DECISION_TRACE_SCHEMA_VERSION,
+        "artifact_kind": DECISION_TRACE_ARTIFACT_KIND,
+        "trace_id": "trace-go2-office-0001",
+        "run_id": "cross-embodiment-demo",
+        "step_index": 0,
+        "prev_trace_id": None,
+        "embodiment": {
+            "kind": "quadruped_navigation",
+            "platform": "unitree_go2_air",
+            "embodiment_id": "go2-air-replay",
+            "action_space": "planar_velocity",
+        },
+        "host_runtime": {"name": "DimOS replay", "mode": "checkout_safe_replay", "version": None},
+        "task": {"task_id": "office-scan", "description": "Choose a local navigation action."},
+        "observation": {"ref": {"episode_id": "episode-1", "frame_id": "frame-1"}},
+        "goal": {
+            "type": "navigation",
+            "description": "Move toward the scan goal while avoiding obstacles.",
+            "sub_goals": [
+                {
+                    "id": "advance",
+                    "description": "Reduce distance to the goal.",
+                    "required": True,
+                    "weight": 0.7,
+                }
+            ],
+            "success_criteria": {"metric": "partial_subgoal_credit", "partial_credit": True},
+        },
+        "candidate_actions": [
+            {
+                "candidate_id": "forward",
+                "action": {
+                    "type": "body_velocity",
+                    "params": {"dx_m": 0.4, "dyaw_rad": 0.0},
+                    "units": {"dx_m": "m", "dyaw_rad": "rad"},
+                },
+            },
+            {
+                "candidate_id": "stop",
+                "action": {
+                    "type": "stop_relocalize",
+                    "params": {"duration_s": 1.0},
+                    "units": {"duration_s": "s"},
+                },
+            },
+        ],
+        "scores": [
+            {
+                "candidate_id": "forward",
+                "rank": 1,
+                "score": 0.2,
+                "lower_is_better": True,
+                "components": {"distance_cost": 0.1, "risk_cost": 0.1},
+                "normalized": {
+                    "value_signal": 0.8,
+                    "regret_vs_baseline": 0.5,
+                    "separability": 0.6,
+                },
+            },
+            {
+                "candidate_id": "stop",
+                "rank": 2,
+                "score": 0.7,
+                "lower_is_better": True,
+                "components": {"distance_cost": 0.6, "risk_cost": 0.1},
+                "normalized": {
+                    "value_signal": 0.3,
+                    "regret_vs_baseline": 0.0,
+                    "separability": 0.0,
+                },
+            },
+        ],
+        "selected_action": {
+            "candidate_id": "forward",
+            "score": 0.2,
+            "score_margin": 0.5,
+            "why_selected": "Lowest transparent replay cost with positive baseline regret.",
+        },
+        "counterfactuals": [
+            {
+                "candidate_id": "stop",
+                "score": 0.7,
+                "delta_vs_selected": 0.5,
+                "why_rejected": "Higher goal-progress cost.",
+            }
+        ],
+        "baseline": {
+            "candidate_id": "stop",
+            "score": 0.7,
+            "regret_vs_selected": 0.5,
+            "policy": "hardcoded_stop",
+        },
+        "outcome": {
+            "kind": "analytic",
+            "status": "predicted_success",
+            "metrics": {"partial_subgoal_credit": 0.8},
+        },
+        "planner_diagnostics": {"planner": "score-rank", "candidate_count": 2},
+        "reproducibility": {
+            "provider_version": "worldforge-integration",
+            "checkpoint_hash": None,
+            "model_card_ref": None,
+            "input_digest": "sha256:fixture",
+            "seed": 0,
+            "code_ref": "integration/worldforge-go2-so101-evidence",
+        },
+        "claim_boundary": {
+            "score_kind": "hand_cost",
+            "outcome_kind": "analytic",
+            "hardware_executed": False,
+            "learned_model_used": False,
+            "safety_controller": None,
+            "limitations": ["No live robot execution."],
+        },
+    }
+
+
+def test_decision_trace_schema_resource_loads() -> None:
+    schema = load_decision_trace_schema()
+
+    assert schema["title"] == "WorldForge DecisionTrace v1"
+    assert schema["properties"]["schema_version"]["const"] == DECISION_TRACE_SCHEMA_VERSION
+
+
+def test_validate_decision_trace_accepts_valid_trace() -> None:
+    trace = validate_decision_trace(_valid_trace())
+
+    assert trace["schema_version"] == DECISION_TRACE_SCHEMA_VERSION
+    assert decision_trace_digest(trace) == decision_trace_digest(trace)
+
+
+def test_validate_decision_trace_rejects_missing_subgoals() -> None:
+    trace = _valid_trace()
+    trace["goal"]["sub_goals"] = []
+
+    with pytest.raises(WorldForgeError, match="sub_goals"):
+        validate_decision_trace(trace)
+
+
+def test_validate_decision_trace_rejects_score_without_candidate() -> None:
+    trace = _valid_trace()
+    trace["scores"][1]["candidate_id"] = "unknown"
+
+    with pytest.raises(WorldForgeError, match="candidate ids mismatch"):
+        validate_decision_trace(trace)
+
+
+def test_validate_decision_trace_rejects_overclaimed_real_outcome() -> None:
+    trace = _valid_trace()
+    trace["claim_boundary"]["outcome_kind"] = "real_measured"
+
+    with pytest.raises(WorldForgeError, match="outcome_kind must match"):
+        validate_decision_trace(trace)

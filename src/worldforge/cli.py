@@ -99,6 +99,17 @@ EXAMPLE_COMMANDS: tuple[dict[str, str], ...] = (
         ),
     },
     {
+        "task": "Robot decision traces",
+        "name": "cross-embodiment-decision-evidence",
+        "surface": "DecisionTrace v1, Go2 replay, PimSim export, SO-101 replay",
+        "requires": "base WorldForge package; checkout-safe replay fixtures",
+        "command": "uv run python examples/cross-embodiment-decision-evidence/run.py",
+        "description": (
+            "Normalize Go2 replay, PimSim export, and SO-101 manipulation decisions into one "
+            "DecisionTrace v1 evidence bundle with counterfactuals and claim boundaries."
+        ),
+    },
+    {
         "task": "Visual harness",
         "name": "theworldharness",
         "surface": "E2E flows, provider diagnostics, benchmark comparison",

@@ -54,6 +54,7 @@ comparison flows.
 | Example | Surface | Command |
 | --- | --- | --- |
 | `so101-replay-trace` | score provider, decision trace, counterfactuals, mock replay | `uv run worldforge-demo-so101-replay-trace` |
+| `cross-embodiment-decision-evidence` | DecisionTrace v1, Go2 replay, PimSim export, SO-101 replay | `uv run python examples/cross-embodiment-decision-evidence/run.py` |
 
 The SO-101 replay trace demo uses a deterministic pick-and-place decision point shaped after the
 public `lerobot/svla_so101_pickplace` metadata. It scores candidate 6D joint-action futures,
@@ -61,6 +62,11 @@ selects the lowest-cost manipulation action, executes the selected object placem
 local mock provider, and emits an `observation -> goal -> candidate_actions -> candidate_scores ->
 selected_action -> outcome -> counterfactuals` trace without installing LeRobot, torch, DimOS, or
 connecting robot hardware.
+
+The cross-embodiment evidence example validates one `DecisionTrace v1` contract across Go2
+navigation replay, a PimSim export conversion, and SO-101 manipulation replay. It writes three
+validated trace JSON artifacts plus a compact comparison report, while labeling each lane as
+hand-cost scoring with analytic/replay outcomes and no live hardware claim.
 
 ## Service Host Reference
 

@@ -1,0 +1,389 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://abdelstark.github.io/worldforge/schemas/decision_trace.v1.schema.json",
+  "title": "WorldForge DecisionTrace v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "artifact_kind",
+    "trace_id",
+    "run_id",
+    "step_index",
+    "embodiment",
+    "host_runtime",
+    "task",
+    "observation",
+    "goal",
+    "candidate_actions",
+    "scores",
+    "selected_action",
+    "counterfactuals",
+    "baseline",
+    "outcome",
+    "planner_diagnostics",
+    "reproducibility",
+    "claim_boundary"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "worldforge.decision_trace.v1"
+    },
+    "artifact_kind": {
+      "const": "worldforge.decision_trace"
+    },
+    "trace_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "step_index": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "prev_trace_id": {
+      "type": ["string", "null"]
+    },
+    "embodiment": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["kind", "platform", "action_space"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "platform": {
+          "type": "string",
+          "minLength": 1
+        },
+        "embodiment_id": {
+          "type": "string"
+        },
+        "action_space": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "host_runtime": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["name", "mode"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mode": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["task_id", "description"],
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "observation": {
+      "type": "object"
+    },
+    "goal": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "description", "sub_goals", "success_criteria"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sub_goals": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["id", "description"],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": {
+                "type": "string",
+                "minLength": 1
+              },
+              "required": {
+                "type": "boolean"
+              },
+              "weight": {
+                "type": "number"
+              }
+            }
+          }
+        },
+        "success_criteria": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["metric", "partial_credit"],
+          "properties": {
+            "metric": {
+              "type": "string",
+              "minLength": 1
+            },
+            "partial_credit": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "candidate_actions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["candidate_id", "action"],
+        "properties": {
+          "candidate_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "action": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["type", "params", "units"],
+            "properties": {
+              "type": {
+                "type": "string",
+                "minLength": 1
+              },
+              "params": {
+                "type": "object"
+              },
+              "units": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "scores": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "candidate_id",
+          "rank",
+          "score",
+          "lower_is_better",
+          "components",
+          "normalized"
+        ],
+        "properties": {
+          "candidate_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "rank": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "score": {
+            "type": "number"
+          },
+          "lower_is_better": {
+            "type": "boolean"
+          },
+          "components": {
+            "type": "object"
+          },
+          "normalized": {
+            "type": "object",
+            "required": ["value_signal"],
+            "properties": {
+              "value_signal": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    "selected_action": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["candidate_id", "score", "score_margin", "why_selected"],
+      "properties": {
+        "candidate_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "score": {
+          "type": "number"
+        },
+        "score_margin": {
+          "type": "number"
+        },
+        "why_selected": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "counterfactuals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["candidate_id", "score", "delta_vs_selected", "why_rejected"],
+        "properties": {
+          "candidate_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "score": {
+            "type": "number"
+          },
+          "delta_vs_selected": {
+            "type": "number"
+          },
+          "why_rejected": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "baseline": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["candidate_id", "regret_vs_selected"],
+      "properties": {
+        "candidate_id": {
+          "type": ["string", "null"]
+        },
+        "regret_vs_selected": {
+          "type": "number"
+        }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["kind", "status", "metrics"],
+      "properties": {
+        "kind": {
+          "enum": ["analytic", "sim_measured", "real_measured"]
+        },
+        "status": {
+          "type": "string",
+          "minLength": 1
+        },
+        "metrics": {
+          "type": "object"
+        }
+      }
+    },
+    "planner_diagnostics": {
+      "type": "object"
+    },
+    "reproducibility": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "provider_version",
+        "checkpoint_hash",
+        "model_card_ref",
+        "input_digest",
+        "seed",
+        "code_ref"
+      ],
+      "properties": {
+        "provider_version": {
+          "type": ["string", "null"]
+        },
+        "checkpoint_hash": {
+          "type": ["string", "null"]
+        },
+        "model_card_ref": {
+          "type": ["string", "null"]
+        },
+        "input_digest": {
+          "type": "string",
+          "minLength": 1
+        },
+        "seed": {
+          "type": ["integer", "null"]
+        },
+        "code_ref": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "claim_boundary": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "score_kind",
+        "outcome_kind",
+        "hardware_executed",
+        "learned_model_used",
+        "safety_controller",
+        "limitations"
+      ],
+      "properties": {
+        "score_kind": {
+          "enum": ["hand_cost", "learned_latent", "simulator", "human_label"]
+        },
+        "outcome_kind": {
+          "enum": ["analytic", "sim_measured", "real_measured"]
+        },
+        "hardware_executed": {
+          "type": "boolean"
+        },
+        "learned_model_used": {
+          "type": "boolean"
+        },
+        "safety_controller": {
+          "type": ["string", "null"]
+        },
+        "limitations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

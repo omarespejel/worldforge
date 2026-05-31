@@ -111,10 +111,17 @@ checkpoint inference.
 | Example | Command | Runtime boundary |
 | --- | --- | --- |
 | `so101-replay-trace` | `uv run worldforge-demo-so101-replay-trace` | Scores deterministic SO-101 pick-and-place candidates and emits a reusable decision trace without LeRobot, torch, DimOS, or hardware. |
+| `cross-embodiment-decision-evidence` | `uv run python examples/cross-embodiment-decision-evidence/run.py` | Normalizes Go2 replay, PimSim export, and SO-101 replay outputs into one DecisionTrace v1 evidence bundle without robot hardware or optional runtimes. |
 
 The SO-101 replay trace records `observation -> goal -> candidate_actions -> candidate_scores ->
 selected_action -> outcome -> counterfactuals`. It is a checkout-safe replay fixture shaped after
 the public `lerobot/svla_so101_pickplace` metadata, not a hardware-success or policy-quality claim.
+
+The cross-embodiment evidence bundle writes `decision-trace-go2.json`,
+`decision-trace-pimsim.json`, `decision-trace-so101.json`, and
+`cross-embodiment-report.md`. Each trace records typed goals and sub-goals, self-describing
+actions with units, comparable score components, selected action, rejected counterfactuals,
+baseline regret, reproducibility fields, and explicit claim boundaries.
 
 ## Service Host Reference
 

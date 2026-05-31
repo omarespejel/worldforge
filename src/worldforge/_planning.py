@@ -459,8 +459,12 @@ def mpc_plan_metadata(
         "lower_is_better": step_result.lower_is_better,
         "candidate_count": step_result.candidate_count,
         "iteration_best_scores": list(step_result.iteration_best_scores),
+        "running_best_scores": list(step_result.running_best_scores),
         "iteration_costs": (
             list(step_result.iteration_best_scores) if step_result.lower_is_better else []
+        ),
+        "running_costs": (
+            list(step_result.running_best_scores) if step_result.lower_is_better else []
         ),
         "mpc_result": dict(step_result.metadata),
         "success_probability_source": success_probability_source,

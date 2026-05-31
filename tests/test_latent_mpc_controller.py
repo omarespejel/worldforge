@@ -84,6 +84,27 @@ class _FlatTieForge:
         )
 
 
+class _WorseningForge:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def score_actions(
+        self,
+        provider: str,
+        *,
+        info: JSONDict,
+        action_candidates: object,
+    ) -> ActionScoreResult:
+        candidates = _candidate_payloads(action_candidates)
+        self.calls += 1
+        score = float(self.calls)
+        return ActionScoreResult(
+            provider=provider,
+            scores=[score for _ in candidates],
+            best_index=0,
+        )
+
+
 def test_latent_mpc_controller_converges_on_lower_is_better_score() -> None:
     controller = LatentMPCController(
         forge=_ConvexForge(),
@@ -111,7 +132,7 @@ def test_latent_mpc_controller_converges_on_lower_is_better_score() -> None:
     assert result.actions[0].parameters["x"] == pytest.approx(0.75, abs=0.2)
     assert result.best_score < 0.04
     assert result.lower_is_better is True
-    assert result.iteration_best_scores[-1] <= result.iteration_best_scores[0]
+    assert result.running_best_scores[-1] <= result.running_best_scores[0]
     assert result.candidate_count == 96 * 5
 
 
@@ -161,7 +182,30 @@ def test_latent_mpc_controller_default_seed_makes_tie_cases_repeatable() -> None
 
     assert first.actions[0].to_dict() == second.actions[0].to_dict()
     assert first.iteration_best_scores == second.iteration_best_scores
+    assert first.running_best_scores == second.running_best_scores
     assert first.metadata["config"]["seed"] == 0
+
+
+def test_latent_mpc_reports_iteration_scores_separately_from_running_best() -> None:
+    controller = LatentMPCController(
+        forge=_WorseningForge(),
+        score_provider="worsening",
+        config=PlannerConfig(
+            horizon=1,
+            num_samples=4,
+            num_iterations=3,
+            num_elites=1,
+            seed=3,
+        ),
+    )
+
+    result = controller.plan_step(observation_info={}, goal_info={})
+
+    assert result.best_score == 1.0
+    assert result.iteration_best_scores == [1.0, 2.0, 3.0]
+    assert result.running_best_scores == [1.0, 1.0, 1.0]
+    assert result.metadata["iteration_best_scores"] == [1.0, 2.0, 3.0]
+    assert result.metadata["running_best_scores"] == [1.0, 1.0, 1.0]
 
 
 def test_latent_mpc_controller_rejects_score_count_mismatch() -> None:
@@ -220,6 +264,7 @@ def test_world_plan_latent_mpc_routes_through_score_provider(tmp_path: Path) -> 
     assert plan.metadata["score_provider"] == "convex_cost"
     assert plan.metadata["candidate_count"] == 96 * 5
     assert plan.metadata["iteration_costs"] == plan.metadata["iteration_best_scores"]
+    assert plan.metadata["running_costs"] == plan.metadata["running_best_scores"]
     assert plan.metadata["workflow_trace"]["metadata"]["planning_mode"] == "latent-mpc"
     assert [step["status"] for step in plan.metadata["workflow_trace"]["steps"]] == [
         "success",

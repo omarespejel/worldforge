@@ -1,0 +1,37 @@
+{
+  "artifact_kind": "worldforge.cross_embodiment_decision_evidence",
+  "kill_criterion": "If WorldForge cannot choose, explain, compare, or expose counterfactual robot actions better than a hardcoded command or plain script, stop pushing this integration.",
+  "report_path": "examples/cross-embodiment-decision-evidence/cross-embodiment-report.md",
+  "run_id": "cross-embodiment-decision-evidence",
+  "schema_version": 1,
+  "trace_count": 3,
+  "traces": {
+    "go2": {
+      "baseline_regret": 1.4010390399075636,
+      "outcome_kind": "analytic",
+      "path": "examples/cross-embodiment-decision-evidence/decision-trace-go2.json",
+      "score_kind": "hand_cost",
+      "score_margin": 0.20560341778291247,
+      "selected_action_id": "stop_relocalize",
+      "trace_id": "decision-trace-go2"
+    },
+    "pimsim": {
+      "baseline_regret": 1.6372246358719167,
+      "outcome_kind": "analytic",
+      "path": "examples/cross-embodiment-decision-evidence/decision-trace-pimsim.json",
+      "score_kind": "hand_cost",
+      "score_margin": 0.0664549641369423,
+      "selected_action_id": "arc_left_clear",
+      "trace_id": "decision-trace-pimsim"
+    },
+    "so101": {
+      "baseline_regret": 1.197197,
+      "outcome_kind": "analytic",
+      "path": "examples/cross-embodiment-decision-evidence/decision-trace-so101.json",
+      "score_kind": "hand_cost",
+      "score_margin": 0.9303,
+      "selected_action_id": "lift-place-stable",
+      "trace_id": "decision-trace-so101"
+    }
+  }
+}
