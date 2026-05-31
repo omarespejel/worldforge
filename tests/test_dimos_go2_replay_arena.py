@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from worldforge.demos.dimos_go2_replay_arena import (
+    _PIMSIM_EXPORT_MAX_BYTES,
     DEFAULT_FIXTURE_PATH,
     DEFAULT_PIMSIM_EXPORT_PATH,
     Go2ReplayScoreProvider,
@@ -168,6 +169,10 @@ def test_pimsim_go2_export_converts_to_replay_fixture() -> None:
     assert fixture["observation"]["pose"]["x"] == 0.0
     assert fixture["observation"]["pose"]["yaw_rad"] == pytest.approx(0.0)
     assert fixture["observation"]["map"]["obstacles"][0]["id"] == "pimsim-chair-leg"
+    assert fixture["observation"]["map"]["obstacles"][1]["id"] == "pimsim-supply-cart"
+    assert fixture["observation"]["map"]["obstacles"][1]["radius_m"] == pytest.approx(
+        0.5 * (0.45**2 + 0.9**2) ** 0.5
+    )
     assert fixture["baseline_action_id"] == "baseline_forward"
     assert [candidate["id"] for candidate in fixture["candidate_actions"]] == [
         "baseline_forward",
@@ -189,6 +194,24 @@ def test_pimsim_go2_export_runs_through_replay_arena(tmp_path: Path) -> None:
     assert trace["baseline_regret"] > 0.0
     assert trace["score_margin"] > 0.0
     assert "counterfactual" in trace["worldforge_value"]
+
+
+def test_pimsim_go2_export_sanitizes_source_metadata(tmp_path: Path) -> None:
+    payload = load_pimsim_go2_export(DEFAULT_PIMSIM_EXPORT_PATH)
+    payload["source"]["api_key"] = "secret"
+    payload["source"]["signed_url"] = "https://example.invalid/export?token=secret"
+    converted = pimsim_export_to_go2_replay_fixture(payload)
+
+    assert "api_key" not in converted["source"]
+    assert "signed_url" not in converted["source"]
+    assert converted["source"]["runtime"] == "dimos"
+
+    export_path = tmp_path / "source-secrets.json"
+    export_path.write_text(json.dumps(payload), encoding="utf-8")
+    result = run_dimos_go2_pimsim_export(export_path, tmp_path / "run")
+
+    assert "api_key" not in result.trace["source"]
+    assert "signed_url" not in result.trace["source"]
 
 
 def test_pimsim_go2_export_workflow_summary_points_to_artifacts(tmp_path: Path) -> None:
@@ -222,6 +245,28 @@ def test_pimsim_go2_export_rejects_pose_without_yaw_or_quaternion(tmp_path: Path
 
     with pytest.raises(WorldForgeError, match="pose must include yaw_rad or qw/qx/qy/qz"):
         load_pimsim_go2_export(malformed)
+
+
+def test_pimsim_go2_export_rejects_oversized_file(tmp_path: Path) -> None:
+    oversized = tmp_path / "oversized.json"
+    oversized.write_text(" " * (_PIMSIM_EXPORT_MAX_BYTES + 1), encoding="utf-8")
+
+    with pytest.raises(WorldForgeError, match="exceeds maximum size"):
+        load_pimsim_go2_export(oversized)
+
+
+def test_pimsim_go2_export_rejects_malformed_map_entries(tmp_path: Path) -> None:
+    payload = load_pimsim_go2_export(DEFAULT_PIMSIM_EXPORT_PATH)
+    payload["map"]["obstacles"] = [{}]
+
+    with pytest.raises(WorldForgeError, match=r"map\.obstacles\[0\] is missing 'x'"):
+        pimsim_export_to_go2_replay_fixture(payload)
+
+    payload = load_pimsim_go2_export(DEFAULT_PIMSIM_EXPORT_PATH)
+    payload["map"]["cost_zones"] = [{"x": 0.0, "y": 0.0, "radius_m": 0.0, "cost": 1.0}]
+
+    with pytest.raises(WorldForgeError, match=r"map\.cost_zones\[0\]\.radius_m"):
+        pimsim_export_to_go2_replay_fixture(payload)
 
 
 def test_go2_replay_arena_rejects_malformed_fixture(tmp_path: Path) -> None:

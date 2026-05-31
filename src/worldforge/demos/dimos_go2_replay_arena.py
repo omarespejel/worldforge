@@ -38,6 +38,7 @@ _PROGRESS_REWARD_WEIGHT = 0.25
 _OBSTACLE_CLEARANCE_PENALTY_SCALE = 4.0
 _SAFETY_ACTION_RELOCALIZATION_COST = 0.08
 _UNCERTAIN_MOTION_BASE_COST = 0.6
+_PIMSIM_EXPORT_MAX_BYTES = 2 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -264,9 +265,7 @@ def load_go2_replay_fixture(path: Path) -> JSONDict:
 
 def load_pimsim_go2_export(path: Path) -> JSONDict:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError as exc:
-        raise WorldForgeError(f"PimSim Go2 export not found: {path}") from exc
+        payload = json.loads(_read_pimsim_export_text(path))
     except json.JSONDecodeError as exc:
         raise WorldForgeError(f"PimSim Go2 export is invalid JSON: {path}") from exc
     _validate_pimsim_export(payload)
@@ -300,12 +299,7 @@ def pimsim_export_to_go2_replay_fixture(payload: JSONDict) -> JSONDict:
     fixture = {
         "schema_version": 1,
         "scenario_id": str(payload.get("scenario_id", payload["episode_id"])),
-        "source": {
-            **dict(_require_mapping(payload.get("source", {}), "source")),
-            "mode": "pimsim-export",
-            "hardware_required": False,
-            "adapter": "worldforge.dimos_go2_pimsim_export",
-        },
+        "source": _pimsim_source_metadata(payload),
         "observation": observation,
         "goal": dict(_require_mapping(payload["goal"], "goal")),
         "baseline_action_id": payload.get("baseline_action_id"),
@@ -469,6 +463,18 @@ def _optional_sequence(value: object, field_name: str) -> list[Any]:
     return list(_require_sequence(value, field_name))
 
 
+def _read_pimsim_export_text(path: Path) -> str:
+    try:
+        size_bytes = path.stat().st_size
+    except FileNotFoundError as exc:
+        raise WorldForgeError(f"PimSim Go2 export not found: {path}") from exc
+    if size_bytes > _PIMSIM_EXPORT_MAX_BYTES:
+        raise WorldForgeError(
+            f"PimSim Go2 export exceeds maximum size {_PIMSIM_EXPORT_MAX_BYTES} bytes: {path}"
+        )
+    return path.read_text(encoding="utf-8")
+
+
 def _validate_pimsim_export(payload: object) -> None:
     if not isinstance(payload, dict):
         raise WorldForgeError("PimSim Go2 export must be a JSON object.")
@@ -507,6 +513,24 @@ def _validate_pimsim_export(payload: object) -> None:
         raise WorldForgeError("PimSim Go2 export candidate_actions cannot be empty.")
 
 
+def _pimsim_source_metadata(payload: JSONDict) -> JSONDict:
+    source = _require_mapping(payload.get("source", {}), "source")
+    sanitized: JSONDict = {}
+    for field_name in ("runtime", "simulator", "branch_reference"):
+        if field_name in source:
+            sanitized[field_name] = _non_empty_string(source[field_name], f"source.{field_name}")
+    if "export_kind" in payload:
+        sanitized["export_kind"] = _non_empty_string(payload["export_kind"], "export_kind")
+    sanitized.update(
+        {
+            "mode": "pimsim-export",
+            "hardware_required": False,
+            "adapter": "worldforge.dimos_go2_pimsim_export",
+        }
+    )
+    return sanitized
+
+
 def _pimsim_entity_by_id(entities: object, entity_id: str) -> JSONDict:
     for index, entity in enumerate(_require_sequence(entities, "entity_state_batch.entities")):
         entity_map = _require_mapping(entity, f"entity_state_batch.entities[{index}]")
@@ -533,7 +557,7 @@ def _pimsim_map_payload(
     robot_entity_id: str,
 ) -> JSONDict:
     map_payload = dict(_require_mapping(payload.get("map", {}), "map"))
-    explicit_obstacles = _optional_sequence(map_payload.get("obstacles"), "map.obstacles")
+    explicit_obstacles = _validated_map_obstacles(map_payload.get("obstacles"), "map.obstacles")
     entity_obstacles = _pimsim_entity_obstacles(entity_state_batch["entities"], robot_entity_id)
     return {
         "safety_margin_m": _number(
@@ -541,8 +565,8 @@ def _pimsim_map_payload(
             name="map.safety_margin_m",
         ),
         "obstacles": [*explicit_obstacles, *entity_obstacles],
-        "cost_zones": _optional_sequence(map_payload.get("cost_zones"), "map.cost_zones"),
-        "uncertainty_zones": _optional_sequence(
+        "cost_zones": _validated_map_zones(map_payload.get("cost_zones"), "map.cost_zones"),
+        "uncertainty_zones": _validated_map_zones(
             map_payload.get("uncertainty_zones"),
             "map.uncertainty_zones",
         ),
@@ -586,13 +610,59 @@ def _pimsim_entity_radius(entity: Mapping[str, Any], index: int) -> float:
         return 0.25
     if shape in {"sphere", "cylinder"}:
         radius = extents[0]
-    elif shape == "box" and len(extents) >= 3:
-        radius = 0.5 * math.hypot(extents[0], extents[2])
+    elif shape == "box" and len(extents) >= 2:
+        radius = 0.5 * math.hypot(extents[0], extents[1])
+    elif shape == "box":
+        radius = extents[0] * 0.5
     else:
         radius = max(extents) * 0.5
     if radius <= 0.0:
         raise WorldForgeError("PimSim Go2 export entity obstacle radius must be greater than 0.")
     return radius
+
+
+def _validated_map_obstacles(value: object, field_name: str) -> list[JSONDict]:
+    obstacles: list[JSONDict] = []
+    for index, obstacle in enumerate(_optional_sequence(value, field_name)):
+        obstacle_map = _require_mapping(obstacle, f"{field_name}[{index}]")
+        _require_fields(obstacle_map, ("x", "y", "radius_m"), f"{field_name}[{index}]")
+        radius = _positive_number(obstacle_map["radius_m"], name=f"{field_name}[{index}].radius_m")
+        validated: JSONDict = {
+            "x": _number(obstacle_map["x"], name=f"{field_name}[{index}].x"),
+            "y": _number(obstacle_map["y"], name=f"{field_name}[{index}].y"),
+            "radius_m": radius,
+        }
+        if "id" in obstacle_map:
+            validated["id"] = _non_empty_string(obstacle_map["id"], f"{field_name}[{index}].id")
+        obstacles.append(validated)
+    return obstacles
+
+
+def _validated_map_zones(value: object, field_name: str) -> list[JSONDict]:
+    zones: list[JSONDict] = []
+    for index, zone in enumerate(_optional_sequence(value, field_name)):
+        zone_map = _require_mapping(zone, f"{field_name}[{index}]")
+        _require_fields(zone_map, ("x", "y", "radius_m", "cost"), f"{field_name}[{index}]")
+        validated: JSONDict = {
+            "x": _number(zone_map["x"], name=f"{field_name}[{index}].x"),
+            "y": _number(zone_map["y"], name=f"{field_name}[{index}].y"),
+            "radius_m": _positive_number(
+                zone_map["radius_m"],
+                name=f"{field_name}[{index}].radius_m",
+            ),
+            "cost": _number(zone_map["cost"], name=f"{field_name}[{index}].cost"),
+        }
+        if "id" in zone_map:
+            validated["id"] = _non_empty_string(zone_map["id"], f"{field_name}[{index}].id")
+        zones.append(validated)
+    return zones
+
+
+def _positive_number(value: object, *, name: str) -> float:
+    number = _number(value, name=name)
+    if number <= 0.0:
+        raise WorldForgeError(f"{name} must be greater than 0.")
+    return number
 
 
 def _yaw_from_pimsim_pose(pose: Mapping[str, Any]) -> float:
