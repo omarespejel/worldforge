@@ -484,16 +484,22 @@ def _candidate_parameter_vector(
 ) -> list[list[float]]:
     if len(candidate) != horizon:
         raise WorldForgeError("Latent MPC candidate action plan length did not match horizon.")
-    return [
-        [
-            require_finite_number(
-                action.parameters[name],
-                name=f"Action parameter {name}",
+    vectors: list[list[float]] = []
+    for action_index, action in enumerate(candidate):
+        vector: list[float] = []
+        for name in parameter_names:
+            if name not in action.parameters:
+                raise WorldForgeError(
+                    f"Latent MPC action {action_index} is missing required parameter {name!r}."
+                )
+            vector.append(
+                require_finite_number(
+                    action.parameters[name],
+                    name=f"Action parameter {name}",
+                )
             )
-            for name in parameter_names
-        ]
-        for action in candidate
-    ]
+        vectors.append(vector)
+    return vectors
 
 
 __all__ = [

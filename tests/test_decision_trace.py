@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+import worldforge.decision_trace as decision_trace_module
 from worldforge.decision_trace import (
     DECISION_TRACE_ARTIFACT_KIND,
     DECISION_TRACE_SCHEMA_VERSION,
@@ -161,9 +162,52 @@ def test_validate_decision_trace_rejects_score_without_candidate() -> None:
         validate_decision_trace(trace)
 
 
+def test_validate_decision_trace_rejects_score_rank_drift() -> None:
+    trace = _valid_trace()
+    trace["scores"][0]["rank"] = 2
+    trace["scores"][1]["rank"] = 1
+
+    with pytest.raises(WorldForgeError, match=r"rank .* must match score ordering"):
+        validate_decision_trace(trace)
+
+
+def test_validate_decision_trace_rejects_selected_score_mismatch() -> None:
+    trace = _valid_trace()
+    trace["selected_action"]["score"] = 0.9
+
+    with pytest.raises(WorldForgeError, match=r"selected_action\.score"):
+        validate_decision_trace(trace)
+
+
+def test_validate_decision_trace_rejects_selected_margin_mismatch() -> None:
+    trace = _valid_trace()
+    trace["selected_action"]["score_margin"] = 0.1
+
+    with pytest.raises(WorldForgeError, match=r"selected_action\.score_margin"):
+        validate_decision_trace(trace)
+
+
 def test_validate_decision_trace_rejects_overclaimed_real_outcome() -> None:
     trace = _valid_trace()
     trace["claim_boundary"]["outcome_kind"] = "real_measured"
 
     with pytest.raises(WorldForgeError, match="outcome_kind must match"):
         validate_decision_trace(trace)
+
+
+def test_load_decision_trace_schema_wraps_resource_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    class MissingResource:
+        def joinpath(self, _name: str) -> MissingResource:
+            return self
+
+        def read_text(self) -> str:
+            raise FileNotFoundError("missing schema")
+
+    monkeypatch.setattr(
+        decision_trace_module.resources,
+        "files",
+        lambda _package: MissingResource(),
+    )
+
+    with pytest.raises(WorldForgeError, match=r"decision_trace\.v1\.schema\.json"):
+        load_decision_trace_schema()

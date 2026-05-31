@@ -8,6 +8,9 @@ from worldforge.demos.cross_embodiment_decision_evidence import (
     run_cross_embodiment_decision_evidence,
 )
 
+ROOT = Path(__file__).resolve().parents[1]
+COMMITTED_BUNDLE = ROOT / "examples" / "cross-embodiment-decision-evidence"
+
 
 def test_cross_embodiment_evidence_bundle_writes_valid_decision_traces(tmp_path: Path) -> None:
     summary = run_cross_embodiment_decision_evidence(output_dir=tmp_path)
@@ -33,3 +36,45 @@ def test_cross_embodiment_report_contains_kill_criterion(tmp_path: Path) -> None
     assert "DecisionTrace v1" in report
     assert "Kill Criterion" in report
     assert "stop pushing this integration and pivot" in report
+
+
+def test_checked_in_cross_embodiment_evidence_bundle_matches_generator(
+    tmp_path: Path,
+) -> None:
+    run_cross_embodiment_decision_evidence(output_dir=tmp_path)
+
+    for filename in (
+        "decision-trace-go2.json",
+        "decision-trace-pimsim.json",
+        "decision-trace-so101.json",
+    ):
+        generated = json.loads((tmp_path / filename).read_text(encoding="utf-8"))
+        committed = json.loads((COMMITTED_BUNDLE / filename).read_text(encoding="utf-8"))
+        assert generated == committed
+
+    assert (tmp_path / "cross-embodiment-report.md").read_text(encoding="utf-8") == (
+        COMMITTED_BUNDLE / "cross-embodiment-report.md"
+    ).read_text(encoding="utf-8")
+
+    generated_summary = _portable_summary(
+        json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
+    )
+    committed_summary = _portable_summary(
+        json.loads((COMMITTED_BUNDLE / "summary.json").read_text(encoding="utf-8"))
+    )
+    assert generated_summary == committed_summary
+
+
+def _portable_summary(summary: dict[str, object]) -> dict[str, object]:
+    portable = dict(summary)
+    traces = {}
+    raw_traces = portable["traces"]
+    assert isinstance(raw_traces, dict)
+    for name, raw_row in raw_traces.items():
+        assert isinstance(raw_row, dict)
+        row = dict(raw_row)
+        row["path"] = Path(str(row["path"])).name
+        traces[name] = row
+    portable["traces"] = traces
+    portable["report_path"] = Path(str(portable["report_path"])).name
+    return portable

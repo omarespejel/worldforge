@@ -579,12 +579,16 @@ def _normalized_score_records(
     baseline_score: float | None,
     score_margin: float,
 ) -> list[JSONDict]:
-    scores = [float(candidate[score_key]) for candidate in candidates]
+    ranked_candidates = sorted(
+        candidates,
+        key=lambda candidate: (float(candidate[score_key]), str(candidate[id_key])),
+    )
+    scores = [float(candidate[score_key]) for candidate in ranked_candidates]
     best_score = min(scores)
     worst_score = max(scores)
     span = max(worst_score - best_score, 0.0)
     records: list[JSONDict] = []
-    for index, candidate in enumerate(candidates):
+    for index, candidate in enumerate(ranked_candidates):
         score = float(candidate[score_key])
         desirability = 0.0 if span == 0.0 else (worst_score - score) / span
         regret = 0.0 if baseline_score is None else max(0.0, baseline_score - score)

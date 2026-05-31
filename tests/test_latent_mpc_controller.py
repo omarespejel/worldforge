@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from worldforge import (
+    Action,
     ActionPlanCandidateEncoder,
     ActionScoreResult,
     LatentMPCController,
@@ -13,6 +14,7 @@ from worldforge import (
     WorldForge,
     WorldForgeError,
 )
+from worldforge.control.mpc import _candidate_parameter_vector
 from worldforge.models import JSONDict
 from worldforge.providers.base import ProviderProfileSpec
 
@@ -217,6 +219,15 @@ def test_latent_mpc_controller_rejects_score_count_mismatch() -> None:
 
     with pytest.raises(WorldForgeError, match=r"returned 1 score\(s\) for 4 candidate"):
         controller.plan_step(observation_info={}, goal_info={})
+
+
+def test_candidate_parameter_vector_rejects_missing_parameter_with_worldforge_error() -> None:
+    with pytest.raises(WorldForgeError, match="missing required parameter 'y'"):
+        _candidate_parameter_vector(
+            [Action("velocity", {"x": 1.0})],
+            parameter_names=("x", "y"),
+            horizon=1,
+        )
 
 
 def test_planner_config_validates_cem_settings() -> None:

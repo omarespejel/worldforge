@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from hashlib import sha256
 from importlib import resources
 from typing import Any
@@ -56,13 +57,31 @@ _REQUIRED_TOP_LEVEL_FIELDS: tuple[str, ...] = (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class _ScoreTable:
+    candidate_ids: set[str]
+    score_by_candidate: dict[str, float]
+    lower_is_better: bool
+    ranked_candidate_ids: list[str]
+    ranked_scores: list[float]
+
+
 def load_decision_trace_schema() -> JSONDict:
     """Return the packaged DecisionTrace v1 JSON Schema."""
 
-    schema_text = (
-        resources.files("worldforge.schemas").joinpath(DECISION_TRACE_SCHEMA_RESOURCE).read_text()
-    )
-    decoded = json.loads(schema_text)
+    try:
+        schema_text = (
+            resources.files("worldforge.schemas")
+            .joinpath(DECISION_TRACE_SCHEMA_RESOURCE)
+            .read_text()
+        )
+        decoded = json.loads(schema_text)
+    except (FileNotFoundError, ModuleNotFoundError, OSError, json.JSONDecodeError) as exc:
+        raise WorldForgeError(
+            "Could not load DecisionTrace v1 JSON Schema resource "
+            f"{DECISION_TRACE_SCHEMA_RESOURCE!r} from package 'worldforge.schemas'. "
+            "Verify the installed wheel includes packaged schema data."
+        ) from exc
     return require_json_dict(decoded, name="DecisionTrace v1 JSON Schema", allow_empty=False)
 
 
@@ -93,11 +112,12 @@ def validate_decision_trace(payload: object, *, name: str = "DecisionTrace v1") 
     candidate_ids = _validate_candidate_actions(
         trace["candidate_actions"], name=f"{name}.candidate_actions"
     )
-    score_ids = _validate_scores(trace["scores"], name=f"{name}.scores")
-    _require_same_ids(candidate_ids, score_ids, name=f"{name}.scores")
+    score_table = _validate_scores(trace["scores"], name=f"{name}.scores")
+    _require_same_ids(candidate_ids, score_table.candidate_ids, name=f"{name}.scores")
     selected_id = _validate_selected_action(
         trace["selected_action"],
         candidate_ids=candidate_ids,
+        score_table=score_table,
         name=f"{name}.selected_action",
     )
     _validate_counterfactuals(
@@ -193,10 +213,13 @@ def _validate_candidate_actions(value: object, *, name: str) -> set[str]:
     return candidate_ids
 
 
-def _validate_scores(value: object, *, name: str) -> set[str]:
+def _validate_scores(value: object, *, name: str) -> _ScoreTable:
     scores = _require_non_empty_sequence(value, name=name)
     score_ids: set[str] = set()
+    score_by_candidate: dict[str, float] = {}
     seen_ranks: set[int] = set()
+    lower_is_better: bool | None = None
+    ranked_rows: list[tuple[str, float, int]] = []
     for index, score_value in enumerate(scores):
         score = require_json_dict(score_value, name=f"{name}[{index}]", allow_empty=False)
         _require_fields(
@@ -214,8 +237,16 @@ def _validate_scores(value: object, *, name: str) -> set[str]:
         if rank in seen_ranks:
             raise WorldForgeError(f"{name} contains duplicate rank {rank}.")
         seen_ranks.add(rank)
-        require_finite_number(score["score"], name=f"{name}[{index}].score")
-        require_bool(score["lower_is_better"], name=f"{name}[{index}].lower_is_better")
+        numeric_score = require_finite_number(score["score"], name=f"{name}[{index}].score")
+        score_by_candidate[candidate_id] = numeric_score
+        current_lower_is_better = require_bool(
+            score["lower_is_better"], name=f"{name}[{index}].lower_is_better"
+        )
+        if lower_is_better is None:
+            lower_is_better = current_lower_is_better
+        elif lower_is_better != current_lower_is_better:
+            raise WorldForgeError(f"{name} lower_is_better must be consistent for all scores.")
+        ranked_rows.append((candidate_id, numeric_score, rank))
         require_json_dict(score["components"], name=f"{name}[{index}].components")
         normalized = require_json_dict(
             score["normalized"], name=f"{name}[{index}].normalized", allow_empty=False
@@ -230,17 +261,62 @@ def _validate_scores(value: object, *, name: str) -> set[str]:
     expected_ranks = set(range(1, len(scores) + 1))
     if seen_ranks != expected_ranks:
         raise WorldForgeError(f"{name} ranks must be contiguous from 1 to {len(scores)}.")
-    return score_ids
+    if lower_is_better is None:  # pragma: no cover - guarded by non-empty sequence
+        raise WorldForgeError(f"{name} must not be empty.")
+    sorted_rows = sorted(
+        ranked_rows,
+        key=lambda row: (row[1] if lower_is_better else -row[1], row[0]),
+    )
+    ranked_candidate_ids = [candidate_id for candidate_id, _score, _rank in sorted_rows]
+    ranked_scores = [score_value for _candidate_id, score_value, _rank in sorted_rows]
+    expected_rank_by_candidate = {
+        candidate_id: index + 1 for index, candidate_id in enumerate(ranked_candidate_ids)
+    }
+    for candidate_id, _score, rank in ranked_rows:
+        expected_rank = expected_rank_by_candidate[candidate_id]
+        if rank != expected_rank:
+            raise WorldForgeError(
+                f"{name} rank for candidate_id '{candidate_id}' must match score ordering."
+            )
+    return _ScoreTable(
+        candidate_ids=score_ids,
+        score_by_candidate=score_by_candidate,
+        lower_is_better=lower_is_better,
+        ranked_candidate_ids=ranked_candidate_ids,
+        ranked_scores=ranked_scores,
+    )
 
 
-def _validate_selected_action(value: object, *, candidate_ids: set[str], name: str) -> str:
+def _validate_selected_action(
+    value: object,
+    *,
+    candidate_ids: set[str],
+    score_table: _ScoreTable,
+    name: str,
+) -> str:
     selected = require_json_dict(value, name=name, allow_empty=False)
     _require_fields(selected, ("candidate_id", "score", "score_margin", "why_selected"), name=name)
     candidate_id = require_non_empty_text(selected["candidate_id"], name=f"{name}.candidate_id")
     if candidate_id not in candidate_ids:
         raise WorldForgeError(f"{name}.candidate_id '{candidate_id}' is not a candidate action.")
-    require_finite_number(selected["score"], name=f"{name}.score")
-    require_finite_number(selected["score_margin"], name=f"{name}.score_margin")
+    if candidate_id != score_table.ranked_candidate_ids[0]:
+        raise WorldForgeError(f"{name}.candidate_id must reference the rank-1 score candidate.")
+    selected_score = require_finite_number(selected["score"], name=f"{name}.score")
+    _require_close(
+        selected_score,
+        score_table.score_by_candidate[candidate_id],
+        name=f"{name}.score",
+    )
+    score_margin = require_finite_number(selected["score_margin"], name=f"{name}.score_margin")
+    if len(score_table.ranked_scores) > 1:
+        expected_margin = _score_margin(
+            selected=score_table.ranked_scores[0],
+            runner_up=score_table.ranked_scores[1],
+            lower_is_better=score_table.lower_is_better,
+        )
+    else:
+        expected_margin = 0.0
+    _require_close(score_margin, expected_margin, name=f"{name}.score_margin", tolerance=1e-3)
     require_non_empty_text(selected["why_selected"], name=f"{name}.why_selected")
     return candidate_id
 
@@ -395,6 +471,21 @@ def _require_same_ids(first: set[str], second: set[str], *, name: str) -> None:
     if extra:
         pieces.append(f"unknown score id(s) {', '.join(extra)}")
     raise WorldForgeError(f"{name} candidate ids mismatch: {'; '.join(pieces)}.")
+
+
+def _score_margin(*, selected: float, runner_up: float, lower_is_better: bool) -> float:
+    return runner_up - selected if lower_is_better else selected - runner_up
+
+
+def _require_close(
+    actual: float,
+    expected: float,
+    *,
+    name: str,
+    tolerance: float = 1e-9,
+) -> None:
+    if abs(actual - expected) > tolerance:
+        raise WorldForgeError(f"{name} must match the scores table.")
 
 
 __all__ = [

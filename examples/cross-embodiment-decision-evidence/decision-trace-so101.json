@@ -383,6 +383,33 @@
   "schema_version": "worldforge.decision_trace.v1",
   "scores": [
     {
+      "candidate_id": "lift-place-stable",
+      "components": {
+        "candidate_id": "lift-place-stable",
+        "candidate_index": 1,
+        "clearance_penalty": 0.0,
+        "contact_risk": 0.07,
+        "grasp_penalty": 0.06,
+        "label": "Lift then place",
+        "occlusion_risk": 0.06,
+        "placement_error_m": 0.0,
+        "risk_flags": [],
+        "smoothness_cost": 0.1167,
+        "total_cost_display": 0.3453,
+        "total_cost_raw": 0.34533333333333344
+      },
+      "lower_is_better": true,
+      "normalized": {
+        "calibration_target": "analytic_cost_gap",
+        "desirability": 1.0,
+        "regret_vs_baseline": 1.197197,
+        "separability": 0.711629,
+        "value_signal": 0.875163
+      },
+      "rank": 1,
+      "score": 0.34533333333333344
+    },
+    {
       "candidate_id": "direct-side-push",
       "components": {
         "candidate_id": "direct-side-push",
@@ -410,35 +437,37 @@
         "separability": 0.711629,
         "value_signal": 0.338403
       },
-      "rank": 1,
+      "rank": 2,
       "score": 1.2756614906333081
     },
     {
-      "candidate_id": "lift-place-stable",
+      "candidate_id": "stop-relocalize",
       "components": {
-        "candidate_id": "lift-place-stable",
-        "candidate_index": 1,
+        "candidate_id": "stop-relocalize",
+        "candidate_index": 3,
         "clearance_penalty": 0.0,
-        "contact_risk": 0.07,
-        "grasp_penalty": 0.06,
-        "label": "Lift then place",
-        "occlusion_risk": 0.06,
-        "placement_error_m": 0.0,
-        "risk_flags": [],
-        "smoothness_cost": 0.1167,
-        "total_cost_display": 0.3453,
-        "total_cost_raw": 0.34533333333333344
+        "contact_risk": 0.02,
+        "grasp_penalty": 0.01,
+        "label": "Stop and relocalize",
+        "occlusion_risk": 0.01,
+        "placement_error_m": 0.2476,
+        "risk_flags": [
+          "misses_target_tolerance"
+        ],
+        "smoothness_cost": 0.0,
+        "total_cost_display": 1.5425,
+        "total_cost_raw": 1.5425302083767936
       },
       "lower_is_better": true,
       "normalized": {
         "calibration_target": "analytic_cost_gap",
-        "desirability": 1.0,
-        "regret_vs_baseline": 1.197197,
+        "desirability": 0.084209,
+        "regret_vs_baseline": 0.0,
         "separability": 0.711629,
-        "value_signal": 0.875163
+        "value_signal": 0.18443
       },
-      "rank": 2,
-      "score": 0.34533333333333344
+      "rank": 3,
+      "score": 1.5425302083767936
     },
     {
       "candidate_id": "overreach-place",
@@ -469,37 +498,8 @@
         "separability": 0.711629,
         "value_signal": 0.142326
       },
-      "rank": 3,
-      "score": 1.652614980554399
-    },
-    {
-      "candidate_id": "stop-relocalize",
-      "components": {
-        "candidate_id": "stop-relocalize",
-        "candidate_index": 3,
-        "clearance_penalty": 0.0,
-        "contact_risk": 0.02,
-        "grasp_penalty": 0.01,
-        "label": "Stop and relocalize",
-        "occlusion_risk": 0.01,
-        "placement_error_m": 0.2476,
-        "risk_flags": [
-          "misses_target_tolerance"
-        ],
-        "smoothness_cost": 0.0,
-        "total_cost_display": 1.5425,
-        "total_cost_raw": 1.5425302083767936
-      },
-      "lower_is_better": true,
-      "normalized": {
-        "calibration_target": "analytic_cost_gap",
-        "desirability": 0.084209,
-        "regret_vs_baseline": 0.0,
-        "separability": 0.711629,
-        "value_signal": 0.18443
-      },
       "rank": 4,
-      "score": 1.5425302083767936
+      "score": 1.652614980554399
     }
   ],
   "selected_action": {
