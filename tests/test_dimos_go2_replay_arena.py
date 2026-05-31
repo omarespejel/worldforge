@@ -308,6 +308,33 @@ def test_pimsim_go2_export_rejects_invalid_json_with_redacted_path(tmp_path: Pat
     assert "First triage step:" in message
 
 
+def test_pimsim_go2_export_rejects_non_utf8_with_redacted_path(tmp_path: Path) -> None:
+    invalid = tmp_path / "latin1-export.json"
+    invalid.write_bytes(b"\xff")
+
+    with pytest.raises(WorldForgeError) as exc_info:
+        load_pimsim_go2_export(invalid)
+
+    message = str(exc_info.value)
+    assert "not valid UTF-8 JSON text" in message
+    assert "<host-local-path>/latin1-export.json" in message
+    assert str(tmp_path) not in message
+
+
+def test_pimsim_go2_export_rejects_non_string_entity_metadata() -> None:
+    payload = load_pimsim_go2_export(DEFAULT_PIMSIM_EXPORT_PATH)
+    payload["entity_state_batch"]["entities"][1]["id"] = 123
+
+    with pytest.raises(WorldForgeError, match=r"entity_state_batch\.entities\[1\]\.id"):
+        pimsim_export_to_go2_replay_fixture(payload)
+
+    payload = load_pimsim_go2_export(DEFAULT_PIMSIM_EXPORT_PATH)
+    payload["entity_state_batch"]["entities"][1]["kind"] = ["static"]
+
+    with pytest.raises(WorldForgeError, match=r"entity_state_batch\.entities\[1\]\.kind"):
+        pimsim_export_to_go2_replay_fixture(payload)
+
+
 def test_pimsim_go2_export_rejects_malformed_map_entries(tmp_path: Path) -> None:
     payload = load_pimsim_go2_export(DEFAULT_PIMSIM_EXPORT_PATH)
     payload["map"]["obstacles"] = [{}]

@@ -486,6 +486,12 @@ def _read_pimsim_export_text(path: Path) -> str:
             safe_path,
             "pass --pimsim-export with a JSON export path or use the bundled default.",
         ) from exc
+    except OSError as exc:
+        raise _pimsim_export_file_error(
+            "PimSim export file metadata could not be read",
+            safe_path,
+            "check file permissions and retry with a readable JSON snapshot.",
+        ) from exc
     if size_bytes > _PIMSIM_EXPORT_MAX_BYTES:
         raise _pimsim_export_file_error(
             f"PimSim export exceeds maximum size {_PIMSIM_EXPORT_MAX_BYTES} bytes",
@@ -499,6 +505,18 @@ def _read_pimsim_export_text(path: Path) -> str:
             "PimSim export file was not found",
             safe_path,
             "pass --pimsim-export with a JSON export path or use the bundled default.",
+        ) from exc
+    except UnicodeDecodeError as exc:
+        raise _pimsim_export_file_error(
+            "PimSim export is not valid UTF-8 JSON text",
+            safe_path,
+            "re-export as UTF-8 encoded JSON and retry.",
+        ) from exc
+    except OSError as exc:
+        raise _pimsim_export_file_error(
+            "PimSim export file could not be read",
+            safe_path,
+            "check file permissions and retry with a readable JSON snapshot.",
         ) from exc
 
 
@@ -593,7 +611,11 @@ def _pimsim_entity_by_id(entities: object, entity_id: str) -> JSONDict:
     for index, entity in enumerate(_require_sequence(entities, "entity_state_batch.entities")):
         entity_map = _require_mapping(entity, f"entity_state_batch.entities[{index}]")
         _require_fields(entity_map, ("id", "pose"), f"entity_state_batch.entities[{index}]")
-        if str(entity_map["id"]) == entity_id:
+        candidate_entity_id = _non_empty_string(
+            entity_map["id"],
+            f"entity_state_batch.entities[{index}].id",
+        )
+        if candidate_entity_id == entity_id:
             pose = _require_mapping(
                 entity_map["pose"],
                 f"entity_state_batch.entities[{index}].pose",
@@ -635,10 +657,20 @@ def _pimsim_entity_obstacles(entities: object, robot_entity_id: str) -> list[JSO
     obstacles: list[JSONDict] = []
     for index, entity in enumerate(_require_sequence(entities, "entity_state_batch.entities")):
         entity_map = _require_mapping(entity, f"entity_state_batch.entities[{index}]")
-        entity_id = str(entity_map.get("id", ""))
+        entity_id = _non_empty_string(
+            entity_map.get("id"),
+            f"entity_state_batch.entities[{index}].id",
+        )
         if entity_id == robot_entity_id:
             continue
-        kind = str(entity_map.get("kind", "static"))
+        kind = (
+            _non_empty_string(
+                entity_map["kind"],
+                f"entity_state_batch.entities[{index}].kind",
+            )
+            if "kind" in entity_map
+            else "static"
+        )
         if kind == "kinematic":
             continue
         pose = _require_mapping(
