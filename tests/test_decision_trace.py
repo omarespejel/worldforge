@@ -171,6 +171,44 @@ def test_validate_decision_trace_rejects_score_rank_drift() -> None:
         validate_decision_trace(trace)
 
 
+def test_validate_decision_trace_accepts_tied_best_selected_by_provider_order() -> None:
+    trace = _valid_trace()
+    trace["candidate_actions"][0]["candidate_id"] = "z_provider_selected"
+    trace["candidate_actions"][1]["candidate_id"] = "a_lexicographic_peer"
+    trace["scores"][0]["candidate_id"] = "z_provider_selected"
+    trace["scores"][0]["rank"] = 2
+    trace["scores"][0]["score"] = 0.2
+    trace["scores"][1]["candidate_id"] = "a_lexicographic_peer"
+    trace["scores"][1]["rank"] = 1
+    trace["scores"][1]["score"] = 0.2
+    trace["selected_action"]["candidate_id"] = "z_provider_selected"
+    trace["selected_action"]["score"] = 0.2
+    trace["selected_action"]["score_margin"] = 0.0
+    trace["counterfactuals"][0]["candidate_id"] = "a_lexicographic_peer"
+    trace["counterfactuals"][0]["score"] = 0.2
+    trace["counterfactuals"][0]["delta_vs_selected"] = 0.0
+    trace["baseline"]["candidate_id"] = "a_lexicographic_peer"
+    trace["baseline"]["score"] = 0.2
+    trace["baseline"]["regret_vs_selected"] = 0.0
+
+    validated = validate_decision_trace(trace)
+
+    assert validated["selected_action"]["candidate_id"] == "z_provider_selected"
+
+
+def test_validate_decision_trace_rejects_selected_non_best_tie_policy_escape() -> None:
+    trace = _valid_trace()
+    trace["selected_action"]["candidate_id"] = "stop"
+    trace["selected_action"]["score"] = 0.7
+    trace["selected_action"]["score_margin"] = 0.0
+    trace["counterfactuals"][0]["candidate_id"] = "forward"
+    trace["counterfactuals"][0]["score"] = 0.2
+    trace["counterfactuals"][0]["delta_vs_selected"] = -0.5
+
+    with pytest.raises(WorldForgeError, match="best-score candidate"):
+        validate_decision_trace(trace)
+
+
 def test_validate_decision_trace_rejects_selected_score_mismatch() -> None:
     trace = _valid_trace()
     trace["selected_action"]["score"] = 0.9

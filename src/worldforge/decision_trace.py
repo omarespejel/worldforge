@@ -13,6 +13,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from importlib import resources
+from itertools import pairwise
 from typing import Any
 
 from worldforge.models import (
@@ -263,20 +264,15 @@ def _validate_scores(value: object, *, name: str) -> _ScoreTable:
         raise WorldForgeError(f"{name} ranks must be contiguous from 1 to {len(scores)}.")
     if lower_is_better is None:  # pragma: no cover - guarded by non-empty sequence
         raise WorldForgeError(f"{name} must not be empty.")
-    sorted_rows = sorted(
-        ranked_rows,
-        key=lambda row: (row[1] if lower_is_better else -row[1], row[0]),
-    )
+    sorted_rows = sorted(ranked_rows, key=lambda row: row[2])
     ranked_candidate_ids = [candidate_id for candidate_id, _score, _rank in sorted_rows]
     ranked_scores = [score_value for _candidate_id, score_value, _rank in sorted_rows]
-    expected_rank_by_candidate = {
-        candidate_id: index + 1 for index, candidate_id in enumerate(ranked_candidate_ids)
-    }
-    for candidate_id, _score, rank in ranked_rows:
-        expected_rank = expected_rank_by_candidate[candidate_id]
-        if rank != expected_rank:
+    for previous, current in pairwise(sorted_rows):
+        previous_score = previous[1]
+        current_score = current[1]
+        if _score_is_worse(previous_score, current_score, lower_is_better=lower_is_better):
             raise WorldForgeError(
-                f"{name} rank for candidate_id '{candidate_id}' must match score ordering."
+                f"{name} rank for candidate_id '{previous[0]}' must match score ordering."
             )
     return _ScoreTable(
         candidate_ids=score_ids,
@@ -299,19 +295,29 @@ def _validate_selected_action(
     candidate_id = require_non_empty_text(selected["candidate_id"], name=f"{name}.candidate_id")
     if candidate_id not in candidate_ids:
         raise WorldForgeError(f"{name}.candidate_id '{candidate_id}' is not a candidate action.")
-    if candidate_id != score_table.ranked_candidate_ids[0]:
-        raise WorldForgeError(f"{name}.candidate_id must reference the rank-1 score candidate.")
     selected_score = require_finite_number(selected["score"], name=f"{name}.score")
     _require_close(
         selected_score,
         score_table.score_by_candidate[candidate_id],
         name=f"{name}.score",
     )
+    if not _score_is_best(
+        selected_score,
+        score_table.score_by_candidate.values(),
+        lower_is_better=score_table.lower_is_better,
+    ):
+        raise WorldForgeError(f"{name}.candidate_id must reference a best-score candidate.")
     score_margin = require_finite_number(selected["score_margin"], name=f"{name}.score_margin")
-    if len(score_table.ranked_scores) > 1:
+    other_scores = [
+        score
+        for other_candidate_id, score in score_table.score_by_candidate.items()
+        if other_candidate_id != candidate_id
+    ]
+    if other_scores:
+        runner_up = min(other_scores) if score_table.lower_is_better else max(other_scores)
         expected_margin = _score_margin(
-            selected=score_table.ranked_scores[0],
-            runner_up=score_table.ranked_scores[1],
+            selected=selected_score,
+            runner_up=runner_up,
             lower_is_better=score_table.lower_is_better,
         )
     else:
@@ -477,6 +483,17 @@ def _score_margin(*, selected: float, runner_up: float, lower_is_better: bool) -
     return runner_up - selected if lower_is_better else selected - runner_up
 
 
+def _score_is_worse(left: float, right: float, *, lower_is_better: bool) -> bool:
+    if lower_is_better:
+        return left > right and not _numbers_close(left, right)
+    return left < right and not _numbers_close(left, right)
+
+
+def _score_is_best(score_value: float, scores: Iterable[float], *, lower_is_better: bool) -> bool:
+    best = min(scores) if lower_is_better else max(scores)
+    return _numbers_close(score_value, best)
+
+
 def _require_close(
     actual: float,
     expected: float,
@@ -484,8 +501,12 @@ def _require_close(
     name: str,
     tolerance: float = 1e-9,
 ) -> None:
-    if abs(actual - expected) > tolerance:
+    if not _numbers_close(actual, expected, tolerance=tolerance):
         raise WorldForgeError(f"{name} must match the scores table.")
+
+
+def _numbers_close(actual: float, expected: float, *, tolerance: float = 1e-9) -> bool:
+    return abs(actual - expected) <= tolerance
 
 
 __all__ = [
