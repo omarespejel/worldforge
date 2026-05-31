@@ -82,7 +82,6 @@ def test_so101_replay_trace_demo_selects_and_explains_best_candidate(tmp_path: P
     }
     assert all(item["delta_vs_selected"] > 0 for item in trace["counterfactuals"])
     assert trace["baseline"]["candidate_id"] == "direct-side-push"
-    assert trace["baseline"]["fallback_used"] is False
     assert trace["baseline"]["regret_vs_selected"] > 0
     assert "score_margin_to_runner_up" not in trace["selected_action"]
     assert trace["predicted_outcome"]["kind"] == "replay_prediction"
@@ -103,13 +102,19 @@ def test_so101_replay_trace_demo_selects_and_explains_best_candidate(tmp_path: P
     assert trace["planner_diagnostics"]["score_provider"] == "so101-replay-score"
     assert trace["reproducibility"]["input_digest"].startswith("sha256:")
     assert trace["reproducibility"]["seed"] == 0
-    assert trace["claim_boundary"] == {
+    expected_limitations = [
+        "Replay fixture only; no real SO-101 controller, calibration, camera, or lab safety loop.",
+        "Scores are deterministic hand-costs, not learned latent world-model predictions.",
+        "Outcome is analytic over the mock replay final pose, not sim-measured or real-measured.",
+    ]
+    claim_boundary = trace["claim_boundary"]
+    assert claim_boundary == {
         "score_kind": "hand_cost",
         "outcome_kind": "analytic",
         "hardware_executed": False,
         "learned_model_used": False,
         "safety_controller": None,
-        "limitations": trace["claim_boundary"]["limitations"],
+        "limitations": expected_limitations,
         "dataset_reference": trace["dataset_reference"],
     }
     assert summary["final_object_position"] == {"x": 0.52, "y": 0.08, "z": 0.03}
@@ -129,6 +134,46 @@ def test_so101_replay_trace_default_json_summary_is_deterministic() -> None:
         "saved_world_id": "<temporary-world-id>",
         "saved_worlds": ["<temporary-world-id>"],
     }
+
+
+def test_so101_replay_trace_baseline_candidate_is_required() -> None:
+    candidates = [
+        candidate
+        for candidate in so101_replay_trace._candidate_records()
+        if candidate["candidate_id"] != "direct-side-push"
+    ]
+
+    with pytest.raises(WorldForgeError, match="direct-side-push"):
+        so101_replay_trace._baseline(
+            candidates=candidates,
+            scores=[1.0 for _candidate in candidates],
+            selected_score=0.5,
+        )
+
+
+def test_so101_replay_trace_digest_uses_typed_json_errors() -> None:
+    with pytest.raises(WorldForgeError, match="JSON serializable"):
+        so101_replay_trace._json_digest({"bad": float("nan")})
+
+
+def test_so101_replay_trace_outcome_failure_labels_are_specific() -> None:
+    selected = dict(so101_replay_trace._candidate_records()[1])
+    target_pose = so101_replay_trace.SO101_TARGET_POSITION.to_dict()
+
+    high_contact = dict(selected, contact_risk=0.25)
+    assert so101_replay_trace._outcome(target_pose, selected=high_contact)["success_label"] == (
+        "high_contact_risk"
+    )
+
+    low_grasp = dict(selected, predicted_grasp_confidence=0.75)
+    assert so101_replay_trace._outcome(target_pose, selected=low_grasp)["success_label"] == (
+        "low_grasp_confidence"
+    )
+
+    missed_target = {"x": 0.8, "y": 0.2, "z": 0.03}
+    assert so101_replay_trace._outcome(missed_target, selected=selected)["success_label"] == (
+        "not_within_target_tolerance"
+    )
 
 
 def test_so101_replay_trace_default_state_dir_is_cleaned_up(

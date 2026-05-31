@@ -31,6 +31,7 @@ from worldforge.models import (
     ProviderHealth,
     WorldForgeError,
     WorldStateError,
+    dump_json,
 )
 from worldforge.providers import BaseProvider, ProviderProfileSpec
 
@@ -746,27 +747,24 @@ def _baseline(
     scores: list[float],
     selected_score: float,
 ) -> JSONDict:
-    baseline_index: int | None = None
-    for index, candidate in enumerate(candidates):
-        if str(candidate.get("candidate_id", "")) == "direct-side-push":
-            baseline_index = index
-            break
-    fallback_used = baseline_index is None
+    baseline_index = next(
+        (
+            index
+            for index, candidate in enumerate(candidates)
+            if str(candidate.get("candidate_id", "")) == "direct-side-push"
+        ),
+        None,
+    )
     if baseline_index is None:
-        baseline_index = 0
+        raise WorldForgeError(
+            "so101-replay-trace requires a 'direct-side-push' baseline candidate."
+        )
     return {
         "candidate_id": str(candidates[baseline_index]["candidate_id"]),
-        "baseline_kind": (
-            "fallback_first_candidate" if fallback_used else "naive_direct_side_push"
-        ),
-        "fallback_used": fallback_used,
+        "baseline_kind": "naive_direct_side_push",
         "score": float(scores[baseline_index]),
         "regret_vs_selected": round(float(scores[baseline_index]) - selected_score, 4),
-        "description": (
-            "Fallback first-candidate baseline; intended direct-side-push baseline was missing."
-            if fallback_used
-            else "Naive direct motion baseline used to show value over a hardcoded action."
-        ),
+        "description": "Naive direct motion baseline used to show value over a hardcoded action.",
     }
 
 
@@ -797,12 +795,7 @@ def _reproducibility(
 
 
 def _json_digest(payload: JSONDict) -> str:
-    encoded = json.dumps(
-        payload,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
+    encoded = dump_json(payload).encode("utf-8")
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
@@ -857,7 +850,11 @@ def _outcome(final_position: JSONDict, *, selected: JSONDict) -> JSONDict:
         and contact_risk < 0.2
         and grasp_confidence >= 0.85
     )
-    success_label = "placed_at_target" if success else "not_within_target_tolerance"
+    success_label = _success_label(
+        placement_error_m=placement_error_m,
+        contact_risk=contact_risk,
+        grasp_confidence=grasp_confidence,
+    )
     return {
         "kind": "analytic",
         "status": "success" if success else "failure",
@@ -875,6 +872,21 @@ def _outcome(final_position: JSONDict, *, selected: JSONDict) -> JSONDict:
         "success": success,
         "success_label": success_label,
     }
+
+
+def _success_label(
+    *,
+    placement_error_m: float,
+    contact_risk: float,
+    grasp_confidence: float,
+) -> str:
+    if placement_error_m > SO101_GOAL_TOLERANCE_M:
+        return "not_within_target_tolerance"
+    if contact_risk >= 0.2:
+        return "high_contact_risk"
+    if grasp_confidence < 0.85:
+        return "low_grasp_confidence"
+    return "placed_at_target"
 
 
 def _counterfactuals(
