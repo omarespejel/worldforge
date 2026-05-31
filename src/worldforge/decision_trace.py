@@ -13,6 +13,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from importlib import resources
+from itertools import pairwise
 from typing import Any
 
 from worldforge.models import (
@@ -308,19 +309,16 @@ def _validate_score_ranks_monotonic(
     lower_is_better: bool,
     name: str,
 ) -> None:
-    for candidate_id, score_value, rank in ranked_rows:
-        for other_id, other_score, other_rank in ranked_rows:
-            if candidate_id == other_id or _scores_equal(score_value, other_score):
-                continue
-            if _score_is_better(score_value, other_score, lower_is_better=lower_is_better):
-                if rank >= other_rank:
-                    raise WorldForgeError(
-                        f"{name} rank for candidate_id '{candidate_id}' must match score ordering."
-                    )
-            elif other_rank >= rank:
-                raise WorldForgeError(
-                    f"{name} rank for candidate_id '{other_id}' must match score ordering."
-                )
+    rank_sorted_rows = sorted(ranked_rows, key=lambda row: row[2])
+    for previous, current in pairwise(rank_sorted_rows):
+        previous_score = previous[1]
+        current_id, current_score, _current_rank = current
+        if _scores_equal(previous_score, current_score):
+            continue
+        if _score_is_better(current_score, previous_score, lower_is_better=lower_is_better):
+            raise WorldForgeError(
+                f"{name} rank for candidate_id '{current_id}' must match score ordering."
+            )
 
 
 def _validate_selected_action(
@@ -337,6 +335,8 @@ def _validate_selected_action(
         raise WorldForgeError(f"{name}.candidate_id '{candidate_id}' is not a candidate action.")
     if candidate_id not in score_table.best_candidate_ids:
         raise WorldForgeError(f"{name}.candidate_id must reference a best-scoring candidate.")
+    if candidate_id != score_table.ranked_candidate_ids[0]:
+        raise WorldForgeError(f"{name}.candidate_id must reference the rank-1 score candidate.")
     selected_score = require_finite_number(selected["score"], name=f"{name}.score")
     _require_close(
         selected_score,
