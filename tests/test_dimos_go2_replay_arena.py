@@ -184,6 +184,25 @@ def test_pimsim_go2_export_converts_to_replay_fixture() -> None:
     ]
 
 
+def test_pimsim_go2_export_normalizes_optional_identifiers() -> None:
+    payload = load_pimsim_go2_export(DEFAULT_PIMSIM_EXPORT_PATH)
+    payload["frame_id"] = None
+    payload["scenario_id"] = None
+
+    fixture = pimsim_export_to_go2_replay_fixture(payload)
+
+    assert fixture["observation"]["frame_id"] == payload["episode_id"]
+    assert fixture["scenario_id"] == payload["episode_id"]
+    assert fixture["observation"]["frame_id"] != "None"
+    assert fixture["scenario_id"] != "None"
+
+    payload = load_pimsim_go2_export(DEFAULT_PIMSIM_EXPORT_PATH)
+    payload["frame_id"] = " "
+
+    with pytest.raises(WorldForgeError, match="frame_id must be a non-empty string"):
+        pimsim_export_to_go2_replay_fixture(payload)
+
+
 def test_pimsim_go2_export_runs_through_replay_arena(tmp_path: Path) -> None:
     result = run_dimos_go2_pimsim_export(DEFAULT_PIMSIM_EXPORT_PATH, tmp_path)
     trace = result.trace
@@ -275,6 +294,20 @@ def test_pimsim_go2_export_rejects_missing_file_with_redacted_path(tmp_path: Pat
     assert "First triage step:" in message
 
 
+def test_pimsim_go2_export_rejects_invalid_json_with_redacted_path(tmp_path: Path) -> None:
+    invalid = tmp_path / "invalid-export.json"
+    invalid.write_text("{", encoding="utf-8")
+
+    with pytest.raises(WorldForgeError) as exc_info:
+        load_pimsim_go2_export(invalid)
+
+    message = str(exc_info.value)
+    assert "Go2 PimSim export adapter:" in message
+    assert "<host-local-path>/invalid-export.json" in message
+    assert str(tmp_path) not in message
+    assert "First triage step:" in message
+
+
 def test_pimsim_go2_export_rejects_malformed_map_entries(tmp_path: Path) -> None:
     payload = load_pimsim_go2_export(DEFAULT_PIMSIM_EXPORT_PATH)
     payload["map"]["obstacles"] = [{}]
@@ -292,6 +325,12 @@ def test_pimsim_go2_export_rejects_malformed_map_entries(tmp_path: Path) -> None
     payload["map"]["uncertainty_zones"] = [{"x": 0.0, "y": 0.0, "radius_m": 1.0, "cost": -0.1}]
 
     with pytest.raises(WorldForgeError, match=r"map\.uncertainty_zones\[0\]\.cost"):
+        pimsim_export_to_go2_replay_fixture(payload)
+
+    payload = load_pimsim_go2_export(DEFAULT_PIMSIM_EXPORT_PATH)
+    payload["map"]["safety_margin_m"] = -0.1
+
+    with pytest.raises(WorldForgeError, match=r"map\.safety_margin_m"):
         pimsim_export_to_go2_replay_fixture(payload)
 
 
