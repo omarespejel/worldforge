@@ -39,10 +39,11 @@ releases may still include breaking changes when the public API needs to tighten
   candidate-level analytic outcomes, reproducibility, and explicit claim boundaries.
 - Added host-owned SO-101 latent scorer handoff scripts. `scripts/build_so101_latent_cache_sidecar.py`
   aligns an existing DINOv2 latent cache with LeRobot frame/episode metadata, while
-  `scripts/train_so101_latent_scorer.py` trains MLP scorer artifacts for independent referee
-  evaluation without adding numpy, pyarrow, torch, transformers, or LeRobot to the base package.
-  The `SO101LatentScoreProvider` demo wrapper loads those local artifacts lazily and marks results
-  as learned-latent scorer output, not as an independent verdict.
+  `scripts/train_so101_latent_scorer.py` trains latent-dynamics and goal-conditioned cost MLP
+  scorer artifacts for independent referee evaluation without adding numpy, pyarrow, torch,
+  transformers, or LeRobot to the base package. The `SO101LatentScoreProvider` demo wrapper loads
+  those local artifacts lazily and marks results as learned-latent scorer output, not as an
+  independent verdict.
 - Added a non-interactive TensorBoard launcher CLI:
   `worldforge-open-tensorboard --logdir <path> [--probe] [--no-browser]
   [--keep-running] [--ready-timeout 60] [--poll-interval 0.5]`. Wraps the

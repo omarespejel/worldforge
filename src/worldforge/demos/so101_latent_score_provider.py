@@ -58,6 +58,7 @@ class SO101LatentScoreProvider:
 
     def score_actions(self, *, info: JSONDict, action_candidates: object) -> ActionScoreResult:
         candidates = _require_candidate_list(action_candidates)
+        target = str(self._model_meta.get("target", "future_latent_residual"))
         current_latent = self._latent_from_info(
             info,
             inline_key="current_latent",
@@ -89,6 +90,8 @@ class SO101LatentScoreProvider:
                 "model_name": self._model_name,
                 "variant": self._model_meta["variant"],
                 "horizon": self._model_meta["horizon"],
+                "target": target,
+                "target_scale": self._model_meta.get("target_scale", "unknown"),
                 "candidate_count": len(candidates),
                 "referee_boundary": (
                     "Scorer output only; independent held-out referee decides whether this "
@@ -106,6 +109,11 @@ class SO101LatentScoreProvider:
     ) -> list[float]:
         """Return the provider's normalized predicted future latent."""
 
+        target = str(self._model_meta.get("target", "future_latent_residual"))
+        if target != "future_latent_residual":
+            raise WorldForgeError(
+                "SO-101 predict_latent is only available for future_latent_residual models."
+            )
         current = _required_vector(current_latent, name="current_latent")
         delta = _required_vector(action_delta, name="action_delta")
         state = _optional_vector(current_state, name="current_state")
@@ -124,6 +132,14 @@ class SO101LatentScoreProvider:
         current_state: Any | None,
     ) -> float:
         action_delta = _candidate_action_delta(candidate, current_state=current_state)
+        target = str(self._model_meta.get("target", "future_latent_residual"))
+        if target == "goal_conditioned_cost":
+            return self._predict_goal_cost(
+                current_latent=current_latent,
+                goal_latent=goal_latent,
+                action_delta=action_delta,
+                current_state=current_state,
+            )
         predicted = self._predict(
             current_latent=current_latent,
             action_delta=action_delta,
@@ -156,6 +172,34 @@ class SO101LatentScoreProvider:
         if norm > 1e-9:
             predicted = predicted / norm
         return predicted.astype(self._np.float32)
+
+    def _predict_goal_cost(
+        self,
+        *,
+        current_latent: Any,
+        goal_latent: Any,
+        action_delta: Any,
+        current_state: Any | None,
+    ) -> float:
+        variant = str(self._model_meta["variant"])
+        parts = [current_latent, goal_latent, action_delta]
+        if variant == "goal_proprio_score_mlp":
+            if current_state is None:
+                raise WorldForgeError(
+                    "SO-101 goal_proprio_score_mlp scorer requires info.current_state."
+                )
+            parts.append(current_state)
+        x = self._np.concatenate(parts).astype(self._np.float32)
+        prediction = self._forward(x)
+        return float(prediction.reshape(-1)[0])
+
+    def _forward(self, x: Any) -> Any:
+        prefix = f"{self._model_name}__"
+        x_norm = (x - self._weights[prefix + "x_mean"]) / self._weights[prefix + "x_scale"]
+        hidden = self._np.tanh(x_norm @ self._weights[prefix + "w1"] + self._weights[prefix + "b1"])
+        return (hidden @ self._weights[prefix + "w2"] + self._weights[prefix + "b2"]).astype(
+            self._np.float32
+        )
 
     def _latent_from_info(self, info: JSONDict, *, inline_key: str, frame_key: str) -> Any:
         if inline_key in info:

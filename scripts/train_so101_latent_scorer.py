@@ -23,6 +23,11 @@ DEFAULT_CACHE_PATH = Path(
 )
 DEFAULT_SIDECAR_PATH = DEFAULT_CACHE_PATH.with_name("latent_cache_meta.json")
 DEFAULT_OUTPUT_DIR = Path(".worldforge/so101-latent-scorer")
+GRIPPER_INDEX = 5
+DECOY_NAMES = ("no_motion", "reverse", "scale_half", "overshoot", "random_other", "jitter")
+LATENT_DYNAMICS_VARIANTS = {"vision_mlp", "vision_proprio_mlp"}
+GOAL_CONDITIONED_SCORE_VARIANTS = {"goal_score_mlp", "goal_proprio_score_mlp"}
+SUPPORTED_VARIANTS = LATENT_DYNAMICS_VARIANTS | GOAL_CONDITIONED_SCORE_VARIANTS
 
 
 @dataclass(frozen=True)
@@ -87,11 +92,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(f"WROTE {result['weights_path']}")
     print(f"WROTE {result['metadata_path']}")
-    print(
-        "selected="
-        f"{result['selected_model']} "
-        f"val_cosine={result['models'][result['selected_model']]['validation']['mean_cosine']:.6f}"
-    )
+    selected_metrics = result["models"][result["selected_model"]]["validation"]
+    if "mean_cosine" in selected_metrics:
+        summary_metric = f"val_cosine={selected_metrics['mean_cosine']:.6f}"
+    else:
+        summary_metric = (
+            f"val_mse={selected_metrics['mse']:.6f} "
+            f"val_corr={selected_metrics['target_correlation']:.6f}"
+        )
+    print(f"selected={result['selected_model']} {summary_metric}")
     return 0
 
 
@@ -133,6 +142,7 @@ def train_so101_latent_scorers(
                 episodes=splits.train,
                 horizon=horizon,
                 variant=variant,
+                seed=config.seed,
                 np=np,
             )
             validation = _build_pairs(
@@ -141,6 +151,7 @@ def train_so101_latent_scorers(
                 episodes=splits.validation,
                 horizon=horizon,
                 variant=variant,
+                seed=config.seed,
                 np=np,
             )
             test = _build_pairs(
@@ -149,6 +160,7 @@ def train_so101_latent_scorers(
                 episodes=splits.test,
                 horizon=horizon,
                 variant=variant,
+                seed=config.seed,
                 np=np,
             )
             model = _fit_mlp(train, config=config, rng=rng, np=np)
@@ -163,15 +175,13 @@ def train_so101_latent_scorers(
                 "horizon": horizon,
                 "input_dim": int(model["x_mean"].shape[0]),
                 "hidden_dim": config.hidden_dim,
-                "output_dim": int(latents.shape[1]),
-                "target": "future_latent_residual",
+                "output_dim": int(model["b2"].shape[0]),
+                "target": _variant_target(variant),
+                "target_scale": _variant_target_scale(variant),
                 "activation": "tanh",
                 **metrics,
             }
-            score_key = (
-                float(metrics["validation"]["mean_cosine"]),
-                -float(metrics["validation"]["mse"]),
-            )
+            score_key = _selection_key(models[name])
             if selected_key is None or score_key > selected_key:
                 selected_key = score_key
                 selected_name = name
@@ -206,7 +216,11 @@ def train_so101_latent_scorers(
             "batch_size": config.batch_size,
             "learning_rate": config.learning_rate,
             "weight_decay": config.weight_decay,
-            "selection": "highest validation mean_cosine, then lowest validation mse",
+            "selection": (
+                "Target-aware validation selection: latent-dynamics models use highest "
+                "mean_cosine then lowest mse; goal-conditioned cost models use lowest mse "
+                "then highest target_correlation."
+            ),
             "referee_boundary": (
                 "This artifact is a scorer handoff only. The independent held-out referee "
                 "must decide whether it beats baselines and chance."
@@ -229,6 +243,35 @@ def train_so101_latent_scorers(
 
 
 def _build_pairs(
+    *,
+    arrays: DatasetArrays,
+    latents: Any,
+    episodes: list[int],
+    horizon: int,
+    variant: str,
+    seed: int,
+    np: Any,
+) -> dict[str, Any]:
+    if variant in GOAL_CONDITIONED_SCORE_VARIANTS:
+        return _build_goal_conditioned_score_pairs(
+            arrays=arrays,
+            latents=latents,
+            episodes=episodes,
+            variant=variant,
+            seed=seed,
+            np=np,
+        )
+    return _build_latent_dynamics_pairs(
+        arrays=arrays,
+        latents=latents,
+        episodes=episodes,
+        horizon=horizon,
+        variant=variant,
+        np=np,
+    )
+
+
+def _build_latent_dynamics_pairs(
     *,
     arrays: DatasetArrays,
     latents: Any,
@@ -260,11 +303,77 @@ def _build_pairs(
     current_latents = latents[current].astype(np.float32)
     y = (latents[future] - current_latents).astype(np.float32)
     return {
+        "target_kind": "future_latent_residual",
         "x": x,
         "y": y,
         "current_latents": current_latents,
         "future_latents": latents[future].astype(np.float32),
     }
+
+
+def _build_goal_conditioned_score_pairs(
+    *,
+    arrays: DatasetArrays,
+    latents: Any,
+    episodes: list[int],
+    variant: str,
+    seed: int,
+    np: Any,
+) -> dict[str, Any]:
+    rng = np.random.default_rng(seed)
+    xs: list[Any] = []
+    ys: list[list[float]] = []
+    for episode in episodes:
+        rows = np.flatnonzero(arrays.episode_indices == episode)
+        if rows.size < 4:
+            continue
+        episode_states = arrays.states[rows]
+        episode_actions = arrays.actions[rows]
+        subgoals = _subgoal_frames(episode_states, np=np)
+        for local_t in range(len(rows) - 1):
+            future_subgoals = [index for index in subgoals if index > local_t]
+            if not future_subgoals:
+                continue
+            local_goal = future_subgoals[0]
+            global_t = int(rows[local_t])
+            global_goal = int(rows[local_goal])
+            current_state = episode_states[local_t]
+            goal_state = episode_states[local_goal]
+            demonstrated = episode_actions[local_t]
+            delta = demonstrated - current_state
+            random_other = episode_actions[int(rng.integers(0, len(episode_actions)))]
+            candidates = {
+                "demonstrated": demonstrated,
+                "no_motion": current_state.copy(),
+                "reverse": current_state - delta,
+                "scale_half": current_state + 0.5 * delta,
+                "overshoot": current_state + 1.5 * delta,
+                "random_other": random_other,
+                "jitter": demonstrated + rng.normal(0.0, 8.0, size=demonstrated.shape),
+            }
+            for candidate in candidates.values():
+                action_delta = candidate - current_state
+                parts = [latents[global_t], latents[global_goal], action_delta]
+                if variant == "goal_proprio_score_mlp":
+                    parts.append(current_state)
+                xs.append(np.concatenate(parts))
+                ys.append([float(np.linalg.norm(candidate - goal_state))])
+    if not xs:
+        raise ValueError(f"No goal-conditioned score pairs available for episodes={episodes!r}")
+    return {
+        "target_kind": "goal_conditioned_cost",
+        "x": np.asarray(xs, dtype=np.float32),
+        "y": np.asarray(ys, dtype=np.float32),
+    }
+
+
+def _subgoal_frames(states: Any, *, np: Any) -> list[int]:
+    gripper = states[:, GRIPPER_INDEX]
+    deltas = np.diff(gripper)
+    if len(deltas) < 2:
+        return [len(gripper) - 1]
+    transition_indices = [int(index) + 1 for index in np.argsort(-np.abs(deltas))[:2]]
+    return sorted({*transition_indices, len(gripper) - 1})
 
 
 def _fit_mlp(data: dict[str, Any], *, config: TrainingConfig, rng: Any, np: Any) -> dict[str, Any]:
@@ -355,6 +464,8 @@ def _adam_update(
 
 
 def _evaluate_model(model: dict[str, Any], data: dict[str, Any], *, np: Any) -> dict[str, Any]:
+    if data["target_kind"] == "goal_conditioned_cost":
+        return _evaluate_score_model(model, data, np=np)
     pred = _predict_residual_model(model, data["x"], data["current_latents"], np=np)
     target = data["future_latents"]
     err = pred - target
@@ -368,6 +479,26 @@ def _evaluate_model(model: dict[str, Any], data: dict[str, Any], *, np: Any) -> 
     }
 
 
+def _evaluate_score_model(
+    model: dict[str, Any], data: dict[str, Any], *, np: Any
+) -> dict[str, Any]:
+    pred = _predict_score_model(model, data["x"], np=np)
+    target = data["y"]
+    err = pred - target
+    if pred.std() > 1e-9 and target.std() > 1e-9:
+        corr = float(np.corrcoef(pred.reshape(-1), target.reshape(-1))[0, 1])
+    else:
+        corr = 0.0
+    return {
+        "pairs": len(pred),
+        "mse": round(float(np.mean(err * err)), 8),
+        "mean_abs_error": round(float(np.mean(np.abs(err))), 8),
+        "target_correlation": round(corr, 8),
+        "loss_first": round(float(model["loss_first"]), 8),
+        "loss_last": round(float(model["loss_last"]), 8),
+    }
+
+
 def _predict_residual_model(model: dict[str, Any], x: Any, current_latents: Any, *, np: Any) -> Any:
     x_norm = (x - model["x_mean"]) / model["x_scale"]
     hidden = np.tanh(x_norm @ model["w1"] + model["b1"])
@@ -376,6 +507,37 @@ def _predict_residual_model(model: dict[str, Any], x: Any, current_latents: Any,
     norm = np.linalg.norm(pred, axis=1, keepdims=True)
     norm = np.where(norm < 1e-9, 1.0, norm)
     return (pred / norm).astype(np.float32)
+
+
+def _predict_score_model(model: dict[str, Any], x: Any, *, np: Any) -> Any:
+    x_norm = (x - model["x_mean"]) / model["x_scale"]
+    hidden = np.tanh(x_norm @ model["w1"] + model["b1"])
+    return (hidden @ model["w2"] + model["b2"]).astype(np.float32)
+
+
+def _selection_key(model_row: dict[str, Any]) -> tuple[float, float]:
+    validation = model_row["validation"]
+    if model_row["target"] == "goal_conditioned_cost":
+        return (
+            -float(validation["mse"]),
+            float(validation["target_correlation"]),
+        )
+    return (
+        float(validation["mean_cosine"]),
+        -float(validation["mse"]),
+    )
+
+
+def _variant_target(variant: str) -> str:
+    if variant in GOAL_CONDITIONED_SCORE_VARIANTS:
+        return "goal_conditioned_cost"
+    return "future_latent_residual"
+
+
+def _variant_target_scale(variant: str) -> str:
+    if variant in GOAL_CONDITIONED_SCORE_VARIANTS:
+        return "joint_distance_to_goal"
+    return "latent_residual"
 
 
 def _store_model_arrays(weights: dict[str, Any], *, name: str, model: dict[str, Any]) -> None:
@@ -419,8 +581,9 @@ def _expand_episode_range(value: dict[str, Any]) -> list[int]:
 
 
 def _validate_variant(variant: str) -> None:
-    if variant not in {"vision_mlp", "vision_proprio_mlp"}:
-        raise ValueError(f"Unknown variant {variant!r}; expected vision_mlp or vision_proprio_mlp.")
+    if variant not in SUPPORTED_VARIANTS:
+        expected = ", ".join(sorted(SUPPORTED_VARIANTS))
+        raise ValueError(f"Unknown variant {variant!r}; expected one of: {expected}.")
 
 
 def _split_csv(value: str) -> list[str]:
