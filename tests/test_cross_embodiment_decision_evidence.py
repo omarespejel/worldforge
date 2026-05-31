@@ -7,6 +7,7 @@ import pytest
 
 from worldforge.decision_trace import DECISION_TRACE_SCHEMA_VERSION, validate_decision_trace
 from worldforge.demos.cross_embodiment_decision_evidence import (
+    _round_json_floats,
     normalize_go2_decision_trace,
     normalize_so101_decision_trace,
     run_cross_embodiment_decision_evidence,
@@ -56,6 +57,17 @@ def test_go2_normalization_wraps_parse_errors() -> None:
 def test_so101_normalization_wraps_parse_errors() -> None:
     with pytest.raises(WorldForgeError, match="Failed to normalize SO-101 decision trace"):
         normalize_so101_decision_trace({}, trace_id="bad-so101", step_index=0)
+
+
+def test_round_json_floats_rejects_non_json_values() -> None:
+    assert _round_json_floats({"score": 1.23456789}) == {"score": 1.234568}
+
+    with pytest.raises(TypeError, match="keys must be strings"):
+        _round_json_floats({1: "bad"})
+    with pytest.raises(TypeError, match="finite"):
+        _round_json_floats({"score": float("nan")})
+    with pytest.raises(TypeError, match="Unsupported JSON value type"):
+        _round_json_floats({"tuple": (1.0,)})
 
 
 def test_checked_in_cross_embodiment_evidence_bundle_matches_generator(

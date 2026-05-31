@@ -8,6 +8,7 @@ normalizes all three outputs into the same DecisionTrace v1 contract.
 from __future__ import annotations
 
 import argparse
+import math
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -676,14 +677,21 @@ def _round_json_floats(value: object) -> object:
     if isinstance(value, bool) or value is None or isinstance(value, str):
         return value
     if isinstance(value, float):
+        if not math.isfinite(value):
+            raise TypeError("JSON float values must be finite.")
         return round(value, 6)
     if isinstance(value, int):
         return value
     if isinstance(value, list):
         return [_round_json_floats(item) for item in value]
     if isinstance(value, Mapping):
-        return {str(key): _round_json_floats(item) for key, item in value.items()}
-    return value
+        rounded: JSONDict = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError("JSON object keys must be strings.")
+            rounded[key] = _round_json_floats(item)
+        return rounded
+    raise TypeError(f"Unsupported JSON value type: {type(value).__name__}.")
 
 
 def _go2_selection_reason(candidate: JSONDict) -> str:
