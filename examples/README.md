@@ -183,8 +183,21 @@ uv run python examples/dimos-go2-replay-arena/run.py \
   --out .worldforge/dimos-go2-replay-arena-batch
 ```
 
+```bash
+uv run python examples/dimos-go2-replay-arena/run.py \
+  --pimsim-export \
+  --out .worldforge/dimos-go2-pimsim-export
+```
+
 Expected success signal: the output directory contains `decision-trace.json` and `report.md`, and
 the trace includes a selected action, rejected counterfactuals, score margin, and baseline regret.
-Batch mode also writes `batch-report.json` and `batch-report.md`.
+Batch mode also writes `batch-report.json` and `batch-report.md`; PimSim export mode writes a
+`converted-replay-fixture.json` before scoring.
+First triage step for `--pimsim-export` failures: rerun with the bundled export and confirm
+`converted-replay-fixture.json` is created; if it is not, read the adapter error for the first
+triage hint, check file permissions and disk space, then inspect the JSON shape around
+`entity_state_batch.entities`, `robot_entity_id`, `goal`, and `candidate_actions`.
 The bundled fixtures include one replay where WorldForge rejects the hardcoded baseline and one
 clear-hallway replay where the baseline remains the best action.
+The bundled PimSim-shaped JSON export converts into the same replay trace contract without
+importing DimOS or starting PimSim.

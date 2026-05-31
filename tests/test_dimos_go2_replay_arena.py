@@ -1,17 +1,24 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import pytest
 
 from worldforge.demos.dimos_go2_replay_arena import (
+    _PIMSIM_EXPORT_MAX_BYTES,
     DEFAULT_FIXTURE_PATH,
+    DEFAULT_PIMSIM_EXPORT_PATH,
     Go2ReplayScoreProvider,
     _decision_trace,
     load_go2_replay_fixture,
+    load_pimsim_go2_export,
+    pimsim_export_to_go2_replay_fixture,
     render_go2_replay_batch_report,
     render_go2_replay_report,
+    run_dimos_go2_pimsim_export,
+    run_dimos_go2_pimsim_export_workflow,
     run_dimos_go2_replay_arena,
     run_dimos_go2_replay_arena_workflow,
     run_dimos_go2_replay_batch,
@@ -150,6 +157,226 @@ def test_go2_replay_batch_report_renders_comparison_table(tmp_path: Path) -> Non
 def test_go2_replay_batch_rejects_empty_fixture_list(tmp_path: Path) -> None:
     with pytest.raises(WorldForgeError, match="requires at least one fixture"):
         run_dimos_go2_replay_batch([], tmp_path)
+
+
+def test_pimsim_go2_export_converts_to_replay_fixture() -> None:
+    pimsim_export = load_pimsim_go2_export(DEFAULT_PIMSIM_EXPORT_PATH)
+    fixture = pimsim_export_to_go2_replay_fixture(pimsim_export)
+
+    assert fixture["scenario_id"] == "pimsim-go2-hallway-export-001"
+    assert fixture["source"]["mode"] == "pimsim-export"
+    assert fixture["source"]["adapter"] == "worldforge.dimos_go2_pimsim_export"
+    assert fixture["observation"]["frame_id"] == "pimsim-frame-001"
+    assert fixture["observation"]["pose"]["x"] == 0.0
+    assert fixture["observation"]["pose"]["yaw_rad"] == pytest.approx(0.0)
+    assert fixture["observation"]["map"]["obstacles"][0]["id"] == "pimsim-chair-leg"
+    assert fixture["observation"]["map"]["obstacles"][1]["id"] == "pimsim-supply-cart"
+    assert fixture["observation"]["map"]["obstacles"][1]["radius_m"] == pytest.approx(
+        0.5 * math.hypot(0.45, 0.9)
+    )
+    assert fixture["baseline_action_id"] == "baseline_forward"
+    assert [candidate["id"] for candidate in fixture["candidate_actions"]] == [
+        "baseline_forward",
+        "arc_left_clear",
+        "arc_right_cart_shadow",
+        "slow_probe_left",
+        "stop_relocalize",
+    ]
+
+
+def test_pimsim_go2_export_normalizes_optional_identifiers() -> None:
+    payload = load_pimsim_go2_export(DEFAULT_PIMSIM_EXPORT_PATH)
+    payload["frame_id"] = None
+    payload["scenario_id"] = None
+
+    fixture = pimsim_export_to_go2_replay_fixture(payload)
+
+    assert fixture["observation"]["frame_id"] == payload["episode_id"]
+    assert fixture["scenario_id"] == payload["episode_id"]
+    assert fixture["observation"]["frame_id"] != "None"
+    assert fixture["scenario_id"] != "None"
+
+    payload = load_pimsim_go2_export(DEFAULT_PIMSIM_EXPORT_PATH)
+    payload["frame_id"] = " "
+
+    with pytest.raises(
+        WorldForgeError,
+        match="PimSim Go2 export frame_id must be a non-empty string",
+    ):
+        pimsim_export_to_go2_replay_fixture(payload)
+
+
+def test_pimsim_go2_export_runs_through_replay_arena(tmp_path: Path) -> None:
+    result = run_dimos_go2_pimsim_export(DEFAULT_PIMSIM_EXPORT_PATH, tmp_path)
+    trace = result.trace
+
+    assert (tmp_path / "converted-replay-fixture.json").is_file()
+    assert trace["scenario_id"] == "pimsim-go2-hallway-export-001"
+    assert trace["selected_action"]["id"] == "arc_left_clear"
+    assert trace["baseline_action_id"] == "baseline_forward"
+    assert trace["baseline_regret"] > 0.0
+    assert trace["score_margin"] > 0.0
+    assert "counterfactual" in trace["worldforge_value"]
+
+
+def test_pimsim_go2_export_sanitizes_source_metadata(tmp_path: Path) -> None:
+    payload = load_pimsim_go2_export(DEFAULT_PIMSIM_EXPORT_PATH)
+    payload["source"]["api_key"] = "secret"
+    payload["source"]["signed_url"] = "https://example.invalid/export?token=secret"
+    converted = pimsim_export_to_go2_replay_fixture(payload)
+
+    assert "api_key" not in converted["source"]
+    assert "signed_url" not in converted["source"]
+    assert converted["source"]["runtime"] == "dimos"
+
+    export_path = tmp_path / "source-secrets.json"
+    export_path.write_text(json.dumps(payload), encoding="utf-8")
+    result = run_dimos_go2_pimsim_export(export_path, tmp_path / "run")
+
+    assert "api_key" not in result.trace["source"]
+    assert "signed_url" not in result.trace["source"]
+
+
+def test_pimsim_go2_export_workflow_summary_points_to_artifacts(tmp_path: Path) -> None:
+    summary = run_dimos_go2_pimsim_export_workflow(DEFAULT_PIMSIM_EXPORT_PATH, tmp_path)
+
+    assert summary["selected_action_id"] == "arc_left_clear"
+    assert summary["score_margin"] > 0.0
+    assert summary["baseline_regret"] > 0.0
+    assert Path(summary["converted_fixture_path"]).is_file()
+    assert Path(summary["decision_trace_path"]).is_file()
+    assert Path(summary["report_path"]).is_file()
+
+
+def test_pimsim_go2_export_rejects_missing_robot_entity(tmp_path: Path) -> None:
+    payload = load_pimsim_go2_export(DEFAULT_PIMSIM_EXPORT_PATH)
+    payload["robot_entity_id"] = "missing-go2"
+    malformed = tmp_path / "missing-robot.json"
+    malformed.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(WorldForgeError, match="robot_entity_id 'missing-go2' was not found"):
+        load_pimsim_go2_export(malformed)
+
+
+def test_pimsim_go2_export_rejects_pose_without_yaw_or_quaternion(tmp_path: Path) -> None:
+    payload = load_pimsim_go2_export(DEFAULT_PIMSIM_EXPORT_PATH)
+    robot_pose = payload["entity_state_batch"]["entities"][0]["pose"]
+    for field_name in ("qw", "qx", "qy", "qz"):
+        robot_pose.pop(field_name)
+    malformed = tmp_path / "missing-quaternion.json"
+    malformed.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(WorldForgeError, match="pose must include yaw_rad or qw/qx/qy/qz"):
+        load_pimsim_go2_export(malformed)
+
+
+def test_pimsim_go2_export_rejects_oversized_file(tmp_path: Path) -> None:
+    oversized = tmp_path / "oversized.json"
+    oversized.write_text(" " * (_PIMSIM_EXPORT_MAX_BYTES + 1), encoding="utf-8")
+
+    with pytest.raises(WorldForgeError, match="Go2 PimSim export adapter:"):
+        load_pimsim_go2_export(oversized)
+    with pytest.raises(WorldForgeError) as exc_info:
+        load_pimsim_go2_export(oversized)
+    message = str(exc_info.value)
+    assert "<host-local-path>/oversized.json" in message
+    assert str(tmp_path) not in message
+    assert "First triage step:" in message
+
+
+def test_pimsim_go2_export_rejects_missing_file_with_redacted_path(tmp_path: Path) -> None:
+    missing = tmp_path / "missing-export.json"
+
+    with pytest.raises(WorldForgeError) as exc_info:
+        load_pimsim_go2_export(missing)
+
+    message = str(exc_info.value)
+    assert "Go2 PimSim export adapter:" in message
+    assert "<host-local-path>/missing-export.json" in message
+    assert str(tmp_path) not in message
+    assert "First triage step:" in message
+
+
+def test_pimsim_go2_export_rejects_invalid_json_with_redacted_path(tmp_path: Path) -> None:
+    invalid = tmp_path / "invalid-export.json"
+    invalid.write_text("{", encoding="utf-8")
+
+    with pytest.raises(WorldForgeError) as exc_info:
+        load_pimsim_go2_export(invalid)
+
+    message = str(exc_info.value)
+    assert "Go2 PimSim export adapter:" in message
+    assert "<host-local-path>/invalid-export.json" in message
+    assert str(tmp_path) not in message
+    assert "First triage step:" in message
+
+
+def test_pimsim_go2_export_rejects_non_regular_file_with_redacted_path(tmp_path: Path) -> None:
+    directory_export = tmp_path / "directory-export.json"
+    directory_export.mkdir()
+
+    with pytest.raises(WorldForgeError) as exc_info:
+        load_pimsim_go2_export(directory_export)
+
+    message = str(exc_info.value)
+    assert "must point to a regular JSON file" in message
+    assert "<host-local-path>/directory-export.json" in message
+    assert str(tmp_path) not in message
+    assert "First triage step:" in message
+
+
+def test_pimsim_go2_export_rejects_non_utf8_with_redacted_path(tmp_path: Path) -> None:
+    invalid = tmp_path / "latin1-export.json"
+    invalid.write_bytes(b"\xff")
+
+    with pytest.raises(WorldForgeError) as exc_info:
+        load_pimsim_go2_export(invalid)
+
+    message = str(exc_info.value)
+    assert "not valid UTF-8 JSON text" in message
+    assert "<host-local-path>/latin1-export.json" in message
+    assert str(tmp_path) not in message
+    assert "First triage step:" in message
+
+
+def test_pimsim_go2_export_rejects_non_string_entity_metadata() -> None:
+    payload = load_pimsim_go2_export(DEFAULT_PIMSIM_EXPORT_PATH)
+    payload["entity_state_batch"]["entities"][1]["id"] = 123
+
+    with pytest.raises(WorldForgeError, match=r"entity_state_batch\.entities\[1\]\.id"):
+        pimsim_export_to_go2_replay_fixture(payload)
+
+    payload = load_pimsim_go2_export(DEFAULT_PIMSIM_EXPORT_PATH)
+    payload["entity_state_batch"]["entities"][1]["kind"] = ["static"]
+
+    with pytest.raises(WorldForgeError, match=r"entity_state_batch\.entities\[1\]\.kind"):
+        pimsim_export_to_go2_replay_fixture(payload)
+
+
+def test_pimsim_go2_export_rejects_malformed_map_entries(tmp_path: Path) -> None:
+    payload = load_pimsim_go2_export(DEFAULT_PIMSIM_EXPORT_PATH)
+    payload["map"]["obstacles"] = [{}]
+
+    with pytest.raises(WorldForgeError, match=r"map\.obstacles\[0\] is missing 'x'"):
+        pimsim_export_to_go2_replay_fixture(payload)
+
+    payload = load_pimsim_go2_export(DEFAULT_PIMSIM_EXPORT_PATH)
+    payload["map"]["cost_zones"] = [{"x": 0.0, "y": 0.0, "radius_m": 0.0, "cost": 1.0}]
+
+    with pytest.raises(WorldForgeError, match=r"map\.cost_zones\[0\]\.radius_m"):
+        pimsim_export_to_go2_replay_fixture(payload)
+
+    payload = load_pimsim_go2_export(DEFAULT_PIMSIM_EXPORT_PATH)
+    payload["map"]["uncertainty_zones"] = [{"x": 0.0, "y": 0.0, "radius_m": 1.0, "cost": -0.1}]
+
+    with pytest.raises(WorldForgeError, match=r"map\.uncertainty_zones\[0\]\.cost"):
+        pimsim_export_to_go2_replay_fixture(payload)
+
+    payload = load_pimsim_go2_export(DEFAULT_PIMSIM_EXPORT_PATH)
+    payload["map"]["safety_margin_m"] = -0.1
+
+    with pytest.raises(WorldForgeError, match=r"map\.safety_margin_m"):
+        pimsim_export_to_go2_replay_fixture(payload)
 
 
 def test_go2_replay_arena_rejects_malformed_fixture(tmp_path: Path) -> None:
