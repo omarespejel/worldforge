@@ -160,9 +160,16 @@ def test_so101_replay_trace_outcome_failure_labels_are_specific() -> None:
     selected = dict(so101_replay_trace._candidate_records()[1])
     target_pose = so101_replay_trace.SO101_TARGET_POSITION.to_dict()
 
-    high_contact = dict(selected, contact_risk=0.25)
+    high_contact = dict(selected, contact_risk=0.22)
     assert so101_replay_trace._outcome(target_pose, selected=high_contact)["success_label"] == (
         "high_contact_risk"
+    )
+    assert (
+        "contact_risk"
+        in so101_replay_trace._score_candidate(
+            high_contact,
+            target_pose=target_pose,
+        )["risk_flags"]
     )
 
     low_grasp = dict(selected, predicted_grasp_confidence=0.75)

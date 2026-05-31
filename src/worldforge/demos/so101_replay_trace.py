@@ -40,6 +40,7 @@ SO101_SCORE_PROVIDER = "so101-replay-score"
 SO101_CUBE_ID = "so101-blue-cube"
 SO101_TARGET_POSITION = Position(0.52, 0.08, 0.03)
 SO101_GOAL_TOLERANCE_M = 0.025
+SO101_CONTACT_RISK_MAX = 0.2
 SO101_FIXTURE_RUN_ID = "so101-replay-fixture-episode-7-frame-182"
 
 SO101_JOINT_NAMES: tuple[str, ...] = (
@@ -243,7 +244,7 @@ def _risk_flags(
     flags: list[str] = []
     if placement_error_m > SO101_GOAL_TOLERANCE_M:
         flags.append("misses_target_tolerance")
-    if contact_risk >= 0.25:
+    if contact_risk >= SO101_CONTACT_RISK_MAX:
         flags.append("contact_risk")
     if occlusion_risk >= 0.25:
         flags.append("camera_occlusion")
@@ -627,7 +628,7 @@ def _decision_goal(goal: StructuredGoal) -> JSONDict:
             "tolerance_m": SO101_GOAL_TOLERANCE_M,
             "requires": [
                 f"placement_error_m <= {SO101_GOAL_TOLERANCE_M}",
-                "contact_risk < 0.2",
+                f"contact_risk < {SO101_CONTACT_RISK_MAX}",
                 "predicted_grasp_confidence >= 0.85",
             ],
         },
@@ -847,7 +848,7 @@ def _outcome(final_position: JSONDict, *, selected: JSONDict) -> JSONDict:
     grasp_confidence = float(selected["predicted_grasp_confidence"])
     success = (
         placement_error_m <= SO101_GOAL_TOLERANCE_M
-        and contact_risk < 0.2
+        and contact_risk < SO101_CONTACT_RISK_MAX
         and grasp_confidence >= 0.85
     )
     success_label = _success_label(
@@ -882,7 +883,7 @@ def _success_label(
 ) -> str:
     if placement_error_m > SO101_GOAL_TOLERANCE_M:
         return "not_within_target_tolerance"
-    if contact_risk >= 0.2:
+    if contact_risk >= SO101_CONTACT_RISK_MAX:
         return "high_contact_risk"
     if grasp_confidence < 0.85:
         return "low_grasp_confidence"
