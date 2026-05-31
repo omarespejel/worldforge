@@ -33,6 +33,15 @@ def test_cross_embodiment_evidence_bundle_writes_valid_decision_traces(tmp_path:
         assert trace["claim_boundary"]["score_kind"] == "hand_cost"
         assert trace["candidate_actions"]
         assert trace["scores"]
+        selected_score = next(
+            score
+            for score in trace["scores"]
+            if score["candidate_id"] == trace["selected_action"]["candidate_id"]
+        )
+        assert 0.0 <= selected_score["normalized"]["value_signal"] <= 1.0
+
+    so101_payload = json.loads(Path(summary["traces"]["so101"]["path"]).read_text(encoding="utf-8"))
+    assert so101_payload["outcome"]["metrics"]["outcome_source"] == "mock_replay_execution"
 
 
 def test_cross_embodiment_report_contains_kill_criterion(tmp_path: Path) -> None:
@@ -40,8 +49,11 @@ def test_cross_embodiment_report_contains_kill_criterion(tmp_path: Path) -> None
     report = Path(summary["report_path"]).read_text(encoding="utf-8")
 
     assert "DecisionTrace v1" in report
+    assert "Value Signal" in report
+    assert "Local Margin" in report
     assert "Kill Criterion" in report
     assert "stop pushing this integration and pivot" in report
+    assert "mock_replay_execution" in report
 
 
 def test_go2_normalization_wraps_parse_errors() -> None:

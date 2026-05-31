@@ -24,6 +24,9 @@ First triage step on failure: confirm the output files exist, then inspect the c
 stderr for the first `WorldForgeError`. If an artifact is missing, rerun the same command and keep
 the run log with the failing fixture or normalization error.
 
-The generated traces validate against the same schema and explicitly label their
-boundaries: hand-cost scoring, analytic/replay outcomes, no live robot command,
-and no learned latent scorer claim.
+The generated traces pass the same `validate_decision_trace()` semantic contract.
+The packaged JSON Schema is available for external tooling shape checks, while the
+Python validator enforces the cross-field arithmetic, claim-boundary, and
+shareability invariants. The traces explicitly label their boundaries: hand-cost
+scoring, analytic/replay outcomes, no live robot command, and no learned latent
+scorer claim.

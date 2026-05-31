@@ -13,6 +13,7 @@
       "score_kind": "hand_cost",
       "score_margin": 0.205603,
       "selected_action_id": "stop_relocalize",
+      "selected_value_signal": 0.656151,
       "trace_id": "decision-trace-go2"
     },
     "pimsim": {
@@ -22,6 +23,7 @@
       "score_kind": "hand_cost",
       "score_margin": 0.066455,
       "selected_action_id": "arc_left_clear",
+      "selected_value_signal": 0.696969,
       "trace_id": "decision-trace-pimsim"
     },
     "so101": {
@@ -31,6 +33,7 @@
       "score_kind": "hand_cost",
       "score_margin": 0.9303,
       "selected_action_id": "lift-place-stable",
+      "selected_value_signal": 0.875163,
       "trace_id": "decision-trace-so101"
     }
   }

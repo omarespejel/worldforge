@@ -307,6 +307,38 @@ def test_validate_decision_trace_rejects_learned_score_without_model_flag() -> N
         validate_decision_trace(trace)
 
 
+def test_validate_decision_trace_rejects_secret_like_text() -> None:
+    trace = _valid_trace()
+    trace["task"]["description"] = "Choose a local action with password=hunter2."
+
+    with pytest.raises(WorldForgeError, match="credentials"):
+        validate_decision_trace(trace)
+
+
+def test_validate_decision_trace_rejects_secret_like_keys() -> None:
+    trace = _valid_trace()
+    trace["observation"]["password"] = "hunter2"
+
+    with pytest.raises(WorldForgeError, match="secret-like key"):
+        validate_decision_trace(trace)
+
+
+def test_validate_decision_trace_rejects_private_ip_text() -> None:
+    trace = _valid_trace()
+    trace["observation"]["robot_ip"] = "10.0.0.5"
+
+    with pytest.raises(WorldForgeError, match="private or local IP"):
+        validate_decision_trace(trace)
+
+
+def test_validate_decision_trace_rejects_host_local_path_text() -> None:
+    trace = _valid_trace()
+    trace["observation"]["summary"] = "Loaded replay from /Users/secret/robot.key"
+
+    with pytest.raises(WorldForgeError, match="host-local paths"):
+        validate_decision_trace(trace)
+
+
 def test_load_decision_trace_schema_wraps_resource_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     class MissingResource:
         def joinpath(self, _name: str) -> MissingResource:

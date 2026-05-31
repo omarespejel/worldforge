@@ -338,6 +338,7 @@
   "outcome": {
     "kind": "analytic",
     "metrics": {
+      "outcome_source": "mock_replay_execution",
       "partial_subgoal_credit": 1.0,
       "placement_error_m": 0.0,
       "success": true

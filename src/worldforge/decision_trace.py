@@ -8,7 +8,9 @@ runtime spans; it does not replace either one.
 
 from __future__ import annotations
 
+import ipaddress
 import json
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
@@ -18,6 +20,7 @@ from typing import Any
 from worldforge.models import (
     JSONDict,
     WorldForgeError,
+    _redact_observable_text,
     dump_json,
     require_bool,
     require_finite_number,
@@ -55,6 +58,15 @@ _REQUIRED_TOP_LEVEL_FIELDS: tuple[str, ...] = (
     "reproducibility",
     "claim_boundary",
 )
+_SENSITIVE_TRACE_KEY_PATTERN = re.compile(
+    r"(api[_-]?key|authorization|bearer|credential|password|secret|signature|signed[_-]?url|token)",
+    re.IGNORECASE,
+)
+_HOST_LOCAL_PATH_PATTERN = re.compile(
+    r"(?P<path>(?:/Users|/private|/var/folders|/tmp|~)/[^\s,;:)'\"]+|"
+    r"(?<![A-Za-z])[A-Za-z]:[\\/][^\s,;:)'\"]+)"
+)
+_IPV4_ADDRESS_PATTERN = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +109,7 @@ def validate_decision_trace(payload: object, *, name: str = "DecisionTrace v1") 
 
     trace = require_json_dict(payload, name=name, allow_empty=False)
     _require_fields(trace, _REQUIRED_TOP_LEVEL_FIELDS, name=name)
+    _validate_shareable_trace_content(trace, name=name)
     _require_const(trace["schema_version"], DECISION_TRACE_SCHEMA_VERSION, f"{name}.schema_version")
     _require_const(trace["artifact_kind"], DECISION_TRACE_ARTIFACT_KIND, f"{name}.artifact_kind")
     require_non_empty_text(trace["trace_id"], name=f"{name}.trace_id")
@@ -146,6 +159,51 @@ def validate_decision_trace(payload: object, *, name: str = "DecisionTrace v1") 
     if "interop" in trace:
         require_json_dict(trace["interop"], name=f"{name}.interop")
     return trace
+
+
+def _validate_shareable_trace_content(value: object, *, name: str) -> None:
+    if isinstance(value, str):
+        _validate_shareable_trace_text(value, name=name)
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _validate_shareable_trace_content(item, name=f"{name}[{index}]")
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if _SENSITIVE_TRACE_KEY_PATTERN.search(key):
+                raise WorldForgeError(f"{name}.{key} must not use a secret-like key.")
+            _validate_shareable_trace_content(item, name=f"{name}.{key}")
+
+
+def _validate_shareable_trace_text(value: str, *, name: str) -> None:
+    redacted = _redact_observable_text(value)
+    if redacted != value:
+        raise WorldForgeError(f"{name} must not contain credentials, signed URLs, or tokens.")
+    if _HOST_LOCAL_PATH_PATTERN.search(value):
+        raise WorldForgeError(f"{name} must not contain host-local paths.")
+    private_ip = _first_non_shareable_ip(value)
+    if private_ip is not None:
+        raise WorldForgeError(f"{name} must not contain private or local IP address {private_ip}.")
+
+
+def _first_non_shareable_ip(value: str) -> str | None:
+    for match in _IPV4_ADDRESS_PATTERN.finditer(value):
+        raw_ip = match.group(0)
+        try:
+            address = ipaddress.ip_address(raw_ip)
+        except ValueError:
+            continue
+        if (
+            address.is_private
+            or address.is_loopback
+            or address.is_link_local
+            or address.is_multicast
+            or address.is_reserved
+            or address.is_unspecified
+        ):
+            return raw_ip
+    return None
 
 
 def _validate_embodiment(value: object, *, name: str) -> None:

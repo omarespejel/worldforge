@@ -99,6 +99,9 @@ def run_cross_embodiment_decision_evidence(
                 "trace_id": trace["trace_id"],
                 "path": str(artifact_paths[name]),
                 "selected_action_id": trace["selected_action"]["candidate_id"],
+                "selected_value_signal": _selected_score_record(trace)["normalized"][
+                    "value_signal"
+                ],
                 "score_margin": trace["selected_action"]["score_margin"],
                 "baseline_regret": trace["baseline"]["regret_vs_selected"],
                 "outcome_kind": trace["outcome"]["kind"],
@@ -413,6 +416,9 @@ def _normalize_so101_decision_trace(
             "kind": "analytic",
             "status": str(trace["outcome"]["success_label"]),
             "metrics": {
+                "outcome_source": str(
+                    trace["outcome"].get("outcome_source", "unknown_replay_outcome")
+                ),
                 "placement_error_m": float(trace["outcome"]["placement_error_m"]),
                 "success": bool(trace["outcome"]["success"]),
                 "partial_subgoal_credit": 1.0 if trace["outcome"]["success"] else 0.5,
@@ -472,14 +478,21 @@ def render_cross_embodiment_report(traces: Mapping[str, JSONDict]) -> str:
         "one `DecisionTrace v1` contract. It is replay evidence, not a live-robot or learned-model "
         "claim.",
         "",
-        "| Trace | Embodiment | Selected | Margin | Baseline Regret | Score Kind | Outcome Kind |",
-        "| --- | --- | --- | ---: | ---: | --- | --- |",
+        "The comparable cross-embodiment column is `Value Signal` on a normalized `[0, 1]` "
+        "scale. `Local Margin` and `Local Baseline Regret` are embodiment-local hand-cost "
+        "diagnostics and should not be compared across embodiments as raw units.",
+        "",
+        "| Trace | Embodiment | Selected | Value Signal | Desirability | Local Margin | "
+        "Local Baseline Regret | Score Kind | Outcome Kind |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- |",
     ]
     lines.extend(
         "| "
         f"`{trace['trace_id']}` | "
         f"{trace['embodiment']['platform']} / {trace['embodiment']['kind']} | "
         f"`{trace['selected_action']['candidate_id']}` | "
+        f"{float(_selected_score_record(trace)['normalized']['value_signal']):.6f} | "
+        f"{float(_selected_score_record(trace)['normalized']['desirability']):.6f} | "
         f"{float(trace['selected_action']['score_margin']):.6f} | "
         f"{float(trace['baseline']['regret_vs_selected']):.6f} | "
         f"{trace['claim_boundary']['score_kind']} | "
@@ -491,7 +504,8 @@ def render_cross_embodiment_report(traces: Mapping[str, JSONDict]) -> str:
             "",
             "## DecisionTrace v1 Contract",
             "",
-            "- One schema validates navigation and manipulation decisions.",
+            "- One DecisionTrace v1 semantic validator accepts navigation and manipulation "
+            "decisions.",
             "- Actions are self-describing with `type`, `params`, and `units`.",
             "- Goals include ordered `sub_goals` and partial-credit success criteria.",
             "- Reproducibility records provider version, checkpoint/model-card refs, input digest, "
@@ -516,13 +530,25 @@ def render_cross_embodiment_report(traces: Mapping[str, JSONDict]) -> str:
                 "",
                 f"- Task: {trace['task']['description']}",
                 f"- Selected: `{trace['selected_action']['candidate_id']}`",
+                "- Value signal: "
+                f"{float(_selected_score_record(trace)['normalized']['value_signal']):.6f}",
                 f"- Why: {trace['selected_action']['why_selected']}",
                 f"- Counterfactuals: {len(trace['counterfactuals'])}",
+                "- Outcome source: "
+                f"{trace['outcome']['metrics'].get('outcome_source', 'analytic_replay_estimate')}",
                 f"- Limitations: {'; '.join(trace['claim_boundary']['limitations'])}",
                 "",
             ]
         )
     return "\n".join(lines)
+
+
+def _selected_score_record(trace: JSONDict) -> JSONDict:
+    selected_id = str(trace["selected_action"]["candidate_id"])
+    for score in trace["scores"]:
+        if str(score["candidate_id"]) == selected_id:
+            return score
+    raise WorldForgeError(f"Trace {trace['trace_id']} selected action has no score row.")
 
 
 def _go2_goal(goal: JSONDict) -> JSONDict:
