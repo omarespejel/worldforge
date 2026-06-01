@@ -423,7 +423,7 @@ def test_validate_decision_trace_rejects_private_ip_text() -> None:
 
 def test_validate_decision_trace_rejects_unitree_serial_text() -> None:
     trace = _valid_trace()
-    trace["embodiment"]["embodiment_id"] = "B42D1000PC4CC883"
+    trace["embodiment"]["embodiment_id"] = "B99D" + "FAKEROBOT000"
 
     with pytest.raises(WorldForgeError, match="Unitree robot serial"):
         validate_decision_trace(trace)
