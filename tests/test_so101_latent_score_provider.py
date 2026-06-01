@@ -11,6 +11,20 @@ from worldforge.demos.so101_latent_score_provider import SO101LatentScoreProvide
 from worldforge.models import WorldForgeError
 
 
+def _load_script_module(script_name: str, module_name: str) -> object:
+    script_path = Path(__file__).resolve().parents[1] / "scripts" / script_name
+    spec = importlib.util.spec_from_file_location(module_name, script_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(spec.name, None)
+    return module
+
+
 def test_so101_latent_score_provider_imports_without_loading_numpy() -> None:
     assert SO101LatentScoreProvider.name == "so101-latent-score-provider"
 
@@ -18,13 +32,7 @@ def test_so101_latent_score_provider_imports_without_loading_numpy() -> None:
 def test_so101_referee_smoke_script_help_imports_without_referee(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    script_path = Path(__file__).resolve().parents[1] / "scripts" / "run_so101_referee_smoke.py"
-    spec = importlib.util.spec_from_file_location("run_so101_referee_smoke_test", script_path)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
+    module = _load_script_module("run_so101_referee_smoke.py", "run_so101_referee_smoke_test")
 
     with pytest.raises(SystemExit) as exc_info:
         module.main(["--help"])
@@ -34,15 +42,10 @@ def test_so101_referee_smoke_script_help_imports_without_referee(
 
 
 def test_so101_referee_smoke_metric_summary_uses_clear_bad_decoys() -> None:
-    script_path = Path(__file__).resolve().parents[1] / "scripts" / "run_so101_referee_smoke.py"
-    spec = importlib.util.spec_from_file_location(
-        "run_so101_referee_smoke_metric_test", script_path
+    module = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_metric_test",
     )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
 
     class RefereeWithoutMetricSummary:
         pass
@@ -68,15 +71,10 @@ def test_so101_referee_smoke_metric_summary_uses_clear_bad_decoys() -> None:
 
 
 def test_so101_referee_smoke_metric_summary_prefers_referee_owned_summary() -> None:
-    script_path = Path(__file__).resolve().parents[1] / "scripts" / "run_so101_referee_smoke.py"
-    spec = importlib.util.spec_from_file_location(
-        "run_so101_referee_smoke_referee_metric_test", script_path
+    module = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_referee_metric_test",
     )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
 
     class RefereeWithMetricSummary:
         @staticmethod
@@ -99,14 +97,10 @@ def test_so101_referee_smoke_metric_summary_prefers_referee_owned_summary() -> N
 
 
 def test_so101_referee_smoke_metric_summary_falls_back_on_bad_referee_summary() -> None:
-    script_path = Path(__file__).resolve().parents[1] / "scripts" / "run_so101_referee_smoke.py"
-    spec = importlib.util.spec_from_file_location(
-        "run_so101_referee_smoke_bad_referee_metric_test", script_path
+    module = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_bad_referee_metric_test",
     )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
 
     class RefereeWithBadMetricSummary:
         @staticmethod
@@ -134,15 +128,10 @@ def test_so101_referee_smoke_metric_summary_falls_back_on_bad_referee_summary() 
 
 
 def test_so101_ranked_residual_selection_key_uses_unrounded_metrics() -> None:
-    script_path = Path(__file__).resolve().parents[1] / "scripts" / "train_so101_latent_scorer.py"
-    spec = importlib.util.spec_from_file_location(
-        "train_so101_latent_scorer_selection_key_test", script_path
+    module = _load_script_module(
+        "train_so101_latent_scorer.py",
+        "train_so101_latent_scorer_selection_key_test",
     )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
 
     rounded_tie_lower_raw = module._selection_key(
         {
@@ -171,15 +160,10 @@ def test_so101_ranked_residual_selection_key_uses_unrounded_metrics() -> None:
 
 
 def test_so101_ranked_residual_training_rejects_negative_hyperparameters() -> None:
-    script_path = Path(__file__).resolve().parents[1] / "scripts" / "train_so101_latent_scorer.py"
-    spec = importlib.util.spec_from_file_location(
-        "train_so101_latent_scorer_negative_hyperparameter_test", script_path
+    module = _load_script_module(
+        "train_so101_latent_scorer.py",
+        "train_so101_latent_scorer_negative_hyperparameter_test",
     )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
 
     invalid_args = [
         ("--early-stop-patience", "-1"),
