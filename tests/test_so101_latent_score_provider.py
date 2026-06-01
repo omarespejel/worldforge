@@ -170,6 +170,30 @@ def test_so101_ranked_residual_selection_key_uses_unrounded_metrics() -> None:
     assert rounded_tie_higher_raw > rounded_tie_lower_raw
 
 
+def test_so101_ranked_residual_training_rejects_negative_hyperparameters() -> None:
+    script_path = Path(__file__).resolve().parents[1] / "scripts" / "train_so101_latent_scorer.py"
+    spec = importlib.util.spec_from_file_location(
+        "train_so101_latent_scorer_negative_hyperparameter_test", script_path
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+
+    invalid_args = [
+        ("--early-stop-patience", "-1"),
+        ("--ranking-margin", "-0.1"),
+        ("--auxiliary-weight", "-0.1"),
+        ("--ranking-margin", "nan"),
+        ("--auxiliary-weight", "inf"),
+    ]
+    for flag, value in invalid_args:
+        with pytest.raises(SystemExit) as exc_info:
+            module.main([flag, value])
+        assert exc_info.value.code == 2
+
+
 def test_so101_latent_score_provider_scores_candidate_deltas(tmp_path: Path) -> None:
     np = pytest.importorskip("numpy")
     model_name = "vision_mlp_h1"

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -83,9 +84,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--learning-rate", type=float, default=0.001)
     parser.add_argument("--weight-decay", type=float, default=0.0001)
-    parser.add_argument("--early-stop-patience", type=int, default=15)
-    parser.add_argument("--ranking-margin", type=float, default=0.05)
-    parser.add_argument("--auxiliary-weight", type=float, default=0.05)
+    parser.add_argument("--early-stop-patience", type=_non_negative_int, default=15)
+    parser.add_argument("--ranking-margin", type=_non_negative_float, default=0.05)
+    parser.add_argument("--auxiliary-weight", type=_non_negative_float, default=0.05)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args(argv)
 
@@ -128,6 +129,20 @@ def main(argv: list[str] | None = None) -> int:
         )
     print(f"selected={result['selected_model']} {summary_metric}")
     return 0
+
+
+def _non_negative_float(value: str) -> float:
+    parsed = float(value)
+    if parsed < 0.0 or not math.isfinite(parsed):
+        raise argparse.ArgumentTypeError("value must be a finite non-negative float")
+    return parsed
+
+
+def _non_negative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("value must be a non-negative integer")
+    return parsed
 
 
 def train_so101_latent_scorers(
