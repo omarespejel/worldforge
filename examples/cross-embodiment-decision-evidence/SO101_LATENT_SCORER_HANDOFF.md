@@ -46,17 +46,20 @@ uv run --with numpy --with pyarrow python scripts/build_so101_latent_cache_sidec
   --out .worldforge/so101-latent-cache/latent_cache_meta.json
 ```
 
-Train residual future-latent scorer artifacts from the existing cache:
+Train ranked residual future-latent scorer artifacts from the existing cache:
 
 ```bash
 uv run --with numpy --with pyarrow python scripts/train_so101_latent_scorer.py \
   --sidecar .worldforge/so101-latent-cache/latent_cache_meta.json \
-  --out-dir .worldforge/so101-latent-scorer \
+  --out-dir .worldforge/so101-ranked-residual-scorer-v2 \
   --epochs 120 \
+  --early-stop-patience 15 \
   --batch-size 256 \
   --hidden-dim 128 \
+  --ranking-margin 0.05 \
+  --auxiliary-weight 0.05 \
   --horizons 1,5,15 \
-  --variants vision_mlp,vision_proprio_mlp
+  --variants ranked_vision_mlp,ranked_vision_proprio_mlp
 ```
 
 Run the scorer artifacts through the external referee:
@@ -66,13 +69,13 @@ uv run --with numpy --with pyarrow python scripts/run_so101_referee_smoke.py \
   --dataset-dir /path/to/svla_so101_pickplace \
   --cache /path/to/latent_cache.npz \
   --referee /path/to/referee_headline.py \
-  --weights .worldforge/so101-latent-scorer/so101_latent_scorers.npz \
-  --metadata .worldforge/so101-latent-scorer/so101_latent_scorer_meta.json \
-  --out .worldforge/so101-latent-scorer/claude-referee-smoke-result.json
+  --weights .worldforge/so101-ranked-residual-scorer-v2/so101_latent_scorers.npz \
+  --metadata .worldforge/so101-ranked-residual-scorer-v2/so101_latent_scorer_meta.json \
+  --out .worldforge/so101-ranked-residual-scorer-v2/claude-referee-ranked-residual-smoke-result.json
 ```
 
-Success signal: the command prints held-out item count and one row per scorer, then writes the JSON
-result under `.worldforge/so101-goal-history-score-scorer/`.
+Success signal: the command prints held-out item count and one row per scorer, including
+`fair_clearbad`, then writes the JSON result under `.worldforge/so101-ranked-residual-scorer-v2/`.
 
 First triage step on failure: check that the cache, sidecar, dataset, and external referee paths
 exist and agree on frame ordering.
@@ -82,7 +85,39 @@ exist and agree on frame ordering.
 The latest local smoke handoff used `3981` held-out sub-goal decision items across `15` test
 episodes.
 
-### Residual Future-Latent Family
+### Ranked Residual Future-Latent v2
+
+This is the current #43 scorer-v2 result. It trains the residual future-latent model with a
+pairwise ranking objective: demonstrated actions should score closer to the visual sub-goal latent
+than the clearly bad decoys. The auxiliary future-latent prediction loss is kept small, so the
+primary optimization target matches the referee gate.
+
+| Scorer | Fair clear-bad beat rate | Near-duplicate beat rate | Top-1 diagnostic | MRR | Calibration vs proprio progress |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `proprio_baseline` | `0.6174` | `0.5896` | `0.0570` | `0.3696` | `1.0000` |
+| `residual_ridge_baseline` | `0.6762` | `0.4189` | `0.0723` | `0.3703` | `0.2276` |
+| `ranked_vision_mlp_h1` | `0.9179` | `0.2513` | `0.0799` | `0.4097` | `0.1596` |
+| `ranked_vision_mlp_h5` | `0.9152` | `0.4451` | `0.1472` | `0.4853` | `0.1838` |
+| `ranked_vision_mlp_h15` | `0.9181` | `0.3238` | `0.0844` | `0.4293` | `0.1692` |
+| `ranked_vision_proprio_mlp_h5` | `0.9209` | `0.1423` | `0.0490` | `0.3707` | `0.1897` |
+
+Decision: the ranked residual objective clears the #43 fair gate under the external held-out
+referee. It beats both the blind proprio baseline (`0.6174`) and the residual ridge sanity
+baseline (`0.6762`) on `fair_beat_rate_clearbad`. This is evidence that the learned vision scorer
+adds decision-ranking value on held-out SO-101 replay candidates. It is still not a physical
+execution, sim-measured outcome, or task-success claim; near-duplicate decoys remain weak for some
+variants, and `rank_corr_vs_proprio_truth` remains calibration only.
+
+Local ranked-v2 artifact hashes from that smoke run:
+
+- `so101_latent_scorers.npz`:
+  `dab7c474da9025aba8e6d8362d71043a6865569e967bd7c0e94ace7dede47eab`
+- `so101_latent_scorer_meta.json`:
+  `e32b7a1dda8b92a3c579df96b33fc3671e34fea39ddb55a8f0b43745f70448fb`
+- `claude-referee-ranked-residual-smoke-result.json`:
+  `15f76a5e722e59100d4eca7daf9e0002449bf3b3c42a333b4458b8c0e16cfa7a`
+
+### Residual Future-Latent Family v1
 
 This is the relevant family for testing whether vision adds decision value, because the provider
 predicts a future visual latent and the referee scores distance to the sub-goal latent.
@@ -135,12 +170,12 @@ Local proprio-target artifact hashes from that smoke run:
 
 ## Next Iteration
 
-The scorer-side experiments should improve the residual future-latent path, not weaken the gate:
+The scorer-side experiments should now harden the ranked residual result rather than weaken the
+gate:
 
-- make `fair_beat_rate_clearbad` the primary gate and keep top-1 diagnostic,
-- keep `rank_corr_vs_proprio_truth` as calibration only,
-- align the residual training/evaluation space explicitly,
-- add early stopping or best-validation checkpoint selection,
-- sweep multi-step horizons to reduce the reverse-decoy blind spot,
+- move the independent referee's `fair_beat_rate_clearbad` summary into any shared referee
+  artifact used by collaborators,
+- rerun Claude's independent copy of the referee on the ranked-v2 artifacts,
+- add more SO-101/LeRobot episodes before increasing neural capacity,
 - include overhead-camera latents when available,
 - keep Claude's external referee as the independent judge.
