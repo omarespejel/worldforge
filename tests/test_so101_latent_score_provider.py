@@ -31,6 +31,35 @@ def test_so101_referee_smoke_script_help_imports_without_referee(
     assert "external held-out referee" in capsys.readouterr().out
 
 
+def test_so101_referee_smoke_metric_summary_uses_clear_bad_decoys() -> None:
+    script_path = Path(__file__).resolve().parents[1] / "scripts" / "run_so101_referee_smoke.py"
+    spec = importlib.util.spec_from_file_location(
+        "run_so101_referee_smoke_metric_test", script_path
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    summary = module._metric_summary(
+        {
+            "decoy_beat_rate": {
+                "no_motion": 0.1,
+                "scale_half": 0.3,
+                "overshoot": 0.6,
+                "reverse": 0.5,
+                "random_other": 0.8,
+                "jitter": 0.7,
+            }
+        }
+    )
+
+    assert summary == {
+        "fair_beat_rate_clearbad": 0.65,
+        "near_duplicate_beat_rate": 0.2,
+    }
+
+
 def test_so101_latent_score_provider_scores_candidate_deltas(tmp_path: Path) -> None:
     np = pytest.importorskip("numpy")
     model_name = "vision_mlp_h1"

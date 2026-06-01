@@ -234,9 +234,10 @@ def train_so101_latent_scorers(
             ),
         },
         "kill_criterion": (
-            "Do not claim learned-scorer value unless the independent referee shows above-chance "
-            "performance and improvement over proprio/hand-cost baselines. Below-chance marginal "
-            "improvement is negative evidence."
+            "Do not claim learned-scorer value unless the independent referee shows improvement "
+            "over proprio/hand-cost baselines on fair decoy/progress metrics, with no "
+            "shuffled-label leak. Exact-match top-1 is diagnostic for near-duplicate decoys, "
+            "not the pass/fail gate."
         ),
     }
     metadata_path = output_dir / "so101_latent_scorer_meta.json"

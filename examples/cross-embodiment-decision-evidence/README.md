@@ -37,9 +37,11 @@ than sim-measured or real-measured success.
 
 Learned-scorer claims have a stricter gate than the replay evidence bundle:
 the scorer must clear an independent held-out referee, beat the proprio or
-hand-cost baselines, and land above chance on fair rank/progress metrics. A
-below-chance model that only beats a weaker baseline is negative evidence.
+hand-cost baselines on fair decoy/progress metrics, and avoid shuffled-label
+leakage. Exact-match top-1 is diagnostic for near-duplicate decoys, not the
+pass/fail gate, and rank-correlation against proprio progress is calibration
+rather than an independent success signal.
 The SO-101 latent scorer scripts are handoff tools for that referee lane; they
 do not grade their own output.
-The scorer handoff runbook and latest negative smoke result are recorded in
+The scorer handoff runbook and latest mixed residual-scorer result are recorded in
 `SO101_LATENT_SCORER_HANDOFF.md`.

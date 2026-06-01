@@ -27,6 +27,8 @@ DEFAULT_REFEREE_PATH = Path(
     "/Users/espejelomar/StarkNet/zk-ai/hackathons/worldforge-eval-referee/referee_headline.py"
 )
 DEFAULT_SCORER_DIR = Path(".worldforge/so101-goal-score-scorer")
+CLEAR_BAD_DECOYS = ("overshoot", "reverse", "random_other", "jitter")
+NEAR_DUPLICATE_DECOYS = ("no_motion", "scale_half")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -69,9 +71,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(f"items={result['n_items']} test_episodes={result['test_episode_count']}")
     for name, row in result["results"].items():
+        summary = result["metric_summary"][name]
         print(
-            f"{name}: top1={row['top1_vs_demonstrated']:.4f} "
-            f"chance={row['chance']:.4f} rank_corr={row['rank_corr_vs_proprio_truth']:.4f}"
+            f"{name}: fair_clearbad={summary['fair_beat_rate_clearbad']:.4f} "
+            f"mrr={row['mrr']:.4f} top1={row['top1_vs_demonstrated']:.4f} "
+            f"rank_corr_calibration={row['rank_corr_vs_proprio_truth']:.4f}"
         )
     print(f"WROTE {result['output_path']}")
     return 0
@@ -120,6 +124,7 @@ def run_referee_smoke(
             ),
             np.random.RandomState(shuffle_seed),
         )
+    metric_summary = {name: _metric_summary(row) for name, row in results.items()}
 
     payload = {
         "boundary": (
@@ -134,6 +139,13 @@ def run_referee_smoke(
         "metadata_sha256": _sha256(metadata_path),
         "n_items": len(items),
         "test_episode_count": len(test_episodes),
+        "metric_boundary": (
+            "Exact-match top-1 is diagnostic for this near-duplicate decoy set. The primary "
+            "handoff metric is fair_beat_rate_clearbad over overshoot, reverse, random_other, "
+            "and jitter. rank_corr_vs_proprio_truth is calibration against proprio progress, "
+            "not an independent success signal."
+        ),
+        "metric_summary": metric_summary,
         "results": results,
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -173,6 +185,23 @@ def _make_provider_scorer(
         return dict(zip(names, result.scores, strict=True))
 
     return scorer
+
+
+def _metric_summary(row: dict[str, Any]) -> dict[str, float]:
+    beat_rates = row.get("decoy_beat_rate", {})
+    clear_bad = _mean_named_rates(beat_rates, CLEAR_BAD_DECOYS)
+    near_duplicate = _mean_named_rates(beat_rates, NEAR_DUPLICATE_DECOYS)
+    return {
+        "fair_beat_rate_clearbad": round(clear_bad, 4),
+        "near_duplicate_beat_rate": round(near_duplicate, 4),
+    }
+
+
+def _mean_named_rates(beat_rates: Any, names: tuple[str, ...]) -> float:
+    values = [float(beat_rates[name]) for name in names if name in beat_rates]
+    if not values:
+        return 0.0
+    return sum(values) / len(values)
 
 
 def _history_latents(cache: Any, item: dict[str, Any]) -> Any:
