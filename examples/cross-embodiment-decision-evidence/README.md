@@ -43,5 +43,5 @@ pass/fail gate, and rank-correlation against proprio progress is calibration
 rather than an independent success signal.
 The SO-101 latent scorer scripts are handoff tools for that referee lane; they
 do not grade their own output.
-The scorer handoff runbook and latest mixed residual-scorer result are recorded in
+The scorer handoff runbook and latest ranked residual scorer result are recorded in
 `SO101_LATENT_SCORER_HANDOFF.md`.

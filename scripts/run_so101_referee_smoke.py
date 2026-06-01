@@ -124,7 +124,7 @@ def run_referee_smoke(
             ),
             np.random.RandomState(shuffle_seed),
         )
-    metric_summary = {name: _metric_summary(row) for name, row in results.items()}
+    metric_summary = {name: _metric_summary(referee, row) for name, row in results.items()}
 
     payload = {
         "boundary": (
@@ -187,7 +187,13 @@ def _make_provider_scorer(
     return scorer
 
 
-def _metric_summary(row: dict[str, Any]) -> dict[str, float]:
+def _metric_summary(referee: Any, row: dict[str, Any]) -> dict[str, float]:
+    if hasattr(referee, "metric_summary"):
+        raw_summary = referee.metric_summary(row)
+        return {
+            "fair_beat_rate_clearbad": round(float(raw_summary["fair_beat_rate_clearbad"]), 4),
+            "near_duplicate_beat_rate": round(float(raw_summary["near_duplicate_beat_rate"]), 4),
+        }
     beat_rates = row.get("decoy_beat_rate", {})
     clear_bad = _mean_named_rates(beat_rates, CLEAR_BAD_DECOYS)
     near_duplicate = _mean_named_rates(beat_rates, NEAR_DUPLICATE_DECOYS)

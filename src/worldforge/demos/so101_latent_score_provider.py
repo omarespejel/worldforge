@@ -114,9 +114,9 @@ class SO101LatentScoreProvider:
         """Return the provider's normalized predicted future latent."""
 
         target = str(self._model_meta.get("target", "future_latent_residual"))
-        if target != "future_latent_residual":
+        if target not in {"future_latent_residual", "ranked_future_latent_residual"}:
             raise WorldForgeError(
-                "SO-101 predict_latent is only available for future_latent_residual models."
+                "SO-101 predict_latent is only available for future-latent residual models."
             )
         current = _required_vector(current_latent, name="current_latent")
         delta = _required_vector(action_delta, name="action_delta")
@@ -162,11 +162,9 @@ class SO101LatentScoreProvider:
     ) -> Any:
         variant = str(self._model_meta["variant"])
         parts = [current_latent, action_delta]
-        if variant == "vision_proprio_mlp":
+        if variant in {"vision_proprio_mlp", "ranked_vision_proprio_mlp"}:
             if current_state is None:
-                raise WorldForgeError(
-                    "SO-101 vision_proprio_mlp scorer requires info.current_state."
-                )
+                raise WorldForgeError(f"SO-101 {variant} scorer requires info.current_state.")
             parts.append(current_state)
         x = self._np.concatenate(parts).astype(self._np.float32)
         prefix = f"{self._model_name}__"
