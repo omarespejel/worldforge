@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,7 @@ def test_so101_referee_smoke_script_help_imports_without_referee(
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
 
     with pytest.raises(SystemExit) as exc_info:
@@ -39,6 +41,7 @@ def test_so101_referee_smoke_metric_summary_uses_clear_bad_decoys() -> None:
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
 
     class RefereeWithoutMetricSummary:
@@ -72,6 +75,7 @@ def test_so101_referee_smoke_metric_summary_prefers_referee_owned_summary() -> N
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
 
     class RefereeWithMetricSummary:
@@ -92,6 +96,78 @@ def test_so101_referee_smoke_metric_summary_prefers_referee_owned_summary() -> N
         "fair_beat_rate_clearbad": 0.1235,
         "near_duplicate_beat_rate": 0.5432,
     }
+
+
+def test_so101_referee_smoke_metric_summary_falls_back_on_bad_referee_summary() -> None:
+    script_path = Path(__file__).resolve().parents[1] / "scripts" / "run_so101_referee_smoke.py"
+    spec = importlib.util.spec_from_file_location(
+        "run_so101_referee_smoke_bad_referee_metric_test", script_path
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    class RefereeWithBadMetricSummary:
+        @staticmethod
+        def metric_summary(row: dict[str, object]) -> dict[str, float]:
+            return {"fair_beat_rate_clearbad": float("nan")}
+
+    summary = module._metric_summary(
+        RefereeWithBadMetricSummary(),
+        {
+            "decoy_beat_rate": {
+                "no_motion": 0.1,
+                "scale_half": 0.3,
+                "overshoot": 0.6,
+                "reverse": 0.5,
+                "random_other": 0.8,
+                "jitter": 0.7,
+            }
+        },
+    )
+
+    assert summary == {
+        "fair_beat_rate_clearbad": 0.65,
+        "near_duplicate_beat_rate": 0.2,
+    }
+
+
+def test_so101_ranked_residual_selection_key_uses_unrounded_metrics() -> None:
+    script_path = Path(__file__).resolve().parents[1] / "scripts" / "train_so101_latent_scorer.py"
+    spec = importlib.util.spec_from_file_location(
+        "train_so101_latent_scorer_selection_key_test", script_path
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+
+    rounded_tie_lower_raw = module._selection_key(
+        {
+            "target": "ranked_future_latent_residual",
+            "validation": {
+                "fair_beat_rate_clearbad": 0.9123,
+                "fair_beat_rate_clearbad_raw": 0.91234001,
+                "mrr": 0.4,
+                "mrr_raw": 0.4,
+            },
+        }
+    )
+    rounded_tie_higher_raw = module._selection_key(
+        {
+            "target": "ranked_future_latent_residual",
+            "validation": {
+                "fair_beat_rate_clearbad": 0.9123,
+                "fair_beat_rate_clearbad_raw": 0.91234999,
+                "mrr": 0.3,
+                "mrr_raw": 0.3,
+            },
+        }
+    )
+
+    assert rounded_tie_higher_raw > rounded_tie_lower_raw
 
 
 def test_so101_latent_score_provider_scores_candidate_deltas(tmp_path: Path) -> None:

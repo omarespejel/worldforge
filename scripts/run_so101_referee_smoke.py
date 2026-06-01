@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -188,12 +189,20 @@ def _make_provider_scorer(
 
 
 def _metric_summary(referee: Any, row: dict[str, Any]) -> dict[str, float]:
-    if hasattr(referee, "metric_summary"):
-        raw_summary = referee.metric_summary(row)
-        return {
-            "fair_beat_rate_clearbad": round(float(raw_summary["fair_beat_rate_clearbad"]), 4),
-            "near_duplicate_beat_rate": round(float(raw_summary["near_duplicate_beat_rate"]), 4),
-        }
+    metric_summary = getattr(referee, "metric_summary", None)
+    if callable(metric_summary):
+        try:
+            raw_summary = metric_summary(row)
+            return {
+                "fair_beat_rate_clearbad": round(
+                    _finite_metric(raw_summary, "fair_beat_rate_clearbad"), 4
+                ),
+                "near_duplicate_beat_rate": round(
+                    _finite_metric(raw_summary, "near_duplicate_beat_rate"), 4
+                ),
+            }
+        except (KeyError, TypeError, ValueError, OverflowError):
+            pass
     beat_rates = row.get("decoy_beat_rate", {})
     clear_bad = _mean_named_rates(beat_rates, CLEAR_BAD_DECOYS)
     near_duplicate = _mean_named_rates(beat_rates, NEAR_DUPLICATE_DECOYS)
@@ -201,6 +210,13 @@ def _metric_summary(referee: Any, row: dict[str, Any]) -> dict[str, float]:
         "fair_beat_rate_clearbad": round(clear_bad, 4),
         "near_duplicate_beat_rate": round(near_duplicate, 4),
     }
+
+
+def _finite_metric(summary: Any, key: str) -> float:
+    value = float(summary[key])
+    if not math.isfinite(value):
+        raise ValueError(f"SO-101 referee metric_summary returned non-finite {key}.")
+    return value
 
 
 def _mean_named_rates(beat_rates: Any, names: tuple[str, ...]) -> float:

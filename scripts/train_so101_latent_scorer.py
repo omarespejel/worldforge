@@ -638,8 +638,8 @@ def _fit_ranked_residual_mlp(
         }
         metrics = _evaluate_ranked_residual_model(candidate, validation, np=np)
         key = (
-            float(metrics["fair_beat_rate_clearbad"]),
-            float(metrics["mrr"]),
+            float(metrics.get("fair_beat_rate_clearbad_raw", metrics["fair_beat_rate_clearbad"])),
+            float(metrics.get("mrr_raw", metrics["mrr"])),
             -float(metrics["ranking_loss"]),
         )
         if best_key is None or key > best_key:
@@ -897,7 +897,6 @@ def _evaluate_ranked_residual_model(
     )
     costs = _latent_cost(pred, goal, np=np).reshape(item_count, candidate_count)
     top1 = 0.0
-    mrr = 0.0
     decoy_beat_rates: dict[str, float] = {}
     candidate_names = list(data["candidate_names"])
     for index, name in enumerate(candidate_names[1:], start=1):
@@ -905,8 +904,9 @@ def _evaluate_ranked_residual_model(
     order = np.argsort(costs, axis=1)
     top1 = float(np.mean(order[:, 0] == 0))
     ranks = np.argmax(order == 0, axis=1) + 1
-    mrr = float(np.mean(1.0 / ranks))
+    mrr_raw = float(np.mean(1.0 / ranks))
     clear_bad = [decoy_beat_rates[name] for name in CLEAR_BAD_DECOYS if name in decoy_beat_rates]
+    fair_clearbad_raw = float(sum(clear_bad) / max(1, len(clear_bad)))
     ranking_loss = _ranked_residual_ranking_loss(model, data, np=np)
     pred_future = _predict_residual_model(
         model,
@@ -921,8 +921,10 @@ def _evaluate_ranked_residual_model(
         "ranking_loss": round(float(ranking_loss), 8),
         "future_latent_mse": round(float(np.mean(aux_err * aux_err)), 8),
         "top1_vs_demonstrated": round(top1, 4),
-        "mrr": round(mrr, 4),
-        "fair_beat_rate_clearbad": round(float(sum(clear_bad) / max(1, len(clear_bad))), 4),
+        "mrr": round(mrr_raw, 4),
+        "mrr_raw": mrr_raw,
+        "fair_beat_rate_clearbad": round(fair_clearbad_raw, 4),
+        "fair_beat_rate_clearbad_raw": fair_clearbad_raw,
         "decoy_beat_rate": {
             name: round(value, 4) for name, value in sorted(decoy_beat_rates.items())
         },
@@ -982,8 +984,13 @@ def _selection_key(model_row: dict[str, Any]) -> tuple[float, float]:
     validation = model_row["validation"]
     if model_row["target"] == "ranked_future_latent_residual":
         return (
-            float(validation["fair_beat_rate_clearbad"]),
-            float(validation["mrr"]),
+            float(
+                validation.get(
+                    "fair_beat_rate_clearbad_raw",
+                    validation["fair_beat_rate_clearbad"],
+                )
+            ),
+            float(validation.get("mrr_raw", validation["mrr"])),
         )
     if model_row["target"] == "goal_conditioned_cost":
         return (
