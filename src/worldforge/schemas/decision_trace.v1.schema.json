@@ -479,7 +479,7 @@
       ],
       "properties": {
         "score_kind": {
-          "enum": ["hand_cost", "learned_latent", "simulator", "human_label"]
+          "enum": ["hand_cost", "learned_latent", "simulator", "human_label", "measured_metric"]
         },
         "outcome_kind": {
           "enum": ["analytic", "sim_measured", "real_measured"]
