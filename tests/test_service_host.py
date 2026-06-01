@@ -135,6 +135,35 @@ def test_service_host_endpoints_exercise_reference_workflows(tmp_path, service_a
         thread.join(timeout=5)
 
 
+def test_service_host_rejects_request_provider_override(tmp_path, service_app) -> None:
+    forge = WorldForge(state_dir=tmp_path)
+    config = service_app.ServiceConfig(provider="mock", state_dir=tmp_path)
+
+    with pytest.raises(WorldForgeError, match="cannot override"):
+        service_app._predict_workflow_payload(
+            forge,
+            config,
+            "request-123",
+            {"provider": "remote-provider"},
+        )
+
+    with pytest.raises(WorldForgeError, match="cannot override"):
+        service_app._mock_predict_workflow_payload(
+            forge,
+            config,
+            "request-123",
+            {"provider": "remote-provider"},
+        )
+
+    prediction = service_app._predict_workflow_payload(
+        forge,
+        config,
+        "request-123",
+        {"provider": "mock"},
+    )
+    assert prediction["provider"] == "mock"
+
+
 def test_service_host_errors_are_public_and_redacted(service_app) -> None:
     payload = service_app.public_error_payload(
         WorldForgeError("token=super-secret-value failed"),

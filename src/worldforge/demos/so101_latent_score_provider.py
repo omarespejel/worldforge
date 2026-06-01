@@ -32,23 +32,39 @@ class SO101LatentScoreProvider:
     ) -> None:
         np = _import_numpy()
         self._np = np
-        self._weights = np.load(weights_path, allow_pickle=False)
-        self._metadata = require_json_dict(
-            json.loads(metadata_path.read_text(encoding="utf-8")),
-            name="SO-101 latent scorer metadata",
+        self._weights = _load_npz(np, weights_path, artifact_name="SO-101 latent scorer weights")
+        self._metadata = _load_metadata(metadata_path)
+        selected_model = self._metadata.get("selected_model")
+        if not isinstance(selected_model, str) or not selected_model:
+            raise WorldForgeError(
+                "SO-101 latent scorer metadata.selected_model must be a non-empty string."
+            )
+        models = require_json_dict(
+            self._metadata.get("models"),
+            name="SO-101 latent scorer metadata.models",
             allow_empty=False,
         )
-        self._model_name = model_name or str(self._metadata["selected_model"])
-        if self._model_name not in self._metadata["models"]:
+        self._model_name = model_name or selected_model
+        if self._model_name not in models:
             raise WorldForgeError(f"SO-101 latent scorer model not found: {self._model_name!r}.")
         self._model_meta = require_json_dict(
-            self._metadata["models"][self._model_name],
+            models[self._model_name],
             name=f"SO-101 latent scorer metadata.models.{self._model_name}",
             allow_empty=False,
         )
+        if "variant" not in self._model_meta or "horizon" not in self._model_meta:
+            raise WorldForgeError(
+                "SO-101 latent scorer model metadata requires variant and horizon."
+            )
         self._cache = None
         if cache_path is not None:
-            self._cache = np.load(cache_path, allow_pickle=False)["latents"].astype(np.float32)
+            cache = _load_npz(np, cache_path, artifact_name="SO-101 latent cache")
+            try:
+                self._cache = cache["latents"].astype(np.float32)
+            except (KeyError, ValueError, TypeError) as exc:
+                raise WorldForgeError(
+                    "SO-101 latent cache must contain a numeric latents array."
+                ) from exc
 
     @property
     def model_name(self) -> str:
@@ -73,6 +89,14 @@ class SO101LatentScoreProvider:
         )
         current_state = _optional_vector(info.get("current_state"), name="current_state")
         history_latents = _optional_history_latents(info.get("history_latents"))
+        if goal_latent.shape[0] != current_latent.shape[0]:
+            raise WorldForgeError(
+                "SO-101 latent scorer goal_latent width must match current_latent width."
+            )
+        if history_latents is not None and history_latents.shape[1] != current_latent.shape[0]:
+            raise WorldForgeError(
+                "SO-101 latent scorer history_latents width must match current_latent width."
+            )
         scores = [
             self._score_candidate(
                 candidate,
@@ -168,9 +192,16 @@ class SO101LatentScoreProvider:
             parts.append(current_state)
         x = self._np.concatenate(parts).astype(self._np.float32)
         prefix = f"{self._model_name}__"
-        x_norm = (x - self._weights[prefix + "x_mean"]) / self._weights[prefix + "x_scale"]
-        hidden = self._np.tanh(x_norm @ self._weights[prefix + "w1"] + self._weights[prefix + "b1"])
-        residual = hidden @ self._weights[prefix + "w2"] + self._weights[prefix + "b2"]
+        try:
+            x_norm = (x - self._weights[prefix + "x_mean"]) / self._weights[prefix + "x_scale"]
+            hidden = self._np.tanh(
+                x_norm @ self._weights[prefix + "w1"] + self._weights[prefix + "b1"]
+            )
+            residual = hidden @ self._weights[prefix + "w2"] + self._weights[prefix + "b2"]
+        except (KeyError, ValueError, TypeError) as exc:
+            raise WorldForgeError(
+                f"SO-101 latent scorer artifacts are malformed for model {self._model_name!r}."
+            ) from exc
         predicted = current_latent + residual
         norm = float(self._np.linalg.norm(predicted))
         if norm > 1e-9:
@@ -204,11 +235,18 @@ class SO101LatentScoreProvider:
 
     def _forward(self, x: Any) -> Any:
         prefix = f"{self._model_name}__"
-        x_norm = (x - self._weights[prefix + "x_mean"]) / self._weights[prefix + "x_scale"]
-        hidden = self._np.tanh(x_norm @ self._weights[prefix + "w1"] + self._weights[prefix + "b1"])
-        return (hidden @ self._weights[prefix + "w2"] + self._weights[prefix + "b2"]).astype(
-            self._np.float32
-        )
+        try:
+            x_norm = (x - self._weights[prefix + "x_mean"]) / self._weights[prefix + "x_scale"]
+            hidden = self._np.tanh(
+                x_norm @ self._weights[prefix + "w1"] + self._weights[prefix + "b1"]
+            )
+            return (hidden @ self._weights[prefix + "w2"] + self._weights[prefix + "b2"]).astype(
+                self._np.float32
+            )
+        except (KeyError, ValueError, TypeError) as exc:
+            raise WorldForgeError(
+                f"SO-101 latent scorer artifacts are malformed for model {self._model_name!r}."
+            ) from exc
 
     def _latent_from_info(self, info: JSONDict, *, inline_key: str, frame_key: str) -> Any:
         if inline_key in info:
@@ -254,7 +292,10 @@ def _required_vector(value: object, *, name: str) -> Any:
     np = _import_numpy()
     if not isinstance(value, (list, tuple)):
         raise WorldForgeError(f"SO-101 latent scorer {name} must be a numeric list.")
-    vector = np.asarray(value, dtype=np.float32)
+    try:
+        vector = np.asarray(value, dtype=np.float32)
+    except (TypeError, ValueError) as exc:
+        raise WorldForgeError(f"SO-101 latent scorer {name} must be a numeric list.") from exc
     if vector.ndim != 1 or vector.size == 0:
         raise WorldForgeError(f"SO-101 latent scorer {name} must be a non-empty vector.")
     if not np.isfinite(vector).all():
@@ -274,7 +315,12 @@ def _optional_history_latents(value: object) -> Any | None:
     np = _import_numpy()
     if not isinstance(value, (list, tuple)):
         raise WorldForgeError("SO-101 latent scorer history_latents must be a numeric list.")
-    matrix = np.asarray(value, dtype=np.float32)
+    try:
+        matrix = np.asarray(value, dtype=np.float32)
+    except (TypeError, ValueError) as exc:
+        raise WorldForgeError(
+            "SO-101 latent scorer history_latents must be a rectangular numeric list."
+        ) from exc
     if matrix.ndim != 2 or matrix.shape[0] != HISTORY_FRAME_COUNT or matrix.shape[1] == 0:
         raise WorldForgeError(
             "SO-101 latent scorer history_latents must contain three latent vectors."
@@ -282,6 +328,25 @@ def _optional_history_latents(value: object) -> Any | None:
     if not np.isfinite(matrix).all():
         raise WorldForgeError("SO-101 latent scorer history_latents must contain finite numbers.")
     return matrix
+
+
+def _load_npz(np: Any, path: Path, *, artifact_name: str) -> Any:
+    try:
+        return np.load(path, allow_pickle=False)
+    except (OSError, ValueError) as exc:
+        raise WorldForgeError(f"{artifact_name} could not be loaded.") from exc
+
+
+def _load_metadata(path: Path) -> JSONDict:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise WorldForgeError("SO-101 latent scorer metadata could not be loaded.") from exc
+    return require_json_dict(
+        raw,
+        name="SO-101 latent scorer metadata",
+        allow_empty=False,
+    )
 
 
 def _import_numpy() -> Any:

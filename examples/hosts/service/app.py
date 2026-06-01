@@ -337,8 +337,8 @@ def _mock_predict_workflow_payload(
     request_id: str,
     body: JSON,
 ) -> JSON:
-    provider = str(body.get("provider") or config.provider)
-    return prediction_payload(forge, body, provider=provider, request_id=request_id)
+    _reject_provider_override(body, allowed_provider="mock")
+    return prediction_payload(forge, body, provider="mock", request_id=request_id)
 
 
 def _predict_workflow_payload(
@@ -347,8 +347,18 @@ def _predict_workflow_payload(
     request_id: str,
     body: JSON,
 ) -> JSON:
-    provider = str(body.get("provider") or config.provider)
-    return prediction_payload(forge, body, provider=provider, request_id=request_id)
+    _reject_provider_override(body, allowed_provider=config.provider)
+    return prediction_payload(forge, body, provider=config.provider, request_id=request_id)
+
+
+def _reject_provider_override(body: JSON, *, allowed_provider: str) -> None:
+    if "provider" not in body:
+        return
+    if body["provider"] == allowed_provider:
+        return
+    raise WorldForgeError(
+        "Provider selection is configured by the service host; request bodies cannot override it."
+    )
 
 
 _GET_ROUTES: dict[str, GetRoute] = {

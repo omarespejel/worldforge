@@ -17,17 +17,10 @@ from typing import Any
 
 from worldforge.demos.so101_latent_score_provider import SO101LatentScoreProvider
 
-DEFAULT_DATASET_DIR = Path(
-    "/Users/espejelomar/StarkNet/zk-ai/hackathons/worldforge-so101-trace-judge/data/"
-    "svla_so101_pickplace"
-)
-DEFAULT_CACHE_PATH = Path(
-    "/Users/espejelomar/StarkNet/zk-ai/hackathons/worldforge-eval-referee/latent_cache.npz"
-)
-DEFAULT_REFEREE_PATH = Path(
-    "/Users/espejelomar/StarkNet/zk-ai/hackathons/worldforge-eval-referee/referee_headline.py"
-)
-DEFAULT_SCORER_DIR = Path(".worldforge/so101-goal-score-scorer")
+DEFAULT_DATASET_DIR = Path("data/svla_so101_pickplace")
+DEFAULT_CACHE_PATH = Path(".worldforge/so101-latent-cache/latent_cache.npz")
+DEFAULT_REFEREE_PATH = Path(".worldforge/so101-referee/referee_headline.py")
+DEFAULT_SCORER_DIR = Path(".worldforge/so101-latent-scorer")
 CLEAR_BAD_DECOYS = ("overshoot", "reverse", "random_other", "jitter")
 NEAR_DUPLICATE_DECOYS = ("no_motion", "scale_half")
 
@@ -75,8 +68,10 @@ def main(argv: list[str] | None = None) -> int:
         summary = result["metric_summary"][name]
         print(
             f"{name}: fair_clearbad={summary['fair_beat_rate_clearbad']:.4f} "
-            f"mrr={row['mrr']:.4f} top1={row['top1_vs_demonstrated']:.4f} "
-            f"rank_corr_calibration={row['rank_corr_vs_proprio_truth']:.4f}"
+            f"mrr={_result_metric(row, 'mrr', scorer_name=name):.4f} "
+            f"top1={_result_metric(row, 'top1_vs_demonstrated', scorer_name=name):.4f} "
+            "rank_corr_calibration="
+            f"{_result_metric(row, 'rank_corr_vs_proprio_truth', scorer_name=name):.4f}"
         )
     print(f"WROTE {result['output_path']}")
     return 0
@@ -97,8 +92,8 @@ def run_referee_smoke(
 ) -> dict[str, Any]:
     np = _import_numpy()
     referee = _load_referee(referee_path)
-    cache = np.load(cache_path, allow_pickle=False)["latents"].astype(np.float32)
-    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    cache = _load_latent_cache(np, cache_path)
+    metadata = _load_scorer_metadata(metadata_path)
     selected_models = model_names or sorted(metadata["models"])
 
     data, episodes = referee.load(dataset_dir)
@@ -201,8 +196,8 @@ def _metric_summary(referee: Any, row: dict[str, Any]) -> dict[str, float]:
                     _finite_metric(raw_summary, "near_duplicate_beat_rate"), 4
                 ),
             }
-        except (KeyError, TypeError, ValueError, OverflowError):
-            pass
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise RuntimeError("SO-101 referee metric_summary returned invalid metrics.") from exc
     beat_rates = row.get("decoy_beat_rate", {})
     clear_bad = _mean_named_rates(beat_rates, CLEAR_BAD_DECOYS)
     near_duplicate = _mean_named_rates(beat_rates, NEAR_DUPLICATE_DECOYS)
@@ -213,6 +208,8 @@ def _metric_summary(referee: Any, row: dict[str, Any]) -> dict[str, float]:
 
 
 def _finite_metric(summary: Any, key: str) -> float:
+    if not isinstance(summary, dict):
+        raise TypeError("SO-101 referee metric_summary must return a dictionary.")
     value = float(summary[key])
     if not math.isfinite(value):
         raise ValueError(f"SO-101 referee metric_summary returned non-finite {key}.")
@@ -220,9 +217,20 @@ def _finite_metric(summary: Any, key: str) -> float:
 
 
 def _mean_named_rates(beat_rates: Any, names: tuple[str, ...]) -> float:
-    values = [float(beat_rates[name]) for name in names if name in beat_rates]
-    if not values:
-        return 0.0
+    if not isinstance(beat_rates, dict):
+        raise ValueError("SO-101 referee result decoy_beat_rate must be a dictionary.")
+    missing = [name for name in names if name not in beat_rates]
+    if missing:
+        raise ValueError(
+            "SO-101 referee result decoy_beat_rate is missing required decoys: "
+            + ", ".join(missing)
+        )
+    values = []
+    for name in names:
+        value = float(beat_rates[name])
+        if not math.isfinite(value):
+            raise ValueError(f"SO-101 referee decoy_beat_rate.{name} must be finite.")
+        values.append(value)
     return sum(values) / len(values)
 
 
@@ -236,16 +244,67 @@ def _history_latents(cache: Any, item: dict[str, Any]) -> Any:
 
 def _load_referee(path: Path) -> Any:
     if not path.is_file():
-        raise FileNotFoundError(f"SO-101 referee path does not exist: {path}")
+        raise FileNotFoundError(
+            f"SO-101 referee path does not exist: {_safe_path_for_error(path)}. "
+            "Pass --referee with the host-owned referee module path."
+        )
     spec = importlib.util.spec_from_file_location("worldforge_external_so101_referee", path)
     if spec is None or spec.loader is None:
-        raise RuntimeError(f"Could not load SO-101 referee module from {path}")
+        raise RuntimeError(
+            f"Could not load SO-101 referee module from {_safe_path_for_error(path)}."
+        )
     module = importlib.util.module_from_spec(spec)
+    # Host-owned referee modules execute arbitrary Python. This helper only loads an explicit
+    # path supplied by the operator and must not be used with untrusted downloaded files.
     spec.loader.exec_module(module)
     for name in ("load", "build_items", "evaluate", "proprio_scorer", "DECOYS"):
         if not hasattr(module, name):
             raise RuntimeError(f"SO-101 referee module is missing required member: {name}")
     return module
+
+
+def _load_latent_cache(np: Any, path: Path) -> Any:
+    try:
+        return np.load(path, allow_pickle=False)["latents"].astype(np.float32)
+    except (OSError, ValueError, KeyError) as exc:
+        raise RuntimeError(
+            f"Could not load SO-101 latent cache from {_safe_path_for_error(path)}. "
+            "Pass --cache with the host-owned latent_cache.npz path."
+        ) from exc
+
+
+def _load_scorer_metadata(path: Path) -> dict[str, Any]:
+    try:
+        metadata = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"Could not load SO-101 scorer metadata from {_safe_path_for_error(path)}. "
+            "Pass --metadata with the scorer metadata artifact."
+        ) from exc
+    if not isinstance(metadata, dict) or not isinstance(metadata.get("models"), dict):
+        raise RuntimeError("SO-101 scorer metadata must contain a models dictionary.")
+    return metadata
+
+
+def _safe_path_for_error(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(Path.cwd().resolve()))
+    except (OSError, ValueError):
+        return path.name
+
+
+def _result_metric(row: dict[str, Any], key: str, *, scorer_name: str) -> float:
+    try:
+        value = float(row[key])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f"SO-101 referee result for {scorer_name!r} is missing numeric metric {key!r}."
+        ) from exc
+    if not math.isfinite(value):
+        raise RuntimeError(
+            f"SO-101 referee result for {scorer_name!r} has non-finite metric {key!r}."
+        )
+    return value
 
 
 def _sha256(path: Path) -> str:

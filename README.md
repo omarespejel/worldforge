@@ -72,6 +72,8 @@ uv run worldforge benchmark --provider mock --operation predict --operation embe
 
 The mock provider needs no credentials, checkpoints, GPU, or robot. Success is a saved local world
 and a benchmark report covering `predict` and `embed`.
+If the first run fails, start triage with `uv run worldforge doctor --registered-only` to confirm
+the active provider surface before changing dependencies or runtime configuration.
 
 ## Robotics Showcase: LeRobot + LeWorldModel
 

@@ -14,13 +14,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-DEFAULT_DATASET_DIR = Path(
-    "/Users/espejelomar/StarkNet/zk-ai/hackathons/worldforge-so101-trace-judge/data/"
-    "svla_so101_pickplace"
-)
-DEFAULT_CACHE_PATH = Path(
-    "/Users/espejelomar/StarkNet/zk-ai/hackathons/worldforge-eval-referee/latent_cache.npz"
-)
+DEFAULT_DATASET_DIR = Path("data/svla_so101_pickplace")
+DEFAULT_CACHE_PATH = Path(".worldforge/so101-latent-cache/latent_cache.npz")
 
 
 def main(argv: list[str] | None = None) -> int:
