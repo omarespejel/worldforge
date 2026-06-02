@@ -106,6 +106,7 @@ checkpoint inference.
 | `so101-replay-trace` | `uv run worldforge-demo-so101-replay-trace` | Scores deterministic SO-101 pick-and-place candidates and emits a reusable decision trace without LeRobot, torch, DimOS, or hardware. |
 | `cross-embodiment-decision-evidence` | `uv run python examples/cross-embodiment-decision-evidence/run.py` | Normalizes Go2 replay, PimSim export, and SO-101 replay outputs into one DecisionTrace v1 evidence bundle without robot hardware or optional runtimes. |
 | `go2-measured-outcomes` | `uv run python examples/go2-measured-outcomes/run.py --capture-dir <dir>` | Sanitizes a host-owned Go2 native-rate system-ID capture into a `real_measured` DecisionTrace summary without committing raw telemetry or LiDAR sidecars. |
+| `go2-controlbench` | `uv run python examples/go2-controlbench/run.py --capture-dir <dir>` | Benchmarks command-to-outcome baselines over a host-owned Go2 capture and emits an inverse-control DecisionTrace overlay without committing raw telemetry or media. |
 
 The SO-101 replay trace records `observation -> goal -> candidate_actions -> candidate_scores ->
 selected_action -> outcome -> counterfactuals`. It is a checkout-safe replay fixture shaped after
@@ -130,6 +131,14 @@ Expected success signal: the command exits `0` and writes
 `--capture-dir` points to a valid Go2 native-rate system-ID capture containing native odometry
 summary statistics and LiDAR stream references, then rerun and use the error output to identify
 which capture artifact is missing.
+
+The Go2 ControlBench benchmark reads the same private capture shape and writes
+`controlbench-summary.json`, `controlbench-report.md`, and
+`decision-trace-go2-controlbench.json` under `.worldforge/go2-controlbench/`. It evaluates
+command-integral, affine system-ID, and deadband-aware affine baselines for command-outcome
+prediction and inverse-control ranking. The generated DecisionTrace overlay records candidates,
+predicted scores, measured outcomes, and regret; it does not claim autonomous Go2 planning or
+publish raw room media, LiDAR sidecars, robot identifiers, IPs, or host-local paths.
 
 ## Service Host Reference
 
