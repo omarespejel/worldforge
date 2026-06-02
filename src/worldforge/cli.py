@@ -120,6 +120,18 @@ EXAMPLE_COMMANDS: tuple[dict[str, str], ...] = (
         ),
     },
     {
+        "task": "Robot decision traces",
+        "name": "go2-controlbench",
+        "surface": "Go2 ControlBench, measured outcomes, inverse-control ranking",
+        "requires": "base WorldForge package; private host-owned Go2 capture directory",
+        "command": "uv run python examples/go2-controlbench/run.py --capture-dir <dir>",
+        "description": (
+            "Benchmark command-to-outcome baselines over a native-rate Go2 capture and emit "
+            "a DecisionTrace overlay for inverse-control regret without committing raw "
+            "telemetry, media, IPs, or robot serials."
+        ),
+    },
+    {
         "task": "Batch evaluation host",
         "name": "batch-eval-host",
         "surface": "evaluation, benchmarking, run workspaces, budget gates",

@@ -54,6 +54,7 @@ terminal and JSON paths remain available with `--no-tui`.
 | `so101-replay-trace` | score provider, decision trace, counterfactuals, mock replay | `uv run worldforge-demo-so101-replay-trace` |
 | `cross-embodiment-decision-evidence` | DecisionTrace v1, Go2 replay, PimSim export, SO-101 replay | `uv run python examples/cross-embodiment-decision-evidence/run.py` |
 | `go2-measured-outcomes` | DecisionTrace v1, real-measured Go2 system-ID summary | `uv run python examples/go2-measured-outcomes/run.py --capture-dir <dir>` |
+| `go2-controlbench` | Go2 ControlBench, measured outcomes, inverse-control ranking | `uv run python examples/go2-controlbench/run.py --capture-dir <dir>` |
 
 The SO-101 replay trace demo uses a deterministic pick-and-place decision point shaped after the
 public `lerobot/svla_so101_pickplace` metadata. It scores candidate 6D joint-action futures,
@@ -77,6 +78,13 @@ Run it with `uv run python examples/go2-measured-outcomes/run.py --capture-dir <
 validated `real_measured` trace plus `go2-measured-outcomes-report.md`. First triage step: confirm
 the capture directory contains the native system-ID analysis CSVs and stream references, then rerun
 and use the error output to identify the missing artifact.
+
+The Go2 ControlBench example consumes the same private capture shape and emits
+`controlbench-summary.json`, `controlbench-report.md`, and
+`decision-trace-go2-controlbench.json`. It evaluates command-integral, affine system-ID, and
+deadband-aware affine baselines on command-outcome prediction and inverse-control ranking. This is
+offline benchmark evidence, not autonomous robot control; raw media and sensor sidecars remain
+outside the generated artifacts.
 
 ## Service Host Reference
 
