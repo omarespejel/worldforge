@@ -225,11 +225,17 @@ def test_so101_referee_smoke_gate_summary_preregisters_baselines() -> None:
             }
         },
         residual_ridge_fair_clearbad=0.6762,
+        stress_tests={
+            "hard_negative_gate": {
+                "verdict": "does_not_clear_hard_on_manifold_gate",
+            }
+        },
     )
 
     assert gate == {
         "registered_before_result": True,
         "metric": "fair_beat_rate_clearbad",
+        "metric_boundary": "train_like_synthetic_clearbad_smoke",
         "clear_bad_decoys": ["overshoot", "reverse", "random_other", "jitter"],
         "near_duplicate_decoys_excluded_from_gate": ["no_motion", "scale_half"],
         "selected_model": "ranked_vision_proprio_mlp_h5",
@@ -244,11 +250,13 @@ def test_so101_referee_smoke_gate_summary_preregisters_baselines() -> None:
             "Shuffled-label top-1 is reported as a leakage control and should stay near chance; "
             "Claude's independent audit owns the final leakage verdict."
         ),
-        "verdict": "clears_pre_registered_fair_gate",
+        "verdict": "clears_train_like_clearbad_smoke_gate",
+        "hard_negative_verdict": "does_not_clear_hard_on_manifold_gate",
         "claim_boundary": (
-            "Passing this gate is evidence of held-out replay ranking value for learned semantic "
-            "latent scoring. It is not a physical execution, sim-measured task-success, or "
-            "safety-controller claim."
+            "Passing this train-like synthetic clear-bad smoke gate is not enough for a robust "
+            "learned-scorer value claim. That claim also needs held-out-generator or "
+            "on-manifold hard-negative rank fidelity, plus the independent leakage audit. This "
+            "is not a physical execution, sim-measured task-success, or safety-controller claim."
         ),
     }
 
@@ -284,7 +292,86 @@ def test_so101_referee_smoke_gate_summary_fails_closed_below_ridge() -> None:
 
     assert gate["clears_proprio_baseline"] is True
     assert gate["clears_residual_ridge_baseline"] is False
-    assert gate["verdict"] == "does_not_clear_pre_registered_fair_gate"
+    assert gate["verdict"] == "does_not_clear_train_like_clearbad_smoke_gate"
+
+
+def test_so101_referee_smoke_progress_candidate_set_uses_progress_best() -> None:
+    np = pytest.importorskip("numpy")
+    module = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_progress_candidate_test",
+    )
+
+    class RefereeWithoutTrueProgress:
+        pass
+
+    item = {
+        "cur": np.asarray([0.0, 0.0], dtype=np.float32),
+        "goal": np.asarray([2.0, 0.0], dtype=np.float32),
+        "cands": {
+            "demonstrated": np.asarray([1.0, 0.0], dtype=np.float32),
+            "other_episode_demo_action": np.asarray([2.0, 0.0], dtype=np.float32),
+        },
+    }
+
+    def scorer(_item: dict[str, object]) -> dict[str, float]:
+        return {
+            "demonstrated": 0.4,
+            "other_episode_demo_action": 0.1,
+        }
+
+    result = module._evaluate_progress_candidate_set(
+        referee=RefereeWithoutTrueProgress(),
+        np=np,
+        items=[item],
+        scorer=scorer,
+        decoy_names=("other_episode_demo_action",),
+    )
+
+    assert result["top1_vs_demonstrated"] == 0.0
+    assert result["top1_vs_progress_best"] == 1.0
+    assert result["progress_pairwise_accuracy"] == 1.0
+    assert result["demonstrated_better_pair_count"] == 0
+
+
+def test_so101_referee_smoke_hard_negative_gate_flags_proprio_failure() -> None:
+    module = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_hard_gate_test",
+    )
+
+    gate = module._build_hard_negative_gate(
+        {
+            "on_manifold_real_actions": {
+                "results": {
+                    "proprio_baseline": {
+                        "progress_pairwise_accuracy_raw": 0.7,
+                    },
+                    "ranked_vision_proprio_mlp_h5": {
+                        "progress_pairwise_accuracy_raw": 0.6,
+                    },
+                }
+            }
+        }
+    )
+
+    assert gate == {
+        "metric": "progress_pairwise_accuracy",
+        "profile": "on_manifold_real_actions",
+        "selected_model": "ranked_vision_proprio_mlp_h5",
+        "selected_model_score": 0.6,
+        "proprio_baseline": 0.7,
+        "clears_proprio_baseline": False,
+        "verdict": "does_not_clear_hard_on_manifold_gate",
+        "claim_boundary": (
+            "This is a hard-negative diagnostic using proprio progress as an oracle proxy, not "
+            "an execution-grounded success metric. Failure means the scorer did not preserve "
+            "on-manifold candidate progress ordering under this proxy. A learned-scorer value "
+            "claim should require this diagnostic, a near-duplicate gate, or a stronger "
+            "execution-grounded rank-fidelity gate, not only train-like synthetic clear-bad "
+            "decoys."
+        ),
+    }
 
 
 def test_so101_referee_smoke_gate_summary_requires_selected_model() -> None:

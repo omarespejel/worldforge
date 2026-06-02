@@ -113,9 +113,10 @@ def run_cross_embodiment_decision_evidence(
         "kill_criterion": (
             "If WorldForge cannot choose, explain, compare, or expose counterfactual robot "
             "actions better than a hardcoded command or plain script, stop pushing this "
-            "integration. Learned-scorer value requires an independent held-out referee result "
-            "that beats proprio/hand-cost baselines on fair decoy/progress metrics; exact-match "
-            "top-1 is diagnostic for near-duplicate decoys, not the pass/fail gate."
+            "integration. Learned-scorer clear-bad decoy metrics are smoke tests only; robust "
+            "value requires independent held-out-generator, hard/on-manifold, or "
+            "execution-grounded rank-fidelity results above the relevant proprio/hand-cost "
+            "baselines."
         ),
     }
     write_json_artifact(output_dir / "summary.json", summary)
@@ -577,11 +578,12 @@ def render_cross_embodiment_report(traces: Mapping[str, JSONDict]) -> str:
             ),
             "",
             (
-                "For learned-scorer claims, the stricter gate is independent held-out referee "
-                "performance above the proprio/hand-cost baselines on fair decoy/progress "
-                "metrics. Exact-match top-1 is diagnostic for near-duplicate decoys; "
-                "rank-correlation against proprio progress is calibration, not an independent "
-                "success signal."
+                "For learned-scorer claims, train-like clear-bad decoy metrics are smoke tests "
+                "only. The stricter gate is independent held-out-generator, hard/on-manifold, "
+                "or execution-grounded rank-fidelity performance above the relevant "
+                "proprio/hand-cost baselines. Exact-match top-1 is diagnostic for "
+                "near-duplicate decoys; rank-correlation against proprio progress is "
+                "calibration, not an independent success signal."
             ),
             "",
         ]

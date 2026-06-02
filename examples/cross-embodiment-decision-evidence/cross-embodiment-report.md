@@ -24,7 +24,7 @@ The comparable cross-embodiment column is `Value Signal` on a normalized `[0, 1]
 
 If WorldForge cannot choose, explain, compare, or expose counterfactual robot actions better than a hardcoded DimOS command or plain script, stop pushing this integration and pivot.
 
-For learned-scorer claims, the stricter gate is independent held-out referee performance above the proprio/hand-cost baselines on fair decoy/progress metrics. Exact-match top-1 is diagnostic for near-duplicate decoys; rank-correlation against proprio progress is calibration, not an independent success signal.
+For learned-scorer claims, train-like clear-bad decoy metrics are smoke tests only. The stricter gate is independent held-out-generator, hard/on-manifold, or execution-grounded rank-fidelity performance above the relevant proprio/hand-cost baselines. Exact-match top-1 is diagnostic for near-duplicate decoys; rank-correlation against proprio progress is calibration, not an independent success signal.
 
 ## go2
 
