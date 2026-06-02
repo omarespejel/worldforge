@@ -14,10 +14,12 @@ Do not claim learned-scorer value unless the independent referee shows all of:
 - no shuffled-label leak,
 - useful held-out task/sub-goal signal under the external referee.
 
-For the current near-duplicate decoy set, exact-match top-1 is diagnostic only. The primary
-handoff gate is `fair_beat_rate_clearbad`: the mean demonstrated-action beat rate over
-`overshoot`, `reverse`, `random_other`, and `jitter`. `rank_corr_vs_proprio_truth` is calibration
-against proprio progress, not an independent success signal.
+For the current near-duplicate decoy set, exact-match top-1 is diagnostic only. The
+`fair_beat_rate_clearbad` metric is a train-like synthetic clear-bad smoke metric: the mean
+demonstrated-action beat rate over `overshoot`, `reverse`, `random_other`, and `jitter`.
+`rank_corr_vs_proprio_truth` is calibration against proprio progress, not an independent success
+signal. A robust learned-scorer claim also needs held-out-generator, near-duplicate, on-manifold,
+or execution-grounded rank-fidelity evidence.
 
 ## Inputs
 
@@ -71,14 +73,46 @@ uv run --with numpy --with pyarrow python scripts/run_so101_referee_smoke.py \
   --referee /path/to/referee_headline.py \
   --weights .worldforge/so101-ranked-residual-scorer-v2/so101_latent_scorers.npz \
   --metadata .worldforge/so101-ranked-residual-scorer-v2/so101_latent_scorer_meta.json \
+  --residual-ridge-fair-clearbad 0.6762 \
   --out .worldforge/so101-ranked-residual-scorer-v2/claude-referee-ranked-residual-smoke-result.json
 ```
 
 Success signal: the command prints held-out item count and one row per scorer, including
-`fair_clearbad`, then writes the JSON result under `.worldforge/so101-ranked-residual-scorer-v2/`.
+`fair_clearbad`, then prints the train-like clear-bad smoke verdict plus the hard-negative
+diagnostic verdict, and writes the JSON result under `.worldforge/so101-ranked-residual-scorer-v2/`.
 
 First triage step on failure: check that the cache, sidecar, dataset, and external referee paths
 exist and agree on frame ordering.
+
+## Pre-Registered Smoke Gate
+
+This gate is written before interpreting the scorer result:
+
+- smoke metric: `fair_beat_rate_clearbad`
+- clear-bad decoys in gate: `overshoot`, `reverse`, `random_other`, `jitter`
+- near-duplicate decoys excluded from the gate: `no_motion`, `scale_half`
+- selected model: the metadata `selected_model`, selected on validation only
+- pass bar:
+  - selected scorer must beat the blind proprio baseline, and
+  - selected scorer should clear the residual-ridge sanity baseline `0.6762`
+- controls:
+  - `shuffled_label_top1` is reported and should stay near chance,
+  - exact-match top-1 remains diagnostic only,
+  - `rank_corr_vs_proprio_truth` remains calibration only.
+
+The smoke JSON now records `external_referee.sha256`; the local referee used for the ranked-v2
+smoke below hashed to:
+
+```text
+398a0c487904f307b08dd934e862689b26cdb9e5e3442963be00608ce5815396
+```
+
+Claude should audit that hash against his frozen `referee_headline.py` before accepting the
+number. Passing this smoke gate is not enough for a robust learned-scorer value claim. It only
+says the scorer separates train-like synthetic clear-bad decoys under the frozen referee. The
+stronger claim requires near-duplicate or on-manifold hard-negative ranking, or execution-grounded
+rank-fidelity. It is not a physical execution, sim-measured task-success, or safety-controller
+claim.
 
 ## Smoke Result
 
@@ -101,12 +135,43 @@ primary optimization target matches the referee gate.
 | `ranked_vision_mlp_h15` | `0.9181` | `0.3238` | `0.0844` | `0.4293` | `0.1692` |
 | `ranked_vision_proprio_mlp_h5` | `0.9209` | `0.1423` | `0.0490` | `0.3707` | `0.1897` |
 
-Decision: the ranked residual objective clears the #43 fair gate under the external held-out
-referee. It beats both the blind proprio baseline (`0.6174`) and the residual ridge sanity
-baseline (`0.6762`) on `fair_beat_rate_clearbad`. This is evidence that the learned vision scorer
-adds decision-ranking value on held-out SO-101 replay candidates. It is still not a physical
-execution, sim-measured outcome, or task-success claim; near-duplicate decoys remain weak for some
-variants, and `rank_corr_vs_proprio_truth` remains calibration only.
+Decision: the ranked residual objective clears the train-like clear-bad smoke metric, but it does
+not clear the harder claim boundary. The selected scorer beats both the blind proprio baseline
+(`0.6174`) and the residual ridge sanity baseline (`0.6762`) on `fair_beat_rate_clearbad`, but it
+collapses on near-duplicate decoys (`0.1423` versus proprio `0.5896`). This is strong evidence
+that the apparatus detects a synthetic-negative artifact, not yet evidence that the learned vision
+scorer adds robust decision-ranking value.
+
+The selected metadata model is `ranked_vision_proprio_mlp_h5`, with
+`fair_beat_rate_clearbad=0.9209`. The train-like smoke verdict is:
+
+```text
+clears_train_like_clearbad_smoke_gate
+```
+
+The hard-negative diagnostic added after the audit uses held-out shifted synthetic decoys and
+on-manifold real demonstrated actions from neighboring, same-episode, and different-episode
+frames. The on-manifold metric uses proprio progress as an oracle proxy, so it is a diagnostic
+rather than an execution-grounded success metric:
+
+| Diagnostic profile | Scorer | Progress-pairwise accuracy | Top-1 vs progress-best | Decision |
+| --- | --- | ---: | ---: | --- |
+| `heldout_shifted_synthetic` | `proprio_baseline` | `1.0000` | `1.0000` | oracle sanity |
+| `heldout_shifted_synthetic` | `ranked_vision_proprio_mlp_h5` | `0.5415` | `0.0686` | weak |
+| `on_manifold_real_actions` | `proprio_baseline` | `1.0000` | `1.0000` | oracle sanity |
+| `on_manifold_real_actions` | `ranked_vision_proprio_mlp_h5` | `0.4584` | `0.1246` | fails hard-negative diagnostic |
+
+Hard-negative verdict:
+
+```text
+does_not_clear_hard_on_manifold_gate
+```
+
+Claim boundary: do not headline the `0.9209` as learned-scorer value. The useful result is the
+negative control: DecisionTrace-style per-decoy evidence exposed that the scorer separates easy
+synthetic negatives but fails harder/on-manifold ranking. The next scorer must use held-out
+negative generators, hard-negative mining, and execution-grounded rank fidelity before any
+external learned-world-model claim.
 
 Local ranked-v2 artifact hashes from that smoke run:
 
@@ -170,12 +235,14 @@ Local proprio-target artifact hashes from that smoke run:
 
 ## Next Iteration
 
-The scorer-side experiments should now harden the ranked residual result rather than weaken the
-gate:
+The scorer-side experiments should now treat the ranked residual result as a useful negative
+control, not a solved scorer:
 
-- move the independent referee's `fair_beat_rate_clearbad` summary into any shared referee
-  artifact used by collaborators,
+- keep the train-like clear-bad metric as a smoke test only,
+- make the headline gate hard/on-manifold or execution-grounded rank fidelity,
+- train with held-out negative generators so the model cannot memorize one perturbation recipe,
+- add hard-negative mining and annealed margins for near-duplicate candidates,
 - rerun Claude's independent copy of the referee on the ranked-v2 artifacts,
 - add more SO-101/LeRobot episodes before increasing neural capacity,
-- include overhead-camera latents when available,
+- include overhead-camera or dense/patch latents when available,
 - keep Claude's external referee as the independent judge.

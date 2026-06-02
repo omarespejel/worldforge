@@ -92,8 +92,13 @@ packages = ["src/worldforge"]
 only-packages = true
 
 [tool.hatch.build.targets.wheel.force-include]
-"src/worldforge/providers/runtime_manifests" = "worldforge/providers/runtime_manifests"
-"src/worldforge/schemas" = "worldforge/schemas"
+"src/worldforge/providers/runtime_manifests/cosmos-policy.json" = "worldforge/providers/runtime_manifests/cosmos-policy.json"
+"src/worldforge/providers/runtime_manifests/gr00t.json" = "worldforge/providers/runtime_manifests/gr00t.json"
+"src/worldforge/providers/runtime_manifests/jepa-wms.json" = "worldforge/providers/runtime_manifests/jepa-wms.json"
+"src/worldforge/providers/runtime_manifests/jepa.json" = "worldforge/providers/runtime_manifests/jepa.json"
+"src/worldforge/providers/runtime_manifests/lerobot.json" = "worldforge/providers/runtime_manifests/lerobot.json"
+"src/worldforge/providers/runtime_manifests/leworldmodel.json" = "worldforge/providers/runtime_manifests/leworldmodel.json"
+"src/worldforge/schemas/decision_trace.v1.schema.json" = "worldforge/schemas/decision_trace.v1.schema.json"
 
 [tool.hatch.build.targets.sdist]
 include = [

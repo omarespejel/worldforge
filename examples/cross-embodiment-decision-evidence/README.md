@@ -36,11 +36,12 @@ counterfactual provenance. `outcome_source` records concrete provenance such as
 than sim-measured or real-measured success.
 
 Learned-scorer claims have a stricter gate than the replay evidence bundle:
-the scorer must clear an independent held-out referee, beat the proprio or
-hand-cost baselines on fair decoy/progress metrics, and avoid shuffled-label
-leakage. Exact-match top-1 is diagnostic for near-duplicate decoys, not the
-pass/fail gate, and rank-correlation against proprio progress is calibration
-rather than an independent success signal.
+train-like clear-bad decoy metrics are smoke tests only. A robust claim needs
+the scorer to clear independent held-out-generator, hard/on-manifold, or
+execution-grounded rank-fidelity checks against proprio or hand-cost baselines,
+and avoid shuffled-label leakage. Exact-match top-1 is diagnostic for
+near-duplicate decoys, not the pass/fail gate, and rank-correlation against
+proprio progress is calibration rather than an independent success signal.
 The SO-101 latent scorer scripts are handoff tools for that referee lane; they
 do not grade their own output.
 The scorer handoff runbook and latest ranked residual scorer result are recorded in
