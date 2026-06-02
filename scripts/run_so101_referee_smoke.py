@@ -279,6 +279,8 @@ def _build_stress_tests(
     scorers: dict[str, Any],
     seed: int,
 ) -> dict[str, Any]:
+    if not items:
+        raise RuntimeError("SO-101 stress diagnostics require at least one held-out item.")
     heldout_items = _heldout_shifted_synthetic_items(items, np=np, seed=seed)
     on_manifold_items = _on_manifold_real_action_items(items)
     profiles = {
@@ -360,15 +362,21 @@ def _on_manifold_real_action_items(items: list[dict[str, Any]]) -> list[dict[str
     for index, item in enumerate(items):
         by_episode.setdefault(item.get("ep"), []).append(index)
     episode_keys = list(by_episode)
+    episode_positions = {episode: index for index, episode in enumerate(episode_keys)}
+    item_positions = {
+        item_index: local_position
+        for indices in by_episode.values()
+        for local_position, item_index in enumerate(indices)
+    }
     transformed = []
     for index, item in enumerate(items):
         episode_indices = by_episode[item.get("ep")]
-        local_position = episode_indices.index(index)
+        local_position = item_positions[index]
         previous_index = episode_indices[max(0, local_position - 3)]
         next_index = episode_indices[min(len(episode_indices) - 1, local_position + 3)]
         same_episode_offset = local_position + max(1, len(episode_indices) // 3)
         same_episode_index = episode_indices[same_episode_offset % len(episode_indices)]
-        other_episode_position = episode_keys.index(item.get("ep")) + 1
+        other_episode_position = episode_positions[item.get("ep")] + 1
         other_episode_key = episode_keys[other_episode_position % len(episode_keys)]
         other_episode_indices = by_episode[other_episode_key]
         other_episode_index = other_episode_indices[index % len(other_episode_indices)]
@@ -395,6 +403,8 @@ def _evaluate_progress_candidate_set(
     scorer: Any,
     decoy_names: tuple[str, ...],
 ) -> dict[str, Any]:
+    if not items:
+        raise RuntimeError("SO-101 progress diagnostics require at least one held-out item.")
     names = ("demonstrated", *decoy_names)
     top1_demo = 0
     top1_progress = 0

@@ -334,6 +334,40 @@ def test_so101_referee_smoke_progress_candidate_set_uses_progress_best() -> None
     assert result["demonstrated_better_pair_count"] == 0
 
 
+def test_so101_referee_smoke_progress_candidate_set_rejects_empty_items() -> None:
+    np = pytest.importorskip("numpy")
+    module = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_empty_progress_test",
+    )
+
+    with pytest.raises(RuntimeError, match="at least one held-out item"):
+        module._evaluate_progress_candidate_set(
+            referee=object(),
+            np=np,
+            items=[],
+            scorer=lambda _item: {},
+            decoy_names=("other_episode_demo_action",),
+        )
+
+
+def test_so101_referee_smoke_stress_tests_reject_empty_items() -> None:
+    np = pytest.importorskip("numpy")
+    module = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_empty_stress_test",
+    )
+
+    with pytest.raises(RuntimeError, match="at least one held-out item"):
+        module._build_stress_tests(
+            referee=object(),
+            np=np,
+            items=[],
+            scorers={"proprio_baseline": lambda _item: {}},
+            seed=0,
+        )
+
+
 def test_so101_referee_smoke_hard_negative_gate_flags_proprio_failure() -> None:
     module = _load_script_module(
         "run_so101_referee_smoke.py",
