@@ -10,8 +10,6 @@ from pathlib import Path
 
 from worldforge import (
     Action,
-    GenerationOptions,
-    VideoClip,
     WorldForge,
     WorldForgeError,
 )
@@ -88,14 +86,25 @@ EXAMPLE_COMMANDS: tuple[dict[str, str], ...] = (
         ),
     },
     {
-        "task": "Visual harness",
-        "name": "theworldharness",
-        "surface": "E2E flows, provider diagnostics, benchmark comparison",
-        "requires": "Textual through the harness extra",
-        "command": "uv run --extra harness worldforge-harness",
+        "task": "Robot decision traces",
+        "name": "so101-replay-trace",
+        "surface": "score provider, decision trace, counterfactuals, mock replay",
+        "requires": "base WorldForge package; deterministic SO-101-shaped replay fixture",
+        "command": "uv run worldforge-demo-so101-replay-trace",
         "description": (
-            "Open the optional Textual harness for running packaged E2E demos, diagnostics, "
-            "and benchmark comparisons as visible provider workflows."
+            "Score SO-101 pick-and-place candidate actions, select the best replay action, "
+            "and emit a reusable robot decision trace without LeRobot, torch, DimOS, or hardware."
+        ),
+    },
+    {
+        "task": "Robot decision traces",
+        "name": "cross-embodiment-decision-evidence",
+        "surface": "DecisionTrace v1, Go2 replay, PimSim export, SO-101 replay",
+        "requires": "base WorldForge package; checkout-safe replay fixtures",
+        "command": "uv run python examples/cross-embodiment-decision-evidence/run.py",
+        "description": (
+            "Normalize Go2 replay, PimSim export, and SO-101 manipulation decisions into one "
+            "DecisionTrace v1 evidence bundle with counterfactuals and claim boundaries."
         ),
     },
     {
@@ -174,20 +183,6 @@ def _print_examples_markdown() -> None:
         )
 
 
-def _build_generation_options(args: argparse.Namespace) -> GenerationOptions:
-    return GenerationOptions(
-        image=getattr(args, "image", None),
-        video=getattr(args, "video", None),
-        model=getattr(args, "model", None),
-        ratio=getattr(args, "ratio", None),
-        size=getattr(args, "size", None),
-        fps=getattr(args, "fps", None),
-        seed=getattr(args, "seed", None),
-        negative_prompt=getattr(args, "negative_prompt", None),
-        reference_images=list(getattr(args, "reference_image", [])),
-    )
-
-
 def _build_parser() -> argparse.ArgumentParser:
     return _build_cli_parser()
 
@@ -198,27 +193,6 @@ def _cmd_examples(args: argparse.Namespace) -> int:
     else:
         _print_examples_markdown()
     return 0
-
-
-def _cmd_harness(args: argparse.Namespace) -> int:
-    from worldforge.harness.cli import run_from_args
-
-    return run_from_args(
-        flow_id=args.flow,
-        state_dir=args.state_dir,
-        list_only=args.list,
-        connectors=args.connectors,
-        runs=args.runs,
-        workspace_dir=args.workspace_dir,
-        provider=args.provider,
-        capability=args.capability,
-        status=args.status,
-        created_from=args.created_from,
-        created_to=args.created_to,
-        artifact_type=args.artifact_type,
-        output_format=args.format,
-        animate=not args.no_animation,
-    )
 
 
 def _cmd_drills(args: argparse.Namespace) -> int:
@@ -302,45 +276,6 @@ def _cmd_negotiate(args: argparse.Namespace, forge: WorldForge) -> int:
     else:
         print(report.to_markdown())
     return 0 if all(negotiation.ready for negotiation in report.workflows) else 1
-
-
-def _cmd_generate(args: argparse.Namespace, forge: WorldForge) -> int:
-    options = _build_generation_options(args)
-    clip = forge.generate(
-        args.prompt,
-        args.provider,
-        duration_seconds=args.duration,
-        options=options,
-    )
-    payload = clip.to_dict()
-    if args.output:
-        payload["output_path"] = str(clip.save(Path(args.output)))
-    _print_json(payload)
-    return 0
-
-
-def _cmd_transfer(args: argparse.Namespace, forge: WorldForge) -> int:
-    options = _build_generation_options(args)
-    input_clip = VideoClip.from_file(
-        args.input,
-        fps=args.fps,
-        resolution=(args.width, args.height),
-        duration_seconds=args.duration,
-    )
-    clip = forge.transfer(
-        input_clip,
-        args.provider,
-        width=args.width,
-        height=args.height,
-        fps=args.fps,
-        prompt=args.prompt,
-        options=options,
-    )
-    payload = clip.to_dict()
-    if args.output:
-        payload["output_path"] = str(clip.save(Path(args.output)))
-    _print_json(payload)
-    return 0
 
 
 def _cmd_predict(args: argparse.Namespace, forge: WorldForge) -> int:
@@ -527,8 +462,6 @@ _FORGE_COMMANDS: dict[str, _ForgeHandler] = {
     "world": _cmd_world,
     "doctor": _cmd_doctor,
     "negotiate": _cmd_negotiate,
-    "generate": _cmd_generate,
-    "transfer": _cmd_transfer,
     "predict": _cmd_predict,
     "eval": _cmd_eval,
     "benchmark": _cmd_benchmark,
@@ -633,7 +566,6 @@ _SPECIAL_COMMAND_HANDLERS: dict[_SpecialCommandKey, _SpecialCommandHandler] = {
         _cmd_provider_workbench,
         _CLI_PROVIDER_ERRORS,
     ),
-    ("harness", None): _plain_special_handler(_cmd_harness),
     ("runs", None): _checked_special_handler(_cmd_runs, _CLI_LOCAL_ERRORS),
     ("drills", None): _checked_special_handler(_cmd_drills, _CLI_LOCAL_ERRORS),
     ("scenario", None): _checked_special_handler(_cmd_scenario, _CLI_PROVIDER_ERRORS),

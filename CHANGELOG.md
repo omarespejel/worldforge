@@ -9,6 +9,48 @@ releases may still include breaking changes when the public API needs to tighten
 
 ### Added
 
+- Added a first-slice latent-MPC controller for score-provider planning. The new
+  `worldforge.control` module exposes `LatentMPCController`, `PlannerConfig`,
+  `ScoreCandidateEncoder`, `ScoreCandidateBatch`, and `ActionPlanCandidateEncoder`, and
+  `World.plan(planner="latent-mpc", score_provider=..., score_info=..., goal_info=...,
+  planner_config=...)` now runs a pure-Python Gaussian CEM solve over `score_actions(...)`.
+  The planner requires an explicit score provider, records `control_mode="mpc"`,
+  `optimizer="cem"`, candidate counts, and per-iteration score/cost diagnostics in plan
+  metadata, and leaves tensor encoding, environment stepping, robot execution, optional ML
+  runtimes, and policy warm-start outside the base package.
+- Added a checkout-safe DimOS Go2 PimSim export adapter for the replay arena. The
+  `examples/dimos-go2-replay-arena/run.py --pimsim-export` path converts a PimSim-shaped JSON
+  entity snapshot into the existing Go2 decision-trace fixture contract, writes
+  `converted-replay-fixture.json`, then produces the same selected-action, score-margin,
+  baseline-regret, and counterfactual report artifacts without importing DimOS, starting PimSim,
+  or connecting to hardware.
+- Added `worldforge-demo-so101-replay-trace`, a checkout-safe SO-101 manipulation replay demo
+  that scores deterministic 6D joint-action candidates, selects the lowest-cost pick-and-place
+  action, mock-executes the selected object placement, and emits a reusable robot decision trace
+  with candidate scores, selected action, measured replay outcome, and counterfactual rejected
+  actions. The demo is shaped after public `lerobot/svla_so101_pickplace` metadata but does not
+  install LeRobot, torch, DimOS, or connect robot hardware.
+- Added a fork-integration DecisionTrace v1 evidence contract and cross-embodiment example.
+  The packaged JSON Schema plus `worldforge.decision_trace.validate_decision_trace(...)`
+  validate one trace shape across Go2 replay, PimSim export, and SO-101 replay artifacts. The
+  `examples/cross-embodiment-decision-evidence/run.py` demo writes normalized
+  `decision-trace-go2.json`, `decision-trace-pimsim.json`, `decision-trace-so101.json`, and a
+  compact report with score kind, outcome kind, baseline regret, score margin, counterfactuals,
+  candidate-level analytic outcomes, reproducibility, and explicit claim boundaries.
+- Added host-owned SO-101 latent scorer handoff scripts. `scripts/build_so101_latent_cache_sidecar.py`
+  aligns an existing DINOv2 latent cache with LeRobot frame/episode metadata, while
+  `scripts/train_so101_latent_scorer.py` trains latent-dynamics and goal-conditioned cost MLP
+  scorer artifacts for independent referee evaluation without adding numpy, pyarrow, torch,
+  transformers, or LeRobot to the base package. The `SO101LatentScoreProvider` demo wrapper loads
+  those local artifacts lazily and marks results as learned-latent scorer output, not as an
+  independent verdict. Goal-conditioned history variants can consume a three-frame latent history
+  for external referee experiments. `scripts/run_so101_referee_smoke.py` adapts those artifacts to
+  an external referee module for host-owned smoke checks without making WorldForge grade its own
+  scorer.
+- Added a pre-registered SO-101 scorer-v2 verdict gate to the external-referee smoke handoff.
+  The result JSON now records the frozen referee hash, sanitized artifact inputs, held-out split,
+  selected-model `fair_beat_rate_clearbad`, proprio and residual-ridge baselines, shuffled-label
+  control, and an explicit claim boundary for learned semantic-latent scoring.
 - Added a non-interactive TensorBoard launcher CLI:
   `worldforge-open-tensorboard --logdir <path> [--probe] [--no-browser]
   [--keep-running] [--ready-timeout 60] [--poll-interval 0.5]`. Wraps the
@@ -21,8 +63,25 @@ releases may still include breaking changes when the public API needs to tighten
   `wait_until_ready`, `probe_html`, `launch`); the TUI now imports them so
   both surfaces stay in sync. Issue #310.
 
+### Removed
+
+- Removed the generative provider surface from the current public contract:
+  generate, transfer, and free-form reason capabilities, their public result
+  models, capability protocols, provider registration helpers, CLI benchmark
+  operations, fixture corpus entries, and provider conformance checks are no
+  longer part of WorldForge.
+- Removed the Cosmos media and Runway provider integrations, smoke scripts,
+  runtime manifests, payload fixtures, and generated provider catalog entries.
+  Cosmos-Policy remains as a host-owned robotics `policy` adapter.
+- Removed the old world-creation/provider/evaluation/benchmark Harness TUI
+  screens and launch command. The optional Textual surface is now scoped to the
+  robotics showcase report UI; planning, diagnostics, benchmarks, run history,
+  and adapter workbench flows remain CLI/library workflows.
+
 ### Fixed
 
+- Latent MPC diagnostics now report per-iteration best scores separately from running best scores,
+  so CEM evidence does not look monotone by construction when an iteration fails to improve.
 - Provider routing failed-attempt records now redact exception messages before
   serialization. `RoutingAttempt` validates optional reason/error text and
   `route_capability(...)` stores a sanitized `str(exc)` so bearer tokens, API
@@ -79,13 +138,13 @@ releases may still include breaking changes when the public API needs to tighten
   host-local absolute paths. Manifest builders now serialize local artifacts
   under the run directory as relative paths, reject absolute paths outside that
   directory, and continue stripping query strings from remote artifact URLs.
-- `WorldForge.reason()` and `WorldForge.embed()` now reject empty or
-  whitespace-only text before provider dispatch, matching the capability
-  fixture contract. Score and policy+score planning now choose a
-  direction-aware success heuristic: lower-is-better scores keep the inverse
-  cost heuristic, bounded higher-is-better utility scores use the best utility
-  value, and unbounded utility scores fall back to a neutral probability rather
-  than pretending a raw utility is a calibrated probability.
+- `WorldForge.embed()` now rejects empty or whitespace-only text before provider
+  dispatch, matching the capability fixture contract. Score and policy+score
+  planning now choose a direction-aware success heuristic: lower-is-better
+  scores keep the inverse cost heuristic, bounded higher-is-better utility
+  scores use the best utility value, and unbounded utility scores fall back to a
+  neutral probability rather than pretending a raw utility is a calibrated
+  probability.
 - `ActionScoreResult` and `worldforge.testing.assert_score_conformance(...)`
   now reject score results whose `best_index` contradicts `lower_is_better`,
   so planners and adapter contract tests cannot accept the wrong candidate for
@@ -93,10 +152,9 @@ releases may still include breaking changes when the public API needs to tighten
 - Capability-specific provider conformance helpers now normalize
   `WorldForgeError` validation failures from invalid public result construction
   and configured-provider `ProviderError`s into explicit `AssertionError`
-  contract failures for predict, reason, embed, generate, transfer, score, and
-  policy checks. The helpers also revalidate returned mutable result objects
-  for finite numeric fields and JSON-native score/policy payloads before
-  accepting provider output.
+  contract failures for predict, embed, score, and policy checks. The helpers
+  also revalidate returned mutable result objects for finite numeric fields and
+  JSON-native score/policy payloads before accepting provider output.
 - The `t` shortcut in `RoboticsShowcaseApp` no longer fails silently because
   TensorBoard cannot import `pkg_resources`. The launched `uvx` command now
   pins `--with "setuptools<81"` so `pkg_resources` is available (setuptools
@@ -203,7 +261,7 @@ releases may still include breaking changes when the public API needs to tighten
   fixtures.
 - Added a checkout-safe capability negotiation preflight demo. The workflow preserves negotiation
   JSON/Markdown for ready, missing-config, missing-dependency, unsupported, and not-registered
-  cases across generate, transfer, score, policy+score, and evaluation workflow shapes without
+  cases across predict, embed, score, policy+score, and evaluation workflow shapes without
   installing dependencies or executing fallback workflows.
 - Added a checkout-safe embodied policy replay comparison. It compares LeRobot, GR00T, and
   Cosmos-Policy policy contracts side by side, preserves provider-specific raw action metadata,
@@ -316,9 +374,9 @@ releases may still include breaking changes when the public API needs to tighten
 - Added fixture snapshot governance for source-controlled JSON fixtures. The new
   `worldforge.testing.fixture_snapshots` helpers and `scripts/manage_fixture_snapshots.py` validate
   `tests/fixtures/fixture-snapshots.json` against capability fixtures, provider payload fixtures,
-  benchmark inputs, scenario files, and scene artifact fixtures, with review output that separates
+  benchmark inputs, scenario files, and runtime asset manifests, with review output that separates
   accidental drift from entries marked `intended-update`.
-- Added a checkout-safe GR00T PolicyClient replay flow in TheWorldHarness. The flow replays a
+- Added a checkout-safe GR00T PolicyClient replay flow in the robotics showcase flows. The flow replays a
   sanitized saved policy response through `GrootPolicyClientProvider`, validates `eef_9d`,
   `gripper_position`, and `joint_position` tensor shapes, translates the trajectory into
   WorldForge actions, and preserves a replay artifact without requiring CUDA, checkpoints, raw
@@ -407,7 +465,7 @@ releases may still include breaking changes when the public API needs to tighten
 - Added capability negotiation reports through the new `worldforge negotiate` CLI subcommand
   and `worldforge.capability_negotiation` Python surface. Reports state — before a workflow
   runs — whether the registered and known providers can satisfy a capability set such as
-  `generate-only`, `score-only`, `policy-plus-score`, `transfer-only`, or one of the
+  `predict-only`, `embed-only`, `score-only`, `policy-plus-score`, or one of the
   evaluation suites' required-capability shapes. For each capability slot the report lists
   every candidate provider's registration, configuration, health, capability compatibility,
   readiness state (`ready`, `missing-config`, `missing-dependency`, `unsupported`,
@@ -463,10 +521,10 @@ releases may still include breaking changes when the public API needs to tighten
   exports one run to `evidence_manifest.json`, `summary.md`, and `issue.md`, prints a short issue
   template, preserves SHA-256 digests and `safe_to_attach` flags, and marks unsafe or host-local
   artifacts before attachment.
-- Added preserved-run history actions to TheWorldHarness. The Runs screen and
-  `worldforge harness --runs` can filter run workspaces by provider, capability, status, date, and
-  safe artifact type; rows expose sanitized rerun commands plus issue-bundle and comparison actions,
-  with failed/skipped/cancelled runs surfacing the recovery bundle command first.
+- Added preserved-run history actions through `worldforge runs index`, `worldforge runs bundle`,
+  and run-comparison reports. Operators can filter run workspaces by provider, capability, status,
+  date, and safe artifact type; rows expose sanitized rerun commands plus issue-bundle and
+  comparison actions, with failed/skipped/cancelled runs surfacing the recovery bundle command first.
 - Provider scaffolding now generates a fuller fail-closed contract pack: an explicit
   `--implementation-status scaffold` maturity claim, provider/profile tests for disabled
   capability calls, placeholder fixtures marked as non-evidence, an incomplete `.json.stub`
@@ -476,7 +534,7 @@ releases may still include breaking changes when the public API needs to tighten
   workbench now handles catalog providers, scaffold providers, and the direct-construction
   `jepa-wms` candidate; reports include runtime manifest status, fixture coverage, docs/catalog
   drift, redaction checks, promotion gaps by target status, safe artifact references, and validation
-  commands, and `worldforge harness --flow workbench` exposes the same logic through TheWorldHarness.
+  commands, and `worldforge provider workbench` exposes the same logic through the CLI.
 - Added cross-provider run comparisons for preserved eval and benchmark workspaces. `worldforge
   runs compare` now exports a shared JSON/Markdown/CSV model with provider rows, capability and
   operation context, fixture digest, suite version, budget status, event counts, missing evidence,
@@ -507,7 +565,7 @@ releases may still include breaking changes when the public API needs to tighten
   budget violations. Public surface lives at `worldforge.benchmark_presets` (`BenchmarkPreset`,
   `list_presets`, `get_preset`, `load_preset_inputs`, `load_preset_budgets`).
 - Added a packaged capability fixture corpus under `worldforge.testing.fixtures` covering the
-  `predict`, `reason`, `embed`, `generate`, `transfer`, `score`, and `policy` capabilities.
+  `predict`, `embed`, `score`, and `policy` capabilities.
   Each capability ships one valid baseline plus at least two invalid boundary fixtures with
   distinct error patterns. The new `worldforge.testing.load_capability_fixture`,
   `iter_capability_fixtures`, `iter_all_fixtures`, `list_fixture_names`, and `CapabilityFixture`

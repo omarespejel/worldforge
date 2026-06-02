@@ -9,21 +9,19 @@ uv run worldforge examples
 uv run worldforge examples --format json
 ```
 
-## Visual Harness
+## Robotics Showcase TUI
 
 | Example | Surface | Command |
 | --- | --- | --- |
-| `theworldharness` | E2E flows, provider diagnostics, benchmark comparison | `uv run --extra harness worldforge-harness` |
+| `robotics-showcase` | real LeRobot policy plus LeWorldModel score report | `scripts/robotics-showcase` |
 
 ```bash
-uv run --extra harness worldforge-harness
-uv run --extra harness worldforge-harness --flow lerobot
-uv run --extra harness worldforge-harness --flow diagnostics
+scripts/robotics-showcase
+scripts/robotics-showcase --no-tui
 ```
 
-TheWorldHarness is optional and depends on Textual through the `harness` extra. It currently
-includes score-planning, policy-plus-score planning, and provider diagnostics plus benchmark
-comparison flows.
+The robotics showcase report is optional and depends on Textual through the `harness` extra. The
+terminal and JSON paths remain available with `--no-tui`.
 
 ## Prediction And Evaluation
 
@@ -49,11 +47,30 @@ comparison flows.
 | --- | --- | --- |
 | `lerobot-policy-score-planning` | policy provider, score provider, planning, persistence | `uv run worldforge-demo-lerobot` |
 
+## Robot Decision Traces
+
+| Example | Surface | Command |
+| --- | --- | --- |
+| `so101-replay-trace` | score provider, decision trace, counterfactuals, mock replay | `uv run worldforge-demo-so101-replay-trace` |
+| `cross-embodiment-decision-evidence` | DecisionTrace v1, Go2 replay, PimSim export, SO-101 replay | `uv run python examples/cross-embodiment-decision-evidence/run.py` |
+
+The SO-101 replay trace demo uses a deterministic pick-and-place decision point shaped after the
+public `lerobot/svla_so101_pickplace` metadata. It scores candidate 6D joint-action futures,
+selects the lowest-cost manipulation action, executes the selected object placement through the
+local mock provider, and emits an `observation -> goal -> candidate_actions -> candidate_scores ->
+selected_action -> outcome -> counterfactuals` trace without installing LeRobot, torch, DimOS, or
+connecting robot hardware.
+
+The cross-embodiment evidence example validates one `DecisionTrace v1` contract across Go2
+navigation replay, a PimSim export conversion, and SO-101 manipulation replay. It writes three
+validated trace JSON artifacts plus a compact comparison report, while labeling each lane as
+hand-cost scoring with analytic/replay outcomes and no live hardware claim.
+
 ## Service Host Reference
 
 | Example | Surface | Command |
 | --- | --- | --- |
-| `service-host` | HTTP liveness/readiness, provider diagnostics, mock workflow, configurable generate workflow | `uv run python examples/hosts/service/app.py --provider mock --port 8080` |
+| `service-host` | HTTP liveness/readiness, provider diagnostics, and mock prediction workflow | `uv run python examples/hosts/service/app.py --provider mock --port 8080` |
 
 The service host uses Python's stdlib HTTP server so it does not add a base dependency. It is a
 reference for embedding WorldForge in a host process, not a WorldForge deployment boundary:
@@ -163,3 +180,41 @@ are intended to verify the framework path in a clean checkout.
 
 Optional live smoke scripts are separate because they require host-owned model runtimes,
 credentials, checkpoints, robot observations, or action translators.
+
+## DimOS Go2 Replay Arena
+
+The DimOS Go2 replay arena is a checkout-safe robotics decision-evidence example. It does not
+import DimOS, start a simulator, or connect to hardware. It consumes a small replay-shaped JSON
+fixture, scores candidate Go2 actions with transparent costs, and writes a decision trace plus a
+compact report.
+
+```bash
+uv run python examples/dimos-go2-replay-arena/run.py \
+  --fixture examples/dimos-go2-replay-arena/fixtures/go2_office_replay_frame.json \
+  --out .worldforge/dimos-go2-replay-arena
+```
+
+```bash
+uv run python examples/dimos-go2-replay-arena/run.py \
+  --all-fixtures \
+  --out .worldforge/dimos-go2-replay-arena-batch
+```
+
+```bash
+uv run python examples/dimos-go2-replay-arena/run.py \
+  --pimsim-export \
+  --out .worldforge/dimos-go2-pimsim-export
+```
+
+Expected success signal: the output directory contains `decision-trace.json` and `report.md`, and
+the trace includes a selected action, rejected counterfactuals, score margin, and baseline regret.
+Batch mode also writes `batch-report.json` and `batch-report.md`; PimSim export mode writes a
+`converted-replay-fixture.json` before scoring.
+First triage step for `--pimsim-export` failures: rerun with the bundled export and confirm
+`converted-replay-fixture.json` is created; if it is not, read the adapter error for the first
+triage hint, check file permissions and disk space, then inspect the JSON shape around
+`entity_state_batch.entities`, `robot_entity_id`, `goal`, and `candidate_actions`.
+The bundled fixtures include one replay where WorldForge rejects the hardcoded baseline and one
+clear-hallway replay where the baseline remains the best action.
+The bundled PimSim-shaped JSON export converts into the same replay trace contract without
+importing DimOS or starting PimSim.

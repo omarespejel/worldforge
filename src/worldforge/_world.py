@@ -52,6 +52,7 @@ from worldforge.models import (
 from worldforge.providers import BaseProvider
 
 if TYPE_CHECKING:
+    from worldforge.control import PlannerConfig, ScoreCandidateEncoder
     from worldforge.evaluation import EvaluationReport
     from worldforge.framework import WorldForge
 
@@ -526,14 +527,20 @@ class World:
         score_provider: str | None = None,
         score_info: JSONDict | None = None,
         score_action_candidates: object | None = None,
+        planner_config: PlannerConfig | None = None,
+        candidate_encoder: ScoreCandidateEncoder | None = None,
+        goal_info: JSONDict | None = None,
         execution_provider: str | None = None,
         **_: Any,
     ) -> Plan:
         """Plan actions through a predictive, score, policy, or policy-plus-score path.
 
-        The selected path is determined by the capability-specific inputs:
+        The selected path is determined by ``planner`` plus the capability-specific inputs.
         ``candidate_actions`` or score arguments choose score planning, ``policy_info`` chooses
         policy planning, and both together compose policy proposals with score-provider ranking.
+        ``planner="latent-mpc"`` forces the latent-MPC path: WorldForge samples candidate
+        action horizons from ``planner_config`` and ranks them through the explicit
+        ``score_provider``. Policy warm-start is rejected until that contract is implemented.
         Without those inputs, the world uses a predictive provider and records predicted states.
         """
 
@@ -554,6 +561,9 @@ class World:
             score_provider=score_provider,
             score_info=score_info,
             score_action_candidates=score_action_candidates,
+            planner_config=planner_config,
+            candidate_encoder=candidate_encoder,
+            goal_info=goal_info,
             execution_provider=execution_provider,
         )
 

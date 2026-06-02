@@ -1,0 +1,135 @@
+{
+  "schema_version": 1,
+  "export_kind": "dimos.pimsim.episode_snapshot",
+  "episode_id": "pimsim-go2-hallway-snapshot-001",
+  "scenario_id": "pimsim-go2-hallway-export-001",
+  "source": {
+    "runtime": "dimos",
+    "simulator": "pimsim",
+    "branch_reference": "pim/dev",
+    "hardware_required": false
+  },
+  "frame_id": "pimsim-frame-001",
+  "robot_entity_id": "go2",
+  "localization_confidence": 0.88,
+  "entity_state_batch": {
+    "ts": 84.25,
+    "entities": [
+      {
+        "id": "go2",
+        "kind": "kinematic",
+        "shape": "box",
+        "extents": [0.56, 0.38, 0.32],
+        "pose": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0,
+          "qw": 1.0,
+          "qx": 0.0,
+          "qy": 0.0,
+          "qz": 0.0
+        }
+      },
+      {
+        "id": "pimsim-chair-leg",
+        "kind": "static",
+        "shape": "cylinder",
+        "extents": [0.16, 0.75],
+        "pose": {
+          "x": 0.78,
+          "y": 0.0,
+          "z": 0.0,
+          "qw": 1.0,
+          "qx": 0.0,
+          "qy": 0.0,
+          "qz": 0.0
+        }
+      },
+      {
+        "id": "pimsim-supply-cart",
+        "kind": "static",
+        "shape": "box",
+        "extents": [0.45, 0.9, 0.65],
+        "pose": {
+          "x": 1.1,
+          "y": -0.55,
+          "z": 0.0,
+          "qw": 1.0,
+          "qx": 0.0,
+          "qy": 0.0,
+          "qz": 0.0
+        }
+      }
+    ]
+  },
+  "map": {
+    "safety_margin_m": 0.22,
+    "cost_zones": [
+      {
+        "id": "right-cart-shadow",
+        "x": 1.05,
+        "y": -0.45,
+        "radius_m": 0.55,
+        "cost": 0.5
+      }
+    ],
+    "uncertainty_zones": []
+  },
+  "goal": {
+    "description": "navigate around the PimSim chair leg toward the inspection marker",
+    "x": 1.35,
+    "y": 0.42,
+    "tolerance_m": 0.25
+  },
+  "baseline_action_id": "baseline_forward",
+  "candidate_actions": [
+    {
+      "id": "baseline_forward",
+      "type": "go2_base_command",
+      "parameters": {
+        "dx_m": 0.95,
+        "dyaw_rad": 0.0,
+        "duration_s": 1.2,
+        "speed_mps": 0.7
+      }
+    },
+    {
+      "id": "arc_left_clear",
+      "type": "go2_base_command",
+      "parameters": {
+        "dx_m": 0.95,
+        "dyaw_rad": 0.52,
+        "duration_s": 1.4,
+        "speed_mps": 0.55
+      }
+    },
+    {
+      "id": "arc_right_cart_shadow",
+      "type": "go2_base_command",
+      "parameters": {
+        "dx_m": 0.9,
+        "dyaw_rad": -0.38,
+        "duration_s": 1.4,
+        "speed_mps": 0.55
+      }
+    },
+    {
+      "id": "slow_probe_left",
+      "type": "go2_base_command",
+      "parameters": {
+        "dx_m": 0.45,
+        "dyaw_rad": 0.3,
+        "duration_s": 1.2,
+        "speed_mps": 0.35
+      }
+    },
+    {
+      "id": "stop_relocalize",
+      "type": "go2_safety_action",
+      "parameters": {
+        "duration_s": 1.0,
+        "reason": "sim_export_operator_pause"
+      }
+    }
+  ]
+}

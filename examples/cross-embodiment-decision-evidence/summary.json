@@ -1,0 +1,40 @@
+{
+  "artifact_kind": "worldforge.cross_embodiment_decision_evidence",
+  "kill_criterion": "If WorldForge cannot choose, explain, compare, or expose counterfactual robot actions better than a hardcoded command or plain script, stop pushing this integration. Learned-scorer clear-bad decoy metrics are smoke tests only; robust value requires independent held-out-generator, hard/on-manifold, or execution-grounded rank-fidelity results above the relevant proprio/hand-cost baselines.",
+  "report_path": "examples/cross-embodiment-decision-evidence/cross-embodiment-report.md",
+  "run_id": "cross-embodiment-decision-evidence",
+  "schema_version": 1,
+  "trace_count": 3,
+  "traces": {
+    "go2": {
+      "baseline_regret": 1.401039,
+      "outcome_kind": "analytic",
+      "path": "examples/cross-embodiment-decision-evidence/decision-trace-go2.json",
+      "score_kind": "hand_cost",
+      "score_margin": 0.205603,
+      "selected_action_id": "stop_relocalize",
+      "selected_value_signal": 0.656151,
+      "trace_id": "decision-trace-go2"
+    },
+    "pimsim": {
+      "baseline_regret": 1.637225,
+      "outcome_kind": "analytic",
+      "path": "examples/cross-embodiment-decision-evidence/decision-trace-pimsim.json",
+      "score_kind": "hand_cost",
+      "score_margin": 0.066455,
+      "selected_action_id": "arc_left_clear",
+      "selected_value_signal": 0.696969,
+      "trace_id": "decision-trace-pimsim"
+    },
+    "so101": {
+      "baseline_regret": 1.197197,
+      "outcome_kind": "analytic",
+      "path": "examples/cross-embodiment-decision-evidence/decision-trace-so101.json",
+      "score_kind": "hand_cost",
+      "score_margin": 0.9303,
+      "selected_action_id": "lift-place-stable",
+      "selected_value_signal": 0.875163,
+      "trace_id": "decision-trace-so101"
+    }
+  }
+}

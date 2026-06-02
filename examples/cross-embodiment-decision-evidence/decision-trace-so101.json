@@ -1,0 +1,644 @@
+{
+  "artifact_kind": "worldforge.decision_trace",
+  "baseline": {
+    "candidate_id": "stop-relocalize",
+    "policy": "safe_hold_baseline",
+    "regret_vs_selected": 1.197197,
+    "score": 1.54253
+  },
+  "candidate_actions": [
+    {
+      "action": {
+        "params": {
+          "duration_s": 0.8,
+          "joint_delta": [
+            0.11,
+            -0.04,
+            0.1,
+            -0.07,
+            0.02,
+            -0.18
+          ],
+          "joint_names": [
+            "shoulder_pan.pos",
+            "shoulder_lift.pos",
+            "elbow_flex.pos",
+            "wrist_flex.pos",
+            "wrist_roll.pos",
+            "gripper.pos"
+          ]
+        },
+        "type": "so101_joint_delta",
+        "units": {
+          "duration_s": "s",
+          "joint_delta": "normalized_replay_delta"
+        }
+      },
+      "candidate_id": "direct-side-push",
+      "label": "Direct side push",
+      "predicted_outcome": {
+        "expected_outcome": "partial placement with side contact",
+        "object_pose": {
+          "x": 0.48,
+          "y": 0.06,
+          "z": 0.03
+        }
+      }
+    },
+    {
+      "action": {
+        "params": {
+          "duration_s": 1.1,
+          "joint_delta": [
+            0.08,
+            -0.12,
+            0.14,
+            -0.1,
+            0.04,
+            -0.22
+          ],
+          "joint_names": [
+            "shoulder_pan.pos",
+            "shoulder_lift.pos",
+            "elbow_flex.pos",
+            "wrist_flex.pos",
+            "wrist_roll.pos",
+            "gripper.pos"
+          ]
+        },
+        "type": "so101_joint_delta",
+        "units": {
+          "duration_s": "s",
+          "joint_delta": "normalized_replay_delta"
+        }
+      },
+      "candidate_id": "lift-place-stable",
+      "label": "Lift then place",
+      "predicted_outcome": {
+        "expected_outcome": "placed inside target tolerance",
+        "object_pose": {
+          "x": 0.52,
+          "y": 0.08,
+          "z": 0.03
+        }
+      }
+    },
+    {
+      "action": {
+        "params": {
+          "duration_s": 0.9,
+          "joint_delta": [
+            0.21,
+            -0.18,
+            0.27,
+            -0.23,
+            0.16,
+            -0.3
+          ],
+          "joint_names": [
+            "shoulder_pan.pos",
+            "shoulder_lift.pos",
+            "elbow_flex.pos",
+            "wrist_flex.pos",
+            "wrist_roll.pos",
+            "gripper.pos"
+          ]
+        },
+        "type": "so101_joint_delta",
+        "units": {
+          "duration_s": "s",
+          "joint_delta": "normalized_replay_delta"
+        }
+      },
+      "candidate_id": "overreach-place",
+      "label": "Overreach place",
+      "predicted_outcome": {
+        "expected_outcome": "overshoots target with low clearance",
+        "object_pose": {
+          "x": 0.58,
+          "y": 0.13,
+          "z": 0.03
+        }
+      }
+    },
+    {
+      "action": {
+        "params": {
+          "duration_s": 0.4,
+          "joint_delta": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "joint_names": [
+            "shoulder_pan.pos",
+            "shoulder_lift.pos",
+            "elbow_flex.pos",
+            "wrist_flex.pos",
+            "wrist_roll.pos",
+            "gripper.pos"
+          ]
+        },
+        "type": "so101_joint_delta",
+        "units": {
+          "duration_s": "s",
+          "joint_delta": "normalized_replay_delta"
+        }
+      },
+      "candidate_id": "stop-relocalize",
+      "label": "Stop and relocalize",
+      "predicted_outcome": {
+        "expected_outcome": "safe hold but no task progress",
+        "object_pose": {
+          "x": 0.34,
+          "y": -0.09,
+          "z": 0.03
+        }
+      }
+    }
+  ],
+  "candidate_outcomes": [
+    {
+      "action_executed": false,
+      "candidate_id": "direct-side-push",
+      "commanded": {
+        "duration_s": 0.8,
+        "joint_delta": [
+          0.11,
+          -0.04,
+          0.1,
+          -0.07,
+          0.02,
+          -0.18
+        ],
+        "joint_names": [
+          "shoulder_pan.pos",
+          "shoulder_lift.pos",
+          "elbow_flex.pos",
+          "wrist_flex.pos",
+          "wrist_roll.pos",
+          "gripper.pos"
+        ]
+      },
+      "kind": "analytic",
+      "measured": {},
+      "metrics": {
+        "contact_risk": 0.28,
+        "placement_error_m": 0.0447
+      },
+      "outcome_source": "mock_replay_execution",
+      "status": "mock_replay_estimate"
+    },
+    {
+      "action_executed": false,
+      "candidate_id": "lift-place-stable",
+      "commanded": {
+        "duration_s": 1.1,
+        "joint_delta": [
+          0.08,
+          -0.12,
+          0.14,
+          -0.1,
+          0.04,
+          -0.22
+        ],
+        "joint_names": [
+          "shoulder_pan.pos",
+          "shoulder_lift.pos",
+          "elbow_flex.pos",
+          "wrist_flex.pos",
+          "wrist_roll.pos",
+          "gripper.pos"
+        ]
+      },
+      "kind": "analytic",
+      "measured": {},
+      "metrics": {
+        "contact_risk": 0.07,
+        "placement_error_m": 0.0
+      },
+      "outcome_source": "mock_replay_execution",
+      "status": "mock_replay_estimate"
+    },
+    {
+      "action_executed": false,
+      "candidate_id": "overreach-place",
+      "commanded": {
+        "duration_s": 0.9,
+        "joint_delta": [
+          0.21,
+          -0.18,
+          0.27,
+          -0.23,
+          0.16,
+          -0.3
+        ],
+        "joint_names": [
+          "shoulder_pan.pos",
+          "shoulder_lift.pos",
+          "elbow_flex.pos",
+          "wrist_flex.pos",
+          "wrist_roll.pos",
+          "gripper.pos"
+        ]
+      },
+      "kind": "analytic",
+      "measured": {},
+      "metrics": {
+        "contact_risk": 0.31,
+        "placement_error_m": 0.0781
+      },
+      "outcome_source": "mock_replay_execution",
+      "status": "mock_replay_estimate"
+    },
+    {
+      "action_executed": false,
+      "candidate_id": "stop-relocalize",
+      "commanded": {
+        "duration_s": 0.4,
+        "joint_delta": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "joint_names": [
+          "shoulder_pan.pos",
+          "shoulder_lift.pos",
+          "elbow_flex.pos",
+          "wrist_flex.pos",
+          "wrist_roll.pos",
+          "gripper.pos"
+        ]
+      },
+      "kind": "analytic",
+      "measured": {},
+      "metrics": {
+        "contact_risk": 0.02,
+        "placement_error_m": 0.2476
+      },
+      "outcome_source": "mock_replay_execution",
+      "status": "mock_replay_estimate"
+    }
+  ],
+  "claim_boundary": {
+    "hardware_executed": false,
+    "learned_model_used": false,
+    "limitations": [
+      "No SO-101 hardware, camera, calibration, or LeRobot runtime was used.",
+      "Outcome is a replay/mock placement check, not a physical execution result.",
+      "Joint deltas are fixture units and must not be treated as calibrated commands."
+    ],
+    "outcome_kind": "analytic",
+    "safety_controller": null,
+    "score_kind": "hand_cost"
+  },
+  "counterfactuals": [
+    {
+      "candidate_id": "direct-side-push",
+      "delta_vs_selected": 0.930328,
+      "score": 1.275661,
+      "why_rejected": "Higher expected risk around contact or workspace clearance."
+    },
+    {
+      "candidate_id": "overreach-place",
+      "delta_vs_selected": 1.307282,
+      "score": 1.652615,
+      "why_rejected": "Higher expected risk around contact or workspace clearance."
+    },
+    {
+      "candidate_id": "stop-relocalize",
+      "delta_vs_selected": 1.197197,
+      "score": 1.54253,
+      "why_rejected": "Predicted placement stays outside the target tolerance."
+    }
+  ],
+  "embodiment": {
+    "action_space": "six_axis_joint_delta",
+    "embodiment_id": "so101-replay",
+    "kind": "manipulation",
+    "platform": "so101"
+  },
+  "goal": {
+    "description": "Place object at target pose.",
+    "sub_goals": [
+      {
+        "description": "Move end effector toward the object.",
+        "id": "approach",
+        "required": true,
+        "weight": 0.15
+      },
+      {
+        "description": "Reach a stable pre-grasp pose with clearance.",
+        "id": "pre_grasp",
+        "required": true,
+        "weight": 0.2
+      },
+      {
+        "description": "Make low-risk contact and preserve grasp confidence.",
+        "id": "contact",
+        "required": true,
+        "weight": 0.2
+      },
+      {
+        "description": "Lift or move the object without unsafe contact risk.",
+        "id": "lift",
+        "required": true,
+        "weight": 0.2
+      },
+      {
+        "description": "Place the object inside target tolerance.",
+        "id": "place",
+        "required": true,
+        "weight": 0.25
+      }
+    ],
+    "success_criteria": {
+      "metric": "partial_subgoal_credit",
+      "partial_credit": true,
+      "protocol": "RoboWM-Bench-style step/task outcome structure"
+    },
+    "target": {
+      "kind": "object_at",
+      "object": {
+        "id": "so101-blue-cube",
+        "name": "so101_blue_cube"
+      },
+      "position": {
+        "x": 0.52,
+        "y": 0.08,
+        "z": 0.03
+      },
+      "tolerance": 0.025
+    },
+    "type": "manipulation"
+  },
+  "host_runtime": {
+    "mode": "checkout_safe_replay",
+    "name": "LeRobot-shaped SO-101 replay",
+    "version": null
+  },
+  "interop": {
+    "otel_span": {
+      "attributes": {
+        "gen_ai.operation.name": "invoke_agent",
+        "worldforge.schema_version": "worldforge.decision_trace.v1",
+        "worldforge.trace_id": "decision-trace-so101"
+      },
+      "name": "worldforge.decision_trace.score_and_select"
+    },
+    "prov": {
+      "activities": [
+        "score_candidates",
+        "select_action"
+      ],
+      "agents": [
+        "SO101ReplayScoreProvider",
+        "WorldForge"
+      ],
+      "entities": [
+        "observation",
+        "candidate_actions",
+        "scores",
+        "outcome"
+      ],
+      "selected_action_was_derived_from": [
+        "observation",
+        "candidate_actions",
+        "scores"
+      ]
+    },
+    "trajectory_ref": {
+      "episode_index": 7,
+      "frame_index": 182,
+      "repo_id": "lerobot/svla_so101_pickplace",
+      "standard": "LeRobotDataset v3"
+    }
+  },
+  "observation": {
+    "ref": {
+      "episode_index": 7,
+      "frame_index": 182,
+      "repo_id": "lerobot/svla_so101_pickplace",
+      "standard": "LeRobotDataset v3-shaped fixture"
+    },
+    "summary": {
+      "episode_index": 7,
+      "frame_index": 182,
+      "object_pose": {
+        "x": 0.34,
+        "y": -0.09,
+        "z": 0.03
+      },
+      "observation.images.side": "videos/observation.images.side/chunk-000/file-000.mp4#frame=182",
+      "observation.images.up": "videos/observation.images.up/chunk-000/file-000.mp4#frame=182",
+      "observation.state": [
+        0.02,
+        -0.72,
+        1.31,
+        -0.66,
+        0.08,
+        0.62
+      ],
+      "state_names": [
+        "shoulder_pan.pos",
+        "shoulder_lift.pos",
+        "elbow_flex.pos",
+        "wrist_flex.pos",
+        "wrist_roll.pos",
+        "gripper.pos"
+      ],
+      "target_pose": {
+        "x": 0.52,
+        "y": 0.08,
+        "z": 0.03
+      },
+      "timestamp_s": 6.0667
+    }
+  },
+  "outcome": {
+    "kind": "analytic",
+    "metrics": {
+      "outcome_source": "mock_replay_execution",
+      "partial_subgoal_credit": 1.0,
+      "placement_error_m": 0.0,
+      "success": true
+    },
+    "status": "placed_at_target"
+  },
+  "planner_diagnostics": {
+    "candidate_count": 4,
+    "dataset_reference": {
+      "action_shape": [
+        6
+      ],
+      "codebase_version": "v3.0",
+      "fps": 30,
+      "metadata_source": "Hugging Face dataset meta/info.json",
+      "repo_id": "lerobot/svla_so101_pickplace",
+      "robot_type": "so100_follower",
+      "runtime_mode": "deterministic_fixture_no_download",
+      "state_shape": [
+        6
+      ],
+      "total_episodes": 50,
+      "total_frames": 11939,
+      "video_views": [
+        "observation.images.up",
+        "observation.images.side"
+      ]
+    },
+    "planner": "so101-replay-cem",
+    "score_provider": "so101-replay-score",
+    "source_schema": "worldforge.robot_decision_trace.v0"
+  },
+  "prev_trace_id": "decision-trace-pimsim",
+  "reproducibility": {
+    "checkpoint_hash": null,
+    "code_ref": "integration/worldforge-go2-so101-evidence",
+    "input_digest": "sha256:5e32b16ed0dbf6e9433deb86fcb8482d6137daf9796f221619acf088a0aedc99",
+    "model_card_ref": "https://huggingface.co/datasets/lerobot/svla_so101_pickplace",
+    "provider_version": "SO101ReplayScoreProvider deterministic hand-cost",
+    "seed": 0
+  },
+  "run_id": "cross-embodiment-decision-evidence",
+  "schema_version": "worldforge.decision_trace.v1",
+  "scores": [
+    {
+      "candidate_id": "lift-place-stable",
+      "components": {
+        "candidate_id": "lift-place-stable",
+        "candidate_index": 1,
+        "clearance_penalty": 0.0,
+        "contact_risk": 0.07,
+        "grasp_penalty": 0.06,
+        "label": "Lift then place",
+        "occlusion_risk": 0.06,
+        "placement_error_m": 0.0,
+        "risk_flags": [],
+        "smoothness_cost": 0.1167,
+        "total_cost_display": 0.3453,
+        "total_cost_raw": 0.345333
+      },
+      "lower_is_better": true,
+      "normalized": {
+        "calibration_target": "analytic_cost_gap",
+        "desirability": 1.0,
+        "regret_vs_baseline": 1.197197,
+        "separability": 0.711629,
+        "value_signal": 0.875163
+      },
+      "rank": 1,
+      "score": 0.345333
+    },
+    {
+      "candidate_id": "direct-side-push",
+      "components": {
+        "candidate_id": "direct-side-push",
+        "candidate_index": 0,
+        "clearance_penalty": 0.0,
+        "contact_risk": 0.28,
+        "grasp_penalty": 0.22,
+        "label": "Direct side push",
+        "occlusion_risk": 0.18,
+        "placement_error_m": 0.0447,
+        "risk_flags": [
+          "misses_target_tolerance",
+          "contact_risk",
+          "weak_grasp"
+        ],
+        "smoothness_cost": 0.0867,
+        "total_cost_display": 1.2757,
+        "total_cost_raw": 1.275661
+      },
+      "lower_is_better": true,
+      "normalized": {
+        "calibration_target": "analytic_cost_gap",
+        "desirability": 0.288349,
+        "regret_vs_baseline": 0.266869,
+        "separability": 0.711629,
+        "value_signal": 0.338403
+      },
+      "rank": 2,
+      "score": 1.275661
+    },
+    {
+      "candidate_id": "stop-relocalize",
+      "components": {
+        "candidate_id": "stop-relocalize",
+        "candidate_index": 3,
+        "clearance_penalty": 0.0,
+        "contact_risk": 0.02,
+        "grasp_penalty": 0.01,
+        "label": "Stop and relocalize",
+        "occlusion_risk": 0.01,
+        "placement_error_m": 0.2476,
+        "risk_flags": [
+          "misses_target_tolerance"
+        ],
+        "smoothness_cost": 0.0,
+        "total_cost_display": 1.5425,
+        "total_cost_raw": 1.54253
+      },
+      "lower_is_better": true,
+      "normalized": {
+        "calibration_target": "analytic_cost_gap",
+        "desirability": 0.084209,
+        "regret_vs_baseline": 0.0,
+        "separability": 0.711629,
+        "value_signal": 0.18443
+      },
+      "rank": 3,
+      "score": 1.54253
+    },
+    {
+      "candidate_id": "overreach-place",
+      "components": {
+        "candidate_id": "overreach-place",
+        "candidate_index": 2,
+        "clearance_penalty": 0.054,
+        "contact_risk": 0.31,
+        "grasp_penalty": 0.16,
+        "label": "Overreach place",
+        "occlusion_risk": 0.24,
+        "placement_error_m": 0.0781,
+        "risk_flags": [
+          "misses_target_tolerance",
+          "contact_risk",
+          "low_workspace_clearance",
+          "weak_grasp"
+        ],
+        "smoothness_cost": 0.225,
+        "total_cost_display": 1.6526,
+        "total_cost_raw": 1.652615
+      },
+      "lower_is_better": true,
+      "normalized": {
+        "calibration_target": "analytic_cost_gap",
+        "desirability": 0.0,
+        "regret_vs_baseline": 0.0,
+        "separability": 0.711629,
+        "value_signal": 0.142326
+      },
+      "rank": 4,
+      "score": 1.652615
+    }
+  ],
+  "selected_action": {
+    "candidate_id": "lift-place-stable",
+    "score": 0.345333,
+    "score_margin": 0.9303,
+    "why_selected": "Lowest weighted replay cost: target placement inside tolerance with high grasp confidence and low contact risk."
+  },
+  "step_index": 2,
+  "task": {
+    "description": "Select a replay action chunk for tabletop pick-and-place.",
+    "task_id": "so101-pick-place"
+  },
+  "trace_id": "decision-trace-so101"
+}

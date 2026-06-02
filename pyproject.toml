@@ -46,14 +46,12 @@ Changelog = "https://github.com/AbdelStark/worldforge/blob/main/CHANGELOG.md"
 
 [project.scripts]
 worldforge = "worldforge.cli:main"
-worldforge-harness = "worldforge.harness.cli:main"
 worldforge-open-tensorboard = "worldforge.harness.tensorboard_launcher:main"
 worldforge-demo-leworldmodel = "worldforge.demos.leworldmodel_e2e:main"
 worldforge-demo-lerobot = "worldforge.demos.lerobot_e2e:main"
+worldforge-demo-so101-replay-trace = "worldforge.demos.so101_replay_trace:main"
 worldforge-demo-rerun = "worldforge.demos.rerun_showcase:main"
-worldforge-smoke-cosmos = "worldforge.smoke.cosmos:main"
 worldforge-smoke-cosmos-policy = "worldforge.smoke.cosmos_policy:main"
-worldforge-smoke-runway = "worldforge.smoke.runway:main"
 worldforge-build-leworldmodel-checkpoint = "worldforge.smoke.leworldmodel_checkpoint:main"
 worldforge-smoke-leworldmodel = "worldforge.smoke.leworldmodel:main"
 worldforge-smoke-jepa-wms = "worldforge.smoke.jepa_wms:main"
@@ -94,7 +92,13 @@ packages = ["src/worldforge"]
 only-packages = true
 
 [tool.hatch.build.targets.wheel.force-include]
-"src/worldforge/providers/runtime_manifests" = "worldforge/providers/runtime_manifests"
+"src/worldforge/providers/runtime_manifests/cosmos-policy.json" = "worldforge/providers/runtime_manifests/cosmos-policy.json"
+"src/worldforge/providers/runtime_manifests/gr00t.json" = "worldforge/providers/runtime_manifests/gr00t.json"
+"src/worldforge/providers/runtime_manifests/jepa-wms.json" = "worldforge/providers/runtime_manifests/jepa-wms.json"
+"src/worldforge/providers/runtime_manifests/jepa.json" = "worldforge/providers/runtime_manifests/jepa.json"
+"src/worldforge/providers/runtime_manifests/lerobot.json" = "worldforge/providers/runtime_manifests/lerobot.json"
+"src/worldforge/providers/runtime_manifests/leworldmodel.json" = "worldforge/providers/runtime_manifests/leworldmodel.json"
+"src/worldforge/schemas/decision_trace.v1.schema.json" = "worldforge/schemas/decision_trace.v1.schema.json"
 
 [tool.hatch.build.targets.sdist]
 include = [

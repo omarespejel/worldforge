@@ -1,0 +1,952 @@
+from __future__ import annotations
+
+import importlib.util
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+from worldforge.demos.so101_latent_score_provider import SO101LatentScoreProvider
+from worldforge.models import WorldForgeError
+
+
+def _write_basic_vision_latent_artifacts(tmp_path: Path) -> tuple[Path, Path]:
+    np = pytest.importorskip("numpy")
+    model_name = "vision_mlp_h1"
+    weights_path = tmp_path / "weights.npz"
+    metadata_path = tmp_path / "metadata.json"
+    np.savez_compressed(
+        weights_path,
+        selected_model=np.asarray(model_name),
+        latent_dim=np.asarray(2, dtype=np.int64),
+        **{
+            f"{model_name}__x_mean": np.zeros(3, dtype=np.float32),
+            f"{model_name}__x_scale": np.ones(3, dtype=np.float32),
+            f"{model_name}__w1": np.asarray([[0.0], [0.0], [1.0]], dtype=np.float32),
+            f"{model_name}__b1": np.zeros(1, dtype=np.float32),
+            f"{model_name}__w2": np.asarray([[-1.0, 1.0]], dtype=np.float32),
+            f"{model_name}__b2": np.zeros(2, dtype=np.float32),
+        },
+    )
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "artifact_kind": "worldforge.so101_latent_score_provider",
+                "selected_model": model_name,
+                "models": {
+                    model_name: {
+                        "variant": "vision_mlp",
+                        "horizon": 1,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return weights_path, metadata_path
+
+
+def _load_script_module(script_name: str, module_name: str) -> object:
+    script_path = Path(__file__).resolve().parents[1] / "scripts" / script_name
+    spec = importlib.util.spec_from_file_location(module_name, script_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(spec.name, None)
+    return module
+
+
+def test_so101_latent_score_provider_imports_without_loading_numpy() -> None:
+    assert SO101LatentScoreProvider.name == "so101-latent-score-provider"
+
+
+def test_so101_referee_smoke_script_help_imports_without_referee(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = _load_script_module("run_so101_referee_smoke.py", "run_so101_referee_smoke_test")
+
+    with pytest.raises(SystemExit) as exc_info:
+        module.main(["--help"])
+
+    assert exc_info.value.code == 0
+    assert "external held-out referee" in capsys.readouterr().out
+
+
+def test_so101_referee_smoke_metric_summary_uses_clear_bad_decoys() -> None:
+    module = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_metric_test",
+    )
+
+    class RefereeWithoutMetricSummary:
+        pass
+
+    summary = module._metric_summary(
+        RefereeWithoutMetricSummary(),
+        {
+            "decoy_beat_rate": {
+                "no_motion": 0.1,
+                "scale_half": 0.3,
+                "overshoot": 0.6,
+                "reverse": 0.5,
+                "random_other": 0.8,
+                "jitter": 0.7,
+            }
+        },
+    )
+
+    assert summary == {
+        "fair_beat_rate_clearbad": 0.65,
+        "fair_beat_rate_clearbad_raw": 0.65,
+        "near_duplicate_beat_rate": 0.2,
+        "near_duplicate_beat_rate_raw": 0.2,
+    }
+
+
+def test_so101_referee_smoke_metric_summary_prefers_referee_owned_summary() -> None:
+    module = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_referee_metric_test",
+    )
+
+    class RefereeWithMetricSummary:
+        @staticmethod
+        def metric_summary(row: dict[str, object]) -> dict[str, float]:
+            assert row["decoy_beat_rate"] == {"overshoot": 0.1}
+            return {
+                "fair_beat_rate_clearbad": 0.12345,
+                "near_duplicate_beat_rate": 0.54321,
+            }
+
+    summary = module._metric_summary(
+        RefereeWithMetricSummary(),
+        {"decoy_beat_rate": {"overshoot": 0.1}},
+    )
+
+    assert summary == {
+        "fair_beat_rate_clearbad": 0.1235,
+        "fair_beat_rate_clearbad_raw": 0.12345,
+        "near_duplicate_beat_rate": 0.5432,
+        "near_duplicate_beat_rate_raw": 0.54321,
+    }
+
+
+def test_so101_referee_smoke_metric_summary_rejects_bad_referee_summary() -> None:
+    module = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_bad_referee_metric_test",
+    )
+
+    class RefereeWithBadMetricSummary:
+        @staticmethod
+        def metric_summary(row: dict[str, object]) -> dict[str, float]:
+            return {"fair_beat_rate_clearbad": float("nan")}
+
+    with pytest.raises(RuntimeError, match="invalid metrics"):
+        module._metric_summary(
+            RefereeWithBadMetricSummary(),
+            {
+                "decoy_beat_rate": {
+                    "no_motion": 0.1,
+                    "scale_half": 0.3,
+                    "overshoot": 0.6,
+                    "reverse": 0.5,
+                    "random_other": 0.8,
+                    "jitter": 0.7,
+                }
+            },
+        )
+
+
+def test_so101_referee_smoke_metric_summary_rejects_missing_decoys() -> None:
+    module = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_missing_decoy_test",
+    )
+
+    class RefereeWithoutMetricSummary:
+        pass
+
+    with pytest.raises(ValueError, match="missing required decoys"):
+        module._metric_summary(
+            RefereeWithoutMetricSummary(),
+            {
+                "decoy_beat_rate": {
+                    "no_motion": 0.1,
+                    "scale_half": 0.3,
+                    "overshoot": 0.6,
+                    "reverse": 0.5,
+                    "random_other": 0.8,
+                }
+            },
+        )
+
+
+def test_so101_referee_smoke_rejects_missing_print_metrics() -> None:
+    module = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_missing_print_metric_test",
+    )
+
+    with pytest.raises(RuntimeError, match="missing numeric metric"):
+        module._result_metric({}, "mrr", scorer_name="candidate-scorer")
+
+
+def test_so101_referee_smoke_gate_summary_preregisters_baselines() -> None:
+    module = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_gate_summary_test",
+    )
+
+    gate = module._build_gate_summary(
+        metadata={"selected_model": "ranked_vision_proprio_mlp_h5"},
+        metric_summary={
+            "proprio_baseline": {
+                "fair_beat_rate_clearbad": 0.6174,
+                "fair_beat_rate_clearbad_raw": 0.617449,
+                "near_duplicate_beat_rate": 0.5896,
+            },
+            "ranked_vision_proprio_mlp_h5": {
+                "fair_beat_rate_clearbad": 0.9209,
+                "fair_beat_rate_clearbad_raw": 0.920912,
+                "near_duplicate_beat_rate": 0.1423,
+            },
+        },
+        results={
+            "ranked_vision_proprio_mlp_h5": {
+                "chance": 0.1429,
+                "shuffled_label_top1": 0.139,
+            }
+        },
+        residual_ridge_fair_clearbad=0.6762,
+        stress_tests={
+            "hard_negative_gate": {
+                "verdict": "does_not_clear_hard_on_manifold_gate",
+            }
+        },
+    )
+
+    assert gate == {
+        "registered_before_result": True,
+        "metric": "fair_beat_rate_clearbad",
+        "metric_boundary": "train_like_synthetic_clearbad_smoke",
+        "clear_bad_decoys": ["overshoot", "reverse", "random_other", "jitter"],
+        "near_duplicate_decoys_excluded_from_gate": ["no_motion", "scale_half"],
+        "selected_model": "ranked_vision_proprio_mlp_h5",
+        "selected_model_score": 0.9209,
+        "proprio_baseline": 0.6174,
+        "residual_ridge_baseline": 0.6762,
+        "clears_proprio_baseline": True,
+        "clears_residual_ridge_baseline": True,
+        "chance_top1": 0.1429,
+        "shuffled_label_top1": 0.139,
+        "control_boundary": (
+            "Shuffled-label top-1 is reported as a leakage control and should stay near chance; "
+            "Claude's independent audit owns the final leakage verdict."
+        ),
+        "verdict": "clears_train_like_clearbad_smoke_gate",
+        "hard_negative_verdict": "does_not_clear_hard_on_manifold_gate",
+        "claim_boundary": (
+            "Passing this train-like synthetic clear-bad smoke gate is not enough for a robust "
+            "learned-scorer value claim. That claim also needs held-out-generator or "
+            "on-manifold hard-negative rank fidelity, plus the independent leakage audit. This "
+            "is not a physical execution, sim-measured task-success, or safety-controller claim."
+        ),
+    }
+
+
+def test_so101_referee_smoke_gate_summary_fails_closed_below_ridge() -> None:
+    module = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_gate_failure_test",
+    )
+
+    gate = module._build_gate_summary(
+        metadata={"selected_model": "ranked_vision_mlp_h1"},
+        metric_summary={
+            "proprio_baseline": {
+                "fair_beat_rate_clearbad": 0.6174,
+                "fair_beat_rate_clearbad_raw": 0.617449,
+                "near_duplicate_beat_rate": 0.5896,
+            },
+            "ranked_vision_mlp_h1": {
+                "fair_beat_rate_clearbad": 0.65,
+                "fair_beat_rate_clearbad_raw": 0.649999,
+                "near_duplicate_beat_rate": 0.2,
+            },
+        },
+        results={
+            "ranked_vision_mlp_h1": {
+                "chance": 0.1429,
+                "shuffled_label_top1": 0.141,
+            }
+        },
+        residual_ridge_fair_clearbad=0.6762,
+    )
+
+    assert gate["clears_proprio_baseline"] is True
+    assert gate["clears_residual_ridge_baseline"] is False
+    assert gate["verdict"] == "does_not_clear_train_like_clearbad_smoke_gate"
+
+
+def test_so101_referee_smoke_progress_candidate_set_uses_progress_best() -> None:
+    np = pytest.importorskip("numpy")
+    module = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_progress_candidate_test",
+    )
+
+    class RefereeWithoutTrueProgress:
+        pass
+
+    item = {
+        "cur": np.asarray([0.0, 0.0], dtype=np.float32),
+        "goal": np.asarray([2.0, 0.0], dtype=np.float32),
+        "cands": {
+            "demonstrated": np.asarray([1.0, 0.0], dtype=np.float32),
+            "other_episode_demo_action": np.asarray([2.0, 0.0], dtype=np.float32),
+        },
+    }
+
+    def scorer(_item: dict[str, object]) -> dict[str, float]:
+        return {
+            "demonstrated": 0.4,
+            "other_episode_demo_action": 0.1,
+        }
+
+    result = module._evaluate_progress_candidate_set(
+        referee=RefereeWithoutTrueProgress(),
+        np=np,
+        items=[item],
+        scorer=scorer,
+        decoy_names=("other_episode_demo_action",),
+    )
+
+    assert result["top1_vs_demonstrated"] == 0.0
+    assert result["top1_vs_progress_best"] == 1.0
+    assert result["progress_pairwise_accuracy"] == 1.0
+    assert result["demonstrated_better_pair_count"] == 0
+
+
+def test_so101_referee_smoke_progress_candidate_set_rejects_empty_items() -> None:
+    np = pytest.importorskip("numpy")
+    module = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_empty_progress_test",
+    )
+
+    with pytest.raises(RuntimeError, match="at least one held-out item"):
+        module._evaluate_progress_candidate_set(
+            referee=object(),
+            np=np,
+            items=[],
+            scorer=lambda _item: {},
+            decoy_names=("other_episode_demo_action",),
+        )
+
+
+def test_so101_referee_smoke_stress_tests_reject_empty_items() -> None:
+    np = pytest.importorskip("numpy")
+    module = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_empty_stress_test",
+    )
+
+    with pytest.raises(RuntimeError, match="at least one held-out item"):
+        module._build_stress_tests(
+            referee=object(),
+            np=np,
+            items=[],
+            scorers={"proprio_baseline": lambda _item: {}},
+            seed=0,
+        )
+
+
+def test_so101_referee_smoke_hard_negative_gate_flags_proprio_failure() -> None:
+    module = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_hard_gate_test",
+    )
+
+    gate = module._build_hard_negative_gate(
+        {
+            "on_manifold_real_actions": {
+                "results": {
+                    "proprio_baseline": {
+                        "progress_pairwise_accuracy_raw": 0.7,
+                    },
+                    "ranked_vision_proprio_mlp_h5": {
+                        "progress_pairwise_accuracy_raw": 0.6,
+                    },
+                }
+            }
+        }
+    )
+
+    assert gate == {
+        "metric": "progress_pairwise_accuracy",
+        "profile": "on_manifold_real_actions",
+        "selected_model": "ranked_vision_proprio_mlp_h5",
+        "selected_model_score": 0.6,
+        "proprio_baseline": 0.7,
+        "clears_proprio_baseline": False,
+        "verdict": "does_not_clear_hard_on_manifold_gate",
+        "claim_boundary": (
+            "This is a hard-negative diagnostic using proprio progress as an oracle proxy, not "
+            "an execution-grounded success metric. Failure means the scorer did not preserve "
+            "on-manifold candidate progress ordering under this proxy. A learned-scorer value "
+            "claim should require this diagnostic, a near-duplicate gate, or a stronger "
+            "execution-grounded rank-fidelity gate, not only train-like synthetic clear-bad "
+            "decoys."
+        ),
+    }
+
+
+def test_so101_referee_smoke_gate_summary_requires_selected_model() -> None:
+    module = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_gate_missing_model_test",
+    )
+
+    with pytest.raises(RuntimeError, match="selected_model"):
+        module._build_gate_summary(
+            metadata={"selected_model": "not-evaluated"},
+            metric_summary={
+                "proprio_baseline": {
+                    "fair_beat_rate_clearbad": 0.6174,
+                    "near_duplicate_beat_rate": 0.5896,
+                }
+            },
+            results={},
+            residual_ridge_fair_clearbad=0.6762,
+        )
+
+
+def test_so101_referee_smoke_gate_summary_rejects_nonfinite_ridge() -> None:
+    module = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_gate_nonfinite_ridge_test",
+    )
+
+    with pytest.raises(RuntimeError, match="finite residual-ridge baseline"):
+        module._build_gate_summary(
+            metadata={"selected_model": "ranked_vision_proprio_mlp_h5"},
+            metric_summary={
+                "proprio_baseline": {
+                    "fair_beat_rate_clearbad": 0.6174,
+                    "near_duplicate_beat_rate": 0.5896,
+                },
+                "ranked_vision_proprio_mlp_h5": {
+                    "fair_beat_rate_clearbad": 0.9209,
+                    "near_duplicate_beat_rate": 0.1423,
+                },
+            },
+            results={
+                "ranked_vision_proprio_mlp_h5": {
+                    "chance": 0.1429,
+                    "shuffled_label_top1": 0.1384,
+                }
+            },
+            residual_ridge_fair_clearbad=float("inf"),
+        )
+
+
+def test_so101_referee_smoke_gate_summary_rejects_out_of_range_ridge() -> None:
+    module = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_gate_out_of_range_ridge_test",
+    )
+
+    with pytest.raises(RuntimeError, match=r"within \[0, 1\]"):
+        module._build_gate_summary(
+            metadata={"selected_model": "ranked_vision_proprio_mlp_h5"},
+            metric_summary={
+                "proprio_baseline": {
+                    "fair_beat_rate_clearbad": 0.6174,
+                    "near_duplicate_beat_rate": 0.5896,
+                },
+                "ranked_vision_proprio_mlp_h5": {
+                    "fair_beat_rate_clearbad": 0.9209,
+                    "near_duplicate_beat_rate": 0.1423,
+                },
+            },
+            results={
+                "ranked_vision_proprio_mlp_h5": {
+                    "chance": 0.1429,
+                    "shuffled_label_top1": 0.1384,
+                }
+            },
+            residual_ridge_fair_clearbad=1.1,
+        )
+
+
+def test_so101_referee_smoke_episode_identifier_is_shape_tolerant() -> None:
+    module = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_episode_identifier_test",
+    )
+
+    class EpisodeObject:
+        episode_index = "42"
+
+    assert module._episode_identifier(7, fallback_index=99) == 7
+    assert module._episode_identifier({"episode_index": "12"}, fallback_index=99) == 12
+    assert module._episode_identifier(EpisodeObject(), fallback_index=99) == 42
+    assert module._episode_identifier({"episode_index": True}, fallback_index=99) == 99
+    assert module._episode_identifier(object(), fallback_index=99) == 99
+
+
+def test_so101_referee_smoke_episode_identifier_accepts_numpy_integral() -> None:
+    np = pytest.importorskip("numpy")
+    module = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_episode_identifier_numpy_test",
+    )
+
+    assert module._episode_identifier(np.int64(7), fallback_index=99) == 7
+    assert module._episode_identifier({"episode_index": np.int64(12)}, fallback_index=99) == 12
+
+
+def test_so101_referee_smoke_rejects_bad_ridge_baseline_arg() -> None:
+    module = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_bad_ridge_arg_test",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        module.main(["--residual-ridge-fair-clearbad", "-0.1"])
+
+    assert exc_info.value.code == 2
+
+
+def test_so101_referee_smoke_rejects_nonfinite_ridge_baseline_arg() -> None:
+    module = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_nonfinite_ridge_arg_test",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        module.main(["--residual-ridge-fair-clearbad", "nan"])
+
+    assert exc_info.value.code == 2
+
+
+def test_so101_referee_smoke_rejects_out_of_range_ridge_baseline_arg() -> None:
+    module = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_out_of_range_ridge_arg_test",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        module.main(["--residual-ridge-fair-clearbad", "1.1"])
+
+    assert exc_info.value.code == 2
+
+
+def test_so101_referee_smoke_file_load_errors_are_sanitized(tmp_path: Path) -> None:
+    np = pytest.importorskip("numpy")
+    module = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_sanitized_error_test",
+    )
+
+    raw_path = tmp_path / "private" / "latent_cache.npz"
+    with pytest.raises(RuntimeError) as exc_info:
+        module._load_latent_cache(np, raw_path)
+
+    message = str(exc_info.value)
+    assert str(tmp_path) not in message
+    assert "latent_cache.npz" in message
+
+
+def test_so101_scorer_script_default_paths_are_portable() -> None:
+    smoke = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_portable_defaults_test",
+    )
+    train = _load_script_module(
+        "train_so101_latent_scorer.py",
+        "train_so101_latent_scorer_portable_defaults_test",
+    )
+    sidecar = _load_script_module(
+        "build_so101_latent_cache_sidecar.py",
+        "build_so101_latent_cache_sidecar_portable_defaults_test",
+    )
+
+    defaults = (
+        smoke.DEFAULT_DATASET_DIR,
+        smoke.DEFAULT_CACHE_PATH,
+        smoke.DEFAULT_REFEREE_PATH,
+        smoke.DEFAULT_SCORER_DIR,
+        train.DEFAULT_DATASET_DIR,
+        train.DEFAULT_CACHE_PATH,
+        sidecar.DEFAULT_DATASET_DIR,
+        sidecar.DEFAULT_CACHE_PATH,
+    )
+    assert all(not path.is_absolute() for path in defaults)
+    assert smoke.DEFAULT_SCORER_DIR == train.DEFAULT_OUTPUT_DIR
+
+
+def test_so101_ranked_residual_selection_key_uses_unrounded_metrics() -> None:
+    module = _load_script_module(
+        "train_so101_latent_scorer.py",
+        "train_so101_latent_scorer_selection_key_test",
+    )
+
+    rounded_tie_lower_raw = module._selection_key(
+        {
+            "target": "ranked_future_latent_residual",
+            "validation": {
+                "fair_beat_rate_clearbad": 0.9123,
+                "fair_beat_rate_clearbad_raw": 0.91234001,
+                "mrr": 0.4,
+                "mrr_raw": 0.4,
+            },
+        }
+    )
+    rounded_tie_higher_raw = module._selection_key(
+        {
+            "target": "ranked_future_latent_residual",
+            "validation": {
+                "fair_beat_rate_clearbad": 0.9123,
+                "fair_beat_rate_clearbad_raw": 0.91234999,
+                "mrr": 0.3,
+                "mrr_raw": 0.3,
+            },
+        }
+    )
+
+    assert rounded_tie_higher_raw > rounded_tie_lower_raw
+
+
+def test_so101_ranked_residual_training_rejects_negative_hyperparameters() -> None:
+    module = _load_script_module(
+        "train_so101_latent_scorer.py",
+        "train_so101_latent_scorer_negative_hyperparameter_test",
+    )
+
+    invalid_args = [
+        ("--early-stop-patience", "-1"),
+        ("--ranking-margin", "-0.1"),
+        ("--auxiliary-weight", "-0.1"),
+        ("--ranking-margin", "nan"),
+        ("--auxiliary-weight", "inf"),
+    ]
+    for flag, value in invalid_args:
+        with pytest.raises(SystemExit) as exc_info:
+            module.main([flag, value])
+        assert exc_info.value.code == 2
+
+
+def test_so101_latent_score_provider_scores_candidate_deltas(tmp_path: Path) -> None:
+    weights_path, metadata_path = _write_basic_vision_latent_artifacts(tmp_path)
+    provider = SO101LatentScoreProvider(
+        weights_path=weights_path,
+        metadata_path=metadata_path,
+    )
+
+    result = provider.score_actions(
+        info={
+            "current_latent": [1.0, 0.0],
+            "goal_latent": [0.0, 1.0],
+        },
+        action_candidates=[
+            {"candidate_id": "stay", "action_delta": [0.0]},
+            {"candidate_id": "toward_goal", "action_delta": [3.0]},
+        ],
+    )
+
+    assert result.best_index == 1
+    assert result.scores[1] < result.scores[0]
+    assert result.metadata["score_kind"] == "learned_latent"
+    assert result.metadata["target"] == "future_latent_residual"
+
+
+def test_so101_latent_score_provider_rejects_bad_history_latents(tmp_path: Path) -> None:
+    weights_path, metadata_path = _write_basic_vision_latent_artifacts(tmp_path)
+    provider = SO101LatentScoreProvider(
+        weights_path=weights_path,
+        metadata_path=metadata_path,
+    )
+
+    with pytest.raises(WorldForgeError, match="rectangular numeric list"):
+        provider.score_actions(
+            info={
+                "current_latent": [1.0, 0.0],
+                "goal_latent": [0.0, 1.0],
+                "history_latents": [[1.0, 0.0], [0.5], [0.0, 1.0]],
+            },
+            action_candidates=[{"candidate_id": "stay", "action_delta": [0.0]}],
+        )
+
+    with pytest.raises(WorldForgeError, match="history_latents width"):
+        provider.score_actions(
+            info={
+                "current_latent": [1.0, 0.0],
+                "goal_latent": [0.0, 1.0],
+                "history_latents": [[1.0, 0.0, 0.0], [0.5, 0.5, 0.0], [0.0, 1.0, 0.0]],
+            },
+            action_candidates=[{"candidate_id": "stay", "action_delta": [0.0]}],
+        )
+
+
+def test_so101_latent_score_provider_wraps_malformed_artifacts(tmp_path: Path) -> None:
+    np = pytest.importorskip("numpy")
+    model_name = "vision_mlp_h1"
+    weights_path = tmp_path / "weights.npz"
+    metadata_path = tmp_path / "metadata.json"
+    np.savez_compressed(
+        weights_path,
+        selected_model=np.asarray(model_name),
+        latent_dim=np.asarray(2, dtype=np.int64),
+        **{f"{model_name}__x_mean": np.zeros(3, dtype=np.float32)},
+    )
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "selected_model": model_name,
+                "models": {
+                    model_name: {
+                        "variant": "vision_mlp",
+                        "horizon": 1,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    provider = SO101LatentScoreProvider(
+        weights_path=weights_path,
+        metadata_path=metadata_path,
+    )
+
+    with pytest.raises(WorldForgeError, match="malformed"):
+        provider.score_actions(
+            info={
+                "current_latent": [1.0, 0.0],
+                "goal_latent": [0.0, 1.0],
+            },
+            action_candidates=[{"candidate_id": "stay", "action_delta": [0.0]}],
+        )
+
+
+def test_so101_latent_score_provider_wraps_bad_metadata(tmp_path: Path) -> None:
+    np = pytest.importorskip("numpy")
+    weights_path = tmp_path / "weights.npz"
+    metadata_path = tmp_path / "metadata.json"
+    np.savez_compressed(weights_path, latents=np.zeros((1, 2), dtype=np.float32))
+    metadata_path.write_text("{not-json", encoding="utf-8")
+
+    with pytest.raises(WorldForgeError, match="metadata"):
+        SO101LatentScoreProvider(
+            weights_path=weights_path,
+            metadata_path=metadata_path,
+        )
+
+
+def test_so101_latent_score_provider_scores_ranked_residual_model(tmp_path: Path) -> None:
+    np = pytest.importorskip("numpy")
+    model_name = "ranked_vision_proprio_mlp_h5"
+    weights_path = tmp_path / "weights.npz"
+    metadata_path = tmp_path / "metadata.json"
+    np.savez_compressed(
+        weights_path,
+        selected_model=np.asarray(model_name),
+        latent_dim=np.asarray(2, dtype=np.int64),
+        **{
+            f"{model_name}__x_mean": np.zeros(4, dtype=np.float32),
+            f"{model_name}__x_scale": np.ones(4, dtype=np.float32),
+            f"{model_name}__w1": np.asarray([[0.0], [0.0], [1.0], [0.0]], dtype=np.float32),
+            f"{model_name}__b1": np.zeros(1, dtype=np.float32),
+            f"{model_name}__w2": np.asarray([[-1.0, 1.0]], dtype=np.float32),
+            f"{model_name}__b2": np.zeros(2, dtype=np.float32),
+        },
+    )
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "artifact_kind": "worldforge.so101_latent_score_provider",
+                "selected_model": model_name,
+                "models": {
+                    model_name: {
+                        "variant": "ranked_vision_proprio_mlp",
+                        "horizon": 5,
+                        "target": "ranked_future_latent_residual",
+                        "target_scale": "pairwise_clearbad_decoy_margin",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    provider = SO101LatentScoreProvider(
+        weights_path=weights_path,
+        metadata_path=metadata_path,
+    )
+
+    with pytest.raises(WorldForgeError, match="current_state"):
+        provider.score_actions(
+            info={
+                "current_latent": [1.0, 0.0],
+                "goal_latent": [0.0, 1.0],
+            },
+            action_candidates=[{"candidate_id": "toward_goal", "action_delta": [3.0]}],
+        )
+
+    result = provider.score_actions(
+        info={
+            "current_latent": [1.0, 0.0],
+            "goal_latent": [0.0, 1.0],
+            "current_state": [0.0],
+        },
+        action_candidates=[
+            {"candidate_id": "stay", "action_delta": [0.0]},
+            {"candidate_id": "toward_goal", "action_delta": [3.0]},
+        ],
+    )
+
+    assert result.best_index == 1
+    assert result.scores[1] < result.scores[0]
+    assert result.metadata["target"] == "ranked_future_latent_residual"
+    assert result.metadata["target_scale"] == "pairwise_clearbad_decoy_margin"
+    assert provider.predict_latent(
+        current_latent=[1.0, 0.0],
+        action_delta=[3.0],
+        current_state=[0.0],
+    )
+
+
+def test_so101_latent_score_provider_scores_goal_conditioned_cost(tmp_path: Path) -> None:
+    np = pytest.importorskip("numpy")
+    model_name = "goal_score_mlp_h1"
+    weights_path = tmp_path / "weights.npz"
+    metadata_path = tmp_path / "metadata.json"
+    np.savez_compressed(
+        weights_path,
+        selected_model=np.asarray(model_name),
+        latent_dim=np.asarray(2, dtype=np.int64),
+        **{
+            f"{model_name}__x_mean": np.zeros(5, dtype=np.float32),
+            f"{model_name}__x_scale": np.ones(5, dtype=np.float32),
+            f"{model_name}__w1": np.asarray([[0.0], [0.0], [0.0], [0.0], [1.0]], dtype=np.float32),
+            f"{model_name}__b1": np.zeros(1, dtype=np.float32),
+            f"{model_name}__w2": np.asarray([[-1.0]], dtype=np.float32),
+            f"{model_name}__b2": np.asarray([1.0], dtype=np.float32),
+        },
+    )
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "artifact_kind": "worldforge.so101_latent_score_provider",
+                "selected_model": model_name,
+                "models": {
+                    model_name: {
+                        "variant": "goal_score_mlp",
+                        "horizon": 1,
+                        "target": "goal_conditioned_cost",
+                        "target_scale": "joint_distance_to_goal",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    provider = SO101LatentScoreProvider(
+        weights_path=weights_path,
+        metadata_path=metadata_path,
+    )
+
+    result = provider.score_actions(
+        info={
+            "current_latent": [1.0, 0.0],
+            "goal_latent": [0.0, 1.0],
+        },
+        action_candidates=[
+            {"candidate_id": "stay", "action_delta": [0.0]},
+            {"candidate_id": "toward_goal", "action_delta": [3.0]},
+        ],
+    )
+
+    assert result.best_index == 1
+    assert result.scores[1] < result.scores[0]
+    assert result.metadata["target"] == "goal_conditioned_cost"
+    assert result.metadata["target_scale"] == "joint_distance_to_goal"
+    with pytest.raises(WorldForgeError, match="predict_latent"):
+        provider.predict_latent(current_latent=[1.0, 0.0], action_delta=[3.0])
+
+
+def test_so101_latent_score_provider_scores_history_goal_cost(tmp_path: Path) -> None:
+    np = pytest.importorskip("numpy")
+    model_name = "goal_history_score_mlp_h1"
+    weights_path = tmp_path / "weights.npz"
+    metadata_path = tmp_path / "metadata.json"
+    np.savez_compressed(
+        weights_path,
+        selected_model=np.asarray(model_name),
+        latent_dim=np.asarray(2, dtype=np.int64),
+        **{
+            f"{model_name}__x_mean": np.zeros(9, dtype=np.float32),
+            f"{model_name}__x_scale": np.ones(9, dtype=np.float32),
+            f"{model_name}__w1": np.asarray(
+                [[0.0], [0.0], [0.0], [0.0], [0.0], [0.0], [0.0], [0.0], [1.0]],
+                dtype=np.float32,
+            ),
+            f"{model_name}__b1": np.zeros(1, dtype=np.float32),
+            f"{model_name}__w2": np.asarray([[-1.0]], dtype=np.float32),
+            f"{model_name}__b2": np.asarray([1.0], dtype=np.float32),
+        },
+    )
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "artifact_kind": "worldforge.so101_latent_score_provider",
+                "selected_model": model_name,
+                "models": {
+                    model_name: {
+                        "variant": "goal_history_score_mlp",
+                        "horizon": 1,
+                        "target": "goal_conditioned_cost",
+                        "target_scale": "joint_distance_to_goal",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    provider = SO101LatentScoreProvider(
+        weights_path=weights_path,
+        metadata_path=metadata_path,
+    )
+
+    with pytest.raises(WorldForgeError, match="history_latents"):
+        provider.score_actions(
+            info={
+                "current_latent": [1.0, 0.0],
+                "goal_latent": [0.0, 1.0],
+            },
+            action_candidates=[{"candidate_id": "toward_goal", "action_delta": [3.0]}],
+        )
+
+    result = provider.score_actions(
+        info={
+            "current_latent": [1.0, 0.0],
+            "goal_latent": [0.0, 1.0],
+            "history_latents": [[1.0, 0.0], [0.8, 0.2], [0.6, 0.4]],
+        },
+        action_candidates=[
+            {"candidate_id": "stay", "action_delta": [0.0]},
+            {"candidate_id": "toward_goal", "action_delta": [3.0]},
+        ],
+    )
+
+    assert result.best_index == 1
+    assert result.metadata["variant"] == "goal_history_score_mlp"
