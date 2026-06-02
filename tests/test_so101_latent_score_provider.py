@@ -352,6 +352,17 @@ def test_so101_referee_smoke_episode_identifier_is_shape_tolerant() -> None:
     assert module._episode_identifier(object(), fallback_index=99) == 99
 
 
+def test_so101_referee_smoke_episode_identifier_accepts_numpy_integral() -> None:
+    np = pytest.importorskip("numpy")
+    module = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_episode_identifier_numpy_test",
+    )
+
+    assert module._episode_identifier(np.int64(7), fallback_index=99) == 7
+    assert module._episode_identifier({"episode_index": np.int64(12)}, fallback_index=99) == 12
+
+
 def test_so101_referee_smoke_rejects_bad_ridge_baseline_arg() -> None:
     module = _load_script_module(
         "run_so101_referee_smoke.py",

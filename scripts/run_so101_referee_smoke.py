@@ -12,6 +12,7 @@ import argparse
 import importlib.util
 import json
 import math
+import numbers
 from pathlib import Path
 from typing import Any
 
@@ -372,8 +373,8 @@ def _finite_metric(summary: Any, key: str) -> float:
 def _episode_identifier(episode: Any, *, fallback_index: int) -> int:
     if isinstance(episode, bool):
         return fallback_index
-    if isinstance(episode, int):
-        return episode
+    if isinstance(episode, numbers.Integral):
+        return int(episode)
     if isinstance(episode, dict) and "episode_index" in episode:
         return _coerce_episode_identifier(episode["episode_index"], fallback_index=fallback_index)
     if hasattr(episode, "episode_index"):
@@ -387,6 +388,8 @@ def _episode_identifier(episode: Any, *, fallback_index: int) -> int:
 def _coerce_episode_identifier(value: Any, *, fallback_index: int) -> int:
     if isinstance(value, bool):
         return fallback_index
+    if isinstance(value, numbers.Integral):
+        return int(value)
     try:
         return int(value)
     except (TypeError, ValueError):
