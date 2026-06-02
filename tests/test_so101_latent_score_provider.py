@@ -103,7 +103,9 @@ def test_so101_referee_smoke_metric_summary_uses_clear_bad_decoys() -> None:
 
     assert summary == {
         "fair_beat_rate_clearbad": 0.65,
+        "fair_beat_rate_clearbad_raw": 0.65,
         "near_duplicate_beat_rate": 0.2,
+        "near_duplicate_beat_rate_raw": 0.2,
     }
 
 
@@ -129,7 +131,9 @@ def test_so101_referee_smoke_metric_summary_prefers_referee_owned_summary() -> N
 
     assert summary == {
         "fair_beat_rate_clearbad": 0.1235,
+        "fair_beat_rate_clearbad_raw": 0.12345,
         "near_duplicate_beat_rate": 0.5432,
+        "near_duplicate_beat_rate_raw": 0.54321,
     }
 
 
@@ -205,10 +209,12 @@ def test_so101_referee_smoke_gate_summary_preregisters_baselines() -> None:
         metric_summary={
             "proprio_baseline": {
                 "fair_beat_rate_clearbad": 0.6174,
+                "fair_beat_rate_clearbad_raw": 0.617449,
                 "near_duplicate_beat_rate": 0.5896,
             },
             "ranked_vision_proprio_mlp_h5": {
                 "fair_beat_rate_clearbad": 0.9209,
+                "fair_beat_rate_clearbad_raw": 0.920912,
                 "near_duplicate_beat_rate": 0.1423,
             },
         },
@@ -258,10 +264,12 @@ def test_so101_referee_smoke_gate_summary_fails_closed_below_ridge() -> None:
         metric_summary={
             "proprio_baseline": {
                 "fair_beat_rate_clearbad": 0.6174,
+                "fair_beat_rate_clearbad_raw": 0.617449,
                 "near_duplicate_beat_rate": 0.5896,
             },
             "ranked_vision_mlp_h1": {
                 "fair_beat_rate_clearbad": 0.65,
+                "fair_beat_rate_clearbad_raw": 0.649999,
                 "near_duplicate_beat_rate": 0.2,
             },
         },
@@ -297,6 +305,22 @@ def test_so101_referee_smoke_gate_summary_requires_selected_model() -> None:
             results={},
             residual_ridge_fair_clearbad=0.6762,
         )
+
+
+def test_so101_referee_smoke_episode_identifier_is_shape_tolerant() -> None:
+    module = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_episode_identifier_test",
+    )
+
+    class EpisodeObject:
+        episode_index = "42"
+
+    assert module._episode_identifier(7, fallback_index=99) == 7
+    assert module._episode_identifier({"episode_index": "12"}, fallback_index=99) == 12
+    assert module._episode_identifier(EpisodeObject(), fallback_index=99) == 42
+    assert module._episode_identifier({"episode_index": True}, fallback_index=99) == 99
+    assert module._episode_identifier(object(), fallback_index=99) == 99
 
 
 def test_so101_referee_smoke_rejects_bad_ridge_baseline_arg() -> None:

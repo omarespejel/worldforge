@@ -178,7 +178,10 @@ def run_referee_smoke(
         "test_episode_count": len(test_episodes),
         "split": {
             "test_frac": test_frac,
-            "test_episodes": [int(episode["episode_index"]) for episode in test_episodes],
+            "test_episodes": [
+                _episode_identifier(episode, fallback_index=index)
+                for index, episode in enumerate(test_episodes, start=split)
+            ],
         },
         "metric_boundary": (
             "Exact-match top-1 is diagnostic for this near-duplicate decoy set. The primary "
@@ -234,13 +237,13 @@ def _metric_summary(referee: Any, row: dict[str, Any]) -> dict[str, float]:
     if callable(metric_summary):
         try:
             raw_summary = metric_summary(row)
+            fair_clearbad = _finite_metric(raw_summary, "fair_beat_rate_clearbad")
+            near_duplicate = _finite_metric(raw_summary, "near_duplicate_beat_rate")
             return {
-                "fair_beat_rate_clearbad": round(
-                    _finite_metric(raw_summary, "fair_beat_rate_clearbad"), 4
-                ),
-                "near_duplicate_beat_rate": round(
-                    _finite_metric(raw_summary, "near_duplicate_beat_rate"), 4
-                ),
+                "fair_beat_rate_clearbad": round(fair_clearbad, 4),
+                "fair_beat_rate_clearbad_raw": fair_clearbad,
+                "near_duplicate_beat_rate": round(near_duplicate, 4),
+                "near_duplicate_beat_rate_raw": near_duplicate,
             }
         except (KeyError, TypeError, ValueError, OverflowError) as exc:
             raise RuntimeError("SO-101 referee metric_summary returned invalid metrics.") from exc
@@ -249,7 +252,9 @@ def _metric_summary(referee: Any, row: dict[str, Any]) -> dict[str, float]:
     near_duplicate = _mean_named_rates(beat_rates, NEAR_DUPLICATE_DECOYS)
     return {
         "fair_beat_rate_clearbad": round(clear_bad, 4),
+        "fair_beat_rate_clearbad_raw": clear_bad,
         "near_duplicate_beat_rate": round(near_duplicate, 4),
+        "near_duplicate_beat_rate_raw": near_duplicate,
     }
 
 
@@ -269,13 +274,15 @@ def _build_gate_summary(
         raise RuntimeError("SO-101 scorer gate requires the proprio_baseline referee result.")
     selected_score = _finite_summary_metric(
         metric_summary[selected_model],
-        GATE_METRIC,
+        f"{GATE_METRIC}_raw",
         scorer_name=selected_model,
+        fallback_key=GATE_METRIC,
     )
     proprio_score = _finite_summary_metric(
         metric_summary["proprio_baseline"],
-        GATE_METRIC,
+        f"{GATE_METRIC}_raw",
         scorer_name="proprio_baseline",
+        fallback_key=GATE_METRIC,
     )
     residual_ridge_score = float(residual_ridge_fair_clearbad)
     selected_result = results[selected_model]
@@ -318,10 +325,26 @@ def _build_gate_summary(
     }
 
 
-def _finite_summary_metric(row: dict[str, Any], key: str, *, scorer_name: str) -> float:
+def _finite_summary_metric(
+    row: dict[str, Any],
+    key: str,
+    *,
+    scorer_name: str,
+    fallback_key: str | None = None,
+) -> float:
     try:
         value = float(row[key])
-    except (KeyError, TypeError, ValueError) as exc:
+    except KeyError:
+        if fallback_key is None:
+            raise RuntimeError(
+                f"SO-101 referee summary for {scorer_name!r} is missing numeric metric {key!r}."
+            ) from None
+        return _finite_summary_metric(
+            row,
+            fallback_key,
+            scorer_name=scorer_name,
+        )
+    except (TypeError, ValueError) as exc:
         raise RuntimeError(
             f"SO-101 referee summary for {scorer_name!r} is missing numeric metric {key!r}."
         ) from exc
@@ -339,6 +362,30 @@ def _finite_metric(summary: Any, key: str) -> float:
     if not math.isfinite(value):
         raise ValueError(f"SO-101 referee metric_summary returned non-finite {key}.")
     return value
+
+
+def _episode_identifier(episode: Any, *, fallback_index: int) -> int:
+    if isinstance(episode, bool):
+        return fallback_index
+    if isinstance(episode, int):
+        return episode
+    if isinstance(episode, dict) and "episode_index" in episode:
+        return _coerce_episode_identifier(episode["episode_index"], fallback_index=fallback_index)
+    if hasattr(episode, "episode_index"):
+        return _coerce_episode_identifier(
+            episode.episode_index,
+            fallback_index=fallback_index,
+        )
+    return fallback_index
+
+
+def _coerce_episode_identifier(value: Any, *, fallback_index: int) -> int:
+    if isinstance(value, bool):
+        return fallback_index
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback_index
 
 
 def _mean_named_rates(beat_rates: Any, names: tuple[str, ...]) -> float:
