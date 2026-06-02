@@ -284,7 +284,12 @@ def _build_gate_summary(
         scorer_name="proprio_baseline",
         fallback_key=GATE_METRIC,
     )
-    residual_ridge_score = float(residual_ridge_fair_clearbad)
+    try:
+        residual_ridge_score = float(residual_ridge_fair_clearbad)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("SO-101 scorer gate requires a finite residual-ridge baseline.") from exc
+    if not math.isfinite(residual_ridge_score):
+        raise RuntimeError("SO-101 scorer gate requires a finite residual-ridge baseline.")
     selected_result = results[selected_model]
     chance_top1 = _result_metric(selected_result, "chance", scorer_name=selected_model)
     shuffled_label_top1 = _result_metric(
@@ -490,9 +495,14 @@ def _sha256(path: Path) -> str:
 
 
 def _finite_non_negative_float(value: str) -> float:
-    parsed = float(value)
-    if parsed < 0.0 or not math.isfinite(parsed):
-        raise argparse.ArgumentTypeError("value must be a finite non-negative float")
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("value must be a finite float") from exc
+    if not math.isfinite(parsed):
+        raise argparse.ArgumentTypeError("value must be a finite float")
+    if parsed < 0.0:
+        raise argparse.ArgumentTypeError("value must be a non-negative float")
     return parsed
 
 
