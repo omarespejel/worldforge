@@ -23,6 +23,8 @@ DEFAULT_REFEREE_PATH = Path(".worldforge/so101-referee/referee_headline.py")
 DEFAULT_SCORER_DIR = Path(".worldforge/so101-latent-scorer")
 CLEAR_BAD_DECOYS = ("overshoot", "reverse", "random_other", "jitter")
 NEAR_DUPLICATE_DECOYS = ("no_motion", "scale_half")
+GATE_METRIC = "fair_beat_rate_clearbad"
+DEFAULT_RESIDUAL_RIDGE_FAIR_CLEARBAD = 0.6762
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -49,6 +51,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--test-frac", type=float, default=0.3)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--shuffle-seed", type=int, default=7)
+    parser.add_argument(
+        "--residual-ridge-fair-clearbad",
+        type=_finite_non_negative_float,
+        default=DEFAULT_RESIDUAL_RIDGE_FAIR_CLEARBAD,
+        help=(
+            "Pre-registered residual-ridge sanity baseline for fair_beat_rate_clearbad. "
+            "Default comes from the prior frozen-referee residual-ridge run."
+        ),
+    )
     args = parser.parse_args(argv)
 
     result = run_referee_smoke(
@@ -62,6 +73,7 @@ def main(argv: list[str] | None = None) -> int:
         test_frac=args.test_frac,
         seed=args.seed,
         shuffle_seed=args.shuffle_seed,
+        residual_ridge_fair_clearbad=args.residual_ridge_fair_clearbad,
     )
     print(f"items={result['n_items']} test_episodes={result['test_episode_count']}")
     for name, row in result["results"].items():
@@ -73,6 +85,15 @@ def main(argv: list[str] | None = None) -> int:
             "rank_corr_calibration="
             f"{_result_metric(row, 'rank_corr_vs_proprio_truth', scorer_name=name):.4f}"
         )
+    gate = result["gate"]
+    print(
+        "gate="
+        f"{gate['verdict']} "
+        f"selected={gate['selected_model']} "
+        f"{gate['metric']}={gate['selected_model_score']:.4f} "
+        f"proprio={gate['proprio_baseline']:.4f} "
+        f"ridge={gate['residual_ridge_baseline']:.4f}"
+    )
     print(f"WROTE {result['output_path']}")
     return 0
 
@@ -89,6 +110,7 @@ def run_referee_smoke(
     test_frac: float,
     seed: int,
     shuffle_seed: int,
+    residual_ridge_fair_clearbad: float,
 ) -> dict[str, Any]:
     np = _import_numpy()
     referee = _load_referee(referee_path)
@@ -121,26 +143,50 @@ def run_referee_smoke(
             np.random.RandomState(shuffle_seed),
         )
     metric_summary = {name: _metric_summary(referee, row) for name, row in results.items()}
+    gate = _build_gate_summary(
+        metadata=metadata,
+        metric_summary=metric_summary,
+        results=results,
+        residual_ridge_fair_clearbad=residual_ridge_fair_clearbad,
+    )
 
     payload = {
         "boundary": (
             "Smoke handoff using external referee functions; the external referee owner's "
             "independent run remains authoritative."
         ),
-        "dataset_dir": str(dataset_dir),
-        "cache_path": str(cache_path),
-        "referee_path": str(referee_path),
-        "scorer_metadata_path": str(metadata_path),
-        "weights_sha256": _sha256(weights_path),
-        "metadata_sha256": _sha256(metadata_path),
+        "inputs": {
+            "dataset_dir": _safe_path_for_report(dataset_dir),
+            "cache_path": _safe_path_for_report(cache_path),
+            "referee_path": _safe_path_for_report(referee_path),
+            "scorer_metadata_path": _safe_path_for_report(metadata_path),
+        },
+        "external_referee": {
+            "sha256": _sha256(referee_path),
+            "frozen_for_gate": True,
+            "required_members": ["load", "build_items", "evaluate", "proprio_scorer", "DECOYS"],
+            "boundary": (
+                "Host-owned referee module. This helper adapts scorer artifacts to the "
+                "referee; it does not define the evaluation protocol."
+            ),
+        },
+        "scorer_artifacts": {
+            "weights_sha256": _sha256(weights_path),
+            "metadata_sha256": _sha256(metadata_path),
+        },
         "n_items": len(items),
         "test_episode_count": len(test_episodes),
+        "split": {
+            "test_frac": test_frac,
+            "test_episodes": [int(episode["episode_index"]) for episode in test_episodes],
+        },
         "metric_boundary": (
             "Exact-match top-1 is diagnostic for this near-duplicate decoy set. The primary "
             "handoff metric is fair_beat_rate_clearbad over overshoot, reverse, random_other, "
             "and jitter. rank_corr_vs_proprio_truth is calibration against proprio progress, "
             "not an independent success signal."
         ),
+        "gate": gate,
         "metric_summary": metric_summary,
         "results": results,
     }
@@ -205,6 +251,85 @@ def _metric_summary(referee: Any, row: dict[str, Any]) -> dict[str, float]:
         "fair_beat_rate_clearbad": round(clear_bad, 4),
         "near_duplicate_beat_rate": round(near_duplicate, 4),
     }
+
+
+def _build_gate_summary(
+    *,
+    metadata: dict[str, Any],
+    metric_summary: dict[str, dict[str, float]],
+    results: dict[str, dict[str, Any]],
+    residual_ridge_fair_clearbad: float,
+) -> dict[str, Any]:
+    selected_model = str(metadata.get("selected_model", ""))
+    if selected_model not in metric_summary:
+        raise RuntimeError(
+            "SO-101 scorer gate requires the selected_model to be present in referee results."
+        )
+    if "proprio_baseline" not in metric_summary:
+        raise RuntimeError("SO-101 scorer gate requires the proprio_baseline referee result.")
+    selected_score = _finite_summary_metric(
+        metric_summary[selected_model],
+        GATE_METRIC,
+        scorer_name=selected_model,
+    )
+    proprio_score = _finite_summary_metric(
+        metric_summary["proprio_baseline"],
+        GATE_METRIC,
+        scorer_name="proprio_baseline",
+    )
+    residual_ridge_score = float(residual_ridge_fair_clearbad)
+    selected_result = results[selected_model]
+    chance_top1 = _result_metric(selected_result, "chance", scorer_name=selected_model)
+    shuffled_label_top1 = _result_metric(
+        selected_result,
+        "shuffled_label_top1",
+        scorer_name=selected_model,
+    )
+    clears_proprio = selected_score > proprio_score
+    clears_residual_ridge = selected_score >= residual_ridge_score
+    verdict = (
+        "clears_pre_registered_fair_gate"
+        if clears_proprio and clears_residual_ridge
+        else "does_not_clear_pre_registered_fair_gate"
+    )
+    return {
+        "registered_before_result": True,
+        "metric": GATE_METRIC,
+        "clear_bad_decoys": list(CLEAR_BAD_DECOYS),
+        "near_duplicate_decoys_excluded_from_gate": list(NEAR_DUPLICATE_DECOYS),
+        "selected_model": selected_model,
+        "selected_model_score": round(selected_score, 4),
+        "proprio_baseline": round(proprio_score, 4),
+        "residual_ridge_baseline": round(residual_ridge_score, 4),
+        "clears_proprio_baseline": clears_proprio,
+        "clears_residual_ridge_baseline": clears_residual_ridge,
+        "chance_top1": round(chance_top1, 4),
+        "shuffled_label_top1": round(shuffled_label_top1, 4),
+        "control_boundary": (
+            "Shuffled-label top-1 is reported as a leakage control and should stay near chance; "
+            "Claude's independent audit owns the final leakage verdict."
+        ),
+        "verdict": verdict,
+        "claim_boundary": (
+            "Passing this gate is evidence of held-out replay ranking value for learned semantic "
+            "latent scoring. It is not a physical execution, sim-measured task-success, or "
+            "safety-controller claim."
+        ),
+    }
+
+
+def _finite_summary_metric(row: dict[str, Any], key: str, *, scorer_name: str) -> float:
+    try:
+        value = float(row[key])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f"SO-101 referee summary for {scorer_name!r} is missing numeric metric {key!r}."
+        ) from exc
+    if not math.isfinite(value):
+        raise RuntimeError(
+            f"SO-101 referee summary for {scorer_name!r} has non-finite metric {key!r}."
+        )
+    return value
 
 
 def _finite_metric(summary: Any, key: str) -> float:
@@ -293,6 +418,10 @@ def _safe_path_for_error(path: Path) -> str:
         return path.name
 
 
+def _safe_path_for_report(path: Path) -> str:
+    return _safe_path_for_error(path)
+
+
 def _result_metric(row: dict[str, Any], key: str, *, scorer_name: str) -> float:
     try:
         value = float(row[key])
@@ -311,6 +440,13 @@ def _sha256(path: Path) -> str:
     import hashlib
 
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _finite_non_negative_float(value: str) -> float:
+    parsed = float(value)
+    if parsed < 0.0 or not math.isfinite(parsed):
+        raise argparse.ArgumentTypeError("value must be a finite non-negative float")
+    return parsed
 
 
 def _split_csv(value: str) -> list[str]:

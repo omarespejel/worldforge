@@ -47,6 +47,10 @@ releases may still include breaking changes when the public API needs to tighten
   for external referee experiments. `scripts/run_so101_referee_smoke.py` adapts those artifacts to
   an external referee module for host-owned smoke checks without making WorldForge grade its own
   scorer.
+- Added a pre-registered SO-101 scorer-v2 verdict gate to the external-referee smoke handoff.
+  The result JSON now records the frozen referee hash, sanitized artifact inputs, held-out split,
+  selected-model `fair_beat_rate_clearbad`, proprio and residual-ridge baselines, shuffled-label
+  control, and an explicit claim boundary for learned semantic-latent scoring.
 - Added a non-interactive TensorBoard launcher CLI:
   `worldforge-open-tensorboard --logdir <path> [--probe] [--no-browser]
   [--keep-running] [--ready-timeout 60] [--poll-interval 0.5]`. Wraps the

@@ -194,6 +194,123 @@ def test_so101_referee_smoke_rejects_missing_print_metrics() -> None:
         module._result_metric({}, "mrr", scorer_name="candidate-scorer")
 
 
+def test_so101_referee_smoke_gate_summary_preregisters_baselines() -> None:
+    module = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_gate_summary_test",
+    )
+
+    gate = module._build_gate_summary(
+        metadata={"selected_model": "ranked_vision_proprio_mlp_h5"},
+        metric_summary={
+            "proprio_baseline": {
+                "fair_beat_rate_clearbad": 0.6174,
+                "near_duplicate_beat_rate": 0.5896,
+            },
+            "ranked_vision_proprio_mlp_h5": {
+                "fair_beat_rate_clearbad": 0.9209,
+                "near_duplicate_beat_rate": 0.1423,
+            },
+        },
+        results={
+            "ranked_vision_proprio_mlp_h5": {
+                "chance": 0.1429,
+                "shuffled_label_top1": 0.139,
+            }
+        },
+        residual_ridge_fair_clearbad=0.6762,
+    )
+
+    assert gate == {
+        "registered_before_result": True,
+        "metric": "fair_beat_rate_clearbad",
+        "clear_bad_decoys": ["overshoot", "reverse", "random_other", "jitter"],
+        "near_duplicate_decoys_excluded_from_gate": ["no_motion", "scale_half"],
+        "selected_model": "ranked_vision_proprio_mlp_h5",
+        "selected_model_score": 0.9209,
+        "proprio_baseline": 0.6174,
+        "residual_ridge_baseline": 0.6762,
+        "clears_proprio_baseline": True,
+        "clears_residual_ridge_baseline": True,
+        "chance_top1": 0.1429,
+        "shuffled_label_top1": 0.139,
+        "control_boundary": (
+            "Shuffled-label top-1 is reported as a leakage control and should stay near chance; "
+            "Claude's independent audit owns the final leakage verdict."
+        ),
+        "verdict": "clears_pre_registered_fair_gate",
+        "claim_boundary": (
+            "Passing this gate is evidence of held-out replay ranking value for learned semantic "
+            "latent scoring. It is not a physical execution, sim-measured task-success, or "
+            "safety-controller claim."
+        ),
+    }
+
+
+def test_so101_referee_smoke_gate_summary_fails_closed_below_ridge() -> None:
+    module = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_gate_failure_test",
+    )
+
+    gate = module._build_gate_summary(
+        metadata={"selected_model": "ranked_vision_mlp_h1"},
+        metric_summary={
+            "proprio_baseline": {
+                "fair_beat_rate_clearbad": 0.6174,
+                "near_duplicate_beat_rate": 0.5896,
+            },
+            "ranked_vision_mlp_h1": {
+                "fair_beat_rate_clearbad": 0.65,
+                "near_duplicate_beat_rate": 0.2,
+            },
+        },
+        results={
+            "ranked_vision_mlp_h1": {
+                "chance": 0.1429,
+                "shuffled_label_top1": 0.141,
+            }
+        },
+        residual_ridge_fair_clearbad=0.6762,
+    )
+
+    assert gate["clears_proprio_baseline"] is True
+    assert gate["clears_residual_ridge_baseline"] is False
+    assert gate["verdict"] == "does_not_clear_pre_registered_fair_gate"
+
+
+def test_so101_referee_smoke_gate_summary_requires_selected_model() -> None:
+    module = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_gate_missing_model_test",
+    )
+
+    with pytest.raises(RuntimeError, match="selected_model"):
+        module._build_gate_summary(
+            metadata={"selected_model": "not-evaluated"},
+            metric_summary={
+                "proprio_baseline": {
+                    "fair_beat_rate_clearbad": 0.6174,
+                    "near_duplicate_beat_rate": 0.5896,
+                }
+            },
+            results={},
+            residual_ridge_fair_clearbad=0.6762,
+        )
+
+
+def test_so101_referee_smoke_rejects_bad_ridge_baseline_arg() -> None:
+    module = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_bad_ridge_arg_test",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        module.main(["--residual-ridge-fair-clearbad", "-0.1"])
+
+    assert exc_info.value.code == 2
+
+
 def test_so101_referee_smoke_file_load_errors_are_sanitized(tmp_path: Path) -> None:
     np = pytest.importorskip("numpy")
     module = _load_script_module(

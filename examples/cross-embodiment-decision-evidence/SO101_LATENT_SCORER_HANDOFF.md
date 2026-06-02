@@ -71,14 +71,43 @@ uv run --with numpy --with pyarrow python scripts/run_so101_referee_smoke.py \
   --referee /path/to/referee_headline.py \
   --weights .worldforge/so101-ranked-residual-scorer-v2/so101_latent_scorers.npz \
   --metadata .worldforge/so101-ranked-residual-scorer-v2/so101_latent_scorer_meta.json \
+  --residual-ridge-fair-clearbad 0.6762 \
   --out .worldforge/so101-ranked-residual-scorer-v2/claude-referee-ranked-residual-smoke-result.json
 ```
 
 Success signal: the command prints held-out item count and one row per scorer, including
-`fair_clearbad`, then writes the JSON result under `.worldforge/so101-ranked-residual-scorer-v2/`.
+`fair_clearbad`, then prints the pre-registered gate verdict and writes the JSON result under
+`.worldforge/so101-ranked-residual-scorer-v2/`.
 
 First triage step on failure: check that the cache, sidecar, dataset, and external referee paths
 exist and agree on frame ordering.
+
+## Pre-Registered Gate
+
+This gate is written before interpreting the scorer result:
+
+- primary metric: `fair_beat_rate_clearbad`
+- clear-bad decoys in gate: `overshoot`, `reverse`, `random_other`, `jitter`
+- near-duplicate decoys excluded from the gate: `no_motion`, `scale_half`
+- selected model: the metadata `selected_model`, selected on validation only
+- pass bar:
+  - selected scorer must beat the blind proprio baseline, and
+  - selected scorer should clear the residual-ridge sanity baseline `0.6762`
+- controls:
+  - `shuffled_label_top1` is reported and should stay near chance,
+  - exact-match top-1 remains diagnostic only,
+  - `rank_corr_vs_proprio_truth` remains calibration only.
+
+The smoke JSON now records `external_referee.sha256`; the local referee used for the ranked-v2
+smoke below hashed to:
+
+```text
+398a0c487904f307b08dd934e862689b26cdb9e5e3442963be00608ce5815396
+```
+
+Claude should audit that hash against his frozen `referee_headline.py` before accepting the
+number. Passing this gate is evidence of held-out replay ranking value, not a physical execution,
+sim-measured task-success, or safety-controller claim.
 
 ## Smoke Result
 
@@ -107,6 +136,13 @@ baseline (`0.6762`) on `fair_beat_rate_clearbad`. This is evidence that the lear
 adds decision-ranking value on held-out SO-101 replay candidates. It is still not a physical
 execution, sim-measured outcome, or task-success claim; near-duplicate decoys remain weak for some
 variants, and `rank_corr_vs_proprio_truth` remains calibration only.
+
+The selected metadata model is `ranked_vision_proprio_mlp_h5`, with
+`fair_beat_rate_clearbad=0.9209`. The pre-registered verdict is:
+
+```text
+clears_pre_registered_fair_gate
+```
 
 Local ranked-v2 artifact hashes from that smoke run:
 
