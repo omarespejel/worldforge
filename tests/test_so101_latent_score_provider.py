@@ -336,6 +336,35 @@ def test_so101_referee_smoke_gate_summary_rejects_nonfinite_ridge() -> None:
         )
 
 
+def test_so101_referee_smoke_gate_summary_rejects_out_of_range_ridge() -> None:
+    module = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_gate_out_of_range_ridge_test",
+    )
+
+    with pytest.raises(RuntimeError, match=r"within \[0, 1\]"):
+        module._build_gate_summary(
+            metadata={"selected_model": "ranked_vision_proprio_mlp_h5"},
+            metric_summary={
+                "proprio_baseline": {
+                    "fair_beat_rate_clearbad": 0.6174,
+                    "near_duplicate_beat_rate": 0.5896,
+                },
+                "ranked_vision_proprio_mlp_h5": {
+                    "fair_beat_rate_clearbad": 0.9209,
+                    "near_duplicate_beat_rate": 0.1423,
+                },
+            },
+            results={
+                "ranked_vision_proprio_mlp_h5": {
+                    "chance": 0.1429,
+                    "shuffled_label_top1": 0.1384,
+                }
+            },
+            residual_ridge_fair_clearbad=1.1,
+        )
+
+
 def test_so101_referee_smoke_episode_identifier_is_shape_tolerant() -> None:
     module = _load_script_module(
         "run_so101_referee_smoke.py",
@@ -383,6 +412,18 @@ def test_so101_referee_smoke_rejects_nonfinite_ridge_baseline_arg() -> None:
 
     with pytest.raises(SystemExit) as exc_info:
         module.main(["--residual-ridge-fair-clearbad", "nan"])
+
+    assert exc_info.value.code == 2
+
+
+def test_so101_referee_smoke_rejects_out_of_range_ridge_baseline_arg() -> None:
+    module = _load_script_module(
+        "run_so101_referee_smoke.py",
+        "run_so101_referee_smoke_out_of_range_ridge_arg_test",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        module.main(["--residual-ridge-fair-clearbad", "1.1"])
 
     assert exc_info.value.code == 2
 

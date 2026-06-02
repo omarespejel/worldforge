@@ -54,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--shuffle-seed", type=int, default=7)
     parser.add_argument(
         "--residual-ridge-fair-clearbad",
-        type=_finite_non_negative_float,
+        type=_finite_probability_float,
         default=DEFAULT_RESIDUAL_RIDGE_FAIR_CLEARBAD,
         help=(
             "Pre-registered residual-ridge sanity baseline for fair_beat_rate_clearbad. "
@@ -285,12 +285,10 @@ def _build_gate_summary(
         scorer_name="proprio_baseline",
         fallback_key=GATE_METRIC,
     )
-    try:
-        residual_ridge_score = float(residual_ridge_fair_clearbad)
-    except (TypeError, ValueError) as exc:
-        raise RuntimeError("SO-101 scorer gate requires a finite residual-ridge baseline.") from exc
-    if not math.isfinite(residual_ridge_score):
-        raise RuntimeError("SO-101 scorer gate requires a finite residual-ridge baseline.")
+    residual_ridge_score = _finite_rate_value(
+        residual_ridge_fair_clearbad,
+        field_name="residual-ridge baseline",
+    )
     selected_result = results[selected_model]
     chance_top1 = _result_metric(selected_result, "chance", scorer_name=selected_model)
     shuffled_label_top1 = _result_metric(
@@ -491,13 +489,25 @@ def _result_metric(row: dict[str, Any], key: str, *, scorer_name: str) -> float:
     return value
 
 
+def _finite_rate_value(value: Any, *, field_name: str) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"SO-101 scorer gate requires a finite {field_name}.") from exc
+    if not math.isfinite(parsed):
+        raise RuntimeError(f"SO-101 scorer gate requires a finite {field_name}.")
+    if parsed < 0.0 or parsed > 1.0:
+        raise RuntimeError(f"SO-101 scorer gate requires {field_name} to be within [0, 1].")
+    return parsed
+
+
 def _sha256(path: Path) -> str:
     import hashlib
 
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _finite_non_negative_float(value: str) -> float:
+def _finite_probability_float(value: str) -> float:
     try:
         parsed = float(value)
     except ValueError as exc:
@@ -506,6 +516,8 @@ def _finite_non_negative_float(value: str) -> float:
         raise argparse.ArgumentTypeError("value must be a finite float")
     if parsed < 0.0:
         raise argparse.ArgumentTypeError("value must be a non-negative float")
+    if parsed > 1.0:
+        raise argparse.ArgumentTypeError("value must be at most 1.0")
     return parsed
 
 
