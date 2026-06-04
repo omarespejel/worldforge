@@ -41,6 +41,11 @@ def test_go2_moving_safety_intervention_emits_chained_veto_resume_traces(
     assert summary["claim_boundary"]["cosmos3_in_control_path"] is False
     assert summary["claim_boundary"]["relative_move_used"] is False
     assert summary["control_envelope"]["fail_safe_default"] == "stopped_between_chunks"
+    assert summary["control_envelope"]["rage_mode_allowed"] is False
+    assert summary["world_model"]["prediction_scope"] == "command_displacement_only"
+    assert summary["world_model"]["calibration_source"] == "native_go2_odom_public_preview"
+    assert summary["world_model"]["external_gt"] == "pending"
+    assert summary["stop_proof_protocol"]["required_before_live_moving_intervention"] is True
     assert [step["step_id"] for step in summary["steps"]] == [
         "moving_clear",
         "obstacle_veto",
@@ -52,19 +57,35 @@ def test_go2_moving_safety_intervention_emits_chained_veto_resume_traces(
     assert summary["steps"][2]["decision"]["selected_candidate_id"] == "stop_move"
     assert summary["steps"][3]["decision"]["selected_candidate_id"] == "continue_forward_chunk"
     assert (
-        "stopping_envelope_intersects_obstacle_zone"
+        "clearance_budget_intersects_obstacle_zone"
         in (summary["steps"][1]["decision"]["forward_rejection_reasons"])
     )
 
     assert bridge["required_bridge_methods"]["write_stop"].endswith("SportClient.StopMove")
+    assert (
+        bridge["live_perception_contract"]["forward_clearance_wired_in_this_checkout_demo"] is False
+    )
+    assert bridge["live_perception_contract"]["host_must_supply_forward_clearance"] is True
     assert bridge["bounded_motion_contract"]["stop_between_chunks"] is True
+    assert bridge["bounded_motion_contract"]["rage_mode_must_be_disabled"] is True
     assert bridge["hard_gates"]["stop_proof_required_before_live_intervention"] is True
+    assert bridge["hard_gates"]["stopping_distance_measurement_required"] is True
+    assert bridge["hard_gates"]["live_forward_clearance_wiring_required"] is True
+    assert bridge["hard_gates"]["rage_mode_disabled_required"] is True
 
     assert traces[0]["prev_trace_id"] is None
     assert traces[1]["prev_trace_id"] == traces[0]["trace_id"]
     assert traces[2]["prev_trace_id"] == traces[1]["trace_id"]
     assert traces[3]["prev_trace_id"] == traces[2]["trace_id"]
     assert traces[1]["selected_action"]["candidate_id"] == "stop_move"
+    assert traces[1]["observation"]["external_gt"] == "pending"
+    assert traces[1]["planner_diagnostics"]["world_model"]["prediction_scope"] == (
+        "command_displacement_only"
+    )
+    assert traces[1]["interop"]["dimos"]["live_forward_clearance"] == (
+        "host_supplied_not_wired_in_checkout_demo"
+    )
+    assert traces[1]["interop"]["dimos"]["rage_mode"] == "must_remain_disabled"
     assert traces[1]["claim_boundary"]["outcome_kind"] == "analytic"
     assert traces[1]["claim_boundary"]["hardware_executed"] is False
 

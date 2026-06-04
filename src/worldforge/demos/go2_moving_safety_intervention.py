@@ -1,9 +1,10 @@
 """Go2 moving safety-intervention demo.
 
 This module builds the next step after the shadow safety-veto demo: a
-checkout-safe moving-intervention plan that models a tiny Go2 forward command,
-computes a conservative stopping envelope, and emits chained DecisionTrace
-artifacts for continue, veto, hold, and resume decisions.
+checkout-safe moving-intervention plan that predicts the displacement from a
+tiny Go2 forward command, inflates it with a measured or fallback stop budget,
+and emits chained DecisionTrace artifacts for continue, veto, hold, and resume
+decisions.
 
 The default workflow remains host-safe. It does not import DimOS or Unitree SDKs,
 does not connect to hardware, and does not send movement commands. A host-owned
@@ -53,6 +54,7 @@ Mode = Literal[
 
 _MAX_ODOM_AGE_MS = 250.0
 _MAX_LIDAR_OR_COSTMAP_AGE_MS = 500.0
+_MAX_LIVE_OBSTACLE_LIDAR_AGE_MS = 200.0
 _MAX_HEARTBEAT_AGE_MS = 200.0
 _HOST_EXECUTION_RECEIPT = "dimos_bounded_motion_receipt_v1"
 
@@ -288,8 +290,10 @@ def render_go2_moving_safety_report(summary: JSONDict) -> str:
         "",
         "## Safety Budget",
         "",
-        f"- Required clearance: `{summary['safety_budget']['required_clearance_m']}` m",
+        f"- Required clearance budget: `{summary['safety_budget']['required_clearance_m']}` m",
+        f"- Model prediction scope: `{summary['world_model']['prediction_scope']}`",
         f"- Model residual dx RMSE: `{summary['world_model']['residual_rmse']['dx_m']}` m",
+        f"- Stop budget source: `{summary['safety_budget']['stop_budget_source']}`",
         f"- Stop-proof available: `{summary['stop_proof']['available']}`",
         "",
         "## Sequence",
@@ -507,7 +511,7 @@ def _forward_rejection_reasons(
     if clearance is None:
         reasons.append("missing_forward_clearance")
     elif clearance < budget["required_clearance_m"]:
-        reasons.append("stopping_envelope_intersects_obstacle_zone")
+        reasons.append("clearance_budget_intersects_obstacle_zone")
     resume_threshold = budget["required_clearance_m"] + config.veto_clearance_hysteresis_m
     if clearance is not None and clearance >= resume_threshold:
         if observation.clear_frames_seen < config.resume_clear_frames_required:
@@ -569,11 +573,18 @@ def _safety_budget(
             "latency_distance_m": latency_distance_m,
             "stop_time_s": stop_time_s,
             "stop_distance_m": stop_distance_m,
+            "stop_budget_source": (
+                "measured_stop_proof"
+                if stop_proof.available
+                else "conservative_fallback_unmeasured"
+            ),
             "robot_half_extent_m": config.robot_half_extent_m,
             "obstacle_margin_m": config.obstacle_margin_m,
             "model_rmse_dx_m": abs(model_rmse_dx_m),
             "required_clearance_m": required,
             "stop_proof_measurement_available": stop_proof.available,
+            "model_prediction_scope": "command_displacement_only",
+            "external_gt": "pending",
         }
     )
 
@@ -617,6 +628,9 @@ def _build_summary(
                 "model_family": "deadband_affine_command_outcome_v0",
                 "learned_model_used": False,
                 "score_kind": "hand_cost",
+                "prediction_scope": "command_displacement_only",
+                "calibration_source": "native_go2_odom_public_preview",
+                "external_gt": "pending",
                 "thresholds": {
                     "dx_m": world_model.thresholds[0],
                     "dy_m": world_model.thresholds[1],
@@ -633,8 +647,10 @@ def _build_summary(
                 "chunk_duration_s": config.chunk_duration_s,
                 "fail_safe_default": "stopped_between_chunks",
                 "long_continuous_move_allowed": False,
+                "rage_mode_allowed": False,
             },
             "stop_proof": _stop_proof_json(stop_proof),
+            "stop_proof_protocol": _stop_proof_protocol_json(config),
             "safety_budget": decisions[0].safety_budget if decisions else {},
             "steps": [
                 _step_summary(decision=decision, trace=trace)
@@ -679,6 +695,12 @@ def _build_bridge_plan(
                 "read_lidar_or_costmap": "DimOS lidar stream or CostMapper.global_costmap",
                 "positive_heartbeat_watchdog": "host thread sends StopMove without WorldForge",
             },
+            "live_perception_contract": {
+                "forward_clearance_wired_in_this_checkout_demo": False,
+                "host_must_supply_forward_clearance": True,
+                "real_obstacle_demo_max_lidar_age_ms": _MAX_LIVE_OBSTACLE_LIDAR_AGE_MS,
+                "web_rtc_lidar_rate_may_be_too_low_for_real_obstacle": True,
+            },
             "bounded_motion_contract": {
                 "max_vx_mps": config.vx_mps,
                 "max_chunk_duration_s": config.chunk_duration_s,
@@ -686,6 +708,7 @@ def _build_bridge_plan(
                 "stopmove_on_exception": True,
                 "stopmove_on_stale_sensor": True,
                 "operator_deadman_required": True,
+                "rage_mode_must_be_disabled": True,
                 "firmware_obstacle_avoidance_backup_expected": (
                     config.firmware_obstacle_avoidance_backup_expected
                 ),
@@ -693,8 +716,12 @@ def _build_bridge_plan(
             "hard_gates": {
                 "stop_proof_required_before_live_intervention": True,
                 "stop_proof_available": stop_proof.available,
+                "stopping_distance_measurement_required": True,
+                "live_forward_clearance_wiring_required": True,
+                "rage_mode_disabled_required": True,
                 "max_odom_age_ms": _MAX_ODOM_AGE_MS,
                 "max_lidar_or_costmap_age_ms": _MAX_LIDAR_OR_COSTMAP_AGE_MS,
+                "max_live_obstacle_lidar_age_ms": _MAX_LIVE_OBSTACLE_LIDAR_AGE_MS,
                 "max_heartbeat_age_ms": _MAX_HEARTBEAT_AGE_MS,
                 "missing_zero_or_nonfinite_freshness_is_stale": True,
                 "unknown_forward_cells_reject": True,
@@ -793,16 +820,20 @@ def _build_decision_trace(
             "stopmove_verified": observation.stopmove_verified,
             "operator_resume_authorized": observation.operator_resume_authorized,
             "clear_frames_seen": observation.clear_frames_seen,
+            "firmware_obstacle_avoidance_backup_enabled": (
+                observation.firmware_obstacle_avoidance_backup_enabled
+            ),
+            "external_gt": "pending",
         },
         "goal": {
             "type": "safety_filter",
             "description": (
-                "Continue moving only while the predicted stopping envelope remains clear."
+                "Continue moving only while the inflated clearance budget remains clear."
             ),
             "sub_goals": [
                 {
                     "id": "avoid_collision",
-                    "description": "Keep obstacle outside stopping envelope.",
+                    "description": "Keep obstacle outside the inflated clearance budget.",
                 },
                 {
                     "id": "minimal_intervention",
@@ -810,7 +841,7 @@ def _build_decision_trace(
                 },
             ],
             "success_criteria": {
-                "metric": "stopping_envelope_clearance_and_stop_ack",
+                "metric": "inflated_clearance_budget_and_stop_ack",
                 "partial_credit": True,
             },
         },
@@ -866,6 +897,9 @@ def _build_decision_trace(
             "safety_budget": decision.safety_budget,
             "world_model": {
                 "model_family": "deadband_affine_command_outcome_v0",
+                "prediction_scope": "command_displacement_only",
+                "calibration_source": "native_go2_odom_public_preview",
+                "external_gt": "pending",
                 "thresholds": world_model.thresholds,
                 "residual_rmse": world_model.residual_rmse,
             },
@@ -903,6 +937,8 @@ def _build_decision_trace(
                 "role": "host_owned_streams_heartbeat_and_execution_runtime",
                 "adapter": "UnitreeGo2TwistAdapter",
                 "required_stop": "write_stop -> SportClient.StopMove",
+                "live_forward_clearance": "host_supplied_not_wired_in_checkout_demo",
+                "rage_mode": "must_remain_disabled",
             },
             "wmcp": {
                 "role": "future rollout/evaluate protocol below DecisionTrace",
@@ -953,7 +989,7 @@ def _score_record(candidate: _Candidate, *, rank: int) -> JSONDict:
         },
         "normalized": {
             "value_signal": value_signal,
-            "calibration_target": "controlbench_stopping_envelope_clearance",
+            "calibration_target": "controlbench_command_displacement_plus_stop_budget",
         },
     }
 
@@ -988,7 +1024,7 @@ def _step_summary(*, decision: _StepDecision, trace: JSONDict) -> JSONDict:
             "primary_reason": (
                 forward.rejection_reasons[0]
                 if forward.rejection_reasons
-                else "stopping_envelope_clear"
+                else "clearance_budget_clear"
             ),
             "forward_rejection_reasons": list(forward.rejection_reasons),
         },
@@ -1037,7 +1073,7 @@ def _score_margin(scores: list[JSONDict]) -> float:
 def _why_selected(candidate: _Candidate) -> str:
     if candidate.candidate_id == "stop_move":
         return "Forward chunk was unsafe or not sufficiently proven; selected StopMove."
-    return "Forward chunk stayed inside the conservative stopping envelope."
+    return "Forward chunk stayed inside the inflated clearance budget."
 
 
 def _why_rejected(candidate: _Candidate) -> str:
@@ -1065,6 +1101,27 @@ def _stop_proof_json(stop_proof: StopProofMeasurement) -> JSONDict:
         ),
         "velocity_after_stop_mps": _nonnegative_measurement_or_none(
             stop_proof.velocity_after_stop_mps
+        ),
+    }
+
+
+def _stop_proof_protocol_json(config: MovingSafetyConfig) -> JSONDict:
+    return {
+        "required_before_live_moving_intervention": True,
+        "purpose": "Measure the actual Go2 StopMove coast distance and time at demo speed.",
+        "model_prediction_scope": "command displacement only; stop distance is measured separately",
+        "minimum_repetitions_per_speed": 15,
+        "speeds_mps": [0.08, config.vx_mps],
+        "chunk_duration_s": config.chunk_duration_s,
+        "measurements": [
+            "overhead_aruco_stop_distance_m",
+            "native_odom_stop_distance_m",
+            "command_to_stop_ack_latency_ms",
+            "time_to_velocity_near_zero_s",
+        ],
+        "acceptance_gate": (
+            "Use moving intervention only if measured stop distance plus residual margin is "
+            "comfortably below the configured clearance threshold."
         ),
     }
 

@@ -107,7 +107,7 @@ checkpoint inference.
 | `go2-controlbench-decisiontrace` | `uv run python examples/go2-controlbench-decisiontrace/run.py` | Replays a public Go2 Air ControlBench trace, reranks candidate commands through `score`, and reports measured native-odom regret without DimOS, Unitree SDKs, Hugging Face downloads, or hardware. |
 | `go2-world-model-mpc-dimos` | `uv run worldforge-demo-go2-world-model-mpc` | Fits a transparent Go2 command-outcome world model over the public ControlBench table, ranks bounded Sport Move candidates, and emits a DimOS shadow-bridge plan plus DecisionTrace artifacts without importing DimOS or controlling hardware. |
 | `go2-live-safety-veto` | `uv run worldforge-demo-go2-live-safety-veto` | Scores a proposed Go2 forward command against live-shaped obstacle evidence and emits a DimOS safety-veto bridge plan plus DecisionTrace without importing DimOS or sending robot commands. |
-| `go2-moving-safety-intervention` | `uv run worldforge-demo-go2-moving-safety-intervention` | Computes a ControlBench stopping envelope for tiny Go2 forward chunks and emits a chained DimOS bridge DecisionTrace sequence without importing DimOS or sending robot commands. |
+| `go2-moving-safety-intervention` | `uv run worldforge-demo-go2-moving-safety-intervention` | Predicts tiny Go2 forward-chunk displacement, inflates it with a measured or fallback stop budget, and emits a chained DimOS bridge DecisionTrace sequence without importing DimOS or sending robot commands. |
 
 The SO-101 replay trace records `observation -> goal -> candidate_actions -> candidate_scores ->
 selected_action -> outcome -> counterfactuals`. It is a checkout-safe replay fixture shaped after
@@ -136,21 +136,23 @@ The Go2 live safety-veto shadow demo builds that live-execution bridge contract 
 robot. It writes `live-safety-veto-summary.json`, `dimos-live-safety-bridge-plan.json`,
 `decision-trace-go2-live-safety-veto.json`, and `live-safety-veto-report.md` under
 `.worldforge/go2-live-safety-veto/`. The default fixture rejects a proposed `forward_50cm`
-command because the predicted swept footprint intersects obstacle evidence and StopMove has not
-been verified. `uv run worldforge-demo-go2-live-safety-veto --demo-pair` runs a two-case shadow
+command because the host-supplied obstacle evidence conflicts with the proposed forward path and
+StopMove has not been verified. `uv run worldforge-demo-go2-live-safety-veto --demo-pair` runs a two-case shadow
 pair: obstacle veto followed by open-space authorization. `--forward-clearance-m 2.0
 --stopmove-verified` demonstrates the single-case open-space shadow authorization path. The
 artifact is a predictive safety-filter demo, not certified safety, Cosmos 3 control, DimOS
 execution, autonomous navigation, or a `relative_move` call.
 
 The Go2 moving safety-intervention demo is the next rung after the shadow veto. It uses the same
-ControlBench deadband-affine world model to compute a conservative stopping envelope for tiny
-forward Sport Move chunks, then emits a chained `moving_clear -> obstacle_veto -> hold_blocked ->
-resume_clear` DecisionTrace sequence plus a DimOS bridge plan under
-`.worldforge/go2-moving-safety-intervention/`. The packaged command is checkout-safe and does not
-import DimOS or send Unitree commands. A live host must run the ladder `dry-run -> stop-proof ->
-open-space-bounded-motion -> moving-intervention` and supply measured stop-proof evidence before
-claiming real execution.
+ControlBench deadband-affine world model to predict displacement for tiny forward Sport Move
+chunks, inflates that prediction with a measured or fallback stop budget, then emits a chained
+`moving_clear -> obstacle_veto -> hold_blocked -> resume_clear` DecisionTrace sequence plus a
+DimOS bridge plan under `.worldforge/go2-moving-safety-intervention/`. The packaged command is
+checkout-safe and does not import DimOS or send Unitree commands. The model is calibrated on the
+public ControlBench native-odom table and does not predict StopMove coasting. A live host must run
+the ladder `dry-run -> stop-proof -> open-space-bounded-motion -> moving-intervention`, supply
+measured stop-proof evidence, and wire host-owned forward-clearance perception before claiming
+real execution.
 
 ## Service Host Reference
 

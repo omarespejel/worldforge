@@ -94,12 +94,14 @@ open-space-control cases back to back. It does not import DimOS, connect to hard
 commands, use Cosmos 3, call `relative_move`, or claim certified safety.
 
 The Go2 moving safety-intervention example is the next rung after the shadow veto. It uses the
-same ControlBench deadband-affine world model to compute a conservative stopping envelope for tiny
-forward Sport Move chunks, then emits a chained `moving_clear -> obstacle_veto -> hold_blocked ->
-resume_clear` DecisionTrace sequence plus a DimOS bridge contract. The packaged example is
-checkout-safe and does not import DimOS or send Unitree commands; live hosts must run the ladder
-`dry-run -> stop-proof -> open-space-bounded-motion -> moving-intervention` and supply measured
-stop-proof evidence before claiming real execution.
+same ControlBench deadband-affine world model to predict displacement for tiny forward Sport Move
+chunks, inflates that prediction with a measured or fallback stop budget, then emits a chained
+`moving_clear -> obstacle_veto -> hold_blocked -> resume_clear` DecisionTrace sequence plus a
+DimOS bridge contract. The packaged example is checkout-safe and does not import DimOS or send
+Unitree commands; live hosts must run the ladder
+`dry-run -> stop-proof -> open-space-bounded-motion -> moving-intervention`, supply measured
+stop-proof evidence, and wire host-owned forward-clearance perception before claiming real
+execution.
 
 ## Service Host Reference
 
