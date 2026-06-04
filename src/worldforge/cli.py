@@ -107,6 +107,18 @@ EXAMPLE_COMMANDS: tuple[dict[str, str], ...] = (
         ),
     },
     {
+        "task": "Robot decision traces",
+        "name": "go2-world-model-mpc-dimos",
+        "surface": "Go2 ControlBench world-model MPC, DimOS shadow bridge, DecisionTrace",
+        "requires": "base WorldForge package; public ControlBench CSV or local preview table",
+        "command": "uv run worldforge-demo-go2-world-model-mpc",
+        "description": (
+            "Fit a transparent Go2 command-outcome world model over ControlBench, rank bounded "
+            "Sport Move candidates for target motions, and emit a DimOS shadow-bridge plan plus "
+            "validated DecisionTrace artifacts without importing DimOS or controlling hardware."
+        ),
+    },
+    {
         "task": "Batch evaluation host",
         "name": "batch-eval-host",
         "surface": "evaluation, benchmarking, run workspaces, budget gates",
