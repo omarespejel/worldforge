@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -193,6 +194,74 @@ def test_go2_live_safety_veto_fails_closed_on_missing_freshness(
     assert result.summary["decision"]["selected_candidate_id"] == "stop_hold"
     assert "stale_odom" in forward["rejection_reasons"]
     assert "stale_lidar_and_costmap" in forward["rejection_reasons"]
+
+
+def test_go2_live_safety_veto_sanitizes_nonfinite_freshness(
+    tmp_path: Path,
+) -> None:
+    csv_path = _write_trials_csv(tmp_path / "all_trials_normalized.csv")
+    evidence = ObstacleEvidence(
+        source_kind="fixture_nonfinite_freshness",
+        forward_clearance_m=2.0,
+        lidar_freshness_ms=math.nan,
+        costmap_freshness_ms=math.inf,
+        odom_freshness_ms=math.nan,
+        unknown_cells_in_forward_corridor=False,
+        stopmove_verified=True,
+    )
+
+    result = run_go2_live_safety_veto(
+        dataset_csv=csv_path,
+        output_dir=tmp_path / "out",
+        obstacle_evidence=evidence,
+    )
+
+    summary = json.loads(result.summary_path.read_text(encoding="utf-8"))
+    forward = next(
+        candidate
+        for candidate in summary["candidates"]
+        if candidate["candidate_id"] == "forward_50cm"
+    )
+    obstacle_evidence = summary["obstacle_evidence"]
+    assert summary["decision"]["selected_candidate_id"] == "stop_hold"
+    assert "stale_odom" in forward["rejection_reasons"]
+    assert "stale_lidar_and_costmap" in forward["rejection_reasons"]
+    assert obstacle_evidence["odom_freshness_ms"] is None
+    assert obstacle_evidence["lidar_freshness_ms"] is None
+    assert obstacle_evidence["costmap_freshness_ms"] is None
+    json.dumps(summary, allow_nan=False)
+
+
+def test_go2_live_safety_veto_fails_closed_on_nonfinite_clearance(
+    tmp_path: Path,
+) -> None:
+    csv_path = _write_trials_csv(tmp_path / "all_trials_normalized.csv")
+    evidence = ObstacleEvidence(
+        source_kind="fixture_nonfinite_clearance",
+        forward_clearance_m=math.nan,
+        lidar_freshness_ms=80.0,
+        costmap_freshness_ms=90.0,
+        odom_freshness_ms=70.0,
+        unknown_cells_in_forward_corridor=False,
+        stopmove_verified=True,
+    )
+
+    result = run_go2_live_safety_veto(
+        dataset_csv=csv_path,
+        output_dir=tmp_path / "out",
+        obstacle_evidence=evidence,
+    )
+
+    summary = json.loads(result.summary_path.read_text(encoding="utf-8"))
+    forward = next(
+        candidate
+        for candidate in summary["candidates"]
+        if candidate["candidate_id"] == "forward_50cm"
+    )
+    assert summary["decision"]["selected_candidate_id"] == "stop_hold"
+    assert "missing_forward_clearance" in forward["rejection_reasons"]
+    assert summary["obstacle_evidence"]["forward_clearance_m"] is None
+    json.dumps(summary, allow_nan=False)
 
 
 def test_go2_live_safety_veto_rejects_raw_hardware_command_self_report() -> None:

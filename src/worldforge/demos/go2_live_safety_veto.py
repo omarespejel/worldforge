@@ -85,7 +85,7 @@ class ObstacleEvidence:
     """Live-shaped obstacle evidence used by the shadow safety gate."""
 
     source_kind: str
-    forward_clearance_m: float
+    forward_clearance_m: float | None
     lidar_freshness_ms: float | None
     costmap_freshness_ms: float | None
     odom_freshness_ms: float | None
@@ -550,7 +550,11 @@ def _risk_for_candidate(
         risk_cost += 5.0
     if action_type == "planner_request":
         required_clearance = abs(predicted[0]) + 0.35
-        if evidence.forward_clearance_m < required_clearance:
+        forward_clearance_m = _positive_measurement_or_none(evidence.forward_clearance_m)
+        if forward_clearance_m is None:
+            reasons.append("missing_forward_clearance")
+            risk_cost += 20.0
+        elif forward_clearance_m < required_clearance:
             reasons.append("predicted_swept_footprint_intersects_obstacle_zone")
             risk_cost += 20.0
     if not evidence.stopmove_verified:
@@ -809,7 +813,7 @@ def _build_decision_trace(
                 "hardware_commands_sent": False,
                 "unsafe_forward_rejected": summary["decision"]["unsafe_forward_rejected"],
                 "selected_candidate_id": selected.candidate_id,
-                "forward_clearance_m": evidence.forward_clearance_m,
+                "forward_clearance_m": _positive_measurement_or_none(evidence.forward_clearance_m),
                 "stopmove_verified": evidence.stopmove_verified,
             },
         },
@@ -982,10 +986,10 @@ def _candidate_summary(candidate: _Candidate) -> JSONDict:
 def _evidence_json(evidence: ObstacleEvidence) -> JSONDict:
     return {
         "source_kind": evidence.source_kind,
-        "forward_clearance_m": evidence.forward_clearance_m,
-        "lidar_freshness_ms": evidence.lidar_freshness_ms,
-        "costmap_freshness_ms": evidence.costmap_freshness_ms,
-        "odom_freshness_ms": evidence.odom_freshness_ms,
+        "forward_clearance_m": _positive_measurement_or_none(evidence.forward_clearance_m),
+        "lidar_freshness_ms": _freshness_value_or_none(evidence.lidar_freshness_ms),
+        "costmap_freshness_ms": _freshness_value_or_none(evidence.costmap_freshness_ms),
+        "odom_freshness_ms": _freshness_value_or_none(evidence.odom_freshness_ms),
         "freshness_policy": {
             "missing_or_zero_is_stale": True,
             "odom_stale_reject_ms": _ODOM_STALE_REJECT_MS,
@@ -1005,9 +1009,21 @@ def _freshness_is_present(value: float | None) -> bool:
     return value is not None and math.isfinite(value) and value > 0.0
 
 
+def _freshness_value_or_none(value: float | None) -> float | None:
+    if not _freshness_is_present(value):
+        return None
+    return value
+
+
 def _freshness_age_or_inf(value: float | None) -> float:
     if not _freshness_is_present(value):
         return math.inf
+    return value
+
+
+def _positive_measurement_or_none(value: float | None) -> float | None:
+    if value is None or not math.isfinite(value) or value <= 0.0:
+        return None
     return value
 
 
