@@ -39,4 +39,7 @@ open-space bounded motion, then obstacle intervention.
 Claim boundary: the model predicts command displacement from the public ControlBench native-odom
 table; it does not predict StopMove coasting. Stop distance and time must be measured in the
 stop-proof rung before any live moving intervention. Forward clearance is host-supplied in this
-checkout demo; real obstacle perception wiring is a separate live-host requirement.
+checkout demo; real obstacle perception wiring is a separate live-host requirement. A
+`real_measured` trace requires a host-verified HMAC receipt carrying the matched command, timestamp,
+StopMove ack, measured stop time, measured stop distance, and outcome source; copyable receipt
+strings are rejected.

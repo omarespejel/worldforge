@@ -15,7 +15,11 @@ decision and evidence contract are deterministic and testable here.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
+import json
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -56,7 +60,8 @@ _MAX_ODOM_AGE_MS = 250.0
 _MAX_LIDAR_OR_COSTMAP_AGE_MS = 500.0
 _MAX_LIVE_OBSTACLE_LIDAR_AGE_MS = 200.0
 _MAX_HEARTBEAT_AGE_MS = 200.0
-_HOST_EXECUTION_RECEIPT = "dimos_bounded_motion_receipt_v1"
+_HOST_EXECUTION_RECEIPT_KIND = "dimos_bounded_motion_receipt_v1"
+_RECEIPT_HMAC_FIELD = "hmac_sha256"
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,16 +127,10 @@ class MovingObservation:
     clear_frames_seen: int = 0
     operator_resume_authorized: bool = False
     firmware_obstacle_avoidance_backup_enabled: bool = True
-    hardware_execution_receipt: str | None = None
+    hardware_execution_receipt: JSONDict | None = None
     measured_stop_time_s: float | None = None
     measured_stop_distance_m: float | None = None
     stopmove_ack: bool | None = None
-
-    @property
-    def hardware_commands_sent(self) -> bool:
-        """Derive hardware execution from a host receipt, not a caller flag."""
-
-        return self.hardware_execution_receipt == _HOST_EXECUTION_RECEIPT
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +151,8 @@ class _StepDecision:
     candidates: list[_Candidate]
     selected: _Candidate
     safety_budget: JSONDict
+    receipt_verification: JSONDict
+    hardware_commands_sent: bool
 
 
 def run_go2_moving_safety_intervention(
@@ -163,6 +164,7 @@ def run_go2_moving_safety_intervention(
     config: MovingSafetyConfig | None = None,
     stop_proof: StopProofMeasurement | None = None,
     observations: list[MovingObservation] | None = None,
+    receipt_hmac_key: str | bytes | None = None,
 ) -> Go2MovingSafetyResult:
     """Run the checkout-safe moving safety-intervention workflow."""
 
@@ -178,6 +180,7 @@ def run_go2_moving_safety_intervention(
             world_model=world_model,
             config=cfg,
             stop_proof=proof,
+            receipt_hmac_key=receipt_hmac_key,
         )
         for observation in sequence
     ]
@@ -271,6 +274,32 @@ def run_go2_moving_safety_intervention_workflow(
         ],
         "hardware_commands_sent": result.summary["runtime"]["hardware_commands_sent"],
     }
+
+
+def build_dimos_execution_receipt(
+    *,
+    step_id: str,
+    command: tuple[float, float, float, float],
+    issued_at_unix_s: float,
+    stopmove_ack: bool,
+    measured_stop_time_s: float,
+    measured_stop_distance_m: float,
+    outcome_source: str,
+    receipt_hmac_key: str | bytes,
+) -> JSONDict:
+    """Build a host-owned HMAC receipt for measured DimOS execution."""
+
+    payload = _receipt_payload(
+        step_id=step_id,
+        command=command,
+        issued_at_unix_s=issued_at_unix_s,
+        stopmove_ack=stopmove_ack,
+        measured_stop_time_s=measured_stop_time_s,
+        measured_stop_distance_m=measured_stop_distance_m,
+        outcome_source=outcome_source,
+    )
+    payload[_RECEIPT_HMAC_FIELD] = _receipt_hmac(payload, receipt_hmac_key)
+    return payload
 
 
 def render_go2_moving_safety_report(summary: JSONDict) -> str:
@@ -424,8 +453,16 @@ def _decide_step(
     world_model: _DeadbandWorldModel,
     config: MovingSafetyConfig,
     stop_proof: StopProofMeasurement,
+    receipt_hmac_key: str | bytes | None,
 ) -> _StepDecision:
     forward_command = (config.vx_mps, config.vy_mps, config.wz_radps, config.chunk_duration_s)
+    receipt_verification = _verify_host_execution_receipt(
+        observation.hardware_execution_receipt,
+        receipt_hmac_key=receipt_hmac_key,
+        expected_step_id=observation.step_id,
+        expected_command=forward_command,
+    )
+    hardware_commands_sent = bool(receipt_verification["verified"])
     forward_integral = (
         config.vx_mps * config.chunk_duration_s,
         config.vy_mps * config.chunk_duration_s,
@@ -444,6 +481,7 @@ def _decide_step(
         budget=budget,
         config=config,
         stop_proof=stop_proof,
+        hardware_commands_sent=hardware_commands_sent,
     )
     forward_authorized = not forward_reasons
     forward_score = 0.0 if forward_authorized else 100.0 + len(forward_reasons)
@@ -478,6 +516,8 @@ def _decide_step(
         candidates=ranked,
         selected=ranked[0],
         safety_budget=budget,
+        receipt_verification=receipt_verification,
+        hardware_commands_sent=hardware_commands_sent,
     )
 
 
@@ -487,6 +527,7 @@ def _forward_rejection_reasons(
     budget: JSONDict,
     config: MovingSafetyConfig,
     stop_proof: StopProofMeasurement,
+    hardware_commands_sent: bool,
 ) -> list[str]:
     reasons: list[str] = []
     if _age_or_inf(observation.odom_freshness_ms) > _MAX_ODOM_AGE_MS:
@@ -508,17 +549,19 @@ def _forward_rejection_reasons(
     if observation.unknown_cells_in_forward_corridor:
         reasons.append("unknown_cells_in_forward_corridor")
     clearance = _positive_measurement_or_none(observation.forward_clearance_m)
+    resume_threshold = budget["required_clearance_m"] + config.veto_clearance_hysteresis_m
     if clearance is None:
         reasons.append("missing_forward_clearance")
     elif clearance < budget["required_clearance_m"]:
         reasons.append("clearance_budget_intersects_obstacle_zone")
-    resume_threshold = budget["required_clearance_m"] + config.veto_clearance_hysteresis_m
-    if clearance is not None and clearance >= resume_threshold:
+    elif clearance < resume_threshold:
+        reasons.append("clearance_hysteresis_band_hold")
+    else:
         if observation.clear_frames_seen < config.resume_clear_frames_required:
             reasons.append("resume_clear_hysteresis_not_satisfied")
         if not observation.operator_resume_authorized:
             reasons.append("operator_resume_not_authorized")
-    if observation.hardware_commands_sent and not stop_proof.available:
+    if hardware_commands_sent and not stop_proof.available:
         reasons.append("live_motion_without_stop_proof_measurement")
     return reasons
 
@@ -601,7 +644,10 @@ def _build_summary(
     decisions: list[_StepDecision],
     traces: list[JSONDict],
 ) -> JSONDict:
-    any_hardware = any(decision.observation.hardware_commands_sent for decision in decisions)
+    any_hardware = any(decision.hardware_commands_sent for decision in decisions)
+    any_real_measured = any(
+        _decision_outcome_kind(decision) == "real_measured" for decision in decisions
+    )
     return _round_json_floats(
         {
             "schema_version": 1,
@@ -659,7 +705,7 @@ def _build_summary(
             "claim_boundary": {
                 "predictive_safety_filter_demo": True,
                 "certified_safety": False,
-                "outcome_kind": "real_measured" if any_hardware else "analytic",
+                "outcome_kind": "real_measured" if any_real_measured else "analytic",
                 "live_dimos_execution": any_hardware,
                 "cosmos3_in_control_path": False,
                 "relative_move_used": False,
@@ -694,6 +740,14 @@ def _build_bridge_plan(
                 "write_stop": "UnitreeGo2TwistAdapter.write_stop -> SportClient.StopMove",
                 "read_lidar_or_costmap": "DimOS lidar stream or CostMapper.global_costmap",
                 "positive_heartbeat_watchdog": "host thread sends StopMove without WorldForge",
+            },
+            "execution_receipt_contract": {
+                "receipt_kind": _HOST_EXECUTION_RECEIPT_KIND,
+                "requires_hmac_sha256": True,
+                "host_verification_key_not_serialized": True,
+                "must_match_step_id_and_command": True,
+                "must_include_stopmove_ack_and_measured_stop_outcome": True,
+                "copyable_string_receipts_are_rejected": True,
             },
             "live_perception_contract": {
                 "forward_clearance_wired_in_this_checkout_demo": False,
@@ -781,7 +835,7 @@ def _build_decision_trace(
         _score_record(candidate, rank=index + 1)
         for index, candidate in enumerate(decision.candidates)
     ]
-    outcome_kind = "real_measured" if observation.hardware_commands_sent else "analytic"
+    outcome_kind = _decision_outcome_kind(decision)
     trace: JSONDict = {
         "schema_version": DECISION_TRACE_SCHEMA_VERSION,
         "artifact_kind": DECISION_TRACE_ARTIFACT_KIND,
@@ -797,7 +851,7 @@ def _build_decision_trace(
         "host_runtime": {
             "name": "DimOS",
             "mode": "shadow_no_execution"
-            if not observation.hardware_commands_sent
+            if not decision.hardware_commands_sent
             else "host_receipt_supplied",
             "adapter": "UnitreeGo2TwistAdapter",
         },
@@ -880,21 +934,23 @@ def _build_decision_trace(
         },
         "outcome": {
             "kind": outcome_kind,
-            "status": _outcome_status(selected=selected, observation=observation),
+            "status": _outcome_status(selected=selected, decision=decision),
             "metrics": {
-                "hardware_commands_sent": observation.hardware_commands_sent,
-                "stopmove_ack": observation.stopmove_ack,
-                "measured_stop_time_s": _positive_measurement_or_none(
-                    observation.measured_stop_time_s
-                ),
-                "measured_stop_distance_m": _positive_measurement_or_none(
-                    observation.measured_stop_distance_m
-                ),
+                "hardware_commands_sent": decision.hardware_commands_sent,
+                "stopmove_ack": _outcome_stopmove_ack(decision),
+                "measured_stop_time_s": _outcome_measured_stop_time_s(decision),
+                "measured_stop_distance_m": _outcome_measured_stop_distance_m(decision),
                 "selected_action": selected.candidate_id,
+                "outcome_source": _outcome_source(decision),
+                "builtin_obstacle_avoidance_enabled": (
+                    observation.firmware_obstacle_avoidance_backup_enabled
+                ),
+                "stop_attribution": _stop_attribution(selected=selected, decision=decision),
             },
         },
         "planner_diagnostics": {
             "safety_budget": decision.safety_budget,
+            "execution_receipt_verification": decision.receipt_verification,
             "world_model": {
                 "model_family": "deadband_affine_command_outcome_v0",
                 "prediction_scope": "command_displacement_only",
@@ -922,9 +978,13 @@ def _build_decision_trace(
         "claim_boundary": {
             "score_kind": "hand_cost",
             "outcome_kind": outcome_kind,
-            "hardware_executed": observation.hardware_commands_sent,
+            "hardware_executed": decision.hardware_commands_sent,
             "learned_model_used": False,
             "safety_controller": "predictive_safety_filter_inspired_moving_v0",
+            "builtin_obstacle_avoidance_enabled": (
+                observation.firmware_obstacle_avoidance_backup_enabled
+            ),
+            "outcome_source": _outcome_source(decision),
             "limitations": [
                 "Not a certified predictive safety filter, CBF, or HJ reachability controller.",
                 "Uses transparent ControlBench deadband-affine command-outcome model.",
@@ -1064,6 +1124,176 @@ def _input_digest(
     return decision_trace_digest(payload)
 
 
+def _receipt_payload(
+    *,
+    step_id: str,
+    command: tuple[float, float, float, float],
+    issued_at_unix_s: float,
+    stopmove_ack: bool,
+    measured_stop_time_s: float,
+    measured_stop_distance_m: float,
+    outcome_source: str,
+) -> JSONDict:
+    if not step_id:
+        raise WorldStateError("DimOS execution receipt step_id must be non-empty.")
+    if not _finite_positive(issued_at_unix_s):
+        raise WorldStateError("DimOS execution receipt issued_at_unix_s must be positive.")
+    if not _finite_positive(measured_stop_time_s):
+        raise WorldStateError("DimOS execution receipt measured_stop_time_s must be positive.")
+    if not _finite_positive(measured_stop_distance_m):
+        raise WorldStateError("DimOS execution receipt measured_stop_distance_m must be positive.")
+    if outcome_source not in {"native_odom", "external_aruco", "native_odom_plus_external_aruco"}:
+        raise WorldStateError("DimOS execution receipt outcome_source is unsupported.")
+    vx, vy, wz, duration = command
+    return {
+        "receipt_kind": _HOST_EXECUTION_RECEIPT_KIND,
+        "step_id": step_id,
+        "command": {
+            "vx": float(vx),
+            "vy": float(vy),
+            "wz": float(wz),
+            "duration_s": float(duration),
+        },
+        "issued_at_unix_s": float(issued_at_unix_s),
+        "stopmove_ack": bool(stopmove_ack),
+        "measured_stop_time_s": float(measured_stop_time_s),
+        "measured_stop_distance_m": float(measured_stop_distance_m),
+        "outcome_source": outcome_source,
+    }
+
+
+def _verify_host_execution_receipt(
+    receipt: object,
+    *,
+    receipt_hmac_key: str | bytes | None,
+    expected_step_id: str,
+    expected_command: tuple[float, float, float, float],
+) -> JSONDict:
+    status: JSONDict = {
+        "provided": receipt is not None,
+        "verified": False,
+        "scheme": "hmac-sha256",
+        "receipt_kind": _HOST_EXECUTION_RECEIPT_KIND,
+        "receipt_digest": None,
+        "failure_reason": None,
+        "measurement_present": False,
+        "stopmove_ack": False,
+        "outcome_source": None,
+        "measured_stop_time_s": None,
+        "measured_stop_distance_m": None,
+    }
+    if receipt is None:
+        return status
+    if not isinstance(receipt, Mapping):
+        status["failure_reason"] = "receipt_not_json_object"
+        return status
+    public_receipt = dict(receipt)
+    supplied_hmac = public_receipt.pop(_RECEIPT_HMAC_FIELD, None)
+    try:
+        status["receipt_digest"] = hashlib.sha256(
+            _canonical_receipt_json(public_receipt).encode("utf-8")
+        ).hexdigest()
+    except (TypeError, ValueError):
+        status["failure_reason"] = "receipt_not_json_serializable"
+        return status
+    if public_receipt.get("receipt_kind") != _HOST_EXECUTION_RECEIPT_KIND:
+        status["failure_reason"] = "receipt_kind_mismatch"
+        return status
+    if public_receipt.get("step_id") != expected_step_id:
+        status["failure_reason"] = "step_id_mismatch"
+        return status
+    if not _receipt_command_matches(public_receipt.get("command"), expected_command):
+        status["failure_reason"] = "command_mismatch"
+        return status
+    if not _finite_positive(_number_from_receipt(public_receipt.get("issued_at_unix_s"))):
+        status["failure_reason"] = "invalid_issued_at"
+        return status
+    measured_stop_time_s = _number_from_receipt(public_receipt.get("measured_stop_time_s"))
+    measured_stop_distance_m = _number_from_receipt(public_receipt.get("measured_stop_distance_m"))
+    if not _finite_positive(measured_stop_time_s) or not _finite_positive(measured_stop_distance_m):
+        status["failure_reason"] = "missing_measured_stop_outcome"
+        return status
+    if public_receipt.get("stopmove_ack") is not True:
+        status["failure_reason"] = "missing_stopmove_ack"
+        return status
+    outcome_source = public_receipt.get("outcome_source")
+    if outcome_source not in {"native_odom", "external_aruco", "native_odom_plus_external_aruco"}:
+        status["failure_reason"] = "unsupported_outcome_source"
+        return status
+    if receipt_hmac_key is None:
+        status["failure_reason"] = "missing_receipt_hmac_key"
+        return status
+    if not isinstance(supplied_hmac, str):
+        status["failure_reason"] = "missing_receipt_hmac"
+        return status
+    expected_hmac = _receipt_hmac(public_receipt, receipt_hmac_key)
+    if not hmac.compare_digest(supplied_hmac, expected_hmac):
+        status["failure_reason"] = "receipt_hmac_mismatch"
+        return status
+    status.update(
+        {
+            "verified": True,
+            "failure_reason": None,
+            "measurement_present": True,
+            "stopmove_ack": True,
+            "outcome_source": outcome_source,
+            "measured_stop_time_s": float(measured_stop_time_s),
+            "measured_stop_distance_m": float(measured_stop_distance_m),
+        }
+    )
+    return _round_json_floats(status)
+
+
+def _receipt_hmac(payload: Mapping[str, object], receipt_hmac_key: str | bytes) -> str:
+    if isinstance(receipt_hmac_key, str):
+        key = receipt_hmac_key.encode("utf-8")
+    else:
+        key = receipt_hmac_key
+    if not key:
+        raise WorldStateError("DimOS execution receipt HMAC key must be non-empty.")
+    return hmac.new(
+        key,
+        _canonical_receipt_json(dict(payload)).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _canonical_receipt_json(payload: Mapping[str, object]) -> str:
+    return json.dumps(
+        dict(payload),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    )
+
+
+def _receipt_command_matches(
+    command: object, expected_command: tuple[float, float, float, float]
+) -> bool:
+    if not isinstance(command, Mapping):
+        return False
+    expected = {
+        "vx": expected_command[0],
+        "vy": expected_command[1],
+        "wz": expected_command[2],
+        "duration_s": expected_command[3],
+    }
+    for key, expected_value in expected.items():
+        actual = _number_from_receipt(command.get(key))
+        if actual is None or not math.isclose(actual, expected_value, rel_tol=0.0, abs_tol=1e-9):
+            return False
+    return True
+
+
+def _number_from_receipt(value: object) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
 def _score_margin(scores: list[JSONDict]) -> float:
     if len(scores) < 2:
         return 0.0
@@ -1082,10 +1312,59 @@ def _why_rejected(candidate: _Candidate) -> str:
     return "Higher intervention cost than the selected action."
 
 
-def _outcome_status(*, selected: _Candidate, observation: MovingObservation) -> str:
+def _decision_outcome_kind(decision: _StepDecision) -> str:
+    if (
+        decision.hardware_commands_sent
+        and decision.receipt_verification.get("measurement_present") is True
+    ):
+        return "real_measured"
+    return "analytic"
+
+
+def _outcome_stopmove_ack(decision: _StepDecision) -> bool | None:
+    if decision.receipt_verification.get("verified") is True:
+        return bool(decision.receipt_verification.get("stopmove_ack"))
+    return decision.observation.stopmove_ack
+
+
+def _outcome_measured_stop_time_s(decision: _StepDecision) -> float | None:
+    receipt_time = _positive_measurement_or_none(
+        decision.receipt_verification.get("measured_stop_time_s")
+    )
+    if receipt_time is not None:
+        return receipt_time
+    return _positive_measurement_or_none(decision.observation.measured_stop_time_s)
+
+
+def _outcome_measured_stop_distance_m(decision: _StepDecision) -> float | None:
+    receipt_distance = _positive_measurement_or_none(
+        decision.receipt_verification.get("measured_stop_distance_m")
+    )
+    if receipt_distance is not None:
+        return receipt_distance
+    return _positive_measurement_or_none(decision.observation.measured_stop_distance_m)
+
+
+def _outcome_source(decision: _StepDecision) -> str:
+    if decision.receipt_verification.get("verified") is True:
+        return str(decision.receipt_verification.get("outcome_source") or "host_verified_receipt")
+    if _outcome_measured_stop_distance_m(decision) is not None:
+        return "host_supplied_unverified_measurement"
+    return "analytic_shadow"
+
+
+def _stop_attribution(*, selected: _Candidate, decision: _StepDecision) -> str:
+    if selected.candidate_id != "stop_move":
+        return "continued_forward"
+    if decision.hardware_commands_sent:
+        return "dimos_stopmove_ack_with_host_receipt"
+    return "worldforge_shadow_selected_stop"
+
+
+def _outcome_status(*, selected: _Candidate, decision: _StepDecision) -> str:
     if selected.candidate_id == "stop_move":
         return "stopped_or_stop_selected_before_obstacle"
-    if observation.hardware_commands_sent:
+    if decision.hardware_commands_sent:
         return "forward_chunk_executed_with_host_receipt"
     return "forward_chunk_authorized_in_shadow"
 
@@ -1211,6 +1490,7 @@ __all__ = [
     "MovingObservation",
     "MovingSafetyConfig",
     "StopProofMeasurement",
+    "build_dimos_execution_receipt",
     "render_go2_moving_safety_report",
     "run_go2_moving_safety_intervention",
     "run_go2_moving_safety_intervention_workflow",

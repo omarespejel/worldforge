@@ -100,7 +100,8 @@ chunks, inflates that prediction with a measured or fallback stop budget, then e
 DimOS bridge contract. The packaged example is checkout-safe and does not import DimOS or send
 Unitree commands; live hosts must run the ladder
 `dry-run -> stop-proof -> open-space-bounded-motion -> moving-intervention`, supply measured
-stop-proof evidence, and wire host-owned forward-clearance perception before claiming real
+stop-proof evidence, wire host-owned forward-clearance perception, and provide a verified HMAC
+execution receipt with StopMove ack plus measured stop outcome before claiming `real_measured`
 execution.
 
 ## Service Host Reference
