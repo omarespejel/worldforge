@@ -119,6 +119,19 @@ EXAMPLE_COMMANDS: tuple[dict[str, str], ...] = (
         ),
     },
     {
+        "task": "Robot decision traces",
+        "name": "go2-live-safety-veto",
+        "surface": "Go2 predictive safety-filter shadow gate, DimOS bridge, DecisionTrace",
+        "requires": "base WorldForge package; public ControlBench CSV or local preview table",
+        "command": "uv run worldforge-demo-go2-live-safety-veto",
+        "description": (
+            "Score a proposed forward Go2 command against live-shaped obstacle evidence and "
+            "emit a DimOS safety-veto bridge plan plus validated DecisionTrace without importing "
+            "DimOS, without using Cosmos 3, without calling relative_move, or sending robot "
+            "commands."
+        ),
+    },
+    {
         "task": "Batch evaluation host",
         "name": "batch-eval-host",
         "surface": "evaluation, benchmarking, run workspaces, budget gates",
