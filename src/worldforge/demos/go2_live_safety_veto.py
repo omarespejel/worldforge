@@ -49,6 +49,9 @@ _PROPOSED_TARGET = (0.50, 0.0, 0.0)
 _STOP_TARGET = (0.0, 0.0, 0.0)
 _TINY_LEFT_YAW = (0.0, 0.0, math.radians(8.0))
 _YAW_WEIGHT_M_PER_RAD = 0.25
+_ODOM_STALE_REJECT_MS = 250.0
+_LIDAR_OR_COSTMAP_STALE_REJECT_MS = 500.0
+_HOST_EXECUTION_SENTINEL = "host_bounded_sport_move_then_stop_ack"
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,12 +86,18 @@ class ObstacleEvidence:
 
     source_kind: str
     forward_clearance_m: float
-    lidar_freshness_ms: float
-    costmap_freshness_ms: float
-    odom_freshness_ms: float
+    lidar_freshness_ms: float | None
+    costmap_freshness_ms: float | None
+    odom_freshness_ms: float | None
     unknown_cells_in_forward_corridor: bool
     stopmove_verified: bool
-    hardware_commands_sent: bool = False
+    hardware_execution_sentinel: str | None = None
+
+    @property
+    def hardware_commands_sent(self) -> bool:
+        """Derive hardware execution from a host receipt, never from a raw flag."""
+
+        return self.hardware_execution_sentinel == _HOST_EXECUTION_SENTINEL
 
 
 @dataclass(frozen=True, slots=True)
@@ -523,13 +532,16 @@ def _risk_for_candidate(
     reasons: list[str] = []
     risk_cost = 0.0
     is_motion_candidate = action_type != "stop_hold"
-    if is_motion_candidate and evidence.odom_freshness_ms > 250.0:
+    odom_freshness_ms = _freshness_age_or_inf(evidence.odom_freshness_ms)
+    lidar_freshness_ms = _freshness_age_or_inf(evidence.lidar_freshness_ms)
+    costmap_freshness_ms = _freshness_age_or_inf(evidence.costmap_freshness_ms)
+    if is_motion_candidate and odom_freshness_ms > _ODOM_STALE_REJECT_MS:
         reasons.append("stale_odom")
         risk_cost += 10.0
     if (
         is_motion_candidate
-        and evidence.lidar_freshness_ms > 500.0
-        and evidence.costmap_freshness_ms > 500.0
+        and lidar_freshness_ms > _LIDAR_OR_COSTMAP_STALE_REJECT_MS
+        and costmap_freshness_ms > _LIDAR_OR_COSTMAP_STALE_REJECT_MS
     ):
         reasons.append("stale_lidar_and_costmap")
         risk_cost += 10.0
@@ -678,8 +690,9 @@ def _build_bridge_plan(
                 "reason": "shadow_no_execution_default",
             },
             "hard_gates": {
-                "stale_odom_reject_ms": 250,
-                "stale_lidar_and_costmap_reject_ms": 500,
+                "stale_odom_reject_ms": int(_ODOM_STALE_REJECT_MS),
+                "stale_lidar_and_costmap_reject_ms": int(_LIDAR_OR_COSTMAP_STALE_REJECT_MS),
+                "missing_or_zero_freshness_is_stale": True,
                 "unknown_forward_cells_reject": True,
                 "stopmove_required_before_motion": True,
                 "operator_approval_required": True,
@@ -973,10 +986,29 @@ def _evidence_json(evidence: ObstacleEvidence) -> JSONDict:
         "lidar_freshness_ms": evidence.lidar_freshness_ms,
         "costmap_freshness_ms": evidence.costmap_freshness_ms,
         "odom_freshness_ms": evidence.odom_freshness_ms,
+        "freshness_policy": {
+            "missing_or_zero_is_stale": True,
+            "odom_stale_reject_ms": _ODOM_STALE_REJECT_MS,
+            "lidar_and_costmap_stale_reject_ms": _LIDAR_OR_COSTMAP_STALE_REJECT_MS,
+            "odom_present": _freshness_is_present(evidence.odom_freshness_ms),
+            "lidar_present": _freshness_is_present(evidence.lidar_freshness_ms),
+            "costmap_present": _freshness_is_present(evidence.costmap_freshness_ms),
+        },
         "unknown_cells_in_forward_corridor": evidence.unknown_cells_in_forward_corridor,
         "stopmove_verified": evidence.stopmove_verified,
         "hardware_commands_sent": evidence.hardware_commands_sent,
+        "hardware_execution_sentinel_present": evidence.hardware_execution_sentinel is not None,
     }
+
+
+def _freshness_is_present(value: float | None) -> bool:
+    return value is not None and math.isfinite(value) and value > 0.0
+
+
+def _freshness_age_or_inf(value: float | None) -> float:
+    if not _freshness_is_present(value):
+        return math.inf
+    return value
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:

@@ -132,6 +132,85 @@ def test_go2_live_safety_veto_fails_closed_on_stale_odom(
     assert "stale_odom" in forward["rejection_reasons"]
 
 
+def test_go2_live_safety_veto_fails_closed_on_zero_freshness(
+    tmp_path: Path,
+) -> None:
+    csv_path = _write_trials_csv(tmp_path / "all_trials_normalized.csv")
+    evidence = ObstacleEvidence(
+        source_kind="fixture_zero_freshness",
+        forward_clearance_m=2.0,
+        lidar_freshness_ms=0.0,
+        costmap_freshness_ms=0.0,
+        odom_freshness_ms=0.0,
+        unknown_cells_in_forward_corridor=False,
+        stopmove_verified=True,
+    )
+
+    result = run_go2_live_safety_veto(
+        dataset_csv=csv_path,
+        output_dir=tmp_path / "out",
+        obstacle_evidence=evidence,
+    )
+
+    forward = next(
+        candidate
+        for candidate in result.summary["candidates"]
+        if candidate["candidate_id"] == "forward_50cm"
+    )
+    assert result.summary["decision"]["selected_candidate_id"] == "stop_hold"
+    assert "stale_odom" in forward["rejection_reasons"]
+    assert "stale_lidar_and_costmap" in forward["rejection_reasons"]
+    assert result.summary["obstacle_evidence"]["freshness_policy"]["odom_present"] is False
+    assert result.summary["obstacle_evidence"]["freshness_policy"]["lidar_present"] is False
+    assert result.summary["obstacle_evidence"]["freshness_policy"]["costmap_present"] is False
+
+
+def test_go2_live_safety_veto_fails_closed_on_missing_freshness(
+    tmp_path: Path,
+) -> None:
+    csv_path = _write_trials_csv(tmp_path / "all_trials_normalized.csv")
+    evidence = ObstacleEvidence(
+        source_kind="fixture_missing_freshness",
+        forward_clearance_m=2.0,
+        lidar_freshness_ms=None,
+        costmap_freshness_ms=None,
+        odom_freshness_ms=None,
+        unknown_cells_in_forward_corridor=False,
+        stopmove_verified=True,
+    )
+
+    result = run_go2_live_safety_veto(
+        dataset_csv=csv_path,
+        output_dir=tmp_path / "out",
+        obstacle_evidence=evidence,
+    )
+
+    forward = next(
+        candidate
+        for candidate in result.summary["candidates"]
+        if candidate["candidate_id"] == "forward_50cm"
+    )
+    assert result.summary["decision"]["selected_candidate_id"] == "stop_hold"
+    assert "stale_odom" in forward["rejection_reasons"]
+    assert "stale_lidar_and_costmap" in forward["rejection_reasons"]
+
+
+def test_go2_live_safety_veto_rejects_raw_hardware_command_self_report() -> None:
+    kwargs = {
+        "source_kind": "fixture_raw_hardware_claim",
+        "forward_clearance_m": 2.0,
+        "lidar_freshness_ms": 80.0,
+        "costmap_freshness_ms": 90.0,
+        "odom_freshness_ms": 70.0,
+        "unknown_cells_in_forward_corridor": False,
+        "stopmove_verified": True,
+        "hardware_commands_sent": True,
+    }
+
+    with pytest.raises(TypeError):
+        ObstacleEvidence(**kwargs)
+
+
 def test_go2_live_safety_veto_workflow_returns_portable_paths(tmp_path: Path) -> None:
     csv_path = _write_trials_csv(tmp_path / "all_trials_normalized.csv")
 
