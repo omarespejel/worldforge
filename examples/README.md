@@ -55,6 +55,7 @@ terminal and JSON paths remain available with `--no-tui`.
 | `go2-controlbench-decisiontrace` | score provider, public decision trace, measured regret | `uv run python examples/go2-controlbench-decisiontrace/run.py` |
 | `go2-world-model-mpc-dimos` | Go2 ControlBench world-model MPC, DimOS shadow bridge, DecisionTrace | `uv run worldforge-demo-go2-world-model-mpc` |
 | `go2-live-safety-veto` | Go2 predictive safety-filter shadow gate, DimOS bridge contract, DecisionTrace | `uv run worldforge-demo-go2-live-safety-veto` |
+| `go2-moving-safety-intervention` | Go2 ControlBench stopping-envelope safety filter, DimOS bridge contract, chained DecisionTrace | `uv run worldforge-demo-go2-moving-safety-intervention` |
 
 The SO-101 replay trace demo uses a deterministic pick-and-place decision point shaped after the
 public `lerobot/svla_so101_pickplace` metadata. It scores candidate 6D joint-action futures,
@@ -91,6 +92,14 @@ with `--forward-clearance-m 2.0 --stopmove-verified`. For a two-case terminal ru
 `uv run worldforge-demo-go2-live-safety-veto --demo-pair` to run the obstacle-veto and
 open-space-control cases back to back. It does not import DimOS, connect to hardware, send robot
 commands, use Cosmos 3, call `relative_move`, or claim certified safety.
+
+The Go2 moving safety-intervention example is the next rung after the shadow veto. It uses the
+same ControlBench deadband-affine world model to compute a conservative stopping envelope for tiny
+forward Sport Move chunks, then emits a chained `moving_clear -> obstacle_veto -> hold_blocked ->
+resume_clear` DecisionTrace sequence plus a DimOS bridge contract. The packaged example is
+checkout-safe and does not import DimOS or send Unitree commands; live hosts must run the ladder
+`dry-run -> stop-proof -> open-space-bounded-motion -> moving-intervention` and supply measured
+stop-proof evidence before claiming real execution.
 
 ## Service Host Reference
 
