@@ -13,6 +13,7 @@ from worldforge.demos.go2_world_model_mpc import (
     validate_decision_trace,
 )
 from worldforge.models import WorldForgeError, WorldStateError
+from worldforge.providers.base import ProviderError
 
 
 def test_go2_world_model_mpc_writes_dimos_shadow_bridge_and_traces(
@@ -101,12 +102,11 @@ def test_go2_world_model_mpc_rejects_oversized_remote_csv(
 ) -> None:
     monkeypatch.setattr(go2_mpc, "validate_remote_url", lambda url, **_: url)
 
-    def fake_urlopen(url: str, *, timeout: int) -> _FakeResponse:
+    def fake_open(url: str) -> _FakeResponse:
         assert url == go2_mpc.DEFAULT_TRIAL_TABLE_URL
-        assert timeout == 20
         return _FakeResponse(b"x" * (go2_mpc._MAX_TRIAL_TABLE_BYTES + 1))
 
-    monkeypatch.setattr(go2_mpc, "urlopen", fake_urlopen)
+    monkeypatch.setattr(go2_mpc, "_open_validated_trial_table_url", fake_open)
 
     with pytest.raises(WorldForgeError, match="exceeds the download limit"):
         run_go2_world_model_mpc(dataset_csv=None, output_dir=tmp_path / "out")
@@ -126,22 +126,19 @@ def test_go2_world_model_mpc_rejects_oversized_local_csv(tmp_path: Path) -> None
 
 
 def test_go2_world_model_mpc_rejects_unsafe_redirect(
-    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    csv_path = _write_trials_csv(tmp_path / "all_trials_normalized.csv")
     monkeypatch.setattr(go2_mpc, "validate_remote_url", lambda url, **_: url)
-    monkeypatch.setattr(
-        go2_mpc,
-        "urlopen",
-        lambda *_args, **_kwargs: _FakeResponse(
-            csv_path.read_bytes(),
-            final_url="https://93.184.216.34/all_trials_normalized.csv",
-        ),
-    )
 
-    with pytest.raises(WorldForgeError, match="unsafe public dataset CSV URL"):
-        run_go2_world_model_mpc(dataset_csv=None, output_dir=tmp_path / "out")
+    with pytest.raises(ProviderError, match="Hugging Face dataset host"):
+        go2_mpc._ValidatedTrialTableRedirectHandler().redirect_request(
+            None,
+            None,
+            302,
+            "Found",
+            {},
+            "https://93.184.216.34/all_trials_normalized.csv",
+        )
 
 
 def test_go2_world_model_mpc_rejects_malformed_remote_csv(
@@ -149,7 +146,11 @@ def test_go2_world_model_mpc_rejects_malformed_remote_csv(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(go2_mpc, "validate_remote_url", lambda url, **_: url)
-    monkeypatch.setattr(go2_mpc, "urlopen", lambda *_args, **_kwargs: _FakeResponse(b"bad"))
+    monkeypatch.setattr(
+        go2_mpc,
+        "_open_validated_trial_table_url",
+        lambda *_args, **_kwargs: _FakeResponse(b"bad"),
+    )
 
     def broken_dict_reader(_handle: object) -> object:
         raise go2_mpc.csv.Error("bad csv")
@@ -178,7 +179,11 @@ def test_go2_world_model_mpc_does_not_persist_raw_remote_url(
     trial_table_url = go2_mpc.DEFAULT_TRIAL_TABLE_URL
 
     monkeypatch.setattr(go2_mpc, "validate_remote_url", lambda url, **_: url)
-    monkeypatch.setattr(go2_mpc, "urlopen", lambda *_args, **_kwargs: _FakeResponse(payload))
+    monkeypatch.setattr(
+        go2_mpc,
+        "_open_validated_trial_table_url",
+        lambda *_args, **_kwargs: _FakeResponse(payload),
+    )
 
     result = run_go2_world_model_mpc(
         dataset_csv=None,
@@ -201,10 +206,35 @@ def test_go2_world_model_mpc_does_not_persist_raw_remote_url(
     assert go2_mpc.DEFAULT_DATASET_REVISION in artifact_text
 
 
+def test_go2_world_model_mpc_reports_custom_hf_revision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    csv_path = _write_trials_csv(tmp_path / "all_trials_normalized.csv")
+    custom_url = "https://huggingface.co/datasets/acme/go2-demo/resolve/rev123/tables/all_trials_normalized.csv"
+    monkeypatch.setattr(go2_mpc, "validate_remote_url", lambda url, **_: url)
+    monkeypatch.setattr(
+        go2_mpc,
+        "_open_validated_trial_table_url",
+        lambda *_args, **_kwargs: _FakeResponse(csv_path.read_bytes(), final_url=custom_url),
+    )
+
+    result = run_go2_world_model_mpc(
+        dataset_csv=None,
+        trial_table_url=custom_url,
+        output_dir=tmp_path / "out",
+    )
+
+    summary = json.loads(result.summary_path.read_text(encoding="utf-8"))
+    assert summary["dataset"]["dataset_id"] == "acme/go2-demo"
+    assert summary["dataset"]["dataset_revision"] == "rev123"
+    assert summary["dataset"]["source_kind"] == "remote_hf_csv"
+
+
 def test_go2_world_model_mpc_rejects_unsafe_target_id(tmp_path: Path) -> None:
     csv_path = _write_trials_csv(tmp_path / "all_trials_normalized.csv")
 
-    with pytest.raises(WorldStateError):
+    with pytest.raises(WorldForgeError, match=r"unsafe|target"):
         run_go2_world_model_mpc(
             dataset_csv=csv_path,
             targets=[("../outside", (0.2, 0.0, 0.0))],
@@ -238,7 +268,7 @@ def test_go2_world_model_mpc_rejects_invalid_targets(
 def test_go2_world_model_mpc_rejects_duplicate_slugged_target_ids(tmp_path: Path) -> None:
     csv_path = _write_trials_csv(tmp_path / "all_trials_normalized.csv")
 
-    with pytest.raises(WorldStateError, match="collide after normalization"):
+    with pytest.raises(WorldForgeError, match="collide after normalization"):
         run_go2_world_model_mpc(
             dataset_csv=csv_path,
             targets=[

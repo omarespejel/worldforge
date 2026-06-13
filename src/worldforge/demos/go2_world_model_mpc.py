@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import urlopen
+from urllib.request import HTTPRedirectHandler, build_opener
 
 from worldforge.artifact_io import read_bounded_text_artifact, write_json_artifact
 from worldforge.models import JSONDict, WorldForgeError, WorldStateError
@@ -119,11 +119,10 @@ def run_go2_world_model_mpc(
 ) -> Go2WorldModelMPCResult:
     """Run the checkout-safe Go2 world-model MPC demo."""
 
-    validated_targets = _validate_targets(targets)
+    safe_targets = _validate_targets(targets)
     trials = load_controlbench_trials(dataset_csv=dataset_csv, trial_table_url=trial_table_url)
     command_cells = _command_cells_from_trials(trials)
     world_model = _fit_deadband_world_model(trials)
-    safe_targets = _safe_targets(validated_targets)
     decisions = [
         _rank_candidates(
             target_id=target_id,
@@ -363,7 +362,7 @@ def _read_csv_rows(*, dataset_csv: Path | None, trial_table_url: str) -> list[di
             ) from exc
     try:
         safe_url = _validate_trial_table_url(trial_table_url)
-        with urlopen(safe_url, timeout=20) as response:
+        with _open_validated_trial_table_url(safe_url) as response:
             final_url = getattr(response, "geturl", lambda: safe_url)()
             if final_url != safe_url:
                 _validate_trial_table_url(final_url)
@@ -546,20 +545,10 @@ def _build_summary(
     decisions: list[JSONDict],
 ) -> JSONDict:
     releases = sorted({trial.release for trial in trials})
-    if dataset_csv is None:
-        dataset_metadata: JSONDict = {
-            "dataset_id": DEFAULT_DATASET_ID,
-            "dataset_revision": DEFAULT_DATASET_REVISION,
-            "source": _SAFE_ARTIFACT_LABELS["all_trials_normalized.csv"],
-            "source_kind": "remote_hf_pinned_csv",
-        }
-    else:
-        dataset_metadata = {
-            "dataset_id": None,
-            "dataset_revision": None,
-            "source": _SAFE_ARTIFACT_LABELS["all_trials_normalized.csv"],
-            "source_kind": "local_csv",
-        }
+    dataset_metadata = _dataset_metadata(
+        dataset_csv=dataset_csv,
+        trial_table_url=trial_table_url,
+    )
     return _round_json_floats(
         {
             "schema_version": 1,
@@ -1121,6 +1110,7 @@ def _safe_target_id(value: str) -> str:
 def _validate_targets(
     targets: Sequence[tuple[str, tuple[float, float, float]]],
 ) -> list[tuple[str, tuple[float, float, float]]]:
+    seen_safe_ids: dict[str, str] = {}
     validated: list[tuple[str, tuple[float, float, float]]] = []
     for index, raw_target in enumerate(targets):
         if isinstance(raw_target, (str, bytes)) or not isinstance(raw_target, Sequence):
@@ -1130,6 +1120,19 @@ def _validate_targets(
         target_id, coords = raw_target
         if not isinstance(target_id, str):
             raise WorldForgeError(f"Go2 world-model MPC target {index} id must be a string.")
+        try:
+            safe_id = _safe_target_id(target_id)
+        except WorldStateError as exc:
+            raise WorldForgeError(
+                f"Go2 world-model MPC target {target_id!r} has an unsafe id."
+            ) from exc
+        previous = seen_safe_ids.get(safe_id)
+        if previous is not None:
+            raise WorldForgeError(
+                "Go2 world-model MPC target_id values collide after normalization: "
+                f"{previous!r} and {target_id!r} -> {safe_id!r}"
+            )
+        seen_safe_ids[safe_id] = target_id
         if isinstance(coords, (str, bytes)) or not isinstance(coords, Sequence):
             raise WorldForgeError(
                 f"Go2 world-model MPC target {target_id!r} coords must be length 3."
@@ -1150,30 +1153,8 @@ def _validate_targets(
                     f"Go2 world-model MPC target {target_id!r} {axis} must be finite."
                 )
             values.append(value)
-        validated.append((target_id, (values[0], values[1], values[2])))
+        validated.append((safe_id, (values[0], values[1], values[2])))
     return validated
-
-
-def _safe_targets(
-    targets: Sequence[tuple[str, tuple[float, float, float]]],
-) -> list[tuple[str, tuple[float, float, float]]]:
-    safe_by_id: dict[str, str] = {}
-    normalized: list[tuple[str, tuple[float, float, float]]] = []
-    collisions: list[str] = []
-    for target_id, target in targets:
-        safe_id = _safe_target_id(target_id)
-        previous = safe_by_id.get(safe_id)
-        if previous is not None:
-            collisions.append(f"{previous!r} and {target_id!r} -> {safe_id!r}")
-        else:
-            safe_by_id[safe_id] = target_id
-        normalized.append((safe_id, target))
-    if collisions:
-        raise WorldStateError(
-            "Go2 world-model MPC target_id values collide after normalization: "
-            + "; ".join(collisions)
-        )
-    return normalized
 
 
 def _decision_trace_filename(target_id: str) -> str:
@@ -1304,6 +1285,49 @@ def _validate_trial_table_url(trial_table_url: str) -> str:
             "Hugging Face dataset host."
         )
     return safe_url
+
+
+class _ValidatedTrialTableRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(
+        self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str
+    ) -> Any:
+        _validate_trial_table_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _open_validated_trial_table_url(safe_url: str) -> Any:
+    opener = build_opener(_ValidatedTrialTableRedirectHandler)
+    return opener.open(safe_url, timeout=20)
+
+
+def _dataset_metadata(*, dataset_csv: Path | None, trial_table_url: str) -> JSONDict:
+    if dataset_csv is not None:
+        return {
+            "dataset_id": None,
+            "dataset_revision": None,
+            "source": _SAFE_ARTIFACT_LABELS["all_trials_normalized.csv"],
+            "source_kind": "local_csv",
+        }
+    dataset_id, dataset_revision = _parse_hf_dataset_revision(trial_table_url)
+    return {
+        "dataset_id": dataset_id,
+        "dataset_revision": dataset_revision,
+        "source": _SAFE_ARTIFACT_LABELS["all_trials_normalized.csv"],
+        "source_kind": (
+            "remote_hf_pinned_csv"
+            if dataset_id == DEFAULT_DATASET_ID and dataset_revision == DEFAULT_DATASET_REVISION
+            else "remote_hf_csv"
+        ),
+    }
+
+
+def _parse_hf_dataset_revision(trial_table_url: str) -> tuple[str | None, str | None]:
+    safe_url = _validate_trial_table_url(trial_table_url)
+    parsed = urlparse(safe_url)
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) >= 5 and parts[0] == "datasets" and parts[3] == "resolve":
+        return f"{parts[1]}/{parts[2]}", parts[4]
+    return None, None
 
 
 def _float(row: Mapping[str, object], key: str) -> float:
