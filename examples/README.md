@@ -78,7 +78,9 @@ DimOS, connect to a robot, or send live hardware commands. The default remote CS
 to the public Hugging Face dataset host, capped to the expected CSV size, and redacted from emitted
 artifacts. First triage step: rerun with a local `--dataset-csv all_trials_normalized.csv` from
 revision `bb80a77c63f0b502267e5500fef83e65535ced5b`, then confirm the summary still reports
-`shadow_replay_no_execution` and `live_execution_allowed=false`.
+`shadow_replay_no_execution` and `live_execution_allowed=false`. Success signal:
+`world-model-mpc-summary.json` contains those two values and the run emitted a non-empty
+DecisionTrace JSON file for each target.
 
 ## Service Host Reference
 

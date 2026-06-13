@@ -33,6 +33,9 @@ def test_go2_world_model_mpc_writes_dimos_shadow_bridge_and_traces(
     ]
 
     assert summary["artifact_kind"] == "worldforge.go2_world_model_mpc_summary"
+    assert summary["dataset"]["dataset_id"] is None
+    assert summary["dataset"]["dataset_revision"] is None
+    assert summary["dataset"]["source_kind"] == "local_csv"
     assert summary["dataset"]["trial_count"] == 12
     assert summary["dataset"]["command_cell_count"] == 4
     assert summary["dimos"]["role"] == "host_owned_runtime_and_memory_bridge"
@@ -59,6 +62,9 @@ def test_go2_world_model_mpc_writes_dimos_shadow_bridge_and_traces(
         assert trace["claim_boundary"]["learned_model_used"] is False
         assert trace["outcome"]["metrics"]["live_dimos_execution"] is False
         assert trace["interop"]["dimos"]["required_live_skill"] == ("bounded_sport_move_then_stop")
+        assert trace["baseline"]["score"] == pytest.approx(
+            trace["baseline"]["regret_vs_selected"] + trace["selected_action"]["score"]
+        )
 
     payload_text = json.dumps(
         {"summary": summary, "bridge": bridge, "traces": traces},
@@ -106,6 +112,19 @@ def test_go2_world_model_mpc_rejects_oversized_remote_csv(
         run_go2_world_model_mpc(dataset_csv=None, output_dir=tmp_path / "out")
 
 
+def test_go2_world_model_mpc_rejects_non_file_local_csv(tmp_path: Path) -> None:
+    with pytest.raises(WorldForgeError, match="must be a regular file"):
+        run_go2_world_model_mpc(dataset_csv=tmp_path, output_dir=tmp_path / "out")
+
+
+def test_go2_world_model_mpc_rejects_oversized_local_csv(tmp_path: Path) -> None:
+    csv_path = tmp_path / "all_trials_normalized.csv"
+    csv_path.write_bytes(b"x" * (go2_mpc._MAX_TRIAL_TABLE_BYTES + 1))
+
+    with pytest.raises(WorldStateError, match="exceeds the read limit"):
+        run_go2_world_model_mpc(dataset_csv=csv_path, output_dir=tmp_path / "out")
+
+
 def test_go2_world_model_mpc_rejects_unsafe_redirect(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -139,6 +158,15 @@ def test_go2_world_model_mpc_rejects_malformed_remote_csv(
 
     with pytest.raises(WorldStateError, match="remote CSV payload is malformed"):
         run_go2_world_model_mpc(dataset_csv=None, output_dir=tmp_path / "out")
+
+
+def test_go2_world_model_mpc_rejects_non_integral_trial_index(tmp_path: Path) -> None:
+    csv_path = _write_trials_csv(tmp_path / "all_trials_normalized.csv")
+    csv_text = csv_path.read_text(encoding="utf-8")
+    csv_path.write_text(csv_text.replace("release03,0,", "release03,1.9,", 1), encoding="utf-8")
+
+    with pytest.raises(WorldStateError, match=r"trial_index.*integer"):
+        run_go2_world_model_mpc(dataset_csv=csv_path, output_dir=tmp_path / "out")
 
 
 def test_go2_world_model_mpc_does_not_persist_raw_remote_url(
@@ -180,6 +208,29 @@ def test_go2_world_model_mpc_rejects_unsafe_target_id(tmp_path: Path) -> None:
         run_go2_world_model_mpc(
             dataset_csv=csv_path,
             targets=[("../outside", (0.2, 0.0, 0.0))],
+            output_dir=tmp_path / "out",
+        )
+
+
+@pytest.mark.parametrize(
+    "targets",
+    [
+        [("bad", (0.2, float("nan"), 0.0))],
+        [("bad", (0.2, 0.0))],
+        [(123, (0.2, 0.0, 0.0))],
+        [("bad", ("0.2", 0.0, 0.0))],
+    ],
+)
+def test_go2_world_model_mpc_rejects_invalid_targets(
+    tmp_path: Path,
+    targets: object,
+) -> None:
+    csv_path = _write_trials_csv(tmp_path / "all_trials_normalized.csv")
+
+    with pytest.raises(WorldForgeError, match="target"):
+        run_go2_world_model_mpc(
+            dataset_csv=csv_path,
+            targets=targets,  # type: ignore[arg-type]
             output_dir=tmp_path / "out",
         )
 

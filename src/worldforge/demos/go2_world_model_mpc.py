@@ -14,6 +14,7 @@ import csv
 import io
 import json
 import math
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
@@ -118,10 +119,11 @@ def run_go2_world_model_mpc(
 ) -> Go2WorldModelMPCResult:
     """Run the checkout-safe Go2 world-model MPC demo."""
 
+    validated_targets = _validate_targets(targets)
     trials = load_controlbench_trials(dataset_csv=dataset_csv, trial_table_url=trial_table_url)
     command_cells = _command_cells_from_trials(trials)
     world_model = _fit_deadband_world_model(trials)
-    safe_targets = _safe_targets(targets)
+    safe_targets = _safe_targets(validated_targets)
     decisions = [
         _rank_candidates(
             target_id=target_id,
@@ -331,13 +333,30 @@ def render_go2_world_model_mpc_report(summary: JSONDict) -> str:
 def _read_csv_rows(*, dataset_csv: Path | None, trial_table_url: str) -> list[dict[str, str]]:
     if dataset_csv is not None:
         try:
-            with dataset_csv.open(newline="", encoding="utf-8") as handle:
-                return [dict(row) for row in csv.DictReader(handle)]
-        except FileNotFoundError as exc:
+            if not dataset_csv.is_file():
+                raise WorldForgeError(
+                    "Go2 world-model MPC CSV must be a regular file: "
+                    f"{_safe_artifact_path(dataset_csv)}"
+                )
+            with dataset_csv.open("rb") as handle:
+                raw_payload = handle.read(_MAX_TRIAL_TABLE_BYTES + 1)
+            if len(raw_payload) > _MAX_TRIAL_TABLE_BYTES:
+                raise WorldStateError(
+                    "Go2 world-model MPC CSV exceeds the read limit: "
+                    f"{_safe_artifact_path(dataset_csv)}"
+                )
+            payload = raw_payload.decode("utf-8")
+            return _parse_csv_payload(
+                payload,
+                malformed_message="Go2 world-model MPC local CSV payload is malformed.",
+            )
+        except WorldForgeError:
+            raise
+        except FileNotFoundError as exc:  # Defensive: handles races after is_file().
             raise WorldForgeError(
                 f"Go2 world-model MPC CSV not found: {_safe_artifact_path(dataset_csv)}"
             ) from exc
-        except (csv.Error, OSError, UnicodeDecodeError) as exc:
+        except (OSError, UnicodeDecodeError) as exc:
             raise WorldStateError(
                 f"Go2 world-model MPC CSV could not be read: {_safe_artifact_path(dataset_csv)}"
             ) from exc
@@ -359,10 +378,17 @@ def _read_csv_rows(*, dataset_csv: Path | None, trial_table_url: str) -> list[di
         raise WorldForgeError(
             "Go2 world-model MPC could not fetch the public dataset CSV."
         ) from exc
+    return _parse_csv_payload(
+        payload,
+        malformed_message="Go2 world-model MPC remote CSV payload is malformed.",
+    )
+
+
+def _parse_csv_payload(payload: str, *, malformed_message: str) -> list[dict[str, str]]:
     try:
         return [dict(row) for row in csv.DictReader(io.StringIO(payload))]
     except csv.Error as exc:
-        raise WorldStateError("Go2 world-model MPC remote CSV payload is malformed.") from exc
+        raise WorldStateError(malformed_message) from exc
 
 
 def _command_cells_from_trials(trials: list[_Trial]) -> list[_CommandCell]:
@@ -519,16 +545,27 @@ def _build_summary(
     decisions: list[JSONDict],
 ) -> JSONDict:
     releases = sorted({trial.release for trial in trials})
+    if dataset_csv is None:
+        dataset_metadata: JSONDict = {
+            "dataset_id": DEFAULT_DATASET_ID,
+            "dataset_revision": DEFAULT_DATASET_REVISION,
+            "source": _SAFE_ARTIFACT_LABELS["all_trials_normalized.csv"],
+            "source_kind": "remote_hf_pinned_csv",
+        }
+    else:
+        dataset_metadata = {
+            "dataset_id": None,
+            "dataset_revision": None,
+            "source": _SAFE_ARTIFACT_LABELS["all_trials_normalized.csv"],
+            "source_kind": "local_csv",
+        }
     return _round_json_floats(
         {
             "schema_version": 1,
             "artifact_kind": "worldforge.go2_world_model_mpc_summary",
             "run_id": RUN_ID,
             "dataset": {
-                "dataset_id": DEFAULT_DATASET_ID,
-                "dataset_revision": DEFAULT_DATASET_REVISION,
-                "source": _SAFE_ARTIFACT_LABELS["all_trials_normalized.csv"],
-                "source_kind": "local_csv" if dataset_csv is not None else "remote_hf_pinned_csv",
+                **dataset_metadata,
                 "trial_count": len(trials),
                 "command_cell_count": len(command_cells),
                 "release_count": len(releases),
@@ -741,17 +778,8 @@ def _build_decision_trace(
         ],
         "baseline": {
             "candidate_id": decision["baseline_candidate_id"],
-            "score": next(
-                row["score"]
-                for row in ranked
-                if row["candidate_id"] == decision["baseline_candidate_id"]
-            ),
-            "regret_vs_selected": next(
-                row["score"]
-                for row in ranked
-                if row["candidate_id"] == decision["baseline_candidate_id"]
-            )
-            - selected["score"],
+            "score": decision["baseline_score"],
+            "regret_vs_selected": float(decision["baseline_score"] - selected["score"]),
             "policy": "command_integral_baseline",
         },
         "outcome": {
@@ -1089,6 +1117,42 @@ def _safe_target_id(value: str) -> str:
     return slug
 
 
+def _validate_targets(
+    targets: Sequence[tuple[str, tuple[float, float, float]]],
+) -> list[tuple[str, tuple[float, float, float]]]:
+    validated: list[tuple[str, tuple[float, float, float]]] = []
+    for index, raw_target in enumerate(targets):
+        if isinstance(raw_target, (str, bytes)) or not isinstance(raw_target, Sequence):
+            raise WorldForgeError(f"Go2 world-model MPC target {index} must be an id/coords pair.")
+        if len(raw_target) != 2:
+            raise WorldForgeError(f"Go2 world-model MPC target {index} must be an id/coords pair.")
+        target_id, coords = raw_target
+        if not isinstance(target_id, str):
+            raise WorldForgeError(f"Go2 world-model MPC target {index} id must be a string.")
+        if isinstance(coords, (str, bytes)) or not isinstance(coords, Sequence):
+            raise WorldForgeError(
+                f"Go2 world-model MPC target {target_id!r} coords must be length 3."
+            )
+        if len(coords) != 3:
+            raise WorldForgeError(
+                f"Go2 world-model MPC target {target_id!r} coords must be length 3."
+            )
+        values: list[float] = []
+        for axis, raw_value in zip(("dx_m", "dy_m", "dyaw_rad"), coords, strict=True):
+            if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
+                raise WorldForgeError(
+                    f"Go2 world-model MPC target {target_id!r} {axis} must be a finite number."
+                )
+            value = float(raw_value)
+            if not math.isfinite(value):
+                raise WorldForgeError(
+                    f"Go2 world-model MPC target {target_id!r} {axis} must be finite."
+                )
+            values.append(value)
+        validated.append((target_id, (values[0], values[1], values[2])))
+    return validated
+
+
 def _safe_targets(
     targets: Sequence[tuple[str, tuple[float, float, float]]],
 ) -> list[tuple[str, tuple[float, float, float]]]:
@@ -1273,13 +1337,24 @@ def _optional_float(row: Mapping[str, object], key: str) -> float | None:
 
 def _int(row: Mapping[str, object], key: str, *, default: int = 0) -> int:
     raw = row.get(key)
-    if raw in (None, ""):
+    if raw is None:
         return default
-    try:
-        value = int(float(str(raw)))
-    except (TypeError, ValueError) as exc:
-        raise WorldStateError(f"Go2 world-model MPC field {key!r} must be an integer.") from exc
-    return value
+    if isinstance(raw, bool):
+        raise WorldStateError(f"Go2 world-model MPC field {key!r} must be an integer.")
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, float):
+        if math.isfinite(raw) and raw.is_integer():
+            return int(raw)
+        raise WorldStateError(f"Go2 world-model MPC field {key!r} must be an integer.")
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text == "":
+            return default
+        if re.fullmatch(r"[+-]?\d+", text):
+            return int(text)
+        raise WorldStateError(f"Go2 world-model MPC field {key!r} must be an integer.")
+    raise WorldStateError(f"Go2 world-model MPC field {key!r} must be an integer.")
 
 
 def _bool(row: Mapping[str, object], key: str) -> bool:
