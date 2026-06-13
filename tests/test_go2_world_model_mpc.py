@@ -6,11 +6,11 @@ from pathlib import Path
 import pytest
 
 import worldforge.demos.go2_world_model_mpc as go2_mpc
-from worldforge.decision_trace import validate_decision_trace
 from worldforge.demos.go2_world_model_mpc import (
     main,
     run_go2_world_model_mpc,
     run_go2_world_model_mpc_workflow,
+    validate_decision_trace,
 )
 from worldforge.models import WorldForgeError, WorldStateError
 
@@ -25,7 +25,10 @@ def test_go2_world_model_mpc_writes_dimos_shadow_bridge_and_traces(
     summary = json.loads(result.summary_path.read_text(encoding="utf-8"))
     bridge = json.loads(result.dimos_bridge_path.read_text(encoding="utf-8"))
     traces = [
-        validate_decision_trace(json.loads(path.read_text(encoding="utf-8")))
+        validate_decision_trace(
+            json.loads(path.read_text(encoding="utf-8")),
+            name="Go2 world-model MPC test trace",
+        )
         for path in result.decision_trace_paths
     ]
 
@@ -52,6 +55,7 @@ def test_go2_world_model_mpc_writes_dimos_shadow_bridge_and_traces(
         assert trace["host_runtime"]["mode"] == "shadow_replay_no_execution"
         assert trace["claim_boundary"]["outcome_kind"] == "real_measured"
         assert trace["claim_boundary"]["hardware_executed"] is True
+        assert trace["claim_boundary"]["current_run_hardware_executed"] is False
         assert trace["claim_boundary"]["learned_model_used"] is False
         assert trace["outcome"]["metrics"]["live_dimos_execution"] is False
         assert trace["interop"]["dimos"]["required_live_skill"] == ("bounded_sport_move_then_stop")

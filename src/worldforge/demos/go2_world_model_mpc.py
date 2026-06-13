@@ -12,9 +12,11 @@ from __future__ import annotations
 import argparse
 import csv
 import io
+import json
 import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -22,16 +24,12 @@ from urllib.parse import urlparse
 from urllib.request import urlopen
 
 from worldforge.artifact_io import write_json_artifact
-from worldforge.decision_trace import (
-    DECISION_TRACE_ARTIFACT_KIND,
-    DECISION_TRACE_SCHEMA_VERSION,
-    decision_trace_digest,
-    validate_decision_trace,
-)
 from worldforge.models import JSONDict, WorldForgeError, WorldStateError
 from worldforge.providers.base import ProviderError
 from worldforge.providers.http_url_validation import validate_remote_url
 
+DECISION_TRACE_SCHEMA_VERSION = "decision_trace.v1-draft"
+DECISION_TRACE_ARTIFACT_KIND = "worldforge.go2_world_model_mpc_decision_trace"
 DEFAULT_DATASET_ID = "espejelomar/go2-air-controlbench-v1"
 DEFAULT_DATASET_REVISION = "bb80a77c63f0b502267e5500fef83e65535ced5b"
 DEFAULT_HF_BASE_URL = (
@@ -776,6 +774,7 @@ def _build_decision_trace(
             "score_kind": "hand_cost",
             "outcome_kind": "real_measured",
             "hardware_executed": True,
+            "current_run_hardware_executed": False,
             "learned_model_used": False,
             "safety_controller": "offline_shadow_only_dimos_bridge",
             "limitations": [
@@ -1082,6 +1081,119 @@ def _safe_target_id(value: str) -> str:
 
 def _decision_trace_filename(target_id: str) -> str:
     return f"decision-trace-go2-world-model-mpc-{_safe_target_id(target_id)}.json"
+
+
+def decision_trace_digest(payload: Mapping[str, Any]) -> str:
+    encoded = json.dumps(
+        _round_json_floats(dict(payload)),
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return sha256(encoded).hexdigest()
+
+
+def validate_decision_trace(payload: object, *, name: str) -> JSONDict:
+    trace = _json_object(payload, name)
+    _require_fields(
+        trace,
+        (
+            "schema_version",
+            "artifact_kind",
+            "trace_id",
+            "run_id",
+            "host_runtime",
+            "observation",
+            "goal",
+            "candidate_actions",
+            "scores",
+            "selected_action",
+            "counterfactuals",
+            "candidate_outcomes",
+            "outcome",
+            "planner_diagnostics",
+            "claim_boundary",
+            "interop",
+        ),
+        name,
+    )
+    if trace["schema_version"] != DECISION_TRACE_SCHEMA_VERSION:
+        raise WorldForgeError(f"{name}.schema_version must be {DECISION_TRACE_SCHEMA_VERSION}.")
+    if trace["artifact_kind"] != DECISION_TRACE_ARTIFACT_KIND:
+        raise WorldForgeError(f"{name}.artifact_kind must be {DECISION_TRACE_ARTIFACT_KIND}.")
+
+    host_runtime = _json_object(trace["host_runtime"], f"{name}.host_runtime")
+    if host_runtime.get("mode") != _DIMOS_SHADOW_MODE:
+        raise WorldForgeError(f"{name}.host_runtime.mode must be {_DIMOS_SHADOW_MODE}.")
+
+    candidates = _json_list(trace["candidate_actions"], f"{name}.candidate_actions")
+    scores = _json_list(trace["scores"], f"{name}.scores")
+    outcomes = _json_list(trace["candidate_outcomes"], f"{name}.candidate_outcomes")
+    if not candidates or len(candidates) != len(scores) or len(candidates) != len(outcomes):
+        raise WorldForgeError(
+            f"{name} candidate_actions, scores, and candidate_outcomes must align."
+        )
+
+    candidate_ids = {
+        str(_json_object(candidate, f"{name}.candidate_actions[{index}]")["candidate_id"])
+        for index, candidate in enumerate(candidates)
+    }
+    selected = _json_object(trace["selected_action"], f"{name}.selected_action")
+    selected_id = str(selected.get("candidate_id", ""))
+    if selected_id not in candidate_ids:
+        raise WorldForgeError(f"{name}.selected_action.candidate_id must match a candidate.")
+
+    for index, score in enumerate(scores):
+        score_record = _json_object(score, f"{name}.scores[{index}]")
+        if str(score_record.get("candidate_id", "")) not in candidate_ids:
+            raise WorldForgeError(f"{name}.scores[{index}].candidate_id must match a candidate.")
+        _finite_number(score_record.get("score"), f"{name}.scores[{index}].score")
+        _positive_int(score_record.get("rank"), f"{name}.scores[{index}].rank")
+
+    for index, outcome in enumerate(outcomes):
+        outcome_record = _json_object(outcome, f"{name}.candidate_outcomes[{index}]")
+        if str(outcome_record.get("candidate_id", "")) not in candidate_ids:
+            raise WorldForgeError(
+                f"{name}.candidate_outcomes[{index}].candidate_id must match a candidate."
+            )
+
+    claim_boundary = _json_object(trace["claim_boundary"], f"{name}.claim_boundary")
+    if claim_boundary.get("hardware_executed") is not True:
+        raise WorldForgeError(f"{name}.claim_boundary.hardware_executed must be true.")
+    if claim_boundary.get("current_run_hardware_executed") is not False:
+        raise WorldForgeError(
+            f"{name}.claim_boundary.current_run_hardware_executed must be false."
+        )
+    return trace
+
+
+def _json_object(value: object, name: str) -> JSONDict:
+    if not isinstance(value, Mapping):
+        raise WorldForgeError(f"{name} must be a JSON object.")
+    return dict(value)
+
+
+def _json_list(value: object, name: str) -> list[object]:
+    if not isinstance(value, list):
+        raise WorldForgeError(f"{name} must be a JSON list.")
+    return value
+
+
+def _require_fields(payload: Mapping[str, object], fields: Sequence[str], name: str) -> None:
+    for field in fields:
+        if field not in payload:
+            raise WorldForgeError(f"{name} is missing '{field}'.")
+
+
+def _finite_number(value: object, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise WorldForgeError(f"{name} must be a finite number.")
+    return float(value)
+
+
+def _positive_int(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise WorldForgeError(f"{name} must be a positive integer.")
+    return value
 
 
 def _validate_trial_table_url(trial_table_url: str) -> str:
