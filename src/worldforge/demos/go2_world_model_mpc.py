@@ -24,7 +24,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import urlopen
 
-from worldforge.artifact_io import write_json_artifact
+from worldforge.artifact_io import read_bounded_text_artifact, write_json_artifact
 from worldforge.models import JSONDict, WorldForgeError, WorldStateError
 from worldforge.providers.base import ProviderError
 from worldforge.providers.http_url_validation import validate_remote_url
@@ -338,20 +338,21 @@ def _read_csv_rows(*, dataset_csv: Path | None, trial_table_url: str) -> list[di
                     "Go2 world-model MPC CSV must be a regular file: "
                     f"{_safe_artifact_path(dataset_csv)}"
                 )
-            with dataset_csv.open("rb") as handle:
-                raw_payload = handle.read(_MAX_TRIAL_TABLE_BYTES + 1)
-            if len(raw_payload) > _MAX_TRIAL_TABLE_BYTES:
-                raise WorldStateError(
-                    "Go2 world-model MPC CSV exceeds the read limit: "
-                    f"{_safe_artifact_path(dataset_csv)}"
-                )
-            payload = raw_payload.decode("utf-8")
+            payload = read_bounded_text_artifact(
+                dataset_csv,
+                max_bytes=_MAX_TRIAL_TABLE_BYTES,
+            )
             return _parse_csv_payload(
                 payload,
                 malformed_message="Go2 world-model MPC local CSV payload is malformed.",
             )
         except WorldForgeError:
             raise
+        except ValueError as exc:
+            raise WorldStateError(
+                "Go2 world-model MPC CSV exceeds the read limit: "
+                f"{_safe_artifact_path(dataset_csv)}"
+            ) from exc
         except FileNotFoundError as exc:  # Defensive: handles races after is_file().
             raise WorldForgeError(
                 f"Go2 world-model MPC CSV not found: {_safe_artifact_path(dataset_csv)}"
