@@ -347,11 +347,6 @@ def _read_csv_rows(*, dataset_csv: Path | None, trial_table_url: str) -> list[di
             )
         except WorldForgeError:
             raise
-        except ValueError as exc:
-            raise WorldStateError(
-                "Go2 world-model MPC CSV exceeds the read limit: "
-                f"{_safe_artifact_path(dataset_csv)}"
-            ) from exc
         except FileNotFoundError as exc:  # Defensive: handles races after is_file().
             raise WorldForgeError(
                 f"Go2 world-model MPC CSV not found: {_safe_artifact_path(dataset_csv)}"

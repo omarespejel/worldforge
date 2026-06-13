@@ -4,17 +4,23 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from worldforge.models import dump_json
+from worldforge.models import WorldStateError, dump_json
 
 
 def read_bounded_text_artifact(path: Path, *, max_bytes: int) -> str:
     """Read a UTF-8 artifact with a hard byte cap."""
 
-    with path.open("rb") as handle:
-        raw_payload = handle.read(max_bytes + 1)
+    try:
+        with path.open("rb") as handle:
+            raw_payload = handle.read(max_bytes + 1)
+    except OSError as exc:
+        raise WorldStateError("Artifact could not be read.") from exc
     if len(raw_payload) > max_bytes:
-        raise ValueError("artifact exceeds the read limit")
-    return raw_payload.decode("utf-8")
+        raise WorldStateError("Artifact exceeds the read limit.")
+    try:
+        return raw_payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise WorldStateError("Artifact must be UTF-8 text.") from exc
 
 
 def write_json_artifact(path: Path, payload: object) -> Path:
