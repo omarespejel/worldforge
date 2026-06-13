@@ -5,12 +5,14 @@ from pathlib import Path
 
 import pytest
 
+import worldforge.demos.go2_world_model_mpc as go2_mpc
 from worldforge.decision_trace import validate_decision_trace
 from worldforge.demos.go2_world_model_mpc import (
     main,
     run_go2_world_model_mpc,
     run_go2_world_model_mpc_workflow,
 )
+from worldforge.models import WorldForgeError, WorldStateError
 
 
 def test_go2_world_model_mpc_writes_dimos_shadow_bridge_and_traces(
@@ -47,6 +49,7 @@ def test_go2_world_model_mpc_writes_dimos_shadow_bridge_and_traces(
     assert len(traces) == 3
     for trace in traces:
         assert trace["host_runtime"]["name"] == "DimOS shadow bridge"
+        assert trace["host_runtime"]["mode"] == "shadow_replay_no_execution"
         assert trace["claim_boundary"]["outcome_kind"] == "real_measured"
         assert trace["claim_boundary"]["hardware_executed"] is True
         assert trace["claim_boundary"]["learned_model_used"] is False
@@ -60,6 +63,101 @@ def test_go2_world_model_mpc_writes_dimos_shadow_bridge_and_traces(
     assert str(tmp_path) not in payload_text
     assert "/Users/" not in payload_text
     assert "192.168." not in payload_text
+
+
+def test_go2_world_model_mpc_rejects_local_trial_table_url(tmp_path: Path) -> None:
+    with pytest.raises(WorldForgeError):
+        run_go2_world_model_mpc(
+            dataset_csv=None,
+            trial_table_url="http://127.0.0.1/private/all_trials_normalized.csv",
+            output_dir=tmp_path / "out",
+        )
+
+
+def test_go2_world_model_mpc_rejects_non_huggingface_trial_table_url(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(WorldForgeError):
+        run_go2_world_model_mpc(
+            dataset_csv=None,
+            trial_table_url="https://93.184.216.34/all_trials_normalized.csv",
+            output_dir=tmp_path / "out",
+        )
+
+
+def test_go2_world_model_mpc_rejects_oversized_remote_csv(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(go2_mpc, "validate_remote_url", lambda url, **_: url)
+
+    def fake_urlopen(url: str, *, timeout: int) -> _FakeResponse:
+        assert url == go2_mpc.DEFAULT_TRIAL_TABLE_URL
+        assert timeout == 20
+        return _FakeResponse(b"x" * (go2_mpc._MAX_TRIAL_TABLE_BYTES + 1))
+
+    monkeypatch.setattr(go2_mpc, "urlopen", fake_urlopen)
+
+    with pytest.raises(WorldForgeError, match="exceeds the download limit"):
+        run_go2_world_model_mpc(dataset_csv=None, output_dir=tmp_path / "out")
+
+
+def test_go2_world_model_mpc_does_not_persist_raw_remote_url(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    csv_path = _write_trials_csv(tmp_path / "all_trials_normalized.csv")
+    payload = csv_path.read_bytes()
+    trial_table_url = go2_mpc.DEFAULT_TRIAL_TABLE_URL
+
+    monkeypatch.setattr(go2_mpc, "validate_remote_url", lambda url, **_: url)
+    monkeypatch.setattr(go2_mpc, "urlopen", lambda *_args, **_kwargs: _FakeResponse(payload))
+
+    result = run_go2_world_model_mpc(
+        dataset_csv=None,
+        trial_table_url=trial_table_url,
+        output_dir=tmp_path / "out",
+    )
+
+    artifact_text = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in [
+            result.summary_path,
+            result.report_path,
+            result.dimos_bridge_path,
+            *result.decision_trace_paths,
+        ]
+    )
+    assert trial_table_url not in artifact_text
+    assert "huggingface.co" not in artifact_text
+    assert "remote_hf_pinned_csv" in artifact_text
+    assert go2_mpc.DEFAULT_DATASET_REVISION in artifact_text
+
+
+def test_go2_world_model_mpc_rejects_unsafe_target_id(tmp_path: Path) -> None:
+    csv_path = _write_trials_csv(tmp_path / "all_trials_normalized.csv")
+
+    with pytest.raises(WorldStateError):
+        run_go2_world_model_mpc(
+            dataset_csv=csv_path,
+            targets=[("../outside", (0.2, 0.0, 0.0))],
+            output_dir=tmp_path / "out",
+        )
+
+
+def test_go2_world_model_mpc_slugs_safe_target_id(tmp_path: Path) -> None:
+    csv_path = _write_trials_csv(tmp_path / "all_trials_normalized.csv")
+
+    result = run_go2_world_model_mpc(
+        dataset_csv=csv_path,
+        targets=[("Forward Target 20cm", (0.2, 0.0, 0.0))],
+        output_dir=tmp_path / "out",
+    )
+
+    assert len(result.decision_trace_paths) == 1
+    assert result.decision_trace_paths[0].name == (
+        "decision-trace-go2-world-model-mpc-forward-target-20cm.json"
+    )
 
 
 def test_go2_world_model_mpc_workflow_returns_portable_paths(tmp_path: Path) -> None:
@@ -92,6 +190,20 @@ def test_go2_world_model_mpc_cli_help_has_description(
     output = capsys.readouterr().out
     assert "offline Go2 world-model MPC demo" in output
     assert "DimOS shadow-bridge" in output
+
+
+class _FakeResponse:
+    def __init__(self, payload: bytes) -> None:
+        self._payload = payload
+
+    def __enter__(self) -> _FakeResponse:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def read(self, _limit: int = -1) -> bytes:
+        return self._payload
 
 
 def _write_trials_csv(path: Path) -> Path:

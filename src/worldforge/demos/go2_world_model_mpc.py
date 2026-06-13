@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
 from urllib.request import urlopen
 
 from worldforge.artifact_io import write_json_artifact
@@ -28,9 +29,14 @@ from worldforge.decision_trace import (
     validate_decision_trace,
 )
 from worldforge.models import JSONDict, WorldForgeError, WorldStateError
+from worldforge.providers.base import ProviderError
+from worldforge.providers.http_url_validation import validate_remote_url
 
 DEFAULT_DATASET_ID = "espejelomar/go2-air-controlbench-v1"
-DEFAULT_HF_BASE_URL = f"https://huggingface.co/datasets/{DEFAULT_DATASET_ID}/resolve/main"
+DEFAULT_DATASET_REVISION = "bb80a77c63f0b502267e5500fef83e65535ced5b"
+DEFAULT_HF_BASE_URL = (
+    f"https://huggingface.co/datasets/{DEFAULT_DATASET_ID}/resolve/{DEFAULT_DATASET_REVISION}"
+)
 DEFAULT_TRIAL_TABLE_URL = f"{DEFAULT_HF_BASE_URL}/tables/all_trials_normalized.csv"
 DEFAULT_OUTPUT_DIR = Path(".worldforge/go2-world-model-mpc-dimos")
 RUN_ID = "go2-controlbench-world-model-mpc-dimos"
@@ -43,6 +49,9 @@ CLI_DESCRIPTION = (
 _YAW_WEIGHT_M_PER_RAD = 0.25
 _RIDGE = 1e-9
 _MOTION_THRESHOLD = 0.02
+_MAX_TRIAL_TABLE_BYTES = 1_000_000
+_DIMOS_SHADOW_MODE = "shadow_replay_no_execution"
+_TRIAL_TABLE_ALLOWED_HOSTS = frozenset({"huggingface.co"})
 _DEFAULT_TARGETS: tuple[tuple[str, tuple[float, float, float]], ...] = (
     ("forward_target_020", (0.20, 0.0, 0.0)),
     ("forward_target_030", (0.30, 0.0, 0.0)),
@@ -114,6 +123,7 @@ def run_go2_world_model_mpc(
     trials = load_controlbench_trials(dataset_csv=dataset_csv, trial_table_url=trial_table_url)
     command_cells = _command_cells_from_trials(trials)
     world_model = _fit_deadband_world_model(trials)
+    safe_targets = [(_safe_target_id(target_id), target) for target_id, target in targets]
     decisions = [
         _rank_candidates(
             target_id=target_id,
@@ -121,7 +131,7 @@ def run_go2_world_model_mpc(
             command_cells=command_cells,
             world_model=world_model,
         )
-        for target_id, target in targets
+        for target_id, target in safe_targets
     ]
     summary = _build_summary(
         dataset_csv=dataset_csv,
@@ -158,7 +168,7 @@ def run_go2_world_model_mpc(
         )
         trace_paths = [
             write_json_artifact(
-                output_dir / f"decision-trace-go2-world-model-mpc-{decision['target_id']}.json",
+                output_dir / _decision_trace_filename(str(decision["target_id"])),
                 trace,
             )
             for decision, trace in zip(decisions, decision_traces, strict=True)
@@ -334,9 +344,13 @@ def _read_csv_rows(*, dataset_csv: Path | None, trial_table_url: str) -> list[di
                 f"Go2 world-model MPC CSV could not be read: {_safe_artifact_path(dataset_csv)}"
             ) from exc
     try:
-        with urlopen(trial_table_url, timeout=20) as response:
-            payload = response.read().decode("utf-8")
-    except (HTTPError, URLError, TimeoutError, UnicodeDecodeError) as exc:
+        safe_url = _validate_trial_table_url(trial_table_url)
+        with urlopen(safe_url, timeout=20) as response:
+            raw_payload = response.read(_MAX_TRIAL_TABLE_BYTES + 1)
+        if len(raw_payload) > _MAX_TRIAL_TABLE_BYTES:
+            raise WorldForgeError("Go2 world-model MPC dataset CSV exceeds the download limit.")
+        payload = raw_payload.decode("utf-8")
+    except (ProviderError, HTTPError, URLError, TimeoutError, UnicodeDecodeError) as exc:
         raise WorldForgeError(
             "Go2 world-model MPC could not fetch the public dataset CSV."
         ) from exc
@@ -504,11 +518,9 @@ def _build_summary(
             "run_id": RUN_ID,
             "dataset": {
                 "dataset_id": DEFAULT_DATASET_ID,
-                "source": (
-                    _SAFE_ARTIFACT_LABELS["all_trials_normalized.csv"]
-                    if dataset_csv is not None
-                    else trial_table_url
-                ),
+                "dataset_revision": DEFAULT_DATASET_REVISION,
+                "source": _SAFE_ARTIFACT_LABELS["all_trials_normalized.csv"],
+                "source_kind": "local_csv" if dataset_csv is not None else "remote_hf_pinned_csv",
                 "trial_count": len(trials),
                 "command_cell_count": len(command_cells),
                 "release_count": len(releases),
@@ -546,7 +558,7 @@ def _build_summary(
             ],
             "dimos": {
                 "role": "host_owned_runtime_and_memory_bridge",
-                "mode": "shadow_replay_no_execution",
+                "mode": _DIMOS_SHADOW_MODE,
                 "live_execution_allowed": False,
                 "required_live_skill": "bounded_sport_move_then_stop",
             },
@@ -603,7 +615,7 @@ def _build_dimos_bridge_plan(*, summary: JSONDict, decisions: list[JSONDict]) ->
             "run_id": summary["run_id"],
             "runtime": {
                 "name": "DimOS",
-                "mode": "shadow_replay_no_execution",
+                "mode": _DIMOS_SHADOW_MODE,
                 "imports_dimos": False,
                 "hardware_commands_sent": False,
             },
@@ -651,7 +663,7 @@ def _build_decision_trace(
         },
         "host_runtime": {
             "name": "DimOS shadow bridge",
-            "mode": "offline_shadow_replay_no_execution",
+            "mode": _DIMOS_SHADOW_MODE,
             "version": CODE_REF,
         },
         "task": {
@@ -664,7 +676,7 @@ def _build_decision_trace(
             "dataset_id": DEFAULT_DATASET_ID,
             "trial_count": summary["dataset"]["trial_count"],
             "command_cell_count": summary["dataset"]["command_cell_count"],
-            "dimos_mode": "shadow_replay_no_execution",
+            "dimos_mode": _DIMOS_SHADOW_MODE,
         },
         "goal": {
             "type": "target_body_motion",
@@ -779,7 +791,7 @@ def _build_decision_trace(
         "interop": {
             "dimos": {
                 "role": "host_owned_runtime_and_memory_bridge",
-                "mode": "shadow_replay_no_execution",
+                "mode": _DIMOS_SHADOW_MODE,
                 "required_live_skill": "bounded_sport_move_then_stop",
             },
             "wmcp": {
@@ -1056,6 +1068,35 @@ def _command_cell_id(command: tuple[float, float, float]) -> str:
 
 def _slug_text(value: str) -> str:
     return "".join(char if char.isalnum() else "-" for char in value.lower()).strip("-")
+
+
+def _safe_target_id(value: str) -> str:
+    raw = value.strip()
+    if not raw or raw in {".", ".."} or "/" in raw or "\\" in raw:
+        raise WorldStateError("Go2 world-model MPC target_id must be a safe file-name segment.")
+    slug = _slug_text(raw)
+    if not slug or slug in {".", ".."}:
+        raise WorldStateError("Go2 world-model MPC target_id must contain safe characters.")
+    return slug
+
+
+def _decision_trace_filename(target_id: str) -> str:
+    return f"decision-trace-go2-world-model-mpc-{_safe_target_id(target_id)}.json"
+
+
+def _validate_trial_table_url(trial_table_url: str) -> str:
+    safe_url = validate_remote_url(
+        trial_table_url,
+        provider_name="go2-world-model-mpc",
+        url_name="trial_table_url",
+    )
+    host = (urlparse(safe_url).hostname or "").strip().lower()
+    if host not in _TRIAL_TABLE_ALLOWED_HOSTS:
+        raise ProviderError(
+            "Provider 'go2-world-model-mpc' trial_table_url must use the public "
+            "Hugging Face dataset host."
+        )
+    return safe_url
 
 
 def _float(row: Mapping[str, object], key: str) -> float:

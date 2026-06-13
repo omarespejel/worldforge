@@ -1,10 +1,11 @@
 # Go2 World-Model MPC + DimOS Shadow Bridge
 
 Run a checkout-safe one-step MPC demo over the public
-`espejelomar/go2-air-controlbench-v1` dataset. The demo fits a transparent
-deadband-aware command-outcome world model, ranks bounded Unitree Sport Move
-candidate commands against target motions, and writes a DimOS shadow-bridge plan
-plus validated DecisionTrace artifacts.
+`espejelomar/go2-air-controlbench-v1` dataset at pinned revision
+`bb80a77c63f0b502267e5500fef83e65535ced5b`. The demo fits a transparent
+deadband-aware command-outcome world model, ranks bounded Unitree Sport Move candidate commands
+against target motions, and writes a DimOS shadow-bridge plan plus validated DecisionTrace
+artifacts.
 
 This example does not import DimOS, connect to a robot, start a simulator, or send
 hardware commands. DimOS is represented as the host-owned runtime and memory
@@ -24,6 +25,10 @@ uv run python examples/go2-world-model-mpc-dimos/run.py \
   --dataset-csv <path-to-all_trials_normalized.csv> \
   --out .worldforge/go2-world-model-mpc-dimos
 ```
+
+The default remote fetch is limited to the public Hugging Face dataset host, capped to the expected
+CSV size, and redacted from emitted artifacts. For completely offline runs, pass the local
+`all_trials_normalized.csv` file from the same pinned dataset revision.
 
 Expected success signal:
 
