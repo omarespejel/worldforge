@@ -18,6 +18,7 @@ def test_example_index_metadata_is_task_grouped() -> None:
         "Policy plus score planning",
         "Robot decision traces",
         "Robot decision traces",
+        "Robot decision traces",
         "Batch evaluation host",
         "Robotics operator host",
         "Optional runtime smoke",

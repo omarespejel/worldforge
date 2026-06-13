@@ -94,6 +94,11 @@ releases may still include breaking changes when the public API needs to tighten
   `optimizer="cem"`, candidate counts, and per-iteration score/cost diagnostics in plan
   metadata, and leaves tensor encoding, environment stepping, robot execution, optional ML
   runtimes, and policy warm-start outside the base package.
+- Added `worldforge-demo-go2-world-model-mpc`, a checkout-safe Go2 ControlBench command-selection
+  demo that fits a transparent deadband-aware command-outcome world model over the public
+  `espejelomar/go2-air-controlbench-v1` normalized trial table, ranks bounded Sport Move
+  candidates, and emits a DimOS shadow-bridge plan plus validated DecisionTrace artifacts without
+  importing DimOS, connecting to a robot, or sending live hardware commands.
 - Added a non-interactive TensorBoard launcher CLI:
   `worldforge-open-tensorboard --logdir <path> [--probe] [--no-browser]
   [--keep-running] [--ready-timeout 60] [--poll-interval 0.5]`. Wraps the

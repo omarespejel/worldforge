@@ -105,6 +105,7 @@ checkpoint inference.
 | --- | --- | --- |
 | `so101-replay-trace` | `uv run worldforge-demo-so101-replay-trace` | Scores deterministic SO-101 pick-and-place candidates and emits a reusable decision trace without LeRobot, torch, DimOS, or hardware. |
 | `go2-controlbench-decisiontrace` | `uv run python examples/go2-controlbench-decisiontrace/run.py` | Replays a public Go2 Air ControlBench trace, reranks candidate commands through `score`, and reports measured native-odom regret without DimOS, Unitree SDKs, Hugging Face downloads, or hardware. |
+| `go2-world-model-mpc-dimos` | `uv run worldforge-demo-go2-world-model-mpc` | Fits a transparent Go2 command-outcome world model over the public ControlBench table, ranks bounded Sport Move candidates, and emits a DimOS shadow-bridge plan plus DecisionTrace artifacts without importing DimOS or controlling hardware. |
 
 The SO-101 replay trace records `observation -> goal -> candidate_actions -> candidate_scores ->
 selected_action -> outcome -> counterfactuals`. It is a checkout-safe replay fixture shaped after
@@ -115,6 +116,19 @@ candidate Unitree sport-mode commands, predicted-error scores, the score-selecte
 counterfactual measured outcomes, and regret against the best measured command. It uses a bundled
 copy of a public `espejelomar/go2-air-controlbench-v1` trace; source outcomes are native Go2
 odometry means, not mocap-grade ground truth or live-robot execution by the demo.
+
+The Go2 world-model MPC plus DimOS shadow bridge demo reads the public
+`espejelomar/go2-air-controlbench-v1` normalized trial table at pinned revision
+`bb80a77c63f0b502267e5500fef83e65535ced5b`, or an operator-supplied local copy from the same
+revision. It writes `world-model-mpc-summary.json`, `world-model-mpc-report.md`,
+`dimos-shadow-bridge-plan.json`, and one validated DecisionTrace per target under
+`.worldforge/go2-world-model-mpc-dimos/`. DimOS remains a host-owned runtime adapter in shadow
+mode; live execution would require a separate bounded Sport Move skill, StopMove gate, operator
+approval, and telemetry capture. The default remote CSV fetch is Hugging Face-only, size-limited,
+and redacted from emitted artifacts. First triage step: rerun with a local
+`--dataset-csv all_trials_normalized.csv` from revision
+`bb80a77c63f0b502267e5500fef83e65535ced5b`, then confirm the summary still reports
+`shadow_replay_no_execution` and `live_execution_allowed=false`.
 
 ## Service Host Reference
 
