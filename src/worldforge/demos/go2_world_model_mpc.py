@@ -1192,9 +1192,7 @@ def validate_decision_trace(payload: object, *, name: str) -> JSONDict:
     if claim_boundary.get("hardware_executed") is not True:
         raise WorldForgeError(f"{name}.claim_boundary.hardware_executed must be true.")
     if claim_boundary.get("current_run_hardware_executed") is not False:
-        raise WorldForgeError(
-            f"{name}.claim_boundary.current_run_hardware_executed must be false."
-        )
+        raise WorldForgeError(f"{name}.claim_boundary.current_run_hardware_executed must be false.")
     return trace
 
 
