@@ -121,7 +121,7 @@ def run_go2_world_model_mpc(
     trials = load_controlbench_trials(dataset_csv=dataset_csv, trial_table_url=trial_table_url)
     command_cells = _command_cells_from_trials(trials)
     world_model = _fit_deadband_world_model(trials)
-    safe_targets = [(_safe_target_id(target_id), target) for target_id, target in targets]
+    safe_targets = _safe_targets(targets)
     decisions = [
         _rank_candidates(
             target_id=target_id,
@@ -344,15 +344,25 @@ def _read_csv_rows(*, dataset_csv: Path | None, trial_table_url: str) -> list[di
     try:
         safe_url = _validate_trial_table_url(trial_table_url)
         with urlopen(safe_url, timeout=20) as response:
+            final_url = getattr(response, "geturl", lambda: safe_url)()
+            if final_url != safe_url:
+                _validate_trial_table_url(final_url)
             raw_payload = response.read(_MAX_TRIAL_TABLE_BYTES + 1)
         if len(raw_payload) > _MAX_TRIAL_TABLE_BYTES:
             raise WorldForgeError("Go2 world-model MPC dataset CSV exceeds the download limit.")
         payload = raw_payload.decode("utf-8")
-    except (ProviderError, HTTPError, URLError, TimeoutError, UnicodeDecodeError) as exc:
+    except ProviderError as exc:
+        raise WorldForgeError(
+            "Go2 world-model MPC rejected an unsafe public dataset CSV URL."
+        ) from exc
+    except (HTTPError, URLError, TimeoutError, UnicodeDecodeError) as exc:
         raise WorldForgeError(
             "Go2 world-model MPC could not fetch the public dataset CSV."
         ) from exc
-    return [dict(row) for row in csv.DictReader(io.StringIO(payload))]
+    try:
+        return [dict(row) for row in csv.DictReader(io.StringIO(payload))]
+    except csv.Error as exc:
+        raise WorldStateError("Go2 world-model MPC remote CSV payload is malformed.") from exc
 
 
 def _command_cells_from_trials(trials: list[_Trial]) -> list[_CommandCell]:
@@ -1077,6 +1087,28 @@ def _safe_target_id(value: str) -> str:
     if not slug or slug in {".", ".."}:
         raise WorldStateError("Go2 world-model MPC target_id must contain safe characters.")
     return slug
+
+
+def _safe_targets(
+    targets: Sequence[tuple[str, tuple[float, float, float]]],
+) -> list[tuple[str, tuple[float, float, float]]]:
+    safe_by_id: dict[str, str] = {}
+    normalized: list[tuple[str, tuple[float, float, float]]] = []
+    collisions: list[str] = []
+    for target_id, target in targets:
+        safe_id = _safe_target_id(target_id)
+        previous = safe_by_id.get(safe_id)
+        if previous is not None:
+            collisions.append(f"{previous!r} and {target_id!r} -> {safe_id!r}")
+        else:
+            safe_by_id[safe_id] = target_id
+        normalized.append((safe_id, target))
+    if collisions:
+        raise WorldStateError(
+            "Go2 world-model MPC target_id values collide after normalization: "
+            + "; ".join(collisions)
+        )
+    return normalized
 
 
 def _decision_trace_filename(target_id: str) -> str:

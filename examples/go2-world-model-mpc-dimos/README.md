@@ -38,6 +38,11 @@ Expected success signal:
 - One `decision-trace-go2-world-model-mpc-*.json` file exists per target and
   validates as DecisionTrace v1.
 
+First triage step: if the remote fetch fails, download the pinned dataset revision
+`bb80a77c63f0b502267e5500fef83e65535ced5b`, pass its `all_trials_normalized.csv` with
+`--dataset-csv`, and confirm the output still reports `shadow_replay_no_execution` with
+`live_execution_allowed=false`.
+
 ## Boundary
 
 This is an offline ControlBench decision demo. It proves that WorldForge can use

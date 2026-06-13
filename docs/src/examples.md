@@ -125,7 +125,10 @@ revision. It writes `world-model-mpc-summary.json`, `world-model-mpc-report.md`,
 `.worldforge/go2-world-model-mpc-dimos/`. DimOS remains a host-owned runtime adapter in shadow
 mode; live execution would require a separate bounded Sport Move skill, StopMove gate, operator
 approval, and telemetry capture. The default remote CSV fetch is Hugging Face-only, size-limited,
-and redacted from emitted artifacts.
+and redacted from emitted artifacts. First triage step: rerun with a local
+`--dataset-csv all_trials_normalized.csv` from revision
+`bb80a77c63f0b502267e5500fef83e65535ced5b`, then confirm the summary still reports
+`shadow_replay_no_execution` and `live_execution_allowed=false`.
 
 ## Service Host Reference
 

@@ -76,7 +76,9 @@ world model, ranks bounded Sport Move candidates for target body motions, and em
 DimOS is represented as a host-owned shadow runtime and memory bridge; the example does not import
 DimOS, connect to a robot, or send live hardware commands. The default remote CSV fetch is limited
 to the public Hugging Face dataset host, capped to the expected CSV size, and redacted from emitted
-artifacts.
+artifacts. First triage step: rerun with a local `--dataset-csv all_trials_normalized.csv` from
+revision `bb80a77c63f0b502267e5500fef83e65535ced5b`, then confirm the summary still reports
+`shadow_replay_no_execution` and `live_execution_allowed=false`.
 
 ## Service Host Reference
 
