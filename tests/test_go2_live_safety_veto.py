@@ -6,13 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from worldforge.decision_trace import validate_decision_trace
 from worldforge.demos.go2_live_safety_veto import (
     ObstacleEvidence,
     main,
     run_go2_live_safety_veto,
     run_go2_live_safety_veto_demo_pair,
     run_go2_live_safety_veto_workflow,
+    validate_decision_trace,
 )
 
 

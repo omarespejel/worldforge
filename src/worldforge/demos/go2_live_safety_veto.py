@@ -20,26 +20,29 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from worldforge.artifact_io import write_json_artifact
-from worldforge.decision_trace import (
-    DECISION_TRACE_ARTIFACT_KIND,
-    DECISION_TRACE_SCHEMA_VERSION,
-    decision_trace_digest,
-    validate_decision_trace,
-)
 from worldforge.demos.go2_world_model_mpc import (
+    DECISION_TRACE_SCHEMA_VERSION,
     DEFAULT_DATASET_ID,
     DEFAULT_TRIAL_TABLE_URL,
+    _dataset_metadata,
     _DeadbandWorldModel,
+    _finite_number,
     _fit_deadband_world_model,
+    _json_list,
+    _json_object,
     _outcome_distance,
+    _positive_int,
+    _require_fields,
     _round_json_floats,
+    decision_trace_digest,
     load_controlbench_trials,
 )
-from worldforge.models import JSONDict, WorldStateError
+from worldforge.models import JSONDict, WorldForgeError, WorldStateError
 
 DEFAULT_OUTPUT_DIR = Path(".worldforge/go2-live-safety-veto")
 RUN_ID = "go2-live-safety-veto-shadow"
 CODE_REF = "feat/go2-live-safety-veto"
+DECISION_TRACE_ARTIFACT_KIND = "worldforge.go2_live_safety_veto_decision_trace"
 CLI_DESCRIPTION = (
     "Run a checkout-safe Go2 live safety-veto shadow demo and emit DimOS bridge "
     "plus DecisionTrace artifacts."
@@ -586,18 +589,14 @@ def _build_summary(
         if proposed.rejection_reasons
         else "forward_request_authorized_in_shadow"
     )
+    dataset_metadata = _dataset_metadata(dataset_csv=dataset_csv, trial_table_url=trial_table_url)
     return _round_json_floats(
         {
             "schema_version": 1,
             "artifact_kind": "worldforge.go2_live_safety_veto_summary",
             "run_id": RUN_ID,
             "dataset": {
-                "dataset_id": DEFAULT_DATASET_ID,
-                "source": (
-                    "<dataset>/tables/all_trials_normalized.csv"
-                    if dataset_csv is not None
-                    else trial_table_url
-                ),
+                **dataset_metadata,
                 "trial_count": trial_count,
                 "outcome_source": "native_go2_odom_signed_body_projection_public_preview",
             },
@@ -800,6 +799,7 @@ def _build_decision_trace(
             for candidate in candidates
             if candidate.candidate_id != selected.candidate_id
         ],
+        "candidate_outcomes": [_candidate_outcome(candidate) for candidate in candidates],
         "baseline": {
             "candidate_id": "forward_50cm",
             "score": proposed.total_score,
@@ -868,6 +868,86 @@ def _build_decision_trace(
     )
 
 
+def validate_decision_trace(
+    payload: object,
+    *,
+    name: str = "Go2 live safety-veto DecisionTrace",
+) -> JSONDict:
+    """Validate the Go2 live safety-veto DecisionTrace artifact shape."""
+
+    trace = _json_object(payload, name)
+    _require_fields(
+        trace,
+        (
+            "schema_version",
+            "artifact_kind",
+            "trace_id",
+            "run_id",
+            "host_runtime",
+            "observation",
+            "goal",
+            "candidate_actions",
+            "scores",
+            "selected_action",
+            "counterfactuals",
+            "candidate_outcomes",
+            "outcome",
+            "planner_diagnostics",
+            "claim_boundary",
+            "interop",
+        ),
+        name,
+    )
+    if trace["schema_version"] != DECISION_TRACE_SCHEMA_VERSION:
+        raise WorldForgeError(f"{name}.schema_version must be {DECISION_TRACE_SCHEMA_VERSION}.")
+    if trace["artifact_kind"] != DECISION_TRACE_ARTIFACT_KIND:
+        raise WorldForgeError(f"{name}.artifact_kind must be {DECISION_TRACE_ARTIFACT_KIND}.")
+
+    host_runtime = _json_object(trace["host_runtime"], f"{name}.host_runtime")
+    if host_runtime.get("mode") != "shadow_no_execution":
+        raise WorldForgeError(f"{name}.host_runtime.mode must be shadow_no_execution.")
+
+    candidates = _json_list(trace["candidate_actions"], f"{name}.candidate_actions")
+    scores = _json_list(trace["scores"], f"{name}.scores")
+    outcomes = _json_list(trace["candidate_outcomes"], f"{name}.candidate_outcomes")
+    if not candidates or len(candidates) != len(scores) or len(candidates) != len(outcomes):
+        raise WorldForgeError(
+            f"{name} candidate_actions, scores, and candidate_outcomes must align."
+        )
+
+    candidate_ids = {
+        str(_json_object(candidate, f"{name}.candidate_actions[{index}]")["candidate_id"])
+        for index, candidate in enumerate(candidates)
+    }
+    selected = _json_object(trace["selected_action"], f"{name}.selected_action")
+    selected_id = str(selected.get("candidate_id", ""))
+    if selected_id not in candidate_ids:
+        raise WorldForgeError(f"{name}.selected_action.candidate_id must match a candidate.")
+
+    for index, score in enumerate(scores):
+        score_record = _json_object(score, f"{name}.scores[{index}]")
+        if str(score_record.get("candidate_id", "")) not in candidate_ids:
+            raise WorldForgeError(f"{name}.scores[{index}].candidate_id must match a candidate.")
+        _finite_number(score_record.get("score"), f"{name}.scores[{index}].score")
+        _positive_int(score_record.get("rank"), f"{name}.scores[{index}].rank")
+
+    for index, outcome in enumerate(outcomes):
+        outcome_record = _json_object(outcome, f"{name}.candidate_outcomes[{index}]")
+        if str(outcome_record.get("candidate_id", "")) not in candidate_ids:
+            raise WorldForgeError(
+                f"{name}.candidate_outcomes[{index}].candidate_id must match a candidate."
+            )
+
+    claim_boundary = _json_object(trace["claim_boundary"], f"{name}.claim_boundary")
+    if claim_boundary.get("hardware_executed") is not False:
+        raise WorldForgeError(f"{name}.claim_boundary.hardware_executed must be false.")
+
+    outcome = _json_object(trace["outcome"], f"{name}.outcome")
+    if outcome.get("kind") != "analytic":
+        raise WorldForgeError(f"{name}.outcome.kind must be analytic.")
+    return trace
+
+
 def _authorization_status(
     *,
     selected: _Candidate,
@@ -934,6 +1014,31 @@ def _candidate_action(candidate: _Candidate) -> JSONDict:
         },
         "execution_authorized": candidate.authorized_for_execution,
         "rejection_reasons": list(candidate.rejection_reasons),
+    }
+
+
+def _candidate_outcome(candidate: _Candidate) -> JSONDict:
+    return {
+        "candidate_id": candidate.candidate_id,
+        "kind": "analytic",
+        "status": (
+            "shadow_authorized"
+            if candidate.authorized_for_execution
+            else "shadow_rejected_by_safety_gate"
+        ),
+        "outcome_source": "deadband_affine_command_outcome_shadow_prediction",
+        "action_executed": False,
+        "predicted": {
+            "dx_m": candidate.predicted[0],
+            "dy_m": candidate.predicted[1],
+            "dyaw_rad": candidate.predicted[2],
+        },
+        "metrics": {
+            "target_error": candidate.target_error,
+            "risk_cost": candidate.risk_cost,
+            "authorized_for_execution": candidate.authorized_for_execution,
+            "rejection_reasons": list(candidate.rejection_reasons),
+        },
     }
 
 
