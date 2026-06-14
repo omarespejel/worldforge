@@ -232,11 +232,7 @@ def run_go2_moving_safety_intervention(
         )
         trace_paths = [
             write_json_artifact(
-                output_dir
-                / (
-                    "decision-trace-go2-moving-safety-"
-                    f"{index:02d}-{_safe_trace_id(str(trace['trace_id']))}.json"
-                ),
+                output_dir / f"decision-trace-go2-moving-safety-{index:02d}.json",
                 trace,
             )
             for index, trace in enumerate(traces)
@@ -359,12 +355,33 @@ def render_go2_moving_safety_report(summary: JSONDict) -> str:
 
 
 def _validate_config(config: MovingSafetyConfig) -> None:
-    if config.vx_mps <= 0.0 or config.vx_mps > 0.10:
-        raise WorldStateError("Go2 moving safety demo vx_mps must be in (0, 0.10].")
-    if config.chunk_duration_s <= 0.0 or config.chunk_duration_s > 0.15:
-        raise WorldStateError("Go2 moving safety demo chunk_duration_s must be in (0, 0.15].")
-    if config.robot_half_extent_m <= 0.0 or config.obstacle_margin_m <= 0.0:
-        raise WorldStateError("Go2 moving safety demo footprint and margin must be positive.")
+    _require_finite_positive_config("vx_mps", config.vx_mps, max_value=0.10)
+    _require_finite_config("vy_mps", config.vy_mps)
+    _require_finite_config("wz_radps", config.wz_radps)
+    _require_finite_positive_config(
+        "chunk_duration_s",
+        config.chunk_duration_s,
+        max_value=0.15,
+    )
+    _require_finite_positive_config("robot_half_extent_m", config.robot_half_extent_m)
+    _require_finite_positive_config("obstacle_margin_m", config.obstacle_margin_m)
+    _require_finite_positive_config("decision_budget_ms", config.decision_budget_ms)
+    _require_finite_positive_config("command_rtt_ms", config.command_rtt_ms)
+    _require_finite_positive_config("fallback_decel_time_s", config.fallback_decel_time_s)
+    _require_finite_positive_config(
+        "fallback_decel_distance_m",
+        config.fallback_decel_distance_m,
+    )
+    _require_finite_positive_config(
+        "veto_clearance_hysteresis_m",
+        config.veto_clearance_hysteresis_m,
+    )
+    if (
+        isinstance(config.resume_clear_frames_required, bool)
+        or not isinstance(config.resume_clear_frames_required, int)
+        or config.resume_clear_frames_required < 1
+    ):
+        raise _config_error("resume_clear_frames_required", "must be an integer >= 1")
 
 
 def _default_observations(mode: Mode) -> list[MovingObservation]:
@@ -476,7 +493,7 @@ def _decide_step(
         expected_step_id=observation.step_id,
         expected_command=forward_command,
     )
-    hardware_commands_sent = bool(receipt_verification["verified"])
+    receipt_verified_for_forward = bool(receipt_verification["verified"])
     forward_integral = (
         config.vx_mps * config.chunk_duration_s,
         config.vy_mps * config.chunk_duration_s,
@@ -495,7 +512,7 @@ def _decide_step(
         budget=budget,
         config=config,
         stop_proof=stop_proof,
-        hardware_commands_sent=hardware_commands_sent,
+        hardware_commands_sent=receipt_verified_for_forward,
     )
     forward_authorized = not forward_reasons
     forward_score = 0.0 if forward_authorized else 100.0 + len(forward_reasons)
@@ -525,6 +542,12 @@ def _decide_step(
         ),
     ]
     ranked = sorted(candidates, key=lambda candidate: (candidate.score, candidate.candidate_id))
+    receipt_verification = _receipt_verification_for_selected_action(
+        receipt_verification,
+        selected=ranked[0],
+        expected_executed_candidate_id="continue_forward_chunk",
+    )
+    hardware_commands_sent = bool(receipt_verification["verified"])
     return _StepDecision(
         observation=observation,
         candidates=ranked,
@@ -650,7 +673,7 @@ def _safety_budget(
             "obstacle_margin_m": config.obstacle_margin_m,
             "model_rmse_dx_m": abs(model_rmse_dx_m),
             "required_clearance_m": required,
-            "stop_proof_measurement_available": stop_proof.available,
+            "stop_proof_measurement_available": _stop_proof_measurement_available(stop_proof),
             "model_prediction_scope": "command_displacement_only",
             "external_gt": "pending",
         }
@@ -793,7 +816,10 @@ def _build_bridge_plan(
             },
             "hard_gates": {
                 "stop_proof_required_before_live_intervention": True,
-                "stop_proof_available": stop_proof.available,
+                "stop_proof_available": _stop_proof_covers_config_speed(
+                    stop_proof=stop_proof,
+                    config=config,
+                ),
                 "stopping_distance_measurement_required": True,
                 "live_forward_clearance_wiring_required": True,
                 "rage_mode_disabled_required": True,
@@ -1539,7 +1565,8 @@ def _outcome_status(*, selected: _Candidate, decision: _StepDecision) -> str:
 
 def _stop_proof_json(stop_proof: StopProofMeasurement) -> JSONDict:
     return {
-        "available": stop_proof.available,
+        "provided": stop_proof.available,
+        "available": _stop_proof_measurement_available(stop_proof),
         "stop_time_s": _positive_measurement_or_none(stop_proof.stop_time_s),
         "stop_distance_m": _positive_measurement_or_none(stop_proof.stop_distance_m),
         "measured_speed_mps": _positive_measurement_or_none(stop_proof.measured_speed_mps),
@@ -1595,18 +1622,73 @@ def _safe_trace_id(value: str) -> str:
     return safe
 
 
+def _require_finite_config(name: str, value: float) -> None:
+    if not math.isfinite(value):
+        raise _config_error(name, "must be finite")
+
+
+def _require_finite_positive_config(
+    name: str,
+    value: float,
+    *,
+    max_value: float | None = None,
+) -> None:
+    if not math.isfinite(value) or value <= 0.0:
+        raise _config_error(name, "must be finite and positive")
+    if max_value is not None and value > max_value:
+        raise _config_error(name, f"must be <= {max_value}")
+
+
+def _config_error(name: str, message: str) -> WorldStateError:
+    return WorldStateError(
+        "Go2 moving safety config owner=worldforge-demo-go2-moving-safety-intervention "
+        f"triage=check MovingSafetyConfig.{name}: {name} {message}."
+    )
+
+
+def _receipt_verification_for_selected_action(
+    receipt_verification: JSONDict,
+    *,
+    selected: _Candidate,
+    expected_executed_candidate_id: str,
+) -> JSONDict:
+    if receipt_verification.get("verified") is not True:
+        return receipt_verification
+    if selected.candidate_id == expected_executed_candidate_id:
+        updated = dict(receipt_verification)
+        updated["selected_candidate_id"] = selected.candidate_id
+        updated["receipt_command_matches_selected_action"] = True
+        return round_json_floats(updated)
+    updated = dict(receipt_verification)
+    updated.update(
+        {
+            "verified": False,
+            "raw_receipt_verified": True,
+            "failure_reason": "receipt_command_does_not_match_selected_action",
+            "selected_candidate_id": selected.candidate_id,
+            "expected_executed_candidate_id": expected_executed_candidate_id,
+            "receipt_command_matches_selected_action": False,
+        }
+    )
+    return round_json_floats(updated)
+
+
+def _stop_proof_measurement_available(stop_proof: StopProofMeasurement) -> bool:
+    return (
+        stop_proof.available
+        and _finite_positive(stop_proof.stop_time_s)
+        and _finite_positive(stop_proof.stop_distance_m)
+        and _positive_measurement_or_none(stop_proof.measured_speed_mps) is not None
+    )
+
+
 def _stop_proof_covers_config_speed(
     *, stop_proof: StopProofMeasurement, config: MovingSafetyConfig
 ) -> bool:
-    if not stop_proof.available:
-        return False
-    if not _finite_positive(stop_proof.stop_time_s) or not _finite_positive(
-        stop_proof.stop_distance_m
-    ):
+    if not _stop_proof_measurement_available(stop_proof):
         return False
     measured_speed_mps = _positive_measurement_or_none(stop_proof.measured_speed_mps)
-    if measured_speed_mps is None:
-        return False
+    assert measured_speed_mps is not None
     return measured_speed_mps + 1e-9 >= config.vx_mps
 
 
@@ -1656,7 +1738,11 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     stop_proof = StopProofMeasurement(
-        available=args.stop_proof_distance_m is not None and args.stop_proof_time_s is not None,
+        available=(
+            _finite_positive(args.stop_proof_distance_m)
+            and _finite_positive(args.stop_proof_time_s)
+            and _finite_positive(args.vx_mps)
+        ),
         stop_distance_m=args.stop_proof_distance_m,
         stop_time_s=args.stop_proof_time_s,
         measured_speed_mps=args.vx_mps
