@@ -25,25 +25,28 @@ from pathlib import Path
 from typing import Literal
 
 from worldforge.artifact_io import write_json_artifact
-from worldforge.decision_trace import (
-    DECISION_TRACE_ARTIFACT_KIND,
-    DECISION_TRACE_SCHEMA_VERSION,
-    decision_trace_digest,
-    validate_decision_trace,
-)
 from worldforge.demos.go2_world_model_mpc import (
+    DECISION_TRACE_SCHEMA_VERSION,
     DEFAULT_DATASET_ID,
     DEFAULT_TRIAL_TABLE_URL,
+    _dataset_metadata,
     _DeadbandWorldModel,
+    _finite_number,
     _fit_deadband_world_model,
+    _json_list,
+    _json_object,
+    _positive_int,
+    _require_fields,
     _round_json_floats,
+    decision_trace_digest,
     load_controlbench_trials,
 )
-from worldforge.models import JSONDict, WorldStateError
+from worldforge.models import JSONDict, WorldForgeError, WorldStateError
 
 DEFAULT_OUTPUT_DIR = Path(".worldforge/go2-moving-safety-intervention")
 RUN_ID = "go2-moving-safety-intervention"
 CODE_REF = "feat/go2-moving-safety-intervention"
+DECISION_TRACE_ARTIFACT_KIND = "worldforge.go2_moving_safety_intervention_decision_trace"
 CLI_DESCRIPTION = (
     "Run a checkout-safe Go2 moving safety-intervention plan and emit chained "
     "DecisionTrace artifacts for DimOS-hosted execution."
@@ -648,6 +651,7 @@ def _build_summary(
     any_real_measured = any(
         _decision_outcome_kind(decision) == "real_measured" for decision in decisions
     )
+    dataset_metadata = _dataset_metadata(dataset_csv=dataset_csv, trial_table_url=trial_table_url)
     return _round_json_floats(
         {
             "schema_version": 1,
@@ -655,12 +659,7 @@ def _build_summary(
             "run_id": RUN_ID,
             "mode": mode,
             "dataset": {
-                "dataset_id": DEFAULT_DATASET_ID,
-                "source": (
-                    "<dataset>/tables/all_trials_normalized.csv"
-                    if dataset_csv is not None
-                    else trial_table_url
-                ),
+                **dataset_metadata,
                 "trial_count": trial_count,
                 "outcome_source": "native_go2_odom_signed_body_projection_public_preview",
             },
@@ -917,6 +916,9 @@ def _build_decision_trace(
             for candidate in decision.candidates
             if candidate.candidate_id != selected.candidate_id
         ],
+        "candidate_outcomes": [
+            _candidate_outcome(candidate, decision=decision) for candidate in decision.candidates
+        ],
         "baseline": {
             "candidate_id": "continue_forward_chunk",
             "score": next(
@@ -1009,6 +1011,111 @@ def _build_decision_trace(
     return validate_decision_trace(_round_json_floats(trace))
 
 
+def validate_decision_trace(
+    payload: object,
+    *,
+    name: str = "Go2 moving safety-intervention DecisionTrace",
+) -> JSONDict:
+    """Validate the Go2 moving safety-intervention DecisionTrace artifact shape."""
+
+    trace = _json_object(payload, name)
+    _require_fields(
+        trace,
+        (
+            "schema_version",
+            "artifact_kind",
+            "trace_id",
+            "run_id",
+            "host_runtime",
+            "observation",
+            "goal",
+            "candidate_actions",
+            "scores",
+            "selected_action",
+            "counterfactuals",
+            "candidate_outcomes",
+            "outcome",
+            "planner_diagnostics",
+            "claim_boundary",
+            "interop",
+        ),
+        name,
+    )
+    if trace["schema_version"] != DECISION_TRACE_SCHEMA_VERSION:
+        raise WorldForgeError(f"{name}.schema_version must be {DECISION_TRACE_SCHEMA_VERSION}.")
+    if trace["artifact_kind"] != DECISION_TRACE_ARTIFACT_KIND:
+        raise WorldForgeError(f"{name}.artifact_kind must be {DECISION_TRACE_ARTIFACT_KIND}.")
+
+    candidates = _json_list(trace["candidate_actions"], f"{name}.candidate_actions")
+    scores = _json_list(trace["scores"], f"{name}.scores")
+    outcomes = _json_list(trace["candidate_outcomes"], f"{name}.candidate_outcomes")
+    if not candidates or len(candidates) != len(scores) or len(candidates) != len(outcomes):
+        raise WorldForgeError(
+            f"{name} candidate_actions, scores, and candidate_outcomes must align."
+        )
+
+    candidate_ids = {
+        str(_json_object(candidate, f"{name}.candidate_actions[{index}]")["candidate_id"])
+        for index, candidate in enumerate(candidates)
+    }
+    selected = _json_object(trace["selected_action"], f"{name}.selected_action")
+    selected_id = str(selected.get("candidate_id", ""))
+    if selected_id not in candidate_ids:
+        raise WorldForgeError(f"{name}.selected_action.candidate_id must match a candidate.")
+
+    for index, score in enumerate(scores):
+        score_record = _json_object(score, f"{name}.scores[{index}]")
+        if str(score_record.get("candidate_id", "")) not in candidate_ids:
+            raise WorldForgeError(f"{name}.scores[{index}].candidate_id must match a candidate.")
+        _finite_number(score_record.get("score"), f"{name}.scores[{index}].score")
+        _positive_int(score_record.get("rank"), f"{name}.scores[{index}].rank")
+
+    for index, outcome in enumerate(outcomes):
+        outcome_record = _json_object(outcome, f"{name}.candidate_outcomes[{index}]")
+        if str(outcome_record.get("candidate_id", "")) not in candidate_ids:
+            raise WorldForgeError(
+                f"{name}.candidate_outcomes[{index}].candidate_id must match a candidate."
+            )
+
+    outcome = _json_object(trace["outcome"], f"{name}.outcome")
+    metrics = _json_object(outcome["metrics"], f"{name}.outcome.metrics")
+    claim_boundary = _json_object(trace["claim_boundary"], f"{name}.claim_boundary")
+    hardware_executed = claim_boundary.get("hardware_executed")
+    if not isinstance(hardware_executed, bool):
+        raise WorldForgeError(f"{name}.claim_boundary.hardware_executed must be boolean.")
+    if metrics.get("hardware_commands_sent") is not hardware_executed:
+        raise WorldForgeError(
+            f"{name}.outcome.metrics.hardware_commands_sent must match claim boundary."
+        )
+    if hardware_executed:
+        if outcome.get("kind") != "real_measured":
+            raise WorldForgeError(f"{name}.outcome.kind must be real_measured when executed.")
+        if claim_boundary.get("outcome_kind") != "real_measured":
+            raise WorldForgeError(
+                f"{name}.claim_boundary.outcome_kind must be real_measured when executed."
+            )
+        if metrics.get("stopmove_ack") is not True:
+            raise WorldForgeError(f"{name}.outcome.metrics.stopmove_ack must be true.")
+        _finite_number(
+            metrics.get("measured_stop_time_s"),
+            f"{name}.outcome.metrics.measured_stop_time_s",
+        )
+        _finite_number(
+            metrics.get("measured_stop_distance_m"),
+            f"{name}.outcome.metrics.measured_stop_distance_m",
+        )
+        diagnostics = _json_object(trace["planner_diagnostics"], f"{name}.planner_diagnostics")
+        receipt = _json_object(
+            diagnostics["execution_receipt_verification"],
+            f"{name}.planner_diagnostics.execution_receipt_verification",
+        )
+        if receipt.get("verified") is not True or receipt.get("measurement_present") is not True:
+            raise WorldForgeError(f"{name}.receipt verification must prove measured execution.")
+    elif outcome.get("kind") != "analytic":
+        raise WorldForgeError(f"{name}.outcome.kind must be analytic when not executed.")
+    return trace
+
+
 def _candidate_action(candidate: _Candidate) -> JSONDict:
     vx, vy, wz, duration = candidate.command
     return {
@@ -1027,6 +1134,41 @@ def _candidate_action(candidate: _Candidate) -> JSONDict:
                 "wz": "rad/s",
                 "duration_s": "s",
             },
+        },
+    }
+
+
+def _candidate_outcome(candidate: _Candidate, *, decision: _StepDecision) -> JSONDict:
+    real_executed = decision.hardware_commands_sent and (
+        candidate.candidate_id == decision.selected.candidate_id
+    )
+    return {
+        "candidate_id": candidate.candidate_id,
+        "kind": _decision_outcome_kind(decision) if real_executed else "analytic",
+        "status": (
+            _outcome_status(selected=candidate, decision=decision)
+            if real_executed
+            else ("shadow_authorized" if candidate.authorized else "shadow_rejected_by_safety_gate")
+        ),
+        "outcome_source": _outcome_source(decision) if real_executed else "analytic_shadow",
+        "action_executed": real_executed,
+        "predicted": {
+            "dx_m": candidate.predicted[0],
+            "dy_m": candidate.predicted[1],
+            "dyaw_rad": candidate.predicted[2],
+        },
+        "metrics": {
+            "required_clearance_m": candidate.required_clearance_m,
+            "score": candidate.score,
+            "authorized": candidate.authorized,
+            "rejection_reasons": list(candidate.rejection_reasons),
+            "measured_stop_time_s": (
+                _outcome_measured_stop_time_s(decision) if real_executed else None
+            ),
+            "measured_stop_distance_m": (
+                _outcome_measured_stop_distance_m(decision) if real_executed else None
+            ),
+            "stopmove_ack": _outcome_stopmove_ack(decision) if real_executed else None,
         },
     }
 

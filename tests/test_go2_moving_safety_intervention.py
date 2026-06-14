@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from worldforge.decision_trace import validate_decision_trace
 from worldforge.demos.go2_moving_safety_intervention import (
     MovingObservation,
     MovingSafetyConfig,
@@ -15,6 +14,7 @@ from worldforge.demos.go2_moving_safety_intervention import (
     main,
     run_go2_moving_safety_intervention,
     run_go2_moving_safety_intervention_workflow,
+    validate_decision_trace,
 )
 
 _RECEIPT_HMAC_KEY = "test-only-dimos-receipt-key"
