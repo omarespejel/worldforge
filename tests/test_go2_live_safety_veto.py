@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import worldforge.demos.go2_live_safety_veto as live_veto_demo
 from worldforge.demos.go2_live_safety_veto import (
     ObstacleEvidence,
     main,
@@ -101,6 +102,35 @@ def test_go2_live_safety_veto_can_authorize_forward_in_open_space_shadow(
     assert trace["selected_action"]["candidate_id"] == "forward_50cm"
     assert trace["outcome"]["status"] == "forward_action_authorized_in_shadow"
     assert trace["outcome"]["metrics"]["hardware_commands_sent"] is False
+
+
+def test_go2_live_safety_veto_clearance_uses_requested_forward_bound(
+    tmp_path: Path,
+) -> None:
+    csv_path = _write_trials_csv(tmp_path / "all_trials_normalized.csv")
+    evidence = ObstacleEvidence(
+        source_kind="fixture_clearance_between_prediction_and_request",
+        forward_clearance_m=0.80,
+        lidar_freshness_ms=80.0,
+        costmap_freshness_ms=90.0,
+        odom_freshness_ms=70.0,
+        unknown_cells_in_forward_corridor=False,
+        stopmove_verified=True,
+    )
+
+    result = run_go2_live_safety_veto(
+        dataset_csv=csv_path,
+        output_dir=tmp_path / "out",
+        obstacle_evidence=evidence,
+    )
+
+    forward = next(
+        candidate
+        for candidate in result.summary["candidates"]
+        if candidate["candidate_id"] == "forward_50cm"
+    )
+    assert result.summary["decision"]["selected_candidate_id"] == "stop_hold"
+    assert "predicted_swept_footprint_intersects_obstacle_zone" in forward["rejection_reasons"]
 
 
 def test_go2_live_safety_veto_fails_closed_on_stale_odom(
@@ -323,6 +353,28 @@ def test_go2_live_safety_veto_demo_pair_runs_both_cases(tmp_path: Path) -> None:
     assert result.obstacle_result.decision_trace_path.is_file()
     assert result.open_space_result.decision_trace_path.is_file()
     assert result.report_path.name == "demo-pair-report.md"
+
+
+def test_go2_live_safety_veto_demo_pair_loads_controlbench_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    csv_path = _write_trials_csv(tmp_path / "all_trials_normalized.csv")
+    original_load = live_veto_demo.load_controlbench_trials
+    calls = 0
+
+    def counting_load(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        return original_load(*args, **kwargs)
+
+    monkeypatch.setattr(live_veto_demo, "load_controlbench_trials", counting_load)
+
+    run_go2_live_safety_veto_demo_pair(
+        dataset_csv=csv_path,
+        output_dir=tmp_path / "demo",
+    )
+
+    assert calls == 1
 
 
 def test_go2_live_safety_veto_cli_help_has_description(

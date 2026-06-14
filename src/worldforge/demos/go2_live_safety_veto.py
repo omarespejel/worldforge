@@ -24,18 +24,18 @@ from worldforge.demos.go2_world_model_mpc import (
     DECISION_TRACE_SCHEMA_VERSION,
     DEFAULT_DATASET_ID,
     DEFAULT_TRIAL_TABLE_URL,
-    _dataset_metadata,
-    _DeadbandWorldModel,
-    _finite_number,
-    _fit_deadband_world_model,
-    _json_list,
-    _json_object,
-    _outcome_distance,
-    _positive_int,
-    _require_fields,
-    _round_json_floats,
+    DeadbandWorldModel,
+    controlbench_dataset_metadata,
     decision_trace_digest,
+    finite_json_number,
+    fit_deadband_world_model,
+    json_list,
+    json_object,
     load_controlbench_trials,
+    outcome_distance,
+    positive_int,
+    require_json_fields,
+    round_json_floats,
 )
 from worldforge.models import JSONDict, WorldForgeError, WorldStateError
 
@@ -143,13 +143,34 @@ def run_go2_live_safety_veto(
         stopmove_verified=False,
     )
     trials = load_controlbench_trials(dataset_csv=dataset_csv, trial_table_url=trial_table_url)
-    world_model = _fit_deadband_world_model(trials)
+    world_model = fit_deadband_world_model(trials)
+    return _run_go2_live_safety_veto_prepared(
+        dataset_csv=dataset_csv,
+        trial_table_url=trial_table_url,
+        output_dir=output_dir,
+        evidence=evidence,
+        trial_count=len(trials),
+        world_model=world_model,
+    )
+
+
+def _run_go2_live_safety_veto_prepared(
+    *,
+    dataset_csv: Path | None,
+    trial_table_url: str,
+    output_dir: Path,
+    evidence: ObstacleEvidence,
+    trial_count: int,
+    world_model: DeadbandWorldModel,
+) -> Go2LiveSafetyVetoResult:
+    """Run one safety-veto case using an already loaded ControlBench model."""
+
     candidates = _score_candidates(world_model=world_model, evidence=evidence)
     selected = candidates[0]
     summary = _build_summary(
         dataset_csv=dataset_csv,
         trial_table_url=trial_table_url,
-        trial_count=len(trials),
+        trial_count=trial_count,
         world_model=world_model,
         evidence=evidence,
         candidates=candidates,
@@ -169,7 +190,9 @@ def run_go2_live_safety_veto(
         output_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         raise WorldStateError(
-            "Go2 live safety-veto output directory could not be created."
+            "Go2 live safety-veto artifact owner=worldforge-demo-go2-live-safety-veto "
+            "triage=check --out permissions and parent directory availability: "
+            "output directory could not be created."
         ) from exc
 
     try:
@@ -185,7 +208,10 @@ def run_go2_live_safety_veto(
         report_path = output_dir / "live-safety-veto-report.md"
         report_path.write_text(report, encoding="utf-8")
     except OSError as exc:
-        raise WorldStateError("Go2 live safety-veto artifact write failed.") from exc
+        raise WorldStateError(
+            "Go2 live safety-veto artifact owner=worldforge-demo-go2-live-safety-veto "
+            "triage=check --out permissions and free disk space: artifact write failed."
+        ) from exc
 
     return Go2LiveSafetyVetoResult(
         summary=summary,
@@ -209,11 +235,15 @@ def run_go2_live_safety_veto_demo_pair(
 ) -> Go2LiveSafetyVetoDemoPairResult:
     """Run the two-case demo pair: obstacle veto plus open-space control."""
 
-    obstacle_result = run_go2_live_safety_veto(
+    trials = load_controlbench_trials(dataset_csv=dataset_csv, trial_table_url=trial_table_url)
+    world_model = fit_deadband_world_model(trials)
+    trial_count = len(trials)
+
+    obstacle_result = _run_go2_live_safety_veto_prepared(
         dataset_csv=dataset_csv,
         trial_table_url=trial_table_url,
         output_dir=output_dir / "obstacle",
-        obstacle_evidence=ObstacleEvidence(
+        evidence=ObstacleEvidence(
             source_kind="demo_pair_obstacle_lidar_costmap",
             forward_clearance_m=obstacle_clearance_m,
             lidar_freshness_ms=120.0,
@@ -222,12 +252,14 @@ def run_go2_live_safety_veto_demo_pair(
             unknown_cells_in_forward_corridor=False,
             stopmove_verified=True,
         ),
+        trial_count=trial_count,
+        world_model=world_model,
     )
-    open_space_result = run_go2_live_safety_veto(
+    open_space_result = _run_go2_live_safety_veto_prepared(
         dataset_csv=dataset_csv,
         trial_table_url=trial_table_url,
         output_dir=output_dir / "open-space",
-        obstacle_evidence=ObstacleEvidence(
+        evidence=ObstacleEvidence(
             source_kind="demo_pair_open_space_lidar_costmap",
             forward_clearance_m=open_space_clearance_m,
             lidar_freshness_ms=120.0,
@@ -236,6 +268,8 @@ def run_go2_live_safety_veto_demo_pair(
             unknown_cells_in_forward_corridor=False,
             stopmove_verified=True,
         ),
+        trial_count=trial_count,
+        world_model=world_model,
     )
     cases = [
         _DemoCase(case_id="obstacle", label="obstacle veto", result=obstacle_result),
@@ -255,7 +289,10 @@ def run_go2_live_safety_veto_demo_pair(
         report_path = output_dir / "demo-pair-report.md"
         report_path.write_text(report, encoding="utf-8")
     except OSError as exc:
-        raise WorldStateError("Go2 live safety-veto demo artifact write failed.") from exc
+        raise WorldStateError(
+            "Go2 live safety-veto artifact owner=worldforge-demo-go2-live-safety-veto "
+            "triage=check --out permissions and free disk space: demo-pair artifact write failed."
+        ) from exc
 
     return Go2LiveSafetyVetoDemoPairResult(
         summary=summary,
@@ -418,7 +455,7 @@ def _build_demo_pair_summary(
     open_space_clearance_m: float,
     cases: list[_DemoCase],
 ) -> JSONDict:
-    return _round_json_floats(
+    return round_json_floats(
         {
             "schema_version": 1,
             "artifact_kind": "worldforge.go2_live_safety_veto_demo_pair_summary",
@@ -474,7 +511,7 @@ def _demo_pair_case_summary(*, case: _DemoCase, output_dir: Path) -> JSONDict:
 
 def _score_candidates(
     *,
-    world_model: _DeadbandWorldModel,
+    world_model: DeadbandWorldModel,
     evidence: ObstacleEvidence,
 ) -> list[_Candidate]:
     raw_candidates = [
@@ -502,13 +539,14 @@ def _score_candidate(
     label: str,
     action_type: str,
     command: tuple[float, float, float],
-    world_model: _DeadbandWorldModel,
+    world_model: DeadbandWorldModel,
     evidence: ObstacleEvidence,
 ) -> _Candidate:
     predicted = world_model.predict_outcome(command)
-    target_error = _outcome_distance(predicted, _PROPOSED_TARGET)
+    target_error = outcome_distance(predicted, _PROPOSED_TARGET)
     risk_cost, authorized, rejection_reasons = _risk_for_candidate(
         action_type=action_type,
+        command=command,
         predicted=predicted,
         evidence=evidence,
     )
@@ -529,6 +567,7 @@ def _score_candidate(
 def _risk_for_candidate(
     *,
     action_type: str,
+    command: tuple[float, float, float],
     predicted: tuple[float, float, float],
     evidence: ObstacleEvidence,
 ) -> tuple[float, bool, list[str]]:
@@ -552,7 +591,9 @@ def _risk_for_candidate(
         reasons.append("unknown_cells_in_forward_corridor")
         risk_cost += 5.0
     if action_type == "planner_request":
-        required_clearance = abs(predicted[0]) + 0.35
+        requested_forward_m = max(float(command[0]), 0.0)
+        predicted_forward_m = max(float(predicted[0]), 0.0)
+        required_clearance = max(requested_forward_m, predicted_forward_m) + 0.35
         forward_clearance_m = _positive_measurement_or_none(evidence.forward_clearance_m)
         if forward_clearance_m is None:
             reasons.append("missing_forward_clearance")
@@ -573,7 +614,7 @@ def _build_summary(
     dataset_csv: Path | None,
     trial_table_url: str,
     trial_count: int,
-    world_model: _DeadbandWorldModel,
+    world_model: DeadbandWorldModel,
     evidence: ObstacleEvidence,
     candidates: list[_Candidate],
     selected: _Candidate,
@@ -589,8 +630,11 @@ def _build_summary(
         if proposed.rejection_reasons
         else "forward_request_authorized_in_shadow"
     )
-    dataset_metadata = _dataset_metadata(dataset_csv=dataset_csv, trial_table_url=trial_table_url)
-    return _round_json_floats(
+    dataset_metadata = controlbench_dataset_metadata(
+        dataset_csv=dataset_csv,
+        trial_table_url=trial_table_url,
+    )
+    return round_json_floats(
         {
             "schema_version": 1,
             "artifact_kind": "worldforge.go2_live_safety_veto_summary",
@@ -657,7 +701,7 @@ def _build_bridge_plan(
     evidence: ObstacleEvidence,
     selected: _Candidate,
 ) -> JSONDict:
-    return _round_json_floats(
+    return round_json_floats(
         {
             "schema_version": 1,
             "artifact_kind": "worldforge.dimos_go2_live_safety_bridge_plan",
@@ -710,7 +754,7 @@ def _build_decision_trace(
     evidence: ObstacleEvidence,
     candidates: list[_Candidate],
     selected: _Candidate,
-    world_model: _DeadbandWorldModel,
+    world_model: DeadbandWorldModel,
 ) -> JSONDict:
     selected_score = selected.total_score
     proposed = next(
@@ -863,7 +907,7 @@ def _build_decision_trace(
         },
     }
     return validate_decision_trace(
-        _round_json_floats(trace),
+        round_json_floats(trace),
         name="Go2 live safety-veto DecisionTrace",
     )
 
@@ -875,8 +919,8 @@ def validate_decision_trace(
 ) -> JSONDict:
     """Validate the Go2 live safety-veto DecisionTrace artifact shape."""
 
-    trace = _json_object(payload, name)
-    _require_fields(
+    trace = json_object(payload, name)
+    require_json_fields(
         trace,
         (
             "schema_version",
@@ -903,46 +947,46 @@ def validate_decision_trace(
     if trace["artifact_kind"] != DECISION_TRACE_ARTIFACT_KIND:
         raise WorldForgeError(f"{name}.artifact_kind must be {DECISION_TRACE_ARTIFACT_KIND}.")
 
-    host_runtime = _json_object(trace["host_runtime"], f"{name}.host_runtime")
+    host_runtime = json_object(trace["host_runtime"], f"{name}.host_runtime")
     if host_runtime.get("mode") != "shadow_no_execution":
         raise WorldForgeError(f"{name}.host_runtime.mode must be shadow_no_execution.")
 
-    candidates = _json_list(trace["candidate_actions"], f"{name}.candidate_actions")
-    scores = _json_list(trace["scores"], f"{name}.scores")
-    outcomes = _json_list(trace["candidate_outcomes"], f"{name}.candidate_outcomes")
+    candidates = json_list(trace["candidate_actions"], f"{name}.candidate_actions")
+    scores = json_list(trace["scores"], f"{name}.scores")
+    outcomes = json_list(trace["candidate_outcomes"], f"{name}.candidate_outcomes")
     if not candidates or len(candidates) != len(scores) or len(candidates) != len(outcomes):
         raise WorldForgeError(
             f"{name} candidate_actions, scores, and candidate_outcomes must align."
         )
 
     candidate_ids = {
-        str(_json_object(candidate, f"{name}.candidate_actions[{index}]")["candidate_id"])
+        str(json_object(candidate, f"{name}.candidate_actions[{index}]")["candidate_id"])
         for index, candidate in enumerate(candidates)
     }
-    selected = _json_object(trace["selected_action"], f"{name}.selected_action")
+    selected = json_object(trace["selected_action"], f"{name}.selected_action")
     selected_id = str(selected.get("candidate_id", ""))
     if selected_id not in candidate_ids:
         raise WorldForgeError(f"{name}.selected_action.candidate_id must match a candidate.")
 
     for index, score in enumerate(scores):
-        score_record = _json_object(score, f"{name}.scores[{index}]")
+        score_record = json_object(score, f"{name}.scores[{index}]")
         if str(score_record.get("candidate_id", "")) not in candidate_ids:
             raise WorldForgeError(f"{name}.scores[{index}].candidate_id must match a candidate.")
-        _finite_number(score_record.get("score"), f"{name}.scores[{index}].score")
-        _positive_int(score_record.get("rank"), f"{name}.scores[{index}].rank")
+        finite_json_number(score_record.get("score"), f"{name}.scores[{index}].score")
+        positive_int(score_record.get("rank"), f"{name}.scores[{index}].rank")
 
     for index, outcome in enumerate(outcomes):
-        outcome_record = _json_object(outcome, f"{name}.candidate_outcomes[{index}]")
+        outcome_record = json_object(outcome, f"{name}.candidate_outcomes[{index}]")
         if str(outcome_record.get("candidate_id", "")) not in candidate_ids:
             raise WorldForgeError(
                 f"{name}.candidate_outcomes[{index}].candidate_id must match a candidate."
             )
 
-    claim_boundary = _json_object(trace["claim_boundary"], f"{name}.claim_boundary")
+    claim_boundary = json_object(trace["claim_boundary"], f"{name}.claim_boundary")
     if claim_boundary.get("hardware_executed") is not False:
         raise WorldForgeError(f"{name}.claim_boundary.hardware_executed must be false.")
 
-    outcome = _json_object(trace["outcome"], f"{name}.outcome")
+    outcome = json_object(trace["outcome"], f"{name}.outcome")
     if outcome.get("kind") != "analytic":
         raise WorldForgeError(f"{name}.outcome.kind must be analytic.")
     return trace
@@ -1046,7 +1090,7 @@ def _score_record(
     candidate: _Candidate,
     *,
     rank: int,
-    world_model: _DeadbandWorldModel,
+    world_model: DeadbandWorldModel,
 ) -> JSONDict:
     return {
         "candidate_id": candidate.candidate_id,

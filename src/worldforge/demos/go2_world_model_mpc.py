@@ -1450,12 +1450,80 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+DeadbandWorldModel = _DeadbandWorldModel
+
+
+def fit_deadband_world_model(trials: list[_Trial]) -> DeadbandWorldModel:
+    """Fit the shared Go2 ControlBench deadband-affine model."""
+
+    return _fit_deadband_world_model(trials)
+
+
+def controlbench_dataset_metadata(*, dataset_csv: Path | None, trial_table_url: str) -> JSONDict:
+    """Return sanitized ControlBench dataset provenance for demo artifacts."""
+
+    return _dataset_metadata(dataset_csv=dataset_csv, trial_table_url=trial_table_url)
+
+
+def outcome_distance(lhs: tuple[float, float, float], rhs: tuple[float, float, float]) -> float:
+    """Return the shared Go2 outcome-distance metric."""
+
+    return _outcome_distance(lhs, rhs)
+
+
+def round_json_floats(value: Any) -> Any:
+    """Round JSON-native floats with the shared Go2 artifact policy."""
+
+    return _round_json_floats(value)
+
+
+def json_object(value: object, name: str) -> JSONDict:
+    """Validate a JSON object in Go2 DecisionTrace artifacts."""
+
+    return _json_object(value, name)
+
+
+def json_list(value: object, name: str) -> list[object]:
+    """Validate a JSON list in Go2 DecisionTrace artifacts."""
+
+    return _json_list(value, name)
+
+
+def require_json_fields(mapping: Mapping[str, object], fields: set[str], name: str) -> None:
+    """Validate required fields in a JSON object."""
+
+    _require_fields(mapping, fields, name)
+
+
+def finite_json_number(value: object, name: str) -> float:
+    """Validate a finite JSON number."""
+
+    return _finite_number(value, name)
+
+
+def positive_int(value: object, name: str) -> int:
+    """Validate a positive integer."""
+
+    return _positive_int(value, name)
+
+
 __all__ = [
     "DEFAULT_DATASET_ID",
     "DEFAULT_OUTPUT_DIR",
+    "DeadbandWorldModel",
     "Go2WorldModelMPCResult",
+    "controlbench_dataset_metadata",
+    "decision_trace_digest",
+    "finite_json_number",
+    "fit_deadband_world_model",
+    "json_list",
+    "json_object",
     "load_controlbench_trials",
+    "outcome_distance",
+    "positive_int",
     "render_go2_world_model_mpc_report",
+    "require_json_fields",
+    "round_json_floats",
     "run_go2_world_model_mpc",
     "run_go2_world_model_mpc_workflow",
 ]
