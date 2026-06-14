@@ -53,6 +53,7 @@ terminal and JSON paths remain available with `--no-tui`.
 | --- | --- | --- |
 | `so101-replay-trace` | score provider, decision trace, counterfactuals, mock replay | `uv run worldforge-demo-so101-replay-trace` |
 | `cross-embodiment-decision-evidence` | DecisionTrace v1, Go2 replay, PimSim export, SO-101 replay | `uv run python examples/cross-embodiment-decision-evidence/run.py` |
+| `go2-measured-outcomes` | DecisionTrace v1, real-measured Go2 system-ID summary | `uv run python examples/go2-measured-outcomes/run.py --capture-dir <dir>` |
 
 The SO-101 replay trace demo uses a deterministic pick-and-place decision point shaped after the
 public `lerobot/svla_so101_pickplace` metadata. It scores candidate 6D joint-action futures,
@@ -65,6 +66,17 @@ The cross-embodiment evidence example validates one `DecisionTrace v1` contract 
 navigation replay, a PimSim export conversion, and SO-101 manipulation replay. It writes three
 validated trace JSON artifacts plus a compact comparison report, while labeling each lane as
 hand-cost scoring with analytic/replay outcomes and no live hardware claim.
+
+The Go2 measured-outcomes example consumes a host-owned native-rate system-ID capture and writes a
+sanitized `real_measured` trace with command groups, native odometry summary statistics, LiDAR
+stream references, and explicit limitations. It does not commit or attach raw telemetry, LiDAR
+sidecars, RGB frames, IP addresses, serial numbers, or host-local paths.
+
+Run it with `uv run python examples/go2-measured-outcomes/run.py --capture-dir <dir> --out
+.worldforge/go2-measured-outcomes`. Expected success signal: the command exits `0` and writes a
+validated `real_measured` trace plus `go2-measured-outcomes-report.md`. First triage step: confirm
+the capture directory contains the native system-ID analysis CSVs and stream references, then rerun
+and use the error output to identify the missing artifact.
 
 ## Service Host Reference
 

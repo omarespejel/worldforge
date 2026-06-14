@@ -105,6 +105,7 @@ checkpoint inference.
 | --- | --- | --- |
 | `so101-replay-trace` | `uv run worldforge-demo-so101-replay-trace` | Scores deterministic SO-101 pick-and-place candidates and emits a reusable decision trace without LeRobot, torch, DimOS, or hardware. |
 | `cross-embodiment-decision-evidence` | `uv run python examples/cross-embodiment-decision-evidence/run.py` | Normalizes Go2 replay, PimSim export, and SO-101 replay outputs into one DecisionTrace v1 evidence bundle without robot hardware or optional runtimes. |
+| `go2-measured-outcomes` | `uv run python examples/go2-measured-outcomes/run.py --capture-dir <dir>` | Sanitizes a host-owned Go2 native-rate system-ID capture into a `real_measured` DecisionTrace summary without committing raw telemetry or LiDAR sidecars. |
 
 The SO-101 replay trace records `observation -> goal -> candidate_actions -> candidate_scores ->
 selected_action -> outcome -> counterfactuals`. It is a checkout-safe replay fixture shaped after
@@ -115,6 +116,20 @@ The cross-embodiment evidence bundle writes `decision-trace-go2.json`,
 `cross-embodiment-report.md`. Each trace records typed goals and sub-goals, self-describing
 actions with units, comparable score components, selected action, rejected counterfactuals,
 baseline regret, reproducibility fields, and explicit claim boundaries.
+
+The Go2 measured-outcomes sanitizer writes `decision-trace-go2-real-measured.json` and
+`go2-measured-outcomes-report.md` under `.worldforge/`. Its trace records operator-scripted
+command groups, native odometry summary statistics, LiDAR stream references, and
+`outcome_kind=real_measured` with `hardware_executed=true`. It is a measured-outcome artifact, not
+an autonomous planning success claim.
+
+Expected success signal: the command exits `0` and writes
+`.worldforge/go2-measured-outcomes/decision-trace-go2-real-measured.json` plus
+`.worldforge/go2-measured-outcomes/go2-measured-outcomes-report.md`, with
+`outcome_kind=real_measured` and `hardware_executed=true`. First triage step: confirm
+`--capture-dir` points to a valid Go2 native-rate system-ID capture containing native odometry
+summary statistics and LiDAR stream references, then rerun and use the error output to identify
+which capture artifact is missing.
 
 ## Service Host Reference
 

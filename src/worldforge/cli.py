@@ -108,6 +108,18 @@ EXAMPLE_COMMANDS: tuple[dict[str, str], ...] = (
         ),
     },
     {
+        "task": "Robot decision traces",
+        "name": "go2-measured-outcomes",
+        "surface": "DecisionTrace v1, real-measured Go2 system-ID summary",
+        "requires": "base WorldForge package; private host-owned Go2 capture directory",
+        "command": "uv run python examples/go2-measured-outcomes/run.py --capture-dir <dir>",
+        "description": (
+            "Sanitize a native-rate Go2 system-identification capture into a real-measured "
+            "DecisionTrace artifact without committing raw telemetry, LiDAR sidecars, IPs, or "
+            "robot serials."
+        ),
+    },
+    {
         "task": "Batch evaluation host",
         "name": "batch-eval-host",
         "surface": "evaluation, benchmarking, run workspaces, budget gates",

@@ -35,7 +35,13 @@ DECISION_TRACE_SCHEMA_VERSION = "worldforge.decision_trace.v1"
 DECISION_TRACE_ARTIFACT_KIND = "worldforge.decision_trace"
 DECISION_TRACE_SCHEMA_RESOURCE = "decision_trace.v1.schema.json"
 
-SCORE_KINDS: tuple[str, ...] = ("hand_cost", "learned_latent", "simulator", "human_label")
+SCORE_KINDS: tuple[str, ...] = (
+    "hand_cost",
+    "learned_latent",
+    "simulator",
+    "human_label",
+    "measured_metric",
+)
 OUTCOME_KINDS: tuple[str, ...] = ("analytic", "sim_measured", "real_measured")
 
 _REQUIRED_TOP_LEVEL_FIELDS: tuple[str, ...] = (

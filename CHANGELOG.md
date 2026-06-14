@@ -37,6 +37,12 @@ releases may still include breaking changes when the public API needs to tighten
   `decision-trace-go2.json`, `decision-trace-pimsim.json`, `decision-trace-so101.json`, and a
   compact report with score kind, outcome kind, baseline regret, score margin, counterfactuals,
   candidate-level analytic outcomes, reproducibility, and explicit claim boundaries.
+- Added a Go2 measured-outcomes sanitizer for host-owned native-rate system-ID captures. The
+  `examples/go2-measured-outcomes/run.py --capture-dir <dir>` path emits a sanitized
+  DecisionTrace v1 artifact with `outcome_kind=real_measured`, `score_kind=measured_metric`,
+  command groups, native odometry summaries, LiDAR stream references, and explicit limitations
+  while keeping raw telemetry, LiDAR sidecars, IPs, serial numbers, RGB frames, and host-local
+  paths out of shareable artifacts.
 - Added host-owned SO-101 latent scorer handoff scripts. `scripts/build_so101_latent_cache_sidecar.py`
   aligns an existing DINOv2 latent cache with LeRobot frame/episode metadata, while
   `scripts/train_so101_latent_scorer.py` trains latent-dynamics and goal-conditioned cost MLP
