@@ -54,6 +54,7 @@ terminal and JSON paths remain available with `--no-tui`.
 | `so101-replay-trace` | score provider, decision trace, counterfactuals, mock replay | `uv run worldforge-demo-so101-replay-trace` |
 | `go2-controlbench-decisiontrace` | score provider, public decision trace, measured regret | `uv run python examples/go2-controlbench-decisiontrace/run.py` |
 | `go2-world-model-mpc-dimos` | Go2 ControlBench world-model MPC, DimOS shadow bridge, DecisionTrace | `uv run worldforge-demo-go2-world-model-mpc` |
+| `go2-live-safety-veto` | Go2 predictive safety-filter shadow gate, DimOS bridge contract, DecisionTrace | `uv run worldforge-demo-go2-live-safety-veto` |
 
 The SO-101 replay trace demo uses a deterministic pick-and-place decision point shaped after the
 public `lerobot/svla_so101_pickplace` metadata. It scores candidate 6D joint-action futures,
@@ -81,6 +82,15 @@ revision `bb80a77c63f0b502267e5500fef83e65535ced5b`, then confirm the summary st
 `shadow_replay_no_execution` and `live_execution_allowed=false`. Success signal:
 `world-model-mpc-summary.json` contains those two values and the run emitted a non-empty
 DecisionTrace JSON file for each target.
+
+The Go2 live safety-veto shadow example scores a proposed `forward_50cm` command against
+live-shaped obstacle evidence and emits `live-safety-veto-summary.json`,
+`dimos-live-safety-bridge-plan.json`, and `decision-trace-go2-live-safety-veto.json`. The default
+fixture rejects the forward action and selects `stop_hold`; an open-space shadow path is available
+with `--forward-clearance-m 2.0 --stopmove-verified`. For a two-case terminal run, use
+`uv run worldforge-demo-go2-live-safety-veto --demo-pair` to run the obstacle-veto and
+open-space-control cases back to back. It does not import DimOS, connect to hardware, send robot
+commands, use Cosmos 3, call `relative_move`, or claim certified safety.
 
 ## Service Host Reference
 

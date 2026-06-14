@@ -99,6 +99,14 @@ releases may still include breaking changes when the public API needs to tighten
   `espejelomar/go2-air-controlbench-v1` normalized trial table, ranks bounded Sport Move
   candidates, and emits a DimOS shadow-bridge plan plus validated DecisionTrace artifacts without
   importing DimOS, connecting to a robot, or sending live hardware commands.
+- Added `worldforge-demo-go2-live-safety-veto`, a checkout-safe Go2 predictive safety-filter
+  shadow demo that uses the public ControlBench trial table, scores a proposed `forward_50cm`
+  command against live-shaped obstacle evidence, and emits a DimOS bridge contract plus validated
+  DecisionTrace artifact. `--demo-pair` runs the obstacle-veto and open-space-control cases
+  back to back for terminal capture. The demo records fail-closed gates for stale
+  telemetry, obstacle overlap, unknown forward cells, and missing StopMove verification while
+  keeping DimOS imports, Cosmos 3, `relative_move`, autonomous navigation, and hardware commands
+  outside the package.
 - Added a non-interactive TensorBoard launcher CLI:
   `worldforge-open-tensorboard --logdir <path> [--probe] [--no-browser]
   [--keep-running] [--ready-timeout 60] [--poll-interval 0.5]`. Wraps the

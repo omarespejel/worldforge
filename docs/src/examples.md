@@ -106,6 +106,7 @@ checkpoint inference.
 | `so101-replay-trace` | `uv run worldforge-demo-so101-replay-trace` | Scores deterministic SO-101 pick-and-place candidates and emits a reusable decision trace without LeRobot, torch, DimOS, or hardware. |
 | `go2-controlbench-decisiontrace` | `uv run python examples/go2-controlbench-decisiontrace/run.py` | Replays a public Go2 Air ControlBench trace, reranks candidate commands through `score`, and reports measured native-odom regret without DimOS, Unitree SDKs, Hugging Face downloads, or hardware. |
 | `go2-world-model-mpc-dimos` | `uv run worldforge-demo-go2-world-model-mpc` | Fits a transparent Go2 command-outcome world model over the public ControlBench table, ranks bounded Sport Move candidates, and emits a DimOS shadow-bridge plan plus DecisionTrace artifacts without importing DimOS or controlling hardware. |
+| `go2-live-safety-veto` | `uv run worldforge-demo-go2-live-safety-veto` | Scores a proposed Go2 forward command against live-shaped obstacle evidence and emits a DimOS safety-veto bridge plan plus DecisionTrace without importing DimOS or sending robot commands. |
 
 The SO-101 replay trace records `observation -> goal -> candidate_actions -> candidate_scores ->
 selected_action -> outcome -> counterfactuals`. It is a checkout-safe replay fixture shaped after
@@ -129,6 +130,17 @@ and redacted from emitted artifacts. First triage step: rerun with a local
 `--dataset-csv all_trials_normalized.csv` from revision
 `bb80a77c63f0b502267e5500fef83e65535ced5b`, then confirm the summary still reports
 `shadow_replay_no_execution` and `live_execution_allowed=false`.
+
+The Go2 live safety-veto shadow demo builds that live-execution bridge contract without moving the
+robot. It writes `live-safety-veto-summary.json`, `dimos-live-safety-bridge-plan.json`,
+`decision-trace-go2-live-safety-veto.json`, and `live-safety-veto-report.md` under
+`.worldforge/go2-live-safety-veto/`. The default fixture rejects a proposed `forward_50cm`
+command because the predicted swept footprint intersects obstacle evidence and StopMove has not
+been verified. `uv run worldforge-demo-go2-live-safety-veto --demo-pair` runs a two-case shadow
+pair: obstacle veto followed by open-space authorization. `--forward-clearance-m 2.0
+--stopmove-verified` demonstrates the single-case open-space shadow authorization path. The
+artifact is a predictive safety-filter demo, not certified safety, Cosmos 3 control, DimOS
+execution, autonomous navigation, or a `relative_move` call.
 
 ## Service Host Reference
 
