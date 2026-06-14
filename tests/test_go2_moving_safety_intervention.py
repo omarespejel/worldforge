@@ -16,6 +16,7 @@ from worldforge.demos.go2_moving_safety_intervention import (
     run_go2_moving_safety_intervention_workflow,
     validate_decision_trace,
 )
+from worldforge.models import WorldStateError
 
 _RECEIPT_HMAC_KEY = "test-only-dimos-receipt-key"
 
@@ -264,6 +265,7 @@ def test_go2_moving_safety_intervention_accepts_live_receipt_after_stop_proof(
             available=True,
             stop_time_s=0.22,
             stop_distance_m=0.03,
+            measured_speed_mps=0.10,
             command_rtt_ms=80.0,
             velocity_before_stop_mps=0.08,
             velocity_after_stop_mps=0.0,
@@ -281,6 +283,73 @@ def test_go2_moving_safety_intervention_accepts_live_receipt_after_stop_proof(
     assert trace["outcome"]["metrics"]["measured_stop_distance_m"] == 0.03
     assert trace["outcome"]["metrics"]["outcome_source"] == "native_odom"
     assert trace["claim_boundary"]["hardware_executed"] is True
+
+
+def test_go2_moving_safety_intervention_rejects_unsafe_step_id_filename(
+    tmp_path: Path,
+) -> None:
+    csv_path = _write_trials_csv(tmp_path / "all_trials_normalized.csv")
+    observation = MovingObservation(
+        step_id="../escape",
+        label="Unsafe trace id probe",
+        forward_clearance_m=2.0,
+        odom_freshness_ms=80.0,
+        lidar_freshness_ms=120.0,
+        costmap_freshness_ms=160.0,
+        heartbeat_freshness_ms=80.0,
+        measured_vx_mps=0.08,
+        stopmove_verified=True,
+        operator_resume_authorized=True,
+        clear_frames_seen=5,
+    )
+
+    with pytest.raises(WorldStateError, match="trace_id"):
+        run_go2_moving_safety_intervention(
+            mode="open-space-bounded-motion",
+            dataset_csv=csv_path,
+            output_dir=tmp_path / "out",
+            observations=[observation],
+        )
+
+    assert not (tmp_path / "escape").exists()
+
+
+def test_go2_moving_safety_intervention_ignores_slower_stop_proof(
+    tmp_path: Path,
+) -> None:
+    csv_path = _write_trials_csv(tmp_path / "all_trials_normalized.csv")
+    observation = MovingObservation(
+        step_id="slow_stop_proof",
+        label="Stop proof measured below configured demo speed",
+        forward_clearance_m=2.0,
+        odom_freshness_ms=80.0,
+        lidar_freshness_ms=120.0,
+        costmap_freshness_ms=160.0,
+        heartbeat_freshness_ms=80.0,
+        measured_vx_mps=0.08,
+        stopmove_verified=True,
+        operator_resume_authorized=True,
+        clear_frames_seen=5,
+    )
+
+    result = run_go2_moving_safety_intervention(
+        mode="open-space-bounded-motion",
+        dataset_csv=csv_path,
+        output_dir=tmp_path / "out",
+        config=MovingSafetyConfig(vx_mps=0.10, fallback_decel_distance_m=0.08),
+        observations=[observation],
+        stop_proof=StopProofMeasurement(
+            available=True,
+            stop_time_s=0.10,
+            stop_distance_m=0.01,
+            measured_speed_mps=0.05,
+        ),
+    )
+
+    budget = result.summary["steps"][0]["safety_budget"]
+    assert budget["stop_proof_covers_config_speed"] is False
+    assert budget["stop_distance_m"] == 0.08
+    assert budget["stop_budget_source"] == "conservative_fallback_unmeasured"
 
 
 def test_go2_moving_safety_intervention_holds_resume_hysteresis_band(
@@ -316,7 +385,7 @@ def test_go2_moving_safety_intervention_holds_resume_hysteresis_band(
 def test_go2_moving_safety_intervention_rejects_unsafe_config(tmp_path: Path) -> None:
     csv_path = _write_trials_csv(tmp_path / "all_trials_normalized.csv")
 
-    with pytest.raises(Exception, match="vx_mps"):
+    with pytest.raises(WorldStateError, match="vx_mps"):
         run_go2_moving_safety_intervention(
             dataset_csv=csv_path,
             output_dir=tmp_path / "out",

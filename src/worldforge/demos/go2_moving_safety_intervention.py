@@ -29,17 +29,17 @@ from worldforge.demos.go2_world_model_mpc import (
     DECISION_TRACE_SCHEMA_VERSION,
     DEFAULT_DATASET_ID,
     DEFAULT_TRIAL_TABLE_URL,
-    _dataset_metadata,
-    _DeadbandWorldModel,
-    _finite_number,
-    _fit_deadband_world_model,
-    _json_list,
-    _json_object,
-    _positive_int,
-    _require_fields,
-    _round_json_floats,
+    DeadbandWorldModel,
+    controlbench_dataset_metadata,
     decision_trace_digest,
+    finite_json_number,
+    fit_deadband_world_model,
+    json_list,
+    json_object,
     load_controlbench_trials,
+    positive_int,
+    require_json_fields,
+    round_json_floats,
 )
 from worldforge.models import JSONDict, WorldForgeError, WorldStateError
 
@@ -107,6 +107,7 @@ class StopProofMeasurement:
     available: bool = False
     stop_time_s: float | None = None
     stop_distance_m: float | None = None
+    measured_speed_mps: float | None = None
     command_rtt_ms: float | None = None
     velocity_before_stop_mps: float | None = None
     velocity_after_stop_mps: float | None = None
@@ -175,7 +176,7 @@ def run_go2_moving_safety_intervention(
     _validate_config(cfg)
     proof = stop_proof or StopProofMeasurement()
     trials = load_controlbench_trials(dataset_csv=dataset_csv, trial_table_url=trial_table_url)
-    world_model = _fit_deadband_world_model(trials)
+    world_model = fit_deadband_world_model(trials)
     sequence = observations or _default_observations(mode)
     decisions = [
         _decide_step(
@@ -214,7 +215,10 @@ def run_go2_moving_safety_intervention(
         output_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         raise WorldStateError(
-            "Go2 moving safety-intervention output directory could not be created."
+            "Go2 moving safety-intervention artifact "
+            "owner=worldforge-demo-go2-moving-safety-intervention "
+            "triage=check --out permissions and parent directory availability: "
+            "output directory could not be created."
         ) from exc
 
     try:
@@ -229,7 +233,10 @@ def run_go2_moving_safety_intervention(
         trace_paths = [
             write_json_artifact(
                 output_dir
-                / (f"decision-trace-go2-moving-safety-{index:02d}-{trace['trace_id']}.json"),
+                / (
+                    "decision-trace-go2-moving-safety-"
+                    f"{index:02d}-{_safe_trace_id(str(trace['trace_id']))}.json"
+                ),
                 trace,
             )
             for index, trace in enumerate(traces)
@@ -237,7 +244,11 @@ def run_go2_moving_safety_intervention(
         report_path = output_dir / "moving-safety-intervention-report.md"
         report_path.write_text(report, encoding="utf-8")
     except OSError as exc:
-        raise WorldStateError("Go2 moving safety-intervention artifact write failed.") from exc
+        raise WorldStateError(
+            "Go2 moving safety-intervention artifact "
+            "owner=worldforge-demo-go2-moving-safety-intervention "
+            "triage=check --out permissions and free disk space: artifact write failed."
+        ) from exc
 
     return Go2MovingSafetyResult(
         summary=summary,
@@ -453,7 +464,7 @@ def _default_observations(mode: Mode) -> list[MovingObservation]:
 def _decide_step(
     *,
     observation: MovingObservation,
-    world_model: _DeadbandWorldModel,
+    world_model: DeadbandWorldModel,
     config: MovingSafetyConfig,
     stop_proof: StopProofMeasurement,
     receipt_hmac_key: str | bytes | None,
@@ -564,7 +575,10 @@ def _forward_rejection_reasons(
             reasons.append("resume_clear_hysteresis_not_satisfied")
         if not observation.operator_resume_authorized:
             reasons.append("operator_resume_not_authorized")
-    if hardware_commands_sent and not stop_proof.available:
+    if hardware_commands_sent and not _stop_proof_covers_config_speed(
+        stop_proof=stop_proof,
+        config=config,
+    ):
         reasons.append("live_motion_without_stop_proof_measurement")
     return reasons
 
@@ -588,14 +602,18 @@ def _safety_budget(
         if _finite_positive(stop_proof.command_rtt_ms)
         else config.command_rtt_ms
     )
+    measured_stop_proof_covers_speed = _stop_proof_covers_config_speed(
+        stop_proof=stop_proof,
+        config=config,
+    )
     stop_time_s = (
         stop_proof.stop_time_s
-        if _finite_positive(stop_proof.stop_time_s)
+        if measured_stop_proof_covers_speed and _finite_positive(stop_proof.stop_time_s)
         else config.fallback_decel_time_s
     )
     stop_distance_m = (
         stop_proof.stop_distance_m
-        if _finite_positive(stop_proof.stop_distance_m)
+        if measured_stop_proof_covers_speed and _finite_positive(stop_proof.stop_distance_m)
         else config.fallback_decel_distance_m
     )
     latency_distance_m = config.vx_mps * (
@@ -610,7 +628,7 @@ def _safety_budget(
         + config.obstacle_margin_m
         + abs(model_rmse_dx_m)
     )
-    return _round_json_floats(
+    return round_json_floats(
         {
             "predicted_forward_dx_m": predicted_forward_m,
             "perception_age_ms": perception_age_ms,
@@ -621,9 +639,13 @@ def _safety_budget(
             "stop_distance_m": stop_distance_m,
             "stop_budget_source": (
                 "measured_stop_proof"
-                if stop_proof.available
+                if measured_stop_proof_covers_speed
                 else "conservative_fallback_unmeasured"
             ),
+            "stop_proof_measured_speed_mps": _positive_measurement_or_none(
+                stop_proof.measured_speed_mps
+            ),
+            "stop_proof_covers_config_speed": measured_stop_proof_covers_speed,
             "robot_half_extent_m": config.robot_half_extent_m,
             "obstacle_margin_m": config.obstacle_margin_m,
             "model_rmse_dx_m": abs(model_rmse_dx_m),
@@ -641,7 +663,7 @@ def _build_summary(
     dataset_csv: Path | None,
     trial_table_url: str,
     trial_count: int,
-    world_model: _DeadbandWorldModel,
+    world_model: DeadbandWorldModel,
     config: MovingSafetyConfig,
     stop_proof: StopProofMeasurement,
     decisions: list[_StepDecision],
@@ -651,8 +673,11 @@ def _build_summary(
     any_real_measured = any(
         _decision_outcome_kind(decision) == "real_measured" for decision in decisions
     )
-    dataset_metadata = _dataset_metadata(dataset_csv=dataset_csv, trial_table_url=trial_table_url)
-    return _round_json_floats(
+    dataset_metadata = controlbench_dataset_metadata(
+        dataset_csv=dataset_csv,
+        trial_table_url=trial_table_url,
+    )
+    return round_json_floats(
         {
             "schema_version": 1,
             "artifact_kind": "worldforge.go2_moving_safety_intervention_summary",
@@ -721,7 +746,7 @@ def _build_bridge_plan(
     config: MovingSafetyConfig,
     stop_proof: StopProofMeasurement,
 ) -> JSONDict:
-    return _round_json_floats(
+    return round_json_floats(
         {
             "schema_version": 1,
             "artifact_kind": "worldforge.dimos_go2_moving_safety_bridge_plan",
@@ -790,14 +815,15 @@ def _build_trace_chain(
     dataset_csv: Path | None,
     trial_table_url: str,
     decisions: list[_StepDecision],
-    world_model: _DeadbandWorldModel,
+    world_model: DeadbandWorldModel,
     config: MovingSafetyConfig,
     stop_proof: StopProofMeasurement,
 ) -> list[JSONDict]:
     traces: list[JSONDict] = []
     prev_trace_id: str | None = None
     for index, decision in enumerate(decisions):
-        trace_id = f"go2-moving-safety-{index:02d}-{decision.observation.step_id}"
+        safe_step_id = _safe_trace_id(decision.observation.step_id)
+        trace_id = f"go2-moving-safety-{index:02d}-{safe_step_id}"
         trace = _build_decision_trace(
             mode=mode,
             trace_id=trace_id,
@@ -824,7 +850,7 @@ def _build_decision_trace(
     dataset_csv: Path | None,
     trial_table_url: str,
     decision: _StepDecision,
-    world_model: _DeadbandWorldModel,
+    world_model: DeadbandWorldModel,
     config: MovingSafetyConfig,
     stop_proof: StopProofMeasurement,
 ) -> JSONDict:
@@ -1008,7 +1034,7 @@ def _build_decision_trace(
             },
         },
     }
-    return validate_decision_trace(_round_json_floats(trace))
+    return validate_decision_trace(round_json_floats(trace))
 
 
 def validate_decision_trace(
@@ -1018,8 +1044,8 @@ def validate_decision_trace(
 ) -> JSONDict:
     """Validate the Go2 moving safety-intervention DecisionTrace artifact shape."""
 
-    trace = _json_object(payload, name)
-    _require_fields(
+    trace = json_object(payload, name)
+    require_json_fields(
         trace,
         (
             "schema_version",
@@ -1046,40 +1072,40 @@ def validate_decision_trace(
     if trace["artifact_kind"] != DECISION_TRACE_ARTIFACT_KIND:
         raise WorldForgeError(f"{name}.artifact_kind must be {DECISION_TRACE_ARTIFACT_KIND}.")
 
-    candidates = _json_list(trace["candidate_actions"], f"{name}.candidate_actions")
-    scores = _json_list(trace["scores"], f"{name}.scores")
-    outcomes = _json_list(trace["candidate_outcomes"], f"{name}.candidate_outcomes")
+    candidates = json_list(trace["candidate_actions"], f"{name}.candidate_actions")
+    scores = json_list(trace["scores"], f"{name}.scores")
+    outcomes = json_list(trace["candidate_outcomes"], f"{name}.candidate_outcomes")
     if not candidates or len(candidates) != len(scores) or len(candidates) != len(outcomes):
         raise WorldForgeError(
             f"{name} candidate_actions, scores, and candidate_outcomes must align."
         )
 
     candidate_ids = {
-        str(_json_object(candidate, f"{name}.candidate_actions[{index}]")["candidate_id"])
+        str(json_object(candidate, f"{name}.candidate_actions[{index}]")["candidate_id"])
         for index, candidate in enumerate(candidates)
     }
-    selected = _json_object(trace["selected_action"], f"{name}.selected_action")
+    selected = json_object(trace["selected_action"], f"{name}.selected_action")
     selected_id = str(selected.get("candidate_id", ""))
     if selected_id not in candidate_ids:
         raise WorldForgeError(f"{name}.selected_action.candidate_id must match a candidate.")
 
     for index, score in enumerate(scores):
-        score_record = _json_object(score, f"{name}.scores[{index}]")
+        score_record = json_object(score, f"{name}.scores[{index}]")
         if str(score_record.get("candidate_id", "")) not in candidate_ids:
             raise WorldForgeError(f"{name}.scores[{index}].candidate_id must match a candidate.")
-        _finite_number(score_record.get("score"), f"{name}.scores[{index}].score")
-        _positive_int(score_record.get("rank"), f"{name}.scores[{index}].rank")
+        finite_json_number(score_record.get("score"), f"{name}.scores[{index}].score")
+        positive_int(score_record.get("rank"), f"{name}.scores[{index}].rank")
 
     for index, outcome in enumerate(outcomes):
-        outcome_record = _json_object(outcome, f"{name}.candidate_outcomes[{index}]")
+        outcome_record = json_object(outcome, f"{name}.candidate_outcomes[{index}]")
         if str(outcome_record.get("candidate_id", "")) not in candidate_ids:
             raise WorldForgeError(
                 f"{name}.candidate_outcomes[{index}].candidate_id must match a candidate."
             )
 
-    outcome = _json_object(trace["outcome"], f"{name}.outcome")
-    metrics = _json_object(outcome["metrics"], f"{name}.outcome.metrics")
-    claim_boundary = _json_object(trace["claim_boundary"], f"{name}.claim_boundary")
+    outcome = json_object(trace["outcome"], f"{name}.outcome")
+    metrics = json_object(outcome["metrics"], f"{name}.outcome.metrics")
+    claim_boundary = json_object(trace["claim_boundary"], f"{name}.claim_boundary")
     hardware_executed = claim_boundary.get("hardware_executed")
     if not isinstance(hardware_executed, bool):
         raise WorldForgeError(f"{name}.claim_boundary.hardware_executed must be boolean.")
@@ -1096,16 +1122,16 @@ def validate_decision_trace(
             )
         if metrics.get("stopmove_ack") is not True:
             raise WorldForgeError(f"{name}.outcome.metrics.stopmove_ack must be true.")
-        _finite_number(
+        finite_json_number(
             metrics.get("measured_stop_time_s"),
             f"{name}.outcome.metrics.measured_stop_time_s",
         )
-        _finite_number(
+        finite_json_number(
             metrics.get("measured_stop_distance_m"),
             f"{name}.outcome.metrics.measured_stop_distance_m",
         )
-        diagnostics = _json_object(trace["planner_diagnostics"], f"{name}.planner_diagnostics")
-        receipt = _json_object(
+        diagnostics = json_object(trace["planner_diagnostics"], f"{name}.planner_diagnostics")
+        receipt = json_object(
             diagnostics["execution_receipt_verification"],
             f"{name}.planner_diagnostics.execution_receipt_verification",
         )
@@ -1383,7 +1409,7 @@ def _verify_host_execution_receipt(
             "measured_stop_distance_m": float(measured_stop_distance_m),
         }
     )
-    return _round_json_floats(status)
+    return round_json_floats(status)
 
 
 def _receipt_hmac(payload: Mapping[str, object], receipt_hmac_key: str | bytes) -> str:
@@ -1516,6 +1542,7 @@ def _stop_proof_json(stop_proof: StopProofMeasurement) -> JSONDict:
         "available": stop_proof.available,
         "stop_time_s": _positive_measurement_or_none(stop_proof.stop_time_s),
         "stop_distance_m": _positive_measurement_or_none(stop_proof.stop_distance_m),
+        "measured_speed_mps": _positive_measurement_or_none(stop_proof.measured_speed_mps),
         "command_rtt_ms": _positive_measurement_or_none(stop_proof.command_rtt_ms),
         "velocity_before_stop_mps": _positive_measurement_or_none(
             stop_proof.velocity_before_stop_mps
@@ -1533,6 +1560,7 @@ def _stop_proof_protocol_json(config: MovingSafetyConfig) -> JSONDict:
         "model_prediction_scope": "command displacement only; stop distance is measured separately",
         "minimum_repetitions_per_speed": 15,
         "speeds_mps": [0.08, config.vx_mps],
+        "measured_speed_mps_required": True,
         "chunk_duration_s": config.chunk_duration_s,
         "measurements": [
             "overhead_aruco_stop_distance_m",
@@ -1549,6 +1577,37 @@ def _stop_proof_protocol_json(config: MovingSafetyConfig) -> JSONDict:
 
 def _freshness_is_present(value: float | None) -> bool:
     return value is not None and math.isfinite(value) and value > 0.0
+
+
+def _safe_trace_id(value: str) -> str:
+    raw = value.strip()
+    if not raw or raw in {".", ".."} or "/" in raw or "\\" in raw:
+        raise WorldStateError(
+            "Go2 moving safety trace_id owner=worldforge-demo-go2-moving-safety-intervention "
+            "triage=check observation step_id values: trace_id must be a safe file-name segment."
+        )
+    safe = "".join(char if char.isalnum() else "-" for char in raw.lower()).strip("-")
+    if not safe or safe in {".", ".."}:
+        raise WorldStateError(
+            "Go2 moving safety trace_id owner=worldforge-demo-go2-moving-safety-intervention "
+            "triage=check observation step_id values: trace_id must contain safe characters."
+        )
+    return safe
+
+
+def _stop_proof_covers_config_speed(
+    *, stop_proof: StopProofMeasurement, config: MovingSafetyConfig
+) -> bool:
+    if not stop_proof.available:
+        return False
+    if not _finite_positive(stop_proof.stop_time_s) or not _finite_positive(
+        stop_proof.stop_distance_m
+    ):
+        return False
+    measured_speed_mps = _positive_measurement_or_none(stop_proof.measured_speed_mps)
+    if measured_speed_mps is None:
+        return False
+    return measured_speed_mps + 1e-9 >= config.vx_mps
 
 
 def _freshness_value_or_none(value: float | None) -> float | None:
@@ -1600,6 +1659,9 @@ def main(argv: list[str] | None = None) -> None:
         available=args.stop_proof_distance_m is not None and args.stop_proof_time_s is not None,
         stop_distance_m=args.stop_proof_distance_m,
         stop_time_s=args.stop_proof_time_s,
+        measured_speed_mps=args.vx_mps
+        if args.stop_proof_distance_m is not None and args.stop_proof_time_s is not None
+        else None,
         command_rtt_ms=args.command_rtt_ms,
     )
     result = run_go2_moving_safety_intervention(
